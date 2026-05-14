@@ -1,9 +1,13 @@
 import { Hono } from "hono";
 import { logger } from "hono/logger";
 import type { Env } from "./env";
+import { extractRoute } from "./routes/extract";
+import { fetchRoute } from "./routes/fetch";
+import { researchRoute } from "./routes/research";
+import { searchRoute } from "./routes/search";
 import { envelopeFail, envelopeOk } from "./utils/envelope";
 import { ErrorCodes } from "./utils/errors";
-import { newJobId, newRequestId } from "./utils/id";
+import { newRequestId } from "./utils/id";
 
 export { AtlasJob } from "./do/atlas-job";
 
@@ -37,7 +41,12 @@ app.get("/", (c) =>
 
 const v1 = new Hono<AppEnv>();
 
-const notImplemented = (op: string) => (c: any) =>
+v1.route("/search", searchRoute);
+v1.route("/fetch", fetchRoute);
+v1.route("/extract", extractRoute);
+v1.route("/research", researchRoute);
+
+const notImplementedAsync = (op: AsyncOp) => (c: any) =>
   c.json(
     envelopeFail(
       ErrorCodes.E_NOT_IMPLEMENTED,
@@ -47,34 +56,12 @@ const notImplemented = (op: string) => (c: any) =>
     501,
   );
 
-v1.post("/search", notImplemented("/v1/search"));
-v1.post("/fetch", notImplemented("/v1/fetch"));
-
-const submitAsync = (op: AsyncOp) => (c: any) => {
-  const id = newJobId();
-  return c.json(
-    envelopeOk(
-      {
-        id,
-        op,
-        status: "queued",
-        url: `/v1/${op}/${id}`,
-        stream_url: `/v1/${op}/${id}/stream`,
-      },
-      c.get("request_id"),
-    ),
-    202,
-  );
-};
-
-v1.post("/extract", submitAsync("extract"));
-v1.post("/crawl", submitAsync("crawl"));
-v1.post("/research", submitAsync("research"));
-v1.post("/task", submitAsync("task"));
+v1.post("/crawl", notImplementedAsync("crawl"));
+v1.post("/task", notImplementedAsync("task"));
 
 const forwardToJob = async (c: any) => {
   const id = c.req.param("id") as string;
-  const ns = c.env.ATLAS_JOB as DurableObjectNamespace;
+  const ns = c.env.ATLAS_JOB;
   const stub = ns.get(ns.idFromName(id));
   return stub.fetch(c.req.raw);
 };
