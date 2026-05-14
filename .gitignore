@@ -1,0 +1,13 @@
+node_modules/
+.wrangler/
+.dev.vars
+.dev.vars.*
+*.log
+.DS_Store
+dist/
+.env
+.env.local
+worker-configuration.d.ts
+
+# Cloned OSS reference projects — not part of this repo
+refs/

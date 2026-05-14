@@ -1,0 +1,27 @@
+{
+  "name": "atlas",
+  "version": "0.0.1",
+  "description": "OSS web data API on Cloudflare Workers, backed by Steel Browser.",
+  "private": true,
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "typecheck": "tsc --noEmit",
+    "cf-typegen": "wrangler types"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.92.0",
+    "hono": "^4.6.14",
+    "steel-sdk": "^0.18.0",
+    "ulidx": "^2.4.1",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250122.0",
+    "typescript": "^5.7.2",
+    "wrangler": "^4.0.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
