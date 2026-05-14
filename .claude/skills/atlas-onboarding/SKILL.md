@@ -1,5 +1,5 @@
 ---
-name: onboarding
+name: atlas-onboarding
 description:
   Deploy your own Atlas instance to Cloudflare Workers, wired to your Steel and Anthropic accounts.
   Use when the user wants to set up, deploy, or onboard to Atlas — typically right after they clone

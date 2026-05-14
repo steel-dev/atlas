@@ -29,7 +29,7 @@ claude  # or open the folder in your Claude Code IDE
 Then in Claude Code:
 
 ```
-/onboarding
+/atlas-onboarding
 ```
 
 The skill walks you through (~5 min):
