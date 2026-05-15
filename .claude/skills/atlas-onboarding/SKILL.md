@@ -23,20 +23,56 @@ existing clients can migrate by switching baseURL.
 
 Use TaskCreate to track these phases:
 
-1. Prerequisites (wrangler installed + logged in)
-2. Customize wrangler.toml (pick deployment suffix)
-3. Create R2 bucket
-4. Set Steel API key
-5. Set Anthropic API key
-6. Deploy worker
-7. Smoke test
+1. Confirm required accounts & credentials are in hand
+2. Local prerequisites (wrangler installed + logged in)
+3. Customize wrangler.toml (pick deployment suffix)
+4. Create R2 bucket
+5. Set Steel API key
+6. Set Anthropic API key
+7. Deploy worker
+8. Smoke test
 
 Refuse to log any collected API keys back to the chat. After collecting a key with AskUserQuestion,
 pipe it into `wrangler secret put` via stdin — do not echo it elsewhere.
 
-## Phase 1: Prerequisites
+## Phase 1: Prerequisites & Required Credentials
 
-First, confirm the user is in the Atlas project root and that node_modules is installed.
+**Do this first, before any local checks or `wrangler` calls.** Atlas talks to three external
+services. The user owns each account; we won't proceed until all three are ready, because we'd just
+have to stop mid-deploy otherwise.
+
+List what's needed, then use AskUserQuestion (multiSelect) to confirm. Frame it as a checklist —
+don't collect the actual keys yet (we do that in Phases 4 and 5, right before `wrangler secret
+put`), just confirm the user can produce each one when asked.
+
+> Atlas needs three accounts. Before we start, confirm you have (or can create in the next few
+> minutes):
+>
+> 1. **Cloudflare account** — free tier is fine. Workers + R2 must be enabled (R2 needs a credit
+>    card on file, even on free tier). We'll use Wrangler's browser OAuth, so no API token needed.
+> 2. **Steel account** with an API key from https://app.steel.dev → Settings → API Keys.
+>    Free tier works for testing. Required permission: ability to create browser sessions
+>    (default for new keys).
+> 3. **Anthropic API key** from https://console.anthropic.com → API Keys. `sk-ant-…` format.
+>    Make sure the key/workspace has credit available — `/research` and `/extract` will fail
+>    with 402 otherwise.
+>
+> Also useful but optional:
+>
+> - A custom domain on Cloudflare if you want a non-`*.workers.dev` URL (can be added later)
+> - A Steel residential proxy add-on if you'll hit sites with heavy anti-bot (can be added later)
+
+AskUserQuestion (multiSelect=true) — one question with options for each account: "Cloudflare ready",
+"Steel API key ready", "Anthropic API key ready". If any is unchecked, stop and tell the user to
+finish the missing signup(s), then resume the skill. Do **not** proceed to Phase 2 until all three
+are confirmed.
+
+If the user pastes a key into chat at this stage, tell them to hold it — we'll collect it directly
+into `wrangler secret put` in the relevant phase so it never lands in the conversation transcript.
+
+## Phase 2: Local Prerequisites
+
+Confirm the user is in the Atlas project root and that node_modules is installed.
 
 ```bash
 test -f wrangler.toml && test -d node_modules && echo "ready" || echo "missing"
@@ -62,9 +98,9 @@ needs an interactive browser flow on the user's machine. Tell the user:
 > A browser tab will open for Cloudflare OAuth. Once you see "Successfully logged in", come back and
 > tell me you're done.
 
-Wait for the user to confirm before continuing to Phase 2.
+Wait for the user to confirm before continuing to Phase 3.
 
-## Phase 2: Customize wrangler.toml
+## Phase 3: Customize wrangler.toml
 
 R2 bucket names are global within a Cloudflare account, and Worker names are per-account but
 should still be unique within an org. We append a suffix to both so multiple users (or a user with
@@ -95,7 +131,7 @@ Read `wrangler.toml`, then Edit:
 
 Show the user a diff (or just the two changed lines) for confirmation before moving on.
 
-## Phase 3: Create R2 bucket
+## Phase 4: Create R2 bucket
 
 ```bash
 npx wrangler r2 bucket create atlas-<suffix>-artifacts
@@ -105,10 +141,10 @@ Handle outcomes:
 
 - Success: continue
 - `bucket already exists`: ask the user if they want to (a) reuse the existing bucket — fine if it's
-  theirs — or (b) pick a different suffix and re-do Phase 2. Don't silently reuse.
-- Auth error: re-run `wrangler whoami` and back to Phase 1
+  theirs — or (b) pick a different suffix and re-do Phase 3. Don't silently reuse.
+- Auth error: re-run `wrangler whoami` and back to Phase 2
 
-## Phase 4: Steel API Key
+## Phase 5: Steel API Key
 
 Tell the user:
 
@@ -139,7 +175,7 @@ add an env var to wrangler.toml after onboarding:
 STEEL_BASE_URL = "https://their-steel-host"
 ```
 
-## Phase 5: Anthropic API Key
+## Phase 6: Anthropic API Key
 
 Tell the user:
 
@@ -158,25 +194,25 @@ Collect with AskUserQuestion, then:
 printf '%s' '<ANTHROPIC_API_KEY>' | npx wrangler secret put ANTHROPIC_API_KEY
 ```
 
-## Phase 6: Deploy
+## Phase 7: Deploy
 
 ```bash
 npx wrangler deploy 2>&1 | tail -25
 ```
 
 Parse the output for the deployed URL — it'll be something like
-`https://atlas-<suffix>.<your-subdomain>.workers.dev`. Save it in a variable to use in Phase 7.
+`https://atlas-<suffix>.<your-subdomain>.workers.dev`. Save it in a variable to use in Phase 8.
 
 If deploy fails:
 
 - "Durable Object migration" error → user has a stale wrangler. Run
   `npm install -D wrangler@latest` and retry.
-- "Workers name conflict" → the suffix is taken in this account already. Back to Phase 2 with a
+- "Workers name conflict" → the suffix is taken in this account already. Back to Phase 3 with a
   different suffix.
 - "R2 binding not found" → the bucket name in wrangler.toml doesn't match what we created in
-  Phase 3. Verify and retry.
+  Phase 4. Verify and retry.
 
-## Phase 7: Smoke test
+## Phase 8: Smoke test
 
 Two checks: a sync endpoint (validates Steel binding) and an async endpoint (validates DO + LLM
 binding).
@@ -227,12 +263,14 @@ Once the smoke test passes, summarize for the user:
 | -------------------------------------------------------- | ------------------------------------------------------------------ |
 | `wrangler: command not found`                            | User skipped `npm install`; run it and re-try                      |
 | Login flow stalls                                        | Instruct user to run `npx wrangler login` interactively themselves |
-| R2 bucket name conflict                                  | Pick new suffix (Phase 2 redo)                                     |
-| Worker name conflict in this account                     | Pick new suffix (Phase 2 redo)                                     |
+| R2 bucket name conflict                                  | Pick new suffix (Phase 3 redo)                                     |
+| Worker name conflict in this account                     | Pick new suffix (Phase 3 redo)                                     |
 | "new_sqlite_classes" unrecognized                        | Wrangler too old, `npm i -D wrangler@latest`                       |
 | `/v1/search` returns `E_STEEL_UNAVAILABLE` (anti-bot)    | Use `"engine":"bing"` or `"engine":"ddg"` (default); Google is hard |
 | `/v1/research` job stuck in "running"                    | `wrangler tail` to see the alarm logs; usually an LLM rate limit  |
-| `STEEL_API_KEY` not picked up                            | `wrangler secret list` to verify; if missing, re-run Phase 4       |
+| `STEEL_API_KEY` not picked up                            | `wrangler secret list` to verify; if missing, re-run Phase 5       |
+| User missing one of Cloudflare/Steel/Anthropic accounts  | Stop at Phase 1; have them complete signup before resuming         |
+| Anthropic key returns 402 in smoke test                  | Workspace has no credit — top up at console.anthropic.com → Billing |
 
 ## Important Notes
 
