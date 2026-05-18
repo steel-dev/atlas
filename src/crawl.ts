@@ -194,6 +194,7 @@ export interface CrawlFilterOptions {
   allowSubdomains?: boolean;
   allowExternalLinks?: boolean;
   regexOnFullURL?: boolean;
+  ignoreQueryParameters?: boolean;
   robotsRules?: RobotsRules | null;
 }
 
@@ -264,10 +265,11 @@ export function passesFilter(url: string, opts: CrawlFilterOptions): boolean {
 }
 
 export function filterCandidates(urls: string[], opts: CrawlFilterOptions): string[] {
+  const normOpts = { ignoreQueryParameters: opts.ignoreQueryParameters };
   const seen = new Set<string>();
   const out: string[] = [];
   for (const raw of urls) {
-    const n = normalizeUrl(raw);
+    const n = normalizeUrl(raw, normOpts);
     if (!n) continue;
     if (seen.has(n)) continue;
     seen.add(n);

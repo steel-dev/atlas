@@ -7,7 +7,7 @@ import { newJobId } from "../utils/id";
 
 const CrawlRequest = z.object({
   url: z.string().url(),
-  limit: z.number().int().min(1).max(10_000).default(100),
+  limit: z.number().int().min(1).max(500).default(100),
   maxDepth: z.number().int().min(0).optional(),
   maxDiscoveryDepth: z.number().int().min(0).optional(),
   includePaths: z.array(z.string()).default([]),

@@ -6,7 +6,7 @@ import { ErrorCodes } from "../utils/errors";
 import { newJobId } from "../utils/id";
 
 const ExtractRequest = z.object({
-  urls: z.array(z.string().url()).min(1).max(10),
+  urls: z.array(z.string().url()).min(1).max(5),
   schema: z.record(z.string(), z.unknown()),
   prompt: z.string().max(2048).optional(),
   use_proxy: z.boolean().optional(),

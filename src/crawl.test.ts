@@ -297,4 +297,20 @@ describe("filterCandidates", () => {
     const out = filterCandidates(["not a url", "https://example.com/ok"], opts);
     expect(out).toEqual(["https://example.com/ok"]);
   });
+
+  it("strips query strings when ignoreQueryParameters=true", () => {
+    const out = filterCandidates(
+      ["https://example.com/a?x=1", "https://example.com/a?y=2"],
+      { ...opts, ignoreQueryParameters: true },
+    );
+    expect(out).toEqual(["https://example.com/a"]);
+  });
+
+  it("keeps distinct query strings by default", () => {
+    const out = filterCandidates(
+      ["https://example.com/a?x=1", "https://example.com/a?y=2"],
+      opts,
+    );
+    expect(out.length).toBe(2);
+  });
 });

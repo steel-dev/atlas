@@ -23,6 +23,7 @@ import { getSteel } from "../steel";
 const SCHEMA_VERSION = 2;
 const STEP_DELAY_MS = 100;
 const CRAWL_BATCH_SIZE = 5;
+const EXTRACT_BATCH_SIZE = 2;
 
 export type AsyncOp = "extract" | "crawl" | "research" | "task";
 export type JobStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
@@ -444,57 +445,30 @@ export class AtlasJob extends DurableObject<Env> {
     this._closeAllSubscribers();
   }
 
-  private async _stepExtract(state: JobState): Promise<void> {
-    const specRaw = this._getMeta("spec");
-    if (!specRaw) return this._failJob(state, "Spec missing");
-    const spec = JSON.parse(specRaw) as ExtractSpec;
-    const useProxy = spec.use_proxy ?? true;
-    const total = spec.urls.length;
+  private _isCancelled(): boolean {
+    const s = this._loadState();
+    return s?.status === "cancelled";
+  }
 
-    state.status = "running";
-    state.progress = { done: 0, total };
-    this._saveState(state);
+  private _crawlFilterOpts(
+    spec: CrawlSpec,
+    robotsRules: RobotsRules | null,
+  ): Parameters<typeof filterCandidates>[1] {
+    return {
+      initialUrl: spec.url,
+      maxDepth: spec.maxDepth,
+      includePaths: spec.includePaths,
+      excludePaths: spec.excludePaths,
+      crawlEntireDomain: spec.crawlEntireDomain,
+      allowSubdomains: spec.allowSubdomains,
+      allowExternalLinks: spec.allowExternalLinks,
+      regexOnFullURL: spec.regexOnFullURL,
+      ignoreQueryParameters: spec.ignoreQueryParameters,
+      robotsRules,
+    };
+  }
 
-    const steel = getSteel(this.env);
-    const anthropic = getAnthropic(this.env);
-
-    await Promise.all(
-      spec.urls.map(async (url, idx) => {
-        try {
-          await this._emit("fetching", { url, position: idx + 1, total });
-          const scrape = await steel.scrape({
-            url,
-            format: ["markdown"],
-            useProxy,
-          });
-          const markdown = scrape.content?.markdown ?? "";
-          const title = scrape.metadata?.title ?? null;
-          if (!markdown) throw new Error("Steel returned empty markdown");
-
-          await this._emit("extracting", { url });
-          const { data, citations } = await extractWithSchema({
-            anthropic,
-            markdown,
-            schema: spec.schema,
-            systemPrompt: spec.prompt,
-          });
-
-          this._saveSource({ url, title, data, citations });
-          await this._emit("extracted", { url, position: idx + 1, data });
-        } catch (err) {
-          const message = err instanceof Error ? err.message : String(err);
-          this._saveSource({ url, error: message });
-          await this._emit("source_error", { url, error: message });
-        } finally {
-          const cur = this._loadState();
-          if (cur) {
-            cur.progress.done += 1;
-            this._saveState(cur);
-          }
-        }
-      }),
-    );
-
+  private async _finishExtract(total: number): Promise<void> {
     const final = this._loadState();
     if (!final || final.status === "cancelled" || final.status === "failed") {
       return;
@@ -508,6 +482,84 @@ export class AtlasJob extends DurableObject<Env> {
     this._saveState(final);
     await this._emit("completed", { result });
     this._closeAllSubscribers();
+  }
+
+  private async _stepExtract(state: JobState): Promise<void> {
+    const specRaw = this._getMeta("spec");
+    if (!specRaw) return this._failJob(state, "Spec missing");
+    const spec = JSON.parse(specRaw) as ExtractSpec;
+    const useProxy = spec.use_proxy ?? true;
+    const total = spec.urls.length;
+
+    if (this._isCancelled()) return;
+
+    state.status = "running";
+    state.progress.total = total;
+    this._saveState(state);
+
+    let idx = Number(this._getMeta("extract_idx") ?? "0");
+    if (!Number.isFinite(idx) || idx < 0) idx = 0;
+
+    if (idx >= total) {
+      return this._finishExtract(total);
+    }
+
+    const steel = getSteel(this.env);
+    const anthropic = getAnthropic(this.env);
+    const batchEnd = Math.min(idx + EXTRACT_BATCH_SIZE, total);
+
+    for (let i = idx; i < batchEnd; i++) {
+      if (this._isCancelled()) return;
+
+      const url = spec.urls[i];
+      const position = i + 1;
+
+      try {
+        await this._emit("fetching", { url, position, total });
+        const scrape = await steel.scrape({
+          url,
+          format: ["markdown"],
+          useProxy,
+        });
+        const markdown = scrape.content?.markdown ?? "";
+        const title = scrape.metadata?.title ?? null;
+        if (!markdown) throw new Error("Steel returned empty markdown");
+
+        if (this._isCancelled()) return;
+
+        await this._emit("extracting", { url });
+        const { data, citations } = await extractWithSchema({
+          anthropic,
+          markdown,
+          schema: spec.schema,
+          systemPrompt: spec.prompt,
+        });
+
+        this._saveSource({ url, title, data, citations });
+        await this._emit("extracted", { url, position, data });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        this._saveSource({ url, error: message });
+        await this._emit("source_error", { url, error: message });
+      } finally {
+        const cur = this._loadState();
+        if (cur && cur.status !== "cancelled") {
+          cur.progress.done = position;
+          this._saveState(cur);
+        }
+      }
+    }
+
+    idx = batchEnd;
+    this._setMeta("extract_idx", String(idx));
+
+    if (this._isCancelled()) return;
+
+    if (idx >= total) {
+      return this._finishExtract(total);
+    }
+
+    await this.ctx.storage.setAlarm(Date.now() + STEP_DELAY_MS);
   }
 
   private async _stepResearch(state: JobState): Promise<void> {
@@ -757,7 +809,13 @@ export class AtlasJob extends DurableObject<Env> {
     await this.ctx.storage.setAlarm(Date.now() + STEP_DELAY_MS);
   }
 
+  private _crawlProcessedCount(): number {
+    return this._countCompletedPages() + this._countFailedPages();
+  }
+
   private async _stepCrawl(state: JobState): Promise<void> {
+    if (this._isCancelled()) return;
+
     state.status = "running";
     this._saveState(state);
 
@@ -768,41 +826,41 @@ export class AtlasJob extends DurableObject<Env> {
     if (this._getMeta("crawl_kickoff_done") !== "1") {
       await this._emit("started", { url: spec.url, limit: spec.limit });
 
+      if (this._isCancelled()) return;
+
       let robotsRules: RobotsRules | null = null;
       if (!spec.ignoreRobotsTxt) {
         robotsRules = await fetchRobotsTxt(spec.url);
         if (robotsRules) this._setMeta("robots_rules", JSON.stringify(robotsRules));
       }
 
-      const seedNorm = normalizeUrl(spec.url, {
-        ignoreQueryParameters: spec.ignoreQueryParameters,
-      });
-      if (seedNorm) {
-        const seedKey = spec.deduplicateSimilarURLs ? canonicalKey(seedNorm) : seedNorm;
-        this._markVisited(seedKey);
-        this._enqueueFrontier(seedNorm, 0);
+      const filterOpts = this._crawlFilterOpts(spec, robotsRules);
+
+      // sitemap: "only" — seed frontier from sitemap URLs, not the start URL.
+      if (spec.sitemap !== "only") {
+        const seedNorm = normalizeUrl(spec.url, {
+          ignoreQueryParameters: spec.ignoreQueryParameters,
+        });
+        if (seedNorm) {
+          const seedKey = spec.deduplicateSimilarURLs
+            ? canonicalKey(seedNorm)
+            : seedNorm;
+          this._markVisited(seedKey);
+          this._enqueueFrontier(seedNorm, 0);
+        }
       }
 
       if (spec.sitemap !== "skip") {
         const candidates = discoverSitemapCandidates(spec.url, robotsRules);
         const allUrls: string[] = [];
         for (const c of candidates) {
+          if (this._isCancelled()) return;
           const urls = await fetchSitemap(c);
           allUrls.push(...urls);
           if (allUrls.length > 5000) break;
         }
 
-        const filtered = filterCandidates(allUrls, {
-          initialUrl: spec.url,
-          maxDepth: spec.maxDepth,
-          includePaths: spec.includePaths,
-          excludePaths: spec.excludePaths,
-          crawlEntireDomain: spec.crawlEntireDomain,
-          allowSubdomains: spec.allowSubdomains,
-          allowExternalLinks: spec.allowExternalLinks,
-          regexOnFullURL: spec.regexOnFullURL,
-          robotsRules,
-        });
+        const filtered = filterCandidates(allUrls, filterOpts);
 
         let enqueued = 0;
         for (const f of filtered) {
@@ -826,13 +884,17 @@ export class AtlasJob extends DurableObject<Env> {
       state.progress.total = Math.min(spec.limit, this._countFrontier());
       this._saveState(state);
 
+      if (this._isCancelled()) return;
+
       await this.ctx.storage.setAlarm(Date.now() + STEP_DELAY_MS);
       return;
     }
 
-    const completed = this._countCompletedPages();
-    const remaining = spec.limit - completed;
+    const processed = this._crawlProcessedCount();
+    const remaining = spec.limit - processed;
     if (remaining <= 0) return this._completeCrawl(state, spec, "limit_reached");
+
+    if (this._isCancelled()) return;
 
     const batch = this._popFrontier(Math.min(CRAWL_BATCH_SIZE, remaining));
     if (batch.length === 0) return this._completeCrawl(state, spec, "frontier_drained");
@@ -842,25 +904,19 @@ export class AtlasJob extends DurableObject<Env> {
       ? (JSON.parse(robotsRaw) as RobotsRules)
       : null;
     const sitemapOnly = this._getMeta("sitemap_only") === "1";
-    const filterOpts = {
-      initialUrl: spec.url,
-      maxDepth: spec.maxDepth,
-      includePaths: spec.includePaths,
-      excludePaths: spec.excludePaths,
-      crawlEntireDomain: spec.crawlEntireDomain,
-      allowSubdomains: spec.allowSubdomains,
-      allowExternalLinks: spec.allowExternalLinks,
-      regexOnFullURL: spec.regexOnFullURL,
-      robotsRules,
-    };
+    const filterOpts = this._crawlFilterOpts(spec, robotsRules);
 
     await Promise.all(
       batch.map(async (item) => {
+        if (this._isCancelled()) return;
+
         try {
           await this._emit("page_started", {
             url: item.url,
             depth: item.discovery_depth,
           });
+
+          if (this._isCancelled()) return;
 
           const steel = getSteel(this.env);
           const scrape = await steel.scrape({
@@ -873,6 +929,8 @@ export class AtlasJob extends DurableObject<Env> {
           const statusCode = scrape.metadata?.statusCode ?? null;
 
           if (!markdown) throw new Error("Empty markdown from Steel");
+
+          if (this._isCancelled()) return;
 
           const pageId = crypto.randomUUID();
           const r2Key = `crawl/${state.id}/${pageId}.md`;
@@ -893,7 +951,7 @@ export class AtlasJob extends DurableObject<Env> {
             spec.maxDiscoveryDepth === undefined ||
             item.discovery_depth < spec.maxDiscoveryDepth;
 
-          if (!sitemapOnly && withinDiscoveryDepth) {
+          if (!sitemapOnly && withinDiscoveryDepth && !this._isCancelled()) {
             const candidates: string[] = [];
             for (const l of scrape.links ?? []) {
               if (l.url) candidates.push(l.url);
@@ -934,9 +992,14 @@ export class AtlasJob extends DurableObject<Env> {
       }),
     );
 
-    state.progress.done = this._countCompletedPages();
-    state.progress.total = Math.min(spec.limit, this._countVisited());
-    this._saveState(state);
+    if (this._isCancelled()) return;
+
+    const cur = this._loadState();
+    if (!cur || cur.status === "cancelled") return;
+
+    cur.progress.done = this._crawlProcessedCount();
+    cur.progress.total = Math.min(spec.limit, this._countVisited());
+    this._saveState(cur);
 
     const delay = spec.delay ?? 0;
     await this.ctx.storage.setAlarm(
@@ -952,11 +1015,12 @@ export class AtlasJob extends DurableObject<Env> {
     const completed = this._countCompletedPages();
     const failed = this._countFailedPages();
     const visited = this._countVisited();
+    const processed = completed + failed;
 
     state.status = "completed";
     state.finished_at = Date.now();
-    state.progress.done = completed;
-    state.progress.total = completed;
+    state.progress.done = processed;
+    state.progress.total = processed;
     this._saveState(state);
 
     const result = {
