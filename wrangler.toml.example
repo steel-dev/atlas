@@ -1,3 +1,18 @@
+# Template for your Atlas deployment.
+#
+# This repo does NOT ship a tracked wrangler.toml — each contributor/user
+# customizes their own (name, R2 bucket, account_id) and that copy stays
+# gitignored. Either run the `/atlas-onboarding` skill, or:
+#
+#   cp wrangler.toml.example wrangler.toml
+#   # then edit `name`, `bucket_name`, and (if you have >1 CF account) add
+#   # `account_id = "<your-cf-account-id>"`
+#   npx wrangler r2 bucket create <your-bucket-name>
+#   npx wrangler secret put STEEL_API_KEY
+#   npx wrangler secret put ANTHROPIC_API_KEY
+#   npx wrangler secret put ATLAS_API_KEY
+#   npx wrangler deploy
+
 name = "atlas"
 main = "src/index.ts"
 compatibility_date = "2025-01-22"

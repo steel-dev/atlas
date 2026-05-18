@@ -8,6 +8,7 @@ dist/
 .env
 .env.local
 worker-configuration.d.ts
+wrangler.toml
 !/.claude/
 
 # Cloned OSS reference projects — not part of this repo

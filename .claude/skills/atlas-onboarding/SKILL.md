@@ -24,7 +24,7 @@ Use TaskCreate to track these phases:
 
 1. Confirm required accounts & credentials are in hand
 2. Local prerequisites (wrangler installed + logged in)
-3. Customize wrangler.toml (pick deployment suffix)
+3. Create wrangler.toml from template, customize (suffix, account_id if multi-account)
 4. Create R2 bucket
 5. Set Steel API key
 6. Set Anthropic API key
@@ -76,18 +76,23 @@ into `wrangler secret put` in the relevant phase so it never lands in the conver
 
 ## Phase 2: Local Prerequisites
 
-Confirm the user is in the Atlas project root and that node_modules is installed.
+`wrangler.toml` is **not** tracked in this repo — only `wrangler.toml.example` is. Each user
+maintains their own gitignored `wrangler.toml` with their deployment's name, R2 bucket, and
+(optionally) `account_id`.
+
+Confirm the user is in the Atlas project root and that node_modules is installed:
 
 ```bash
-test -f wrangler.toml && test -d node_modules && echo "ready" || echo "missing"
+test -f wrangler.toml.example && test -d node_modules && echo "ready" || echo "missing"
 ```
 
-If `missing`, instruct user to run `npm install` first, then resume.
+If `missing`, instruct user to run `npm install` first (and confirm they're in the repo root), then
+resume.
 
 Check Wrangler login state:
 
 ```bash
-npx wrangler whoami 2>&1 | tail -5
+npx wrangler whoami 2>&1 | tail -20
 ```
 
 If the output indicates not authenticated, **do not try to log in automatically** — `wrangler login`
@@ -104,7 +109,22 @@ needs an interactive browser flow on the user's machine. Tell the user:
 
 Wait for the user to confirm before continuing to Phase 3.
 
-## Phase 3: Customize wrangler.toml
+**Multi-account detection:** if `wrangler whoami` shows more than one account row, capture the list
+of `(name, account_id)` pairs and use AskUserQuestion in Phase 3 to let the user pick — Wrangler
+requires either a pinned `account_id` in `wrangler.toml` or an interactive prompt, and we can't do
+interactive prompts via Bash. Pin it.
+
+## Phase 3: Create & customize wrangler.toml
+
+Start by materializing the file from the template if it doesn't already exist:
+
+```bash
+test -f wrangler.toml || cp wrangler.toml.example wrangler.toml
+```
+
+If `wrangler.toml` already exists, ask the user whether to keep their existing config (skip the rest
+of Phase 3) or reset from template (`cp -f wrangler.toml.example wrangler.toml`). Don't silently
+overwrite.
 
 R2 bucket names are global within a Cloudflare account, and Worker names are per-account but
 should still be unique within an org. We append a suffix to both so multiple users (or a user with
@@ -128,12 +148,16 @@ Use AskUserQuestion to ask:
 > - Their GitHub handle or company name
 > - (Custom)
 
-Read `wrangler.toml`, then Edit:
+Then Edit `wrangler.toml`:
 
 - `name = "atlas"` → `name = "atlas-<suffix>"`
 - `bucket_name = "atlas-artifacts"` → `bucket_name = "atlas-<suffix>-artifacts"`
 
-Show the user a diff (or just the two changed lines) for confirmation before moving on.
+**If multi-account was detected in Phase 2**, also inject `account_id = "<chosen>"` right under the
+`compatibility_flags = [...]` line. Without it, the non-interactive `wrangler secret put` and
+`wrangler deploy` calls later will fail or pick the wrong account.
+
+Show the user a diff (or just the changed lines) for confirmation before moving on.
 
 ## Phase 4: Create R2 bucket
 
@@ -330,6 +354,8 @@ Once the smoke test passes, summarize for the user:
 | Symptom                                                  | Fix                                                                |
 | -------------------------------------------------------- | ------------------------------------------------------------------ |
 | `wrangler: command not found`                            | User skipped `npm install`; run it and re-try                      |
+| `wrangler.toml` missing on fresh clone                   | Expected — Phase 3 copies it from `wrangler.toml.example`          |
+| `wrangler` prompts "Select an account"                   | Multiple CF accounts; add `account_id = "<id>"` to `wrangler.toml` |
 | Login flow stalls                                        | Instruct user to run `npx wrangler login` interactively themselves |
 | R2 bucket name conflict                                  | Pick new suffix (Phase 3 redo)                                     |
 | Worker name conflict in this account                     | Pick new suffix (Phase 3 redo)                                     |
