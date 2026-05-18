@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { z } from "zod";
 import type { AppEnv } from "../env";
+import { hasAnthropicKey } from "../llm";
 import { envelopeFail, envelopeOk } from "../utils/envelope";
 import { ErrorCodes } from "../utils/errors";
 import { newJobId } from "../utils/id";
@@ -38,6 +39,18 @@ extractRoute.post("/", async (c) => {
         requestId,
       ),
       422,
+    );
+  }
+
+  if (!hasAnthropicKey(c.env)) {
+    console.error("ANTHROPIC_API_KEY secret is not set");
+    return c.json(
+      envelopeFail(
+        ErrorCodes.E_INTERNAL,
+        "Server is misconfigured (ANTHROPIC_API_KEY missing)",
+        requestId,
+      ),
+      500,
     );
   }
 

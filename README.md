@@ -36,7 +36,7 @@ Then in Claude Code:
 The skill walks you through (~5 min):
 
 1. Cloudflare login + R2 bucket
-2. Steel API key + Anthropic API key (you bring your own)
+2. Atlas bearer token + Steel API key + Anthropic API key (you bring your own)
 3. `wrangler deploy`
 4. Smoke test against your live URL
 
@@ -55,6 +55,7 @@ sed -i '' "s/bucket_name = \"atlas-artifacts\"/bucket_name = \"atlas-${SUFFIX}-a
 npx wrangler r2 bucket create atlas-${SUFFIX}-artifacts
 
 # 4. Secrets
+printf '%s' "your-shared-token" | npx wrangler secret put ATLAS_API_KEY
 printf '%s' "sk_..." | npx wrangler secret put STEEL_API_KEY       # https://app.steel.dev
 printf '%s' "sk-ant-..." | npx wrangler secret put ANTHROPIC_API_KEY  # https://console.anthropic.com
 
@@ -71,7 +72,6 @@ npx wrangler deploy
 | POST   | `/v1/extract`                    | async  | URLs + JSON schema → structured data + citations |
 | POST   | `/v1/research`                   | async  | Query → cited markdown report                    |
 | POST   | `/v1/crawl`                      | async  | Site crawl → pages persisted to R2, paginated    |
-| POST   | `/v1/task`                       | async  | Query + JSON schema → structured answer w/ basis |
 | GET    | `/v1/{op}/{id}`                  | —      | Job status + result when complete                |
 | GET    | `/v1/{op}/{id}/stream`           | —      | SSE live progress (Last-Event-ID supported)      |
 | DELETE | `/v1/{op}/{id}`                  | —      | Cancel running job                               |
@@ -82,7 +82,7 @@ npx wrangler deploy
   `idFromName(job_id)`.
 - **Durable Object `AtlasJob`** (SQLite-backed) — one per async job. Holds plan, sources, excerpts,
   SSE event log. Crash-resumable via persisted state + alarm-driven step loop.
-- **R2** — large artifacts (full HTML, screenshots, PDFs).
+- **R2** — crawl page markdown artifacts.
 - **Steel** — every browser interaction. The substrate this template is designed around.
 - **Anthropic Claude** — LLM work (Haiku for per-page summarization and extraction, Sonnet for the
   final research report writer).

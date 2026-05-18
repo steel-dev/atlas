@@ -7,14 +7,14 @@ import { extractRoute } from "./routes/extract";
 import { fetchRoute } from "./routes/fetch";
 import { researchRoute } from "./routes/research";
 import { searchRoute } from "./routes/search";
-import { taskRoute } from "./routes/task";
 import { envelopeFail, envelopeOk } from "./utils/envelope";
 import { ErrorCodes } from "./utils/errors";
 import { newRequestId } from "./utils/id";
 
 export { AtlasJob } from "./do/atlas-job";
 
-const ASYNC_OPS = ["extract", "crawl", "research", "task"] as const;
+const ASYNC_OPS = ["extract", "crawl", "research"] as const;
+const REQUEST_ID_HEADER = "x-atlas-request-id";
 
 const app = new Hono<AppEnv>();
 
@@ -46,14 +46,15 @@ v1.route("/search", searchRoute);
 v1.route("/fetch", fetchRoute);
 v1.route("/extract", extractRoute);
 v1.route("/research", researchRoute);
-v1.route("/task", taskRoute);
 v1.route("/crawl", crawlRoute);
 
 const forwardToJob = async (c: any) => {
   const id = c.req.param("id") as string;
   const ns = c.env.ATLAS_JOB;
   const stub = ns.get(ns.idFromName(id));
-  return stub.fetch(c.req.raw);
+  const headers = new Headers(c.req.raw.headers);
+  headers.set(REQUEST_ID_HEADER, c.get("request_id"));
+  return stub.fetch(new Request(c.req.raw, { headers }));
 };
 
 const ASYNC_OP_PATTERN = `:op{${ASYNC_OPS.join("|")}}`;

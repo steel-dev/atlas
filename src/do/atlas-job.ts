@@ -14,18 +14,20 @@ import {
   planBriefAndSubQuestions,
   summarizeWebpage,
   writeReport,
-  writeStructuredAnswer,
   type CitedSource,
 } from "../research";
 import { webSearch, type Engine, type SearchResult } from "../search";
 import { getSteel } from "../steel";
+import { envelopeFail, envelopeOk } from "../utils/envelope";
+import { ErrorCodes } from "../utils/errors";
 
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 1;
 const STEP_DELAY_MS = 100;
 const CRAWL_BATCH_SIZE = 5;
 const EXTRACT_BATCH_SIZE = 2;
+const REQUEST_ID_HEADER = "x-atlas-request-id";
 
-export type AsyncOp = "extract" | "crawl" | "research" | "task";
+export type AsyncOp = "extract" | "crawl" | "research";
 export type JobStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
 
 export interface ExtractSpec {
@@ -42,10 +44,6 @@ export interface ResearchSpec {
   max_sources: number;
   engine: Engine;
   use_proxy: boolean;
-}
-
-export interface TaskSpec extends ResearchSpec {
-  output_schema: Record<string, unknown>;
 }
 
 export interface CrawlSpec {
@@ -194,33 +192,6 @@ export class AtlasJob extends DurableObject<Env> {
     return state;
   }
 
-  async submitTask(jobId: string, spec: TaskSpec): Promise<JobState> {
-    const existing = this._loadState();
-    if (existing) return existing;
-
-    const state: JobState = {
-      id: jobId,
-      op: "task",
-      status: "queued",
-      progress: { done: 0, total: 3 },
-      created_at: Date.now(),
-    };
-    this._saveState(state);
-    this._setMeta("spec", JSON.stringify(spec));
-    this._setMeta(
-      "research_state",
-      JSON.stringify({ phase: "brief" } satisfies ResearchInternalState),
-    );
-    this._appendEvent("submitted", {
-      id: jobId,
-      op: "task",
-      query: spec.query,
-    });
-
-    await this.ctx.storage.setAlarm(Date.now() + STEP_DELAY_MS);
-    return state;
-  }
-
   async submitCrawl(jobId: string, spec: CrawlSpec): Promise<JobState> {
     const existing = this._loadState();
     if (existing) return existing;
@@ -260,20 +231,24 @@ export class AtlasJob extends DurableObject<Env> {
       return this._handleStatus(request);
     }
     if (request.method === "DELETE") {
-      return this._handleCancel();
+      return this._handleCancel(request);
     }
-    return new Response("Method not allowed", { status: 405 });
+    return Response.json(
+      envelopeFail(
+        ErrorCodes.E_BAD_REQUEST,
+        "Method not allowed",
+        this._requestId(request),
+      ),
+      { status: 405 },
+    );
   }
 
   private _handleStatus(request: Request): Response {
+    const requestId = this._requestId(request);
     const state = this._loadState();
     if (!state) {
       return Response.json(
-        {
-          success: false,
-          code: "E_JOB_NOT_FOUND",
-          error: "Job not found",
-        },
+        envelopeFail(ErrorCodes.E_JOB_NOT_FOUND, "Job not found", requestId),
         { status: 404 },
       );
     }
@@ -287,13 +262,11 @@ export class AtlasJob extends DurableObject<Env> {
         ? this._loadResult()
         : null;
 
-    return Response.json({
-      success: true,
-      data: { ...state, result },
-    });
+    return Response.json(envelopeOk({ ...state, result }, requestId));
   }
 
   private _handleCrawlStatus(state: JobState, request: Request): Response {
+    const requestId = this._requestId(request);
     const url = new URL(request.url);
     const offsetRaw = url.searchParams.get("offset") ?? "0";
     const limitRaw = url.searchParams.get("limit") ?? "50";
@@ -318,27 +291,29 @@ export class AtlasJob extends DurableObject<Env> {
     const hasMore = offset + pages.length < totalPages;
     const result = state.status === "completed" ? this._loadResult() : null;
 
-    return Response.json({
-      success: true,
-      data: {
-        ...state,
-        result,
-        summary: {
-          completed: this._countCompletedPages(),
-          failed: this._countFailedPages(),
-          visited_unique: this._countVisited(),
-          frontier_remaining: this._countFrontier(),
-          pages_total: totalPages,
+    return Response.json(
+      envelopeOk(
+        {
+          ...state,
+          result,
+          summary: {
+            completed: this._countCompletedPages(),
+            failed: this._countFailedPages(),
+            visited_unique: this._countVisited(),
+            frontier_remaining: this._countFrontier(),
+            pages_total: totalPages,
+          },
+          pages,
+          pagination: {
+            offset,
+            limit,
+            total_pages: totalPages,
+            next_offset: hasMore ? offset + pages.length : null,
+          },
         },
-        pages,
-        pagination: {
-          offset,
-          limit,
-          total_pages: totalPages,
-          next_offset: hasMore ? offset + pages.length : null,
-        },
-      },
-    });
+        requestId,
+      ),
+    );
   }
 
   private _handleStream(request: Request): Response {
@@ -386,11 +361,12 @@ export class AtlasJob extends DurableObject<Env> {
     this.subscribers.add(writer);
   }
 
-  private async _handleCancel(): Promise<Response> {
+  private async _handleCancel(request: Request): Promise<Response> {
+    const requestId = this._requestId(request);
     const state = this._loadState();
     if (!state) {
       return Response.json(
-        { success: false, code: "E_JOB_NOT_FOUND", error: "Job not found" },
+        envelopeFail(ErrorCodes.E_JOB_NOT_FOUND, "Job not found", requestId),
         { status: 404 },
       );
     }
@@ -402,7 +378,11 @@ export class AtlasJob extends DurableObject<Env> {
       await this.ctx.storage.deleteAlarm();
       this._closeAllSubscribers();
     }
-    return Response.json({ success: true, data: state });
+    return Response.json(envelopeOk(state, requestId));
+  }
+
+  private _requestId(request: Request): string {
+    return request.headers.get(REQUEST_ID_HEADER) ?? "unknown";
   }
 
   // ============================================================
@@ -424,7 +404,7 @@ export class AtlasJob extends DurableObject<Env> {
       await this._stepExtract(state);
       return;
     }
-    if (state.op === "research" || state.op === "task") {
+    if (state.op === "research") {
       await this._stepResearch(state);
       return;
     }
@@ -745,6 +725,8 @@ export class AtlasJob extends DurableObject<Env> {
 
       case "write": {
         try {
+          if (this._isCancelled()) return;
+
           await this._emit("writing", {
             sources_count: rs.sources?.length ?? 0,
           });
@@ -756,45 +738,28 @@ export class AtlasJob extends DurableObject<Env> {
             sources: rs.sources ?? [],
           };
 
-          let result: Record<string, unknown>;
-          if (state.op === "task") {
-            const taskSpec = spec as TaskSpec;
-            const answer = await writeStructuredAnswer({
-              anthropic,
-              brief: rs.brief ?? spec.query,
-              sources: rs.sources ?? [],
-              output_schema: taskSpec.output_schema,
-            });
-            result = {
-              ...baseFields,
-              output: answer.data,
-              basis: answer.basis,
-            };
-            await this._emit("completed", {
-              sources_count: baseFields.sources.length,
-              basis_count: answer.basis.length,
-            });
-          } else {
-            const report = await writeReport({
-              anthropic,
-              brief: rs.brief ?? spec.query,
-              sources: rs.sources ?? [],
-            });
-            result = {
-              ...baseFields,
-              markdown: report.markdown,
-            };
-            await this._emit("completed", {
-              sources_count: baseFields.sources.length,
-              markdown_chars: report.markdown.length,
-            });
-          }
+          const report = await writeReport({
+            anthropic,
+            brief: rs.brief ?? spec.query,
+            sources: rs.sources ?? [],
+          });
+          const result = {
+            ...baseFields,
+            markdown: report.markdown,
+          };
+          const completedEvent = {
+            sources_count: baseFields.sources.length,
+            markdown_chars: report.markdown.length,
+          };
+
+          if (this._isCancelled()) return;
 
           this._setMeta("result", JSON.stringify(result));
           state.status = "completed";
           state.progress.done = state.progress.total;
           state.finished_at = Date.now();
           this._saveState(state);
+          await this._emit("completed", completedEvent);
           this._closeAllSubscribers();
           return;
         } catch (err) {

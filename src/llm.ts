@@ -4,7 +4,14 @@ import type { Env } from "./env";
 const DEFAULT_EXTRACT_MODEL = "claude-haiku-4-5-20251001";
 const MAX_SOURCE_CHARS = 100_000;
 
+export function hasAnthropicKey(env: Env): boolean {
+  return Boolean(env.ANTHROPIC_API_KEY);
+}
+
 export function getAnthropic(env: Env): Anthropic {
+  if (!hasAnthropicKey(env)) {
+    throw new Error("ANTHROPIC_API_KEY secret is not set");
+  }
   return new Anthropic({ apiKey: env.ANTHROPIC_API_KEY });
 }
 
