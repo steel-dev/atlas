@@ -6,18 +6,19 @@ import { envelopeFail, envelopeOk } from "../utils/envelope";
 import { ErrorCodes } from "../utils/errors";
 import { newJobId } from "../utils/id";
 
-const ResearchRequest = z.object({
+const TaskRequest = z.object({
   query: z.string().min(3).max(2048),
+  output_schema: z.record(z.string(), z.unknown()),
   max_sub_questions: z.number().int().min(1).max(5).default(3),
   max_results_per_question: z.number().int().min(1).max(10).default(3),
-  max_sources: z.number().int().min(1).max(20).default(10),
+  max_sources: z.number().int().min(1).max(20).default(8),
   engine: z.enum(ENGINES).default("ddg"),
   use_proxy: z.boolean().default(true),
 });
 
-export const researchRoute = new Hono<AppEnv>();
+export const taskRoute = new Hono<AppEnv>();
 
-researchRoute.post("/", async (c) => {
+taskRoute.post("/", async (c) => {
   const requestId = c.get("request_id");
 
   let body: unknown;
@@ -30,7 +31,7 @@ researchRoute.post("/", async (c) => {
     );
   }
 
-  const parsed = ResearchRequest.safeParse(body);
+  const parsed = TaskRequest.safeParse(body);
   if (!parsed.success) {
     return c.json(
       envelopeFail(
@@ -49,7 +50,7 @@ researchRoute.post("/", async (c) => {
   const stub = ns.get(ns.idFromName(id));
 
   try {
-    const state = await stub.submitResearch(id, parsed.data);
+    const state = await stub.submitTask(id, parsed.data);
     return c.json(
       envelopeOk(
         {
@@ -57,8 +58,8 @@ researchRoute.post("/", async (c) => {
           op: state.op,
           status: state.status,
           progress: state.progress,
-          url: `/v1/research/${state.id}`,
-          stream_url: `/v1/research/${state.id}/stream`,
+          url: `/v1/task/${state.id}`,
+          stream_url: `/v1/task/${state.id}/stream`,
         },
         requestId,
       ),
@@ -67,7 +68,7 @@ researchRoute.post("/", async (c) => {
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     return c.json(
-      envelopeFail(ErrorCodes.E_INTERNAL, `Failed to submit research: ${message}`, requestId),
+      envelopeFail(ErrorCodes.E_INTERNAL, `Failed to submit task: ${message}`, requestId),
       500,
     );
   }

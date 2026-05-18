@@ -16,8 +16,10 @@ binding = "ARTIFACTS"
 bucket_name = "atlas-artifacts"
 
 # --- Secrets (set via `wrangler secret put <NAME>`) ---
-#   STEEL_API_KEY          Steel Cloud API key
-#   ANTHROPIC_API_KEY      Anthropic API key (BYO LLM)
+#   ATLAS_API_KEY          Required. Shared bearer token clients send as
+#                          `Authorization: Bearer …`. Validated timing-safe.
+#   STEEL_API_KEY          Required. Outbound Steel calls.
+#   ANTHROPIC_API_KEY      Required. LLM work (Haiku + Sonnet).
 #
 # --- Optional vars ---
-#   STEEL_BASE_URL         Override Steel endpoint (self-hosted Steel)
+#   STEEL_BASE_URL         Override Steel endpoint (self-hosted Steel).

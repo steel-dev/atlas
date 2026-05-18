@@ -1,23 +1,32 @@
 import { Hono } from "hono";
 import { z } from "zod";
 import type { AppEnv } from "../env";
-import { ENGINES } from "../search";
 import { envelopeFail, envelopeOk } from "../utils/envelope";
 import { ErrorCodes } from "../utils/errors";
 import { newJobId } from "../utils/id";
 
-const ResearchRequest = z.object({
-  query: z.string().min(3).max(2048),
-  max_sub_questions: z.number().int().min(1).max(5).default(3),
-  max_results_per_question: z.number().int().min(1).max(10).default(3),
-  max_sources: z.number().int().min(1).max(20).default(10),
-  engine: z.enum(ENGINES).default("ddg"),
+const CrawlRequest = z.object({
+  url: z.string().url(),
+  limit: z.number().int().min(1).max(10_000).default(100),
+  maxDepth: z.number().int().min(0).optional(),
+  maxDiscoveryDepth: z.number().int().min(0).optional(),
+  includePaths: z.array(z.string()).default([]),
+  excludePaths: z.array(z.string()).default([]),
+  crawlEntireDomain: z.boolean().default(false),
+  allowSubdomains: z.boolean().default(false),
+  allowExternalLinks: z.boolean().default(false),
+  ignoreRobotsTxt: z.boolean().default(false),
+  sitemap: z.enum(["skip", "include", "only"]).default("include"),
+  deduplicateSimilarURLs: z.boolean().default(true),
+  ignoreQueryParameters: z.boolean().default(false),
+  regexOnFullURL: z.boolean().default(false),
+  delay: z.number().nonnegative().optional(),
   use_proxy: z.boolean().default(true),
 });
 
-export const researchRoute = new Hono<AppEnv>();
+export const crawlRoute = new Hono<AppEnv>();
 
-researchRoute.post("/", async (c) => {
+crawlRoute.post("/", async (c) => {
   const requestId = c.get("request_id");
 
   let body: unknown;
@@ -30,7 +39,7 @@ researchRoute.post("/", async (c) => {
     );
   }
 
-  const parsed = ResearchRequest.safeParse(body);
+  const parsed = CrawlRequest.safeParse(body);
   if (!parsed.success) {
     return c.json(
       envelopeFail(
@@ -49,7 +58,7 @@ researchRoute.post("/", async (c) => {
   const stub = ns.get(ns.idFromName(id));
 
   try {
-    const state = await stub.submitResearch(id, parsed.data);
+    const state = await stub.submitCrawl(id, parsed.data);
     return c.json(
       envelopeOk(
         {
@@ -57,8 +66,8 @@ researchRoute.post("/", async (c) => {
           op: state.op,
           status: state.status,
           progress: state.progress,
-          url: `/v1/research/${state.id}`,
-          stream_url: `/v1/research/${state.id}/stream`,
+          url: `/v1/crawl/${state.id}`,
+          stream_url: `/v1/crawl/${state.id}/stream`,
         },
         requestId,
       ),
@@ -67,7 +76,7 @@ researchRoute.post("/", async (c) => {
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     return c.json(
-      envelopeFail(ErrorCodes.E_INTERNAL, `Failed to submit research: ${message}`, requestId),
+      envelopeFail(ErrorCodes.E_INTERNAL, `Failed to submit crawl: ${message}`, requestId),
       500,
     );
   }

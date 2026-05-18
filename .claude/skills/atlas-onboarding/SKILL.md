@@ -16,8 +16,7 @@ You are guiding the user through deploying their own Atlas instance to Cloudflar
 
 Atlas is an OSS web-data API (search, fetch, extract, research, etc.) built on Cloudflare Workers +
 Durable Objects, backed by Steel Browser for the actual web access and Anthropic Claude for the LLM
-work. The user owns the deployment — keys, billing, data — and the surface mirrors Parallel.ai so
-existing clients can migrate by switching baseURL.
+work. The user owns the deployment — keys, billing, data.
 
 ## Before Starting
 
@@ -29,8 +28,13 @@ Use TaskCreate to track these phases:
 4. Create R2 bucket
 5. Set Steel API key
 6. Set Anthropic API key
-7. Deploy worker
-8. Smoke test
+7. Set Atlas API key (gates the deployed `/v1/*` surface)
+8. Deploy worker
+9. Smoke test (with Authorization header)
+
+Every `/v1/*` request must present `Authorization: Bearer <ATLAS_API_KEY>`,
+validated timing-safe against the secret. Without `ATLAS_API_KEY` (or
+`STEEL_API_KEY`) set, the Worker fails closed (500).
 
 Refuse to log any collected API keys back to the chat. After collecting a key with AskUserQuestion,
 pipe it into `wrangler secret put` via stdin — do not echo it elsewhere.
@@ -194,14 +198,53 @@ Collect with AskUserQuestion, then:
 printf '%s' '<ANTHROPIC_API_KEY>' | npx wrangler secret put ANTHROPIC_API_KEY
 ```
 
-## Phase 7: Deploy
+## Phase 7: Atlas API Key
+
+This key gates the deployed `/v1/*` surface. Without it Atlas is wide open and
+anyone with the URL can burn the user's Steel browser-minutes and Anthropic credits.
+
+Generate a 32-byte random key and tell the user:
+
+```bash
+openssl rand -base64 32
+```
+
+Show them the generated value and tell them:
+
+> This is your **Atlas API key**. Clients will send it as
+> `Authorization: Bearer <key>` on every `/v1/*` call. **Save it somewhere safe
+> now** (1Password / your secrets manager) — we won't show it again, and the
+> only copy lives inside the deployed Worker.
+>
+> If you lose it, you can re-run the secret-set step below with a new random
+> value to rotate.
+
+Then store it as a secret. Use AskUserQuestion to collect the same value back
+(letting the user paste from their password manager confirms they captured it),
+or just pipe the same generated value directly:
+
+```bash
+printf '%s' '<ATLAS_API_KEY>' | npx wrangler secret put ATLAS_API_KEY
+```
+
+Sanity-check it landed:
+
+```bash
+npx wrangler secret list 2>&1 | grep ATLAS_API_KEY
+```
+
+Do **not** print the key back to the chat after this point. Keep it for Phase 9
+smoke-test substitution only — refer to it as `$ATLAS_API_KEY` in shell commands
+and let the user export it locally.
+
+## Phase 8: Deploy
 
 ```bash
 npx wrangler deploy 2>&1 | tail -25
 ```
 
 Parse the output for the deployed URL — it'll be something like
-`https://atlas-<suffix>.<your-subdomain>.workers.dev`. Save it in a variable to use in Phase 8.
+`https://atlas-<suffix>.<your-subdomain>.workers.dev`. Save it in a variable to use in Phase 9.
 
 If deploy fails:
 
@@ -212,15 +255,36 @@ If deploy fails:
 - "R2 binding not found" → the bucket name in wrangler.toml doesn't match what we created in
   Phase 4. Verify and retry.
 
-## Phase 8: Smoke test
+## Phase 9: Smoke test
 
-Two checks: a sync endpoint (validates Steel binding) and an async endpoint (validates DO + LLM
-binding).
+Three checks: an auth negative test, a sync endpoint (validates Steel binding +
+auth), and an async endpoint (validates DO + LLM binding).
+
+Have the user export their key in the shell first so curl examples don't need
+literal substitution:
+
+```bash
+export ATLAS_API_KEY='<the value from Phase 7>'
+export ATLAS_URL='<DEPLOY_URL>'   # e.g. https://atlas-<suffix>.<sub>.workers.dev
+```
+
+### Auth negative test (sanity)
+
+```bash
+curl -sS -o /dev/null -w '%{http_code}\n' -X POST "$ATLAS_URL/v1/search" \
+  -H 'Content-Type: application/json' \
+  -d '{"query":"x"}'
+```
+
+Expect `401`. If you get `500`, `ATLAS_API_KEY` (or `STEEL_API_KEY`) secret didn't
+land — re-do Phase 7. If you get `200`, auth is broken — check that `npx wrangler
+deploy` ran *after* the secret was set.
 
 ### Sync test — /v1/search
 
 ```bash
-curl -sS -X POST "<DEPLOY_URL>/v1/search" \
+curl -sS -X POST "$ATLAS_URL/v1/search" \
+  -H "Authorization: Bearer $ATLAS_API_KEY" \
   -H 'Content-Type: application/json' \
   -d '{"query":"steel browser","limit":3}' | head -c 2000
 ```
@@ -233,13 +297,14 @@ Expect a non-empty `results` array. If empty:
 ### Async test — /v1/research
 
 ```bash
-JOB_ID=$(curl -sS -X POST "<DEPLOY_URL>/v1/research" \
+JOB_ID=$(curl -sS -X POST "$ATLAS_URL/v1/research" \
+  -H "Authorization: Bearer $ATLAS_API_KEY" \
   -H 'Content-Type: application/json' \
   -d '{"query":"what is Steel Browser","max_sources":3,"max_sub_questions":2}' \
   | python3 -c "import sys, json; print(json.load(sys.stdin)['data']['id'])")
 echo "Job: $JOB_ID"
-echo "Live: curl -N <DEPLOY_URL>/v1/research/$JOB_ID/stream"
-echo "Poll: curl -sS <DEPLOY_URL>/v1/research/$JOB_ID | head -c 4000"
+echo "Live: curl -N -H \"Authorization: Bearer $ATLAS_API_KEY\" $ATLAS_URL/v1/research/$JOB_ID/stream"
+echo "Poll: curl -sS -H \"Authorization: Bearer $ATLAS_API_KEY\" $ATLAS_URL/v1/research/$JOB_ID | head -c 4000"
 ```
 
 Tell the user to run the `curl -N` line in another terminal to watch the SSE stream live. Final
@@ -249,9 +314,12 @@ result lands when `event: completed` arrives (~1-3 min for `max_sources: 3`).
 
 Once the smoke test passes, summarize for the user:
 
-- Deployed URL
+- Deployed URL + reminder that every client call needs
+  `Authorization: Bearer $ATLAS_API_KEY`
 - The 4 working endpoints (`/v1/search`, `/v1/fetch`, `/v1/extract`, `/v1/research`)
 - Where to find their secrets (`npx wrangler secret list`)
+- How to **rotate the API key**:
+  `printf '%s' '<new>' | npx wrangler secret put ATLAS_API_KEY` then redeploy
 - How to redeploy on code changes (`npx wrangler deploy`)
 - Where to view live logs (`npx wrangler tail`)
 - Cost note: Steel Cloud charges per browser minute, Anthropic charges per token; this is a
@@ -271,6 +339,8 @@ Once the smoke test passes, summarize for the user:
 | `STEEL_API_KEY` not picked up                            | `wrangler secret list` to verify; if missing, re-run Phase 5       |
 | User missing one of Cloudflare/Steel/Anthropic accounts  | Stop at Phase 1; have them complete signup before resuming         |
 | Anthropic key returns 402 in smoke test                  | Workspace has no credit — top up at console.anthropic.com → Billing |
+| All `/v1/*` calls return 500 `ATLAS_API_KEY missing`     | Secret not set or deploy ran before secret. Re-do Phase 7, then redeploy |
+| `/v1/*` returns 401 with a key the user is sure is right | Confirm no trailing newline in secret (use `printf '%s'`, not `echo`); rotate if unsure |
 
 ## Important Notes
 

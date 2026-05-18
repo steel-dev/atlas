@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import { z } from "zod";
-import type { Env } from "../env";
+import type { AppEnv } from "../env";
 import { ENGINES, webSearch } from "../search";
 import { envelopeFail, envelopeOk } from "../utils/envelope";
 import { ErrorCodes } from "../utils/errors";
@@ -14,7 +14,6 @@ const SearchRequest = z.object({
   use_proxy: z.boolean().default(true),
 });
 
-type AppEnv = { Bindings: Env; Variables: { request_id: string } };
 export const searchRoute = new Hono<AppEnv>();
 
 searchRoute.post("/", async (c) => {
@@ -42,7 +41,10 @@ searchRoute.post("/", async (c) => {
     );
   }
 
-  const outcome = await webSearch({ env: c.env, ...parsed.data });
+  const outcome = await webSearch({
+    env: c.env,
+    ...parsed.data,
+  });
   if (!outcome.ok) {
     const status = outcome.error.code === "E_STEEL_TIMEOUT" ? 504 : 502;
     return c.json(

@@ -1,21 +1,20 @@
 import { Hono } from "hono";
 import { logger } from "hono/logger";
-import type { Env } from "./env";
+import { authMiddleware } from "./auth";
+import type { AppEnv } from "./env";
+import { crawlRoute } from "./routes/crawl";
 import { extractRoute } from "./routes/extract";
 import { fetchRoute } from "./routes/fetch";
 import { researchRoute } from "./routes/research";
 import { searchRoute } from "./routes/search";
+import { taskRoute } from "./routes/task";
 import { envelopeFail, envelopeOk } from "./utils/envelope";
 import { ErrorCodes } from "./utils/errors";
 import { newRequestId } from "./utils/id";
 
 export { AtlasJob } from "./do/atlas-job";
 
-type Variables = { request_id: string };
-type AppEnv = { Bindings: Env; Variables: Variables };
-
 const ASYNC_OPS = ["extract", "crawl", "research", "task"] as const;
-type AsyncOp = (typeof ASYNC_OPS)[number];
 
 const app = new Hono<AppEnv>();
 
@@ -41,23 +40,14 @@ app.get("/", (c) =>
 
 const v1 = new Hono<AppEnv>();
 
+v1.use("*", authMiddleware);
+
 v1.route("/search", searchRoute);
 v1.route("/fetch", fetchRoute);
 v1.route("/extract", extractRoute);
 v1.route("/research", researchRoute);
-
-const notImplementedAsync = (op: AsyncOp) => (c: any) =>
-  c.json(
-    envelopeFail(
-      ErrorCodes.E_NOT_IMPLEMENTED,
-      `${op} is not implemented yet`,
-      c.get("request_id"),
-    ),
-    501,
-  );
-
-v1.post("/crawl", notImplementedAsync("crawl"));
-v1.post("/task", notImplementedAsync("task"));
+v1.route("/task", taskRoute);
+v1.route("/crawl", crawlRoute);
 
 const forwardToJob = async (c: any) => {
   const id = c.req.param("id") as string;

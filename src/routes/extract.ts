@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import { z } from "zod";
-import type { Env } from "../env";
+import type { AppEnv } from "../env";
 import { envelopeFail, envelopeOk } from "../utils/envelope";
 import { ErrorCodes } from "../utils/errors";
 import { newJobId } from "../utils/id";
@@ -12,7 +12,6 @@ const ExtractRequest = z.object({
   use_proxy: z.boolean().optional(),
 });
 
-type AppEnv = { Bindings: Env; Variables: { request_id: string } };
 export const extractRoute = new Hono<AppEnv>();
 
 extractRoute.post("/", async (c) => {

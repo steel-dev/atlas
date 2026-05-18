@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import { z } from "zod";
-import type { Env } from "../env";
+import type { AppEnv } from "../env";
 import { envelopeFail, envelopeOk } from "../utils/envelope";
 import { ErrorCodes } from "../utils/errors";
 import { getSteel, looksBlocked } from "../steel";
@@ -14,7 +14,6 @@ const FetchRequest = z.object({
   delay: z.number().int().min(0).max(30_000).optional(),
 });
 
-type AppEnv = { Bindings: Env; Variables: { request_id: string } };
 export const fetchRoute = new Hono<AppEnv>();
 
 fetchRoute.post("/", async (c) => {

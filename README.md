@@ -1,8 +1,9 @@
 # Atlas
 
+[![CI](https://github.com/steel-experiments/atlas/actions/workflows/ci.yml/badge.svg)](https://github.com/steel-experiments/atlas/actions/workflows/ci.yml)
+
 OSS web-data API — search, fetch, extract, research — running on Cloudflare Workers, backed by
-[Steel Browser](https://steel.dev). Surface mirrors Parallel.ai so existing clients port over by
-switching baseURL.
+[Steel Browser](https://steel.dev).
 
 ```
             Cloudflare Workers + Durable Objects (SQLite)
