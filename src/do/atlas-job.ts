@@ -445,77 +445,69 @@ export class AtlasJob extends DurableObject<Env> {
   }
 
   private async _stepExtract(state: JobState): Promise<void> {
-    state.status = "running";
-
-    const i = state.progress.done;
-
-    if (i >= state.progress.total) {
-      const result = this._buildExtractResult();
-      this._setMeta("result", JSON.stringify(result));
-      state.status = "completed";
-      state.finished_at = Date.now();
-      this._saveState(state);
-      await this._emit("completed", { result });
-      this._closeAllSubscribers();
-      return;
-    }
-
-    this._saveState(state);
-
     const specRaw = this._getMeta("spec");
-    if (!specRaw) {
-      state.status = "failed";
-      state.error = "Spec missing";
-      this._saveState(state);
-      await this._emit("failed", { error: state.error });
-      this._closeAllSubscribers();
+    if (!specRaw) return this._failJob(state, "Spec missing");
+    const spec = JSON.parse(specRaw) as ExtractSpec;
+    const useProxy = spec.use_proxy ?? true;
+    const total = spec.urls.length;
+
+    state.status = "running";
+    state.progress = { done: 0, total };
+    this._saveState(state);
+
+    const steel = getSteel(this.env);
+    const anthropic = getAnthropic(this.env);
+
+    await Promise.all(
+      spec.urls.map(async (url, idx) => {
+        try {
+          await this._emit("fetching", { url, position: idx + 1, total });
+          const scrape = await steel.scrape({
+            url,
+            format: ["markdown"],
+            useProxy,
+          });
+          const markdown = scrape.content?.markdown ?? "";
+          const title = scrape.metadata?.title ?? null;
+          if (!markdown) throw new Error("Steel returned empty markdown");
+
+          await this._emit("extracting", { url });
+          const { data, citations } = await extractWithSchema({
+            anthropic,
+            markdown,
+            schema: spec.schema,
+            systemPrompt: spec.prompt,
+          });
+
+          this._saveSource({ url, title, data, citations });
+          await this._emit("extracted", { url, position: idx + 1, data });
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          this._saveSource({ url, error: message });
+          await this._emit("source_error", { url, error: message });
+        } finally {
+          const cur = this._loadState();
+          if (cur) {
+            cur.progress.done += 1;
+            this._saveState(cur);
+          }
+        }
+      }),
+    );
+
+    const final = this._loadState();
+    if (!final || final.status === "cancelled" || final.status === "failed") {
       return;
     }
-    const spec = JSON.parse(specRaw) as ExtractSpec;
-    const url = spec.urls[i];
-    const useProxy = spec.use_proxy ?? true;
 
-    try {
-      await this._emit("fetching", {
-        url,
-        position: i + 1,
-        total: state.progress.total,
-      });
-
-      const steel = getSteel(this.env);
-      const scrape = await steel.scrape({
-        url,
-        format: ["markdown"],
-        useProxy,
-      });
-      const markdown = scrape.content?.markdown ?? "";
-      const title = scrape.metadata?.title ?? null;
-
-      if (!markdown) {
-        throw new Error("Steel returned empty markdown");
-      }
-
-      await this._emit("extracting", { url });
-
-      const anthropic = getAnthropic(this.env);
-      const { data, citations } = await extractWithSchema({
-        anthropic,
-        markdown,
-        schema: spec.schema,
-        systemPrompt: spec.prompt,
-      });
-
-      this._saveSource({ url, title, data, citations });
-      await this._emit("extracted", { url, position: i + 1, data });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      this._saveSource({ url, error: message });
-      await this._emit("source_error", { url, error: message });
-    }
-
-    state.progress.done = i + 1;
-    this._saveState(state);
-    await this.ctx.storage.setAlarm(Date.now() + STEP_DELAY_MS);
+    const result = this._buildExtractResult();
+    this._setMeta("result", JSON.stringify(result));
+    final.status = "completed";
+    final.progress = { done: total, total };
+    final.finished_at = Date.now();
+    this._saveState(final);
+    await this._emit("completed", { result });
+    this._closeAllSubscribers();
   }
 
   private async _stepResearch(state: JobState): Promise<void> {

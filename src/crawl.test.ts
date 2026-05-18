@@ -3,7 +3,6 @@ import {
   canonicalKey,
   discoverSitemapCandidates,
   filterCandidates,
-  generateUrlPermutations,
   isDisallowedByRobots,
   normalizeUrl,
   parseRobotsTxt,
@@ -45,41 +44,6 @@ describe("normalizeUrl", () => {
   });
 });
 
-describe("generateUrlPermutations", () => {
-  it("yields www and non-www host variants", () => {
-    const perms = generateUrlPermutations("https://example.com/a");
-    expect(perms.some((p) => p.includes("//www.example.com"))).toBe(true);
-    expect(perms.some((p) => p.includes("//example.com"))).toBe(true);
-  });
-
-  it("yields http and https protocol variants", () => {
-    const perms = generateUrlPermutations("https://example.com/a");
-    expect(perms.some((p) => p.startsWith("http://"))).toBe(true);
-    expect(perms.some((p) => p.startsWith("https://"))).toBe(true);
-  });
-
-  it("collapses /foo/index.html to /foo/", () => {
-    const perms = generateUrlPermutations("https://example.com/foo/index.html");
-    expect(perms.some((p) => p.endsWith("/foo/"))).toBe(true);
-  });
-
-  it("yields trailing-slash and non-trailing variants", () => {
-    const perms = generateUrlPermutations("https://example.com/a");
-    expect(perms.some((p) => p.endsWith("/a"))).toBe(true);
-    expect(perms.some((p) => p.endsWith("/a/"))).toBe(true);
-  });
-
-  it("falls back to the raw URL for invalid input", () => {
-    expect(generateUrlPermutations("not a url")).toEqual(["not a url"]);
-  });
-
-  it("is deterministic (sorted) across calls", () => {
-    const a = generateUrlPermutations("https://example.com/x");
-    const b = generateUrlPermutations("https://example.com/x");
-    expect(a).toEqual(b);
-  });
-});
-
 describe("canonicalKey", () => {
   it("collapses www/non-www + http/https to a single key", () => {
     const k1 = canonicalKey("https://example.com/page");
@@ -91,6 +55,30 @@ describe("canonicalKey", () => {
     expect(canonicalKey("https://example.com/a")).not.toBe(
       canonicalKey("https://example.com/b"),
     );
+  });
+
+  it("normalizes scheme to https", () => {
+    expect(canonicalKey("http://example.com/x")).toBe("https://example.com/x");
+  });
+
+  it("collapses /foo, /foo/, /foo/index.html to one key", () => {
+    const k = canonicalKey("https://example.com/foo");
+    expect(canonicalKey("https://example.com/foo/")).toBe(k);
+    expect(canonicalKey("https://example.com/foo/index.html")).toBe(k);
+    expect(canonicalKey("https://example.com/foo/index.php")).toBe(k);
+  });
+
+  it("keeps root '/' as-is", () => {
+    expect(canonicalKey("https://example.com/")).toBe("https://example.com/");
+  });
+
+  it("preserves query and SPA hash", () => {
+    expect(canonicalKey("https://example.com/p?a=1")).toBe("https://example.com/p?a=1");
+    expect(canonicalKey("https://example.com/p#/route")).toBe("https://example.com/p#/route");
+  });
+
+  it("returns input unchanged for invalid URLs", () => {
+    expect(canonicalKey("not a url")).toBe("not a url");
   });
 });
 

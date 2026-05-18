@@ -21,47 +21,24 @@ export function normalizeUrl(
 
 const INDEX_FILES = ["/index.html", "/index.php", "/index.htm"];
 
-export function generateUrlPermutations(url: string): string[] {
+export function canonicalKey(url: string): string {
   let u: URL;
   try {
     u = new URL(url);
   } catch {
-    return [url];
+    return url;
   }
-
-  const protocols = ["http:", "https:"];
-  const hostVariants = u.hostname.startsWith("www.")
-    ? [u.hostname, u.hostname.slice(4)]
-    : [u.hostname, `www.${u.hostname}`];
-
-  const pathSeeds = new Set<string>([u.pathname]);
-  for (const t of INDEX_FILES) {
-    if (u.pathname.endsWith(t)) {
-      pathSeeds.add(u.pathname.slice(0, -t.length) + "/");
+  const host = u.hostname.replace(/^www\./i, "");
+  let path = u.pathname;
+  const lower = path.toLowerCase();
+  for (const f of INDEX_FILES) {
+    if (lower.endsWith(f)) {
+      path = path.slice(0, -f.length) + "/";
+      break;
     }
   }
-
-  const allPaths = new Set<string>();
-  for (const p of pathSeeds) {
-    allPaths.add(p);
-    if (p.endsWith("/") && p.length > 1) allPaths.add(p.slice(0, -1));
-    else if (!p.endsWith("/")) allPaths.add(p + "/");
-  }
-
-  const out = new Set<string>();
-  for (const proto of protocols) {
-    for (const host of hostVariants) {
-      for (const path of allPaths) {
-        out.add(`${proto}//${host}${path}${u.search}${u.hash}`);
-      }
-    }
-  }
-
-  return [...out].sort();
-}
-
-export function canonicalKey(url: string): string {
-  return generateUrlPermutations(url)[0] ?? url;
+  if (path.length > 1 && path.endsWith("/")) path = path.slice(0, -1);
+  return `https://${host}${path}${u.search}${u.hash}`;
 }
 
 // ============================================================

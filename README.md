@@ -70,11 +70,11 @@ npx wrangler deploy
 | POST   | `/v1/fetch`                      | sync   | URL → markdown                                   |
 | POST   | `/v1/extract`                    | async  | URLs + JSON schema → structured data + citations |
 | POST   | `/v1/research`                   | async  | Query → cited markdown report                    |
+| POST   | `/v1/crawl`                      | async  | Site crawl → pages persisted to R2, paginated    |
+| POST   | `/v1/task`                       | async  | Query + JSON schema → structured answer w/ basis |
 | GET    | `/v1/{op}/{id}`                  | —      | Job status + result when complete                |
 | GET    | `/v1/{op}/{id}/stream`           | —      | SSE live progress (Last-Event-ID supported)      |
 | DELETE | `/v1/{op}/{id}`                  | —      | Cancel running job                               |
-
-`/v1/crawl` and `/v1/task` are planned; currently return `501 E_NOT_IMPLEMENTED`.
 
 ## Architecture
 
