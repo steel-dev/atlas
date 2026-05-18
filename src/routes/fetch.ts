@@ -10,7 +10,7 @@ const FORMATS = ["markdown", "html", "cleaned_html", "readability"] as const;
 const FetchRequest = z.object({
   url: z.string().url(),
   format: z.enum(FORMATS).default("markdown"),
-  use_proxy: z.boolean().default(true),
+  use_proxy: z.boolean().default(false),
   delay: z.number().int().min(0).max(30_000).optional(),
 });
 

@@ -6,6 +6,11 @@ import { ENGINES } from "../search";
 import { envelopeFail, envelopeOk } from "../utils/envelope";
 import { ErrorCodes } from "../utils/errors";
 import { newJobId } from "../utils/id";
+import {
+  deriveJobIdFromKey,
+  parseIdempotencyHeader,
+  sha256Hex,
+} from "../utils/idempotency";
 
 const ResearchRequest = z.object({
   query: z.string().min(3).max(2048),
@@ -13,7 +18,7 @@ const ResearchRequest = z.object({
   max_results_per_question: z.number().int().min(1).max(10).default(3),
   max_sources: z.number().int().min(1).max(20).default(10),
   engine: z.enum(ENGINES).default("ddg"),
-  use_proxy: z.boolean().default(true),
+  use_proxy: z.boolean().default(false),
 });
 
 export const researchRoute = new Hono<AppEnv>();
@@ -57,12 +62,30 @@ researchRoute.post("/", async (c) => {
     );
   }
 
-  const id = newJobId();
+  const idem = parseIdempotencyHeader(c.req.header("Idempotency-Key"));
+  if (!idem.ok) {
+    return c.json(
+      envelopeFail(ErrorCodes.E_VALIDATION, idem.error, requestId),
+      422,
+    );
+  }
+
+  const bodyHash = idem.key
+    ? await sha256Hex(JSON.stringify(parsed.data))
+    : null;
+  const id = idem.key ? await deriveJobIdFromKey(idem.key) : newJobId();
   const ns = c.env.ATLAS_JOB;
   const stub = ns.get(ns.idFromName(id));
 
   try {
-    const state = await stub.submitResearch(id, parsed.data);
+    const result = await stub.submitResearch(id, parsed.data, bodyHash);
+    if (result.kind === "conflict") {
+      return c.json(
+        envelopeFail(ErrorCodes.E_IDEMPOTENCY_CONFLICT, result.error, requestId),
+        409,
+      );
+    }
+    const { state } = result;
     return c.json(
       envelopeOk(
         {
@@ -75,7 +98,7 @@ researchRoute.post("/", async (c) => {
         },
         requestId,
       ),
-      202,
+      result.kind === "submitted" ? 202 : 200,
     );
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

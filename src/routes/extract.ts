@@ -5,12 +5,17 @@ import { hasAnthropicKey } from "../llm";
 import { envelopeFail, envelopeOk } from "../utils/envelope";
 import { ErrorCodes } from "../utils/errors";
 import { newJobId } from "../utils/id";
+import {
+  deriveJobIdFromKey,
+  parseIdempotencyHeader,
+  sha256Hex,
+} from "../utils/idempotency";
 
 const ExtractRequest = z.object({
-  urls: z.array(z.string().url()).min(1).max(5),
+  urls: z.array(z.string().url()).min(1).max(50),
   schema: z.record(z.string(), z.unknown()),
   prompt: z.string().max(2048).optional(),
-  use_proxy: z.boolean().optional(),
+  use_proxy: z.boolean().default(false),
 });
 
 export const extractRoute = new Hono<AppEnv>();
@@ -54,12 +59,30 @@ extractRoute.post("/", async (c) => {
     );
   }
 
-  const id = newJobId();
+  const idem = parseIdempotencyHeader(c.req.header("Idempotency-Key"));
+  if (!idem.ok) {
+    return c.json(
+      envelopeFail(ErrorCodes.E_VALIDATION, idem.error, requestId),
+      422,
+    );
+  }
+
+  const bodyHash = idem.key
+    ? await sha256Hex(JSON.stringify(parsed.data))
+    : null;
+  const id = idem.key ? await deriveJobIdFromKey(idem.key) : newJobId();
   const ns = c.env.ATLAS_JOB;
   const stub = ns.get(ns.idFromName(id));
 
   try {
-    const state = await stub.submitExtract(id, parsed.data);
+    const result = await stub.submitExtract(id, parsed.data, bodyHash);
+    if (result.kind === "conflict") {
+      return c.json(
+        envelopeFail(ErrorCodes.E_IDEMPOTENCY_CONFLICT, result.error, requestId),
+        409,
+      );
+    }
+    const { state } = result;
     return c.json(
       envelopeOk(
         {
@@ -72,7 +95,7 @@ extractRoute.post("/", async (c) => {
         },
         requestId,
       ),
-      202,
+      result.kind === "submitted" ? 202 : 200,
     );
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

@@ -11,7 +11,7 @@ const SearchRequest = z.object({
   engine: z.enum(ENGINES).default("ddg"),
   country: z.string().length(2).optional(),
   lang: z.string().min(2).max(5).optional(),
-  use_proxy: z.boolean().default(true),
+  use_proxy: z.boolean().default(false),
 });
 
 export const searchRoute = new Hono<AppEnv>();

@@ -76,6 +76,22 @@ npx wrangler deploy
 | GET    | `/v1/{op}/{id}/stream`           | —      | SSE live progress (Last-Event-ID supported)      |
 | DELETE | `/v1/{op}/{id}`                  | —      | Cancel running job                               |
 
+### Conventions
+
+- **Authorization**: every `/v1/*` call needs `Authorization: Bearer $ATLAS_API_KEY`.
+- **Proxy default is OFF**: `use_proxy` defaults to `false` on every endpoint. Steel's residential
+  proxy is a paid add-on; flip to `true` per-request only when the target site blocks the default
+  egress (`{"use_proxy": true}`).
+- **Async caps**: `/v1/extract` accepts up to 50 URLs per submission; `/v1/crawl` up to 10 000
+  pages.
+- **Idempotency-Key**: async POSTs (`extract`, `research`, `crawl`) accept an optional
+  `Idempotency-Key: <≤255 printable ASCII>` header. Same key + same body → returns the existing job
+  (200 instead of 202). Same key + different body → `409 E_IDEMPOTENCY_CONFLICT`. Idempotency lasts
+  until the job is reaped (see below).
+- **Job TTL**: 7 days after a job reaches a terminal state (`completed` / `failed` / `cancelled`)
+  the Durable Object self-wipes — SQLite cleared, R2 crawl artifacts deleted. After that,
+  `GET /v1/{op}/{id}` returns `404 E_JOB_NOT_FOUND`. Pull results before the deadline.
+
 ## Architecture
 
 - **Workers (Hono)** — sync HTTP entry; routes async submissions to the right DO instance via

@@ -26,9 +26,17 @@ const STEP_DELAY_MS = 100;
 const CRAWL_BATCH_SIZE = 5;
 const EXTRACT_BATCH_SIZE = 2;
 const REQUEST_ID_HEADER = "x-atlas-request-id";
+// Terminal jobs are reaped 7 days after they finish: SQLite wiped via
+// deleteAll(), crawl artifacts deleted from R2. After that, GET on the
+// job_id returns 404 (E_JOB_NOT_FOUND).
+const CLEANUP_DELAY_MS = 7 * 24 * 60 * 60 * 1000;
 
 export type AsyncOp = "extract" | "crawl" | "research";
 export type JobStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
+
+export type SubmitResult =
+  | { kind: "submitted" | "existing"; state: JobState }
+  | { kind: "conflict"; error: string };
 
 export interface ExtractSpec {
   urls: string[];
@@ -142,9 +150,15 @@ export class AtlasJob extends DurableObject<Env> {
   // RPC — called by Worker
   // ============================================================
 
-  async submitExtract(jobId: string, spec: ExtractSpec): Promise<JobState> {
+  async submitExtract(
+    jobId: string,
+    spec: ExtractSpec,
+    bodyHash: string | null,
+  ): Promise<SubmitResult> {
+    const conflict = this._checkIdempotency(bodyHash);
+    if (conflict) return conflict;
     const existing = this._loadState();
-    if (existing) return existing;
+    if (existing) return { kind: "existing", state: existing };
 
     const state: JobState = {
       id: jobId,
@@ -155,6 +169,7 @@ export class AtlasJob extends DurableObject<Env> {
     };
     this._saveState(state);
     this._setMeta("spec", JSON.stringify(spec));
+    if (bodyHash) this._setMeta("body_hash", bodyHash);
     this._appendEvent("submitted", {
       id: jobId,
       op: "extract",
@@ -162,12 +177,18 @@ export class AtlasJob extends DurableObject<Env> {
     });
 
     await this.ctx.storage.setAlarm(Date.now() + STEP_DELAY_MS);
-    return state;
+    return { kind: "submitted", state };
   }
 
-  async submitResearch(jobId: string, spec: ResearchSpec): Promise<JobState> {
+  async submitResearch(
+    jobId: string,
+    spec: ResearchSpec,
+    bodyHash: string | null,
+  ): Promise<SubmitResult> {
+    const conflict = this._checkIdempotency(bodyHash);
+    if (conflict) return conflict;
     const existing = this._loadState();
-    if (existing) return existing;
+    if (existing) return { kind: "existing", state: existing };
 
     const state: JobState = {
       id: jobId,
@@ -178,6 +199,7 @@ export class AtlasJob extends DurableObject<Env> {
     };
     this._saveState(state);
     this._setMeta("spec", JSON.stringify(spec));
+    if (bodyHash) this._setMeta("body_hash", bodyHash);
     this._setMeta(
       "research_state",
       JSON.stringify({ phase: "brief" } satisfies ResearchInternalState),
@@ -189,12 +211,18 @@ export class AtlasJob extends DurableObject<Env> {
     });
 
     await this.ctx.storage.setAlarm(Date.now() + STEP_DELAY_MS);
-    return state;
+    return { kind: "submitted", state };
   }
 
-  async submitCrawl(jobId: string, spec: CrawlSpec): Promise<JobState> {
+  async submitCrawl(
+    jobId: string,
+    spec: CrawlSpec,
+    bodyHash: string | null,
+  ): Promise<SubmitResult> {
+    const conflict = this._checkIdempotency(bodyHash);
+    if (conflict) return conflict;
     const existing = this._loadState();
-    if (existing) return existing;
+    if (existing) return { kind: "existing", state: existing };
 
     const state: JobState = {
       id: jobId,
@@ -205,6 +233,7 @@ export class AtlasJob extends DurableObject<Env> {
     };
     this._saveState(state);
     this._setMeta("spec", JSON.stringify(spec));
+    if (bodyHash) this._setMeta("body_hash", bodyHash);
     this._appendEvent("submitted", {
       id: jobId,
       op: "crawl",
@@ -213,7 +242,22 @@ export class AtlasJob extends DurableObject<Env> {
     });
 
     await this.ctx.storage.setAlarm(Date.now() + STEP_DELAY_MS);
-    return state;
+    return { kind: "submitted", state };
+  }
+
+  // Same idempotency_key + different body → 409. The deterministic DO name
+  // already collides retried submits onto this instance, so we only have to
+  // detect the mismatch here.
+  private _checkIdempotency(bodyHash: string | null): SubmitResult | null {
+    if (!bodyHash) return null;
+    const stored = this._getMeta("body_hash");
+    if (stored && stored !== bodyHash) {
+      return {
+        kind: "conflict",
+        error: "Idempotency-Key reused with a different request body",
+      };
+    }
+    return null;
   }
 
   // ============================================================
@@ -375,8 +419,9 @@ export class AtlasJob extends DurableObject<Env> {
       state.finished_at = Date.now();
       this._saveState(state);
       await this._emit("cancelled", { reason: "user_request" });
-      await this.ctx.storage.deleteAlarm();
       this._closeAllSubscribers();
+      // Replaces the pending step alarm with the +7d cleanup alarm.
+      await this._scheduleCleanup();
     }
     return Response.json(envelopeOk(state, requestId));
   }
@@ -397,6 +442,9 @@ export class AtlasJob extends DurableObject<Env> {
       state.status === "failed" ||
       state.status === "completed"
     ) {
+      // Terminal state alarms are the +7d cleanup tick scheduled by the
+      // step that finalized this job.
+      await this._cleanup(state);
       return;
     }
 
@@ -423,6 +471,26 @@ export class AtlasJob extends DurableObject<Env> {
     this._saveState(state);
     await this._emit("failed", { error });
     this._closeAllSubscribers();
+    await this._scheduleCleanup();
+  }
+
+  private async _scheduleCleanup(): Promise<void> {
+    await this.ctx.storage.setAlarm(Date.now() + CLEANUP_DELAY_MS);
+  }
+
+  private async _cleanup(state: JobState): Promise<void> {
+    if (state.op === "crawl") {
+      const rows = [
+        ...this.sql.exec<{ r2_key: string; [k: string]: SqlStorageValue }>(
+          "SELECT r2_key FROM atlas_crawl_pages WHERE r2_key IS NOT NULL",
+        ),
+      ];
+      await Promise.allSettled(
+        rows.map((r) => this.env.ARTIFACTS.delete(r.r2_key)),
+      );
+    }
+    // Wipes SQLite + KV + any pending alarm in one shot.
+    await this.ctx.storage.deleteAll();
   }
 
   private _isCancelled(): boolean {
@@ -462,13 +530,14 @@ export class AtlasJob extends DurableObject<Env> {
     this._saveState(final);
     await this._emit("completed", { result });
     this._closeAllSubscribers();
+    await this._scheduleCleanup();
   }
 
   private async _stepExtract(state: JobState): Promise<void> {
     const specRaw = this._getMeta("spec");
     if (!specRaw) return this._failJob(state, "Spec missing");
     const spec = JSON.parse(specRaw) as ExtractSpec;
-    const useProxy = spec.use_proxy ?? true;
+    const useProxy = spec.use_proxy ?? false;
     const total = spec.urls.length;
 
     if (this._isCancelled()) return;
@@ -761,6 +830,7 @@ export class AtlasJob extends DurableObject<Env> {
           this._saveState(state);
           await this._emit("completed", completedEvent);
           this._closeAllSubscribers();
+          await this._scheduleCleanup();
           return;
         } catch (err) {
           return this._failJob(
@@ -999,6 +1069,7 @@ export class AtlasJob extends DurableObject<Env> {
 
     await this._emit("completed", result);
     this._closeAllSubscribers();
+    await this._scheduleCleanup();
   }
 
   // ============================================================

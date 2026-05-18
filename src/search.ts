@@ -33,7 +33,7 @@ export async function webSearch(opts: {
 }): Promise<WebSearchOutcome> {
   const limit = opts.limit ?? 10;
   const engine = opts.engine ?? "ddg";
-  const useProxy = opts.use_proxy ?? true;
+  const useProxy = opts.use_proxy ?? false;
   const steel = getSteel(opts.env);
   const serpUrl = buildSerpUrl(engine, opts.query, {
     country: opts.country,
