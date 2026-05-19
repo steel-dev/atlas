@@ -76,6 +76,21 @@ npx wrangler deploy
 | GET    | `/v1/{op}/{id}/stream`           | —      | SSE live progress (Last-Event-ID supported)      |
 | DELETE | `/v1/{op}/{id}`                  | —      | Cancel running job                               |
 
+## API docs
+
+Every deployment serves an OpenAPI 3.1 document and an interactive Scalar reference:
+
+```bash
+export ATLAS_URL="https://atlas-yourdeploy.workers.dev"
+export ATLAS_API_KEY="your-shared-token"
+
+open "$ATLAS_URL/docs"
+curl -s "$ATLAS_URL/openapi.json" | jq '.info'
+```
+
+`/docs` and `/openapi.json` are public. Every `/v1/*` API call requires:
+`Authorization: Bearer $ATLAS_API_KEY`.
+
 ### Conventions
 
 - **Authorization**: every `/v1/*` call needs `Authorization: Bearer $ATLAS_API_KEY`.
@@ -91,6 +106,139 @@ npx wrangler deploy
 - **Job TTL**: 7 days after a job reaches a terminal state (`completed` / `failed` / `cancelled`)
   the Durable Object self-wipes — SQLite cleared, R2 crawl artifacts deleted. After that,
   `GET /v1/{op}/{id}` returns `404 E_JOB_NOT_FOUND`. Pull results before the deadline.
+
+## API examples
+
+The examples below assume `ATLAS_URL`, `ATLAS_API_KEY`, and `jq` are available in your shell.
+
+### Search
+
+```bash
+curl -s "$ATLAS_URL/v1/search" \
+  -H "Authorization: Bearer $ATLAS_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "Cloudflare Durable Objects SQLite",
+    "limit": 5,
+    "engine": "ddg"
+  }' | jq
+```
+
+### Fetch
+
+```bash
+curl -s "$ATLAS_URL/v1/fetch" \
+  -H "Authorization: Bearer $ATLAS_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "url": "https://developers.cloudflare.com/durable-objects/",
+    "format": "markdown"
+  }' | jq '.data | {url, title, status_code, content_chars: (.content | length)}'
+```
+
+### Submit an async extraction
+
+```bash
+JOB_ID=$(
+  curl -s "$ATLAS_URL/v1/extract" \
+    -H "Authorization: Bearer $ATLAS_API_KEY" \
+    -H "Content-Type: application/json" \
+    -d '{
+      "urls": ["https://developers.cloudflare.com/durable-objects/"],
+      "schema": {
+        "type": "object",
+        "properties": {
+          "summary": { "type": "string" },
+          "key_features": {
+            "type": "array",
+            "items": { "type": "string" }
+          }
+        },
+        "required": ["summary", "key_features"]
+      }
+    }' | jq -r '.data.id'
+)
+
+echo "$JOB_ID"
+```
+
+### Poll an async job
+
+```bash
+while true; do
+  status_json=$(
+    curl -s "$ATLAS_URL/v1/extract/$JOB_ID" \
+      -H "Authorization: Bearer $ATLAS_API_KEY"
+  )
+
+  echo "$status_json" | jq '.data | {status, progress}'
+
+  status=$(echo "$status_json" | jq -r '.data.status')
+  case "$status" in
+    completed|failed|cancelled) break ;;
+  esac
+
+  sleep 2
+done
+
+echo "$status_json" | jq '.data.result'
+```
+
+### Stream progress with SSE
+
+```bash
+curl -N "$ATLAS_URL/v1/extract/$JOB_ID/stream" \
+  -H "Authorization: Bearer $ATLAS_API_KEY"
+```
+
+If the connection drops, resume after the last event id you received:
+
+```bash
+curl -N "$ATLAS_URL/v1/extract/$JOB_ID/stream" \
+  -H "Authorization: Bearer $ATLAS_API_KEY" \
+  -H "Last-Event-ID: 12"
+```
+
+### Retry safely with Idempotency-Key
+
+```bash
+curl -i "$ATLAS_URL/v1/research" \
+  -H "Authorization: Bearer $ATLAS_API_KEY" \
+  -H "Content-Type: application/json" \
+  -H "Idempotency-Key: research-cloudflare-do-sqlite-v1" \
+  -d '{
+    "query": "What changed when Cloudflare Durable Objects added SQLite?",
+    "max_sub_questions": 3,
+    "max_sources": 8
+  }'
+```
+
+Retrying the same key with the same body returns the existing job (`200`). Reusing the same key with
+a different body returns `409 E_IDEMPOTENCY_CONFLICT`.
+
+### Crawl and paginate pages
+
+```bash
+CRAWL_ID=$(
+  curl -s "$ATLAS_URL/v1/crawl" \
+    -H "Authorization: Bearer $ATLAS_API_KEY" \
+    -H "Content-Type: application/json" \
+    -d '{
+      "url": "https://developers.cloudflare.com/durable-objects/",
+      "limit": 25,
+      "crawlEntireDomain": true,
+      "maxDiscoveryDepth": 1
+    }' | jq -r '.data.id'
+)
+
+curl -s "$ATLAS_URL/v1/crawl/$CRAWL_ID?offset=0&limit=10" \
+  -H "Authorization: Bearer $ATLAS_API_KEY" \
+  | jq '.data | {status, summary, pagination, pages: [.pages[] | {url, status, title, r2_key}]}'
+
+curl -s "$ATLAS_URL/v1/crawl/$CRAWL_ID?offset=10&limit=10" \
+  -H "Authorization: Bearer $ATLAS_API_KEY" \
+  | jq '.data.pagination'
+```
 
 ## Architecture
 
