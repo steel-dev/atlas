@@ -333,7 +333,7 @@ export class AtlasJob extends DurableObject<Env> {
   private _handleStatus(request: Request): Response {
     const requestId = this._requestId(request);
     const state = this._loadState();
-    if (!state) {
+    if (!state || !this._matchesRequestedOp(state, request)) {
       return Response.json(
         envelopeFail(ErrorCodes.E_JOB_NOT_FOUND, "Job not found", requestId),
         { status: 404 },
@@ -404,6 +404,15 @@ export class AtlasJob extends DurableObject<Env> {
   }
 
   private _handleStream(request: Request): Response {
+    const requestId = this._requestId(request);
+    const state = this._loadState();
+    if (!state || !this._matchesRequestedOp(state, request)) {
+      return Response.json(
+        envelopeFail(ErrorCodes.E_JOB_NOT_FOUND, "Job not found", requestId),
+        { status: 404 },
+      );
+    }
+
     const { readable, writable } = new TransformStream<Uint8Array, Uint8Array>();
     const writer = writable.getWriter();
 
@@ -451,7 +460,7 @@ export class AtlasJob extends DurableObject<Env> {
   private async _handleCancel(request: Request): Promise<Response> {
     const requestId = this._requestId(request);
     const state = this._loadState();
-    if (!state) {
+    if (!state || !this._matchesRequestedOp(state, request)) {
       return Response.json(
         envelopeFail(ErrorCodes.E_JOB_NOT_FOUND, "Job not found", requestId),
         { status: 404 },
@@ -471,6 +480,19 @@ export class AtlasJob extends DurableObject<Env> {
 
   private _requestId(request: Request): string {
     return request.headers.get(REQUEST_ID_HEADER) ?? "unknown";
+  }
+
+  private _matchesRequestedOp(state: JobState, request: Request): boolean {
+    const op = this._requestedOp(request);
+    return op === null || op === state.op;
+  }
+
+  private _requestedOp(request: Request): AsyncOp | null {
+    const segments = new URL(request.url).pathname.split("/").filter(Boolean);
+    const op = segments.find((segment): segment is AsyncOp =>
+      segment === "extract" || segment === "research" || segment === "crawl"
+    );
+    return op ?? null;
   }
 
   // ============================================================
@@ -1383,7 +1405,7 @@ export class AtlasJob extends DurableObject<Env> {
 
     const delay = spec.delay ?? 0;
     await this.ctx.storage.setAlarm(
-      Date.now() + Math.max(STEP_DELAY_MS, delay * 1000),
+      Date.now() + Math.max(STEP_DELAY_MS, delay),
     );
   }
 

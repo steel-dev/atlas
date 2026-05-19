@@ -236,7 +236,7 @@ export const CrawlRequest = z.object({
   deduplicateSimilarURLs: z.boolean().default(true),
   ignoreQueryParameters: z.boolean().default(false),
   regexOnFullURL: z.boolean().default(false),
-  delay: z.number().nonnegative().optional(),
+  delay: z.number().int().min(0).max(30_000).optional(),
   use_proxy: z.boolean().default(false),
 });
 
