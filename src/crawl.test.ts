@@ -7,6 +7,7 @@ import {
   normalizeUrl,
   parseRobotsTxt,
   passesFilter,
+  truncateCrawlMarkdown,
   type CrawlFilterOptions,
   type RobotsRules,
 } from "./crawl";
@@ -41,6 +42,29 @@ describe("normalizeUrl", () => {
   it("returns null for invalid input", () => {
     expect(normalizeUrl("not a url")).toBeNull();
     expect(normalizeUrl("")).toBeNull();
+  });
+});
+
+describe("truncateCrawlMarkdown", () => {
+  it("returns short markdown unchanged", () => {
+    expect(truncateCrawlMarkdown("hello", 10)).toEqual({
+      markdown: "hello",
+      content_truncated: false,
+    });
+  });
+
+  it("truncates markdown over the limit", () => {
+    expect(truncateCrawlMarkdown("abcdef", 3)).toEqual({
+      markdown: "abc",
+      content_truncated: true,
+    });
+  });
+
+  it("does not truncate markdown exactly at the limit", () => {
+    expect(truncateCrawlMarkdown("abc", 3)).toEqual({
+      markdown: "abc",
+      content_truncated: false,
+    });
   });
 });
 

@@ -1,5 +1,20 @@
 import * as cheerio from "cheerio";
 
+export const CRAWL_PAGE_MARKDOWN_CHAR_LIMIT = 100_000;
+
+export function truncateCrawlMarkdown(
+  markdown: string,
+  limit = CRAWL_PAGE_MARKDOWN_CHAR_LIMIT,
+): { markdown: string; content_truncated: boolean } {
+  if (markdown.length <= limit) {
+    return { markdown, content_truncated: false };
+  }
+  return {
+    markdown: markdown.slice(0, limit),
+    content_truncated: true,
+  };
+}
+
 // ============================================================
 // URL normalization + permutations
 // ============================================================

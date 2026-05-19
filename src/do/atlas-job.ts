@@ -7,6 +7,7 @@ import {
   fetchSitemap,
   filterCandidates,
   normalizeUrl,
+  truncateCrawlMarkdown,
   type RobotsRules,
 } from "../crawl";
 import { extractWithSchema, getAnthropic } from "../llm";
@@ -35,14 +36,18 @@ const MAX_WRITE_ATTEMPTS = 2;
 const REQUEST_ID_HEADER = "x-atlas-request-id";
 const CRAWL_STATUS_DEFAULT_LIMIT = 10;
 const CRAWL_STATUS_MAX_LIMIT = 50;
-const CRAWL_PAGE_MARKDOWN_CHAR_LIMIT = 100_000;
 // Terminal jobs are reaped 7 days after they finish: SQLite wiped via
 // deleteAll(), crawl artifacts deleted from R2. After that, GET on the
 // job_id returns 404 (E_JOB_NOT_FOUND).
 const CLEANUP_DELAY_MS = 7 * 24 * 60 * 60 * 1000;
 
 export type AsyncOp = "extract" | "crawl" | "research";
-export type JobStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
+export type JobStatus =
+  | "queued"
+  | "running"
+  | "completed"
+  | "failed"
+  | "cancelled";
 
 export type SubmitResult =
   | { kind: "submitted" | "existing"; state: JobState }
@@ -347,19 +352,20 @@ export class AtlasJob extends DurableObject<Env> {
       return this._handleCrawlStatus(state, request);
     }
 
-    const result =
-      state.status === "completed"
-        ? this._loadResult()
-        : null;
+    const result = state.status === "completed" ? this._loadResult() : null;
 
     return Response.json(envelopeOk({ ...state, result }, requestId));
   }
 
-  private async _handleCrawlStatus(state: JobState, request: Request): Promise<Response> {
+  private async _handleCrawlStatus(
+    state: JobState,
+    request: Request,
+  ): Promise<Response> {
     const requestId = this._requestId(request);
     const url = new URL(request.url);
     const offsetRaw = url.searchParams.get("offset") ?? "0";
-    const limitRaw = url.searchParams.get("limit") ?? String(CRAWL_STATUS_DEFAULT_LIMIT);
+    const limitRaw =
+      url.searchParams.get("limit") ?? String(CRAWL_STATUS_DEFAULT_LIMIT);
     const offset = Math.max(0, parseInt(offsetRaw, 10) || 0);
     const limit = Math.min(
       CRAWL_STATUS_MAX_LIMIT,
@@ -368,7 +374,9 @@ export class AtlasJob extends DurableObject<Env> {
 
     const pageRows = this._loadCrawlPages(offset, limit);
     const totalPages = this._countAllCrawlPages();
-    const pages = await Promise.all(pageRows.map((r) => this._buildCrawlPageResponse(r)));
+    const pages = await Promise.all(
+      pageRows.map((r) => this._buildCrawlPageResponse(r)),
+    );
 
     const hasMore = offset + pages.length < totalPages;
     const result = state.status === "completed" ? this._loadResult() : null;
@@ -411,7 +419,9 @@ export class AtlasJob extends DurableObject<Env> {
     discovery_depth: number;
     finished_at: number;
   }> {
-    const { markdown, content_truncated } = await this._loadCrawlMarkdown(r.r2_key);
+    const { markdown, content_truncated } = await this._loadCrawlMarkdown(
+      r.r2_key,
+    );
     return {
       id: r.id,
       url: r.url,
@@ -435,13 +445,7 @@ export class AtlasJob extends DurableObject<Env> {
     const object = await this.env.ARTIFACTS.get(r2Key);
     if (!object) return { markdown: null, content_truncated: false };
     const markdown = await object.text();
-    if (markdown.length <= CRAWL_PAGE_MARKDOWN_CHAR_LIMIT) {
-      return { markdown, content_truncated: false };
-    }
-    return {
-      markdown: markdown.slice(0, CRAWL_PAGE_MARKDOWN_CHAR_LIMIT),
-      content_truncated: true,
-    };
+    return truncateCrawlMarkdown(markdown);
   }
 
   private _handleStream(request: Request): Response {
@@ -454,17 +458,22 @@ export class AtlasJob extends DurableObject<Env> {
       );
     }
 
-    const { readable, writable } = new TransformStream<Uint8Array, Uint8Array>();
+    const { readable, writable } = new TransformStream<
+      Uint8Array,
+      Uint8Array
+    >();
     const writer = writable.getWriter();
 
     const lastEventIdHeader = request.headers.get("last-event-id");
     const lastEventId = lastEventIdHeader ? Number(lastEventIdHeader) : 0;
 
-    this._writeReplayAndSubscribe(writer, Number.isFinite(lastEventId) ? lastEventId : 0)
-      .catch((err) => {
-        console.error("stream replay failed:", err);
-        writer.close().catch(() => {});
-      });
+    this._writeReplayAndSubscribe(
+      writer,
+      Number.isFinite(lastEventId) ? lastEventId : 0,
+    ).catch((err) => {
+      console.error("stream replay failed:", err);
+      writer.close().catch(() => {});
+    });
 
     return new Response(readable, {
       headers: {
@@ -530,8 +539,9 @@ export class AtlasJob extends DurableObject<Env> {
 
   private _requestedOp(request: Request): AsyncOp | null {
     const segments = new URL(request.url).pathname.split("/").filter(Boolean);
-    const op = segments.find((segment): segment is AsyncOp =>
-      segment === "extract" || segment === "research" || segment === "crawl"
+    const op = segments.find(
+      (segment): segment is AsyncOp =>
+        segment === "extract" || segment === "research" || segment === "crawl",
     );
     return op ?? null;
   }
@@ -571,10 +581,20 @@ export class AtlasJob extends DurableObject<Env> {
   }
 
   private async _failJob(state: JobState, error: string): Promise<void> {
-    state.status = "failed";
-    state.error = error;
-    state.finished_at = Date.now();
-    this._saveState(state);
+    const current = this._loadState();
+    if (
+      current &&
+      (current.status === "cancelled" ||
+        current.status === "completed" ||
+        current.status === "failed")
+    ) {
+      return;
+    }
+    const next = current ?? state;
+    next.status = "failed";
+    next.error = error;
+    next.finished_at = Date.now();
+    this._saveState(next);
     await this._emit("failed", { error });
     this._closeAllSubscribers();
     await this._scheduleCleanup();
@@ -624,7 +644,12 @@ export class AtlasJob extends DurableObject<Env> {
 
   private async _finishExtract(total: number): Promise<void> {
     const final = this._loadState();
-    if (!final || final.status === "cancelled" || final.status === "failed") {
+    if (
+      !final ||
+      final.status === "cancelled" ||
+      final.status === "completed" ||
+      final.status === "failed"
+    ) {
       return;
     }
 
@@ -690,9 +715,12 @@ export class AtlasJob extends DurableObject<Env> {
           systemPrompt: spec.prompt,
         });
 
+        if (this._isCancelled()) return;
+
         this._saveSource({ url, title, data, citations });
         await this._emit("extracted", { url, position, data });
       } catch (err) {
+        if (this._isCancelled()) return;
         const message = err instanceof Error ? err.message : String(err);
         this._saveSource({ url, error: message });
         await this._emit("source_error", { url, error: message });
@@ -718,6 +746,8 @@ export class AtlasJob extends DurableObject<Env> {
   }
 
   private async _stepResearch(state: JobState): Promise<void> {
+    if (this._isCancelled()) return;
+
     state.status = "running";
     this._saveState(state);
 
@@ -739,6 +769,7 @@ export class AtlasJob extends DurableObject<Env> {
             query: spec.query,
             max_sub_questions: spec.max_sub_questions,
           });
+          if (this._isCancelled()) return;
           rs.brief = plan.brief;
           rs.sub_questions = plan.sub_questions;
           rs.current_queries = plan.sub_questions;
@@ -756,6 +787,7 @@ export class AtlasJob extends DurableObject<Env> {
             sub_questions: plan.sub_questions,
           });
         } catch (err) {
+          if (this._isCancelled()) return;
           return this._failJob(
             state,
             `brief: ${err instanceof Error ? err.message : String(err)}`,
@@ -787,6 +819,9 @@ export class AtlasJob extends DurableObject<Env> {
               use_proxy: spec.use_proxy,
               limit: spec.max_results_per_question,
             });
+            if (this._isCancelled()) {
+              return [] as Array<SearchResult & { sub_question_idx: number }>;
+            }
             if (!outcome.ok) {
               await this._emit("search_failed", {
                 round,
@@ -800,9 +835,14 @@ export class AtlasJob extends DurableObject<Env> {
               idx,
               count: outcome.results.length,
             });
-            return outcome.results.map((r) => ({ ...r, sub_question_idx: idx }));
+            return outcome.results.map((r) => ({
+              ...r,
+              sub_question_idx: idx,
+            }));
           }),
         );
+
+        if (this._isCancelled()) return;
 
         const flat = perQ.flat();
         const alreadyFetched = new Set((rs.sources ?? []).map((s) => s.url));
@@ -878,6 +918,8 @@ export class AtlasJob extends DurableObject<Env> {
           const title = scrape.metadata?.title ?? item.title;
           if (!markdown) throw new Error("Empty markdown from Steel");
 
+          if (this._isCancelled()) return;
+
           const anthropic = getAnthropic(this.env);
           const summary = await summarizeWebpage({
             anthropic,
@@ -886,6 +928,8 @@ export class AtlasJob extends DurableObject<Env> {
             title,
             sub_question: item.sub_question,
           });
+
+          if (this._isCancelled()) return;
 
           if (summary.is_relevant && summary.summary) {
             const n = (rs.sources?.length ?? 0) + 1;
@@ -900,7 +944,11 @@ export class AtlasJob extends DurableObject<Env> {
             this._saveSource({
               url: item.url,
               title,
-              data: { n, summary: summary.summary, sub_question: item.sub_question },
+              data: {
+                n,
+                summary: summary.summary,
+                sub_question: item.sub_question,
+              },
               citations: summary.key_excerpts.map((q) => ({ quote: q })),
             });
             await this._emit("summarized", {
@@ -917,6 +965,7 @@ export class AtlasJob extends DurableObject<Env> {
             });
           }
         } catch (err) {
+          if (this._isCancelled()) return;
           const message = err instanceof Error ? err.message : String(err);
           this._saveSource({ url: item.url, error: message });
           await this._emit("source_error", { url: item.url, error: message });
@@ -976,6 +1025,8 @@ export class AtlasJob extends DurableObject<Env> {
             max_additional_queries: 3,
           });
 
+          if (this._isCancelled()) return;
+
           const goingDeeper =
             !assessment.sufficient && assessment.additional_queries.length > 0;
 
@@ -999,6 +1050,7 @@ export class AtlasJob extends DurableObject<Env> {
           await this._emit("assessment", record);
           break;
         } catch (err) {
+          if (this._isCancelled()) return;
           // On assess failure, write what we have rather than fail the job.
           const message = err instanceof Error ? err.message : String(err);
           await this._emit("assessment_failed", { round, error: message });
@@ -1057,6 +1109,7 @@ export class AtlasJob extends DurableObject<Env> {
           });
           break;
         } catch (err) {
+          if (this._isCancelled()) return;
           return this._failJob(
             state,
             `write: ${err instanceof Error ? err.message : String(err)}`,
@@ -1086,14 +1139,14 @@ export class AtlasJob extends DurableObject<Env> {
           await this._emit("verifying", { total: claims.length });
 
           if (claims.length === 0) {
-            return this._finalizeResearch(state, rs, spec);
+            return this._finalizeResearch(rs, spec);
           }
         }
 
         const queue = rs.verify_queue;
         const idx = rs.verify_idx ?? 0;
         if (idx >= queue.length) {
-          return this._finalizeResearch(state, rs, spec);
+          return this._finalizeResearch(rs, spec);
         }
 
         const batchEnd = Math.min(idx + VERIFY_BATCH_SIZE, queue.length);
@@ -1163,7 +1216,7 @@ export class AtlasJob extends DurableObject<Env> {
         this._saveState(state);
 
         if (batchEnd >= queue.length) {
-          return this._finalizeResearch(state, rs, spec);
+          return this._finalizeResearch(rs, spec);
         }
         break;
       }
@@ -1173,10 +1226,19 @@ export class AtlasJob extends DurableObject<Env> {
   }
 
   private async _finalizeResearch(
-    state: JobState,
     rs: ResearchInternalState,
     spec: ResearchSpec,
   ): Promise<void> {
+    const final = this._loadState();
+    if (
+      !final ||
+      final.status === "cancelled" ||
+      final.status === "completed" ||
+      final.status === "failed"
+    ) {
+      return;
+    }
+
     const verifications = rs.verifications ?? [];
     const total = verifications.length;
     const supported = verifications.filter((v) => v.supported).length;
@@ -1208,8 +1270,8 @@ export class AtlasJob extends DurableObject<Env> {
       // Expand total to account for the upcoming rewrite + re-verify.
       // claims.length is unknown until reparsed, so we bump conservatively;
       // verify init will refine again.
-      state.progress.total = state.progress.total + 1;
-      this._saveState(state);
+      final.progress.total = final.progress.total + 1;
+      this._saveState(final);
 
       await this._emit("verify_failed", {
         attempt,
@@ -1237,10 +1299,10 @@ export class AtlasJob extends DurableObject<Env> {
     };
 
     this._setMeta("result", JSON.stringify(result));
-    state.status = "completed";
-    state.progress.done = state.progress.total;
-    state.finished_at = Date.now();
-    this._saveState(state);
+    final.status = "completed";
+    final.progress.done = final.progress.total;
+    final.finished_at = Date.now();
+    this._saveState(final);
     await this._emit("completed", {
       sources_count: (rs.sources ?? []).length,
       markdown_chars: (rs.report_markdown ?? "").length,
@@ -1274,7 +1336,9 @@ export class AtlasJob extends DurableObject<Env> {
       let robotsRules: RobotsRules | null = null;
       if (!spec.ignore_robots_txt) {
         robotsRules = await fetchRobotsTxt(spec.url);
-        if (robotsRules) this._setMeta("robots_rules", JSON.stringify(robotsRules));
+        if (this._isCancelled()) return;
+        if (robotsRules)
+          this._setMeta("robots_rules", JSON.stringify(robotsRules));
       }
 
       const filterOpts = this._crawlFilterOpts(spec, robotsRules);
@@ -1299,6 +1363,7 @@ export class AtlasJob extends DurableObject<Env> {
         for (const c of candidates) {
           if (this._isCancelled()) return;
           const urls = await fetchSitemap(c);
+          if (this._isCancelled()) return;
           allUrls.push(...urls);
           if (allUrls.length > 5000) break;
         }
@@ -1335,12 +1400,13 @@ export class AtlasJob extends DurableObject<Env> {
 
     const processed = this._crawlProcessedCount();
     const remaining = spec.limit - processed;
-    if (remaining <= 0) return this._completeCrawl(state, spec, "limit_reached");
+    if (remaining <= 0) return this._completeCrawl(spec, "limit_reached");
 
     if (this._isCancelled()) return;
 
     const batch = this._popFrontier(Math.min(CRAWL_BATCH_SIZE, remaining));
-    if (batch.length === 0) return this._completeCrawl(state, spec, "frontier_drained");
+    if (batch.length === 0)
+      return this._completeCrawl(spec, "frontier_drained");
 
     const robotsRaw = this._getMeta("robots_rules");
     const robotsRules: RobotsRules | null = robotsRaw
@@ -1378,6 +1444,8 @@ export class AtlasJob extends DurableObject<Env> {
           const pageId = crypto.randomUUID();
           const r2Key = `crawl/${state.id}/${pageId}.md`;
           await this.env.ARTIFACTS.put(r2Key, markdown);
+
+          if (this._isCancelled()) return;
 
           this._saveCrawlPage({
             id: pageId,
@@ -1418,6 +1486,7 @@ export class AtlasJob extends DurableObject<Env> {
             total: spec.limit,
           });
         } catch (err) {
+          if (this._isCancelled()) return;
           const message = err instanceof Error ? err.message : String(err);
           this._saveCrawlPage({
             id: crypto.randomUUID(),
@@ -1450,21 +1519,27 @@ export class AtlasJob extends DurableObject<Env> {
     );
   }
 
-  private async _completeCrawl(
-    state: JobState,
-    spec: CrawlSpec,
-    reason: string,
-  ): Promise<void> {
+  private async _completeCrawl(spec: CrawlSpec, reason: string): Promise<void> {
+    const final = this._loadState();
+    if (
+      !final ||
+      final.status === "cancelled" ||
+      final.status === "completed" ||
+      final.status === "failed"
+    ) {
+      return;
+    }
+
     const completed = this._countCompletedPages();
     const failed = this._countFailedPages();
     const visited = this._countVisited();
     const processed = completed + failed;
 
-    state.status = "completed";
-    state.finished_at = Date.now();
-    state.progress.done = processed;
-    state.progress.total = processed;
-    this._saveState(state);
+    final.status = "completed";
+    final.finished_at = Date.now();
+    final.progress.done = processed;
+    final.progress.total = processed;
+    this._saveState(final);
 
     const result = {
       origin_url: spec.url,
@@ -1489,11 +1564,12 @@ export class AtlasJob extends DurableObject<Env> {
   }
 
   private _ensureSchema(): void {
-    const tableExists = [
-      ...this.sql.exec<{ name: string }>(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name='atlas_meta'",
-      ),
-    ].length > 0;
+    const tableExists =
+      [
+        ...this.sql.exec<{ name: string }>(
+          "SELECT name FROM sqlite_master WHERE type='table' AND name='atlas_meta'",
+        ),
+      ].length > 0;
 
     let currentVersion = 0;
     if (tableExists) {
@@ -1537,7 +1613,7 @@ export class AtlasJob extends DurableObject<Env> {
       );
     `);
 
-    // --- v2 crawl tables ---
+    // --- crawl tables ---
     this.sql.exec(`
       CREATE TABLE IF NOT EXISTS atlas_crawl_frontier (
         url TEXT PRIMARY KEY,
@@ -1624,7 +1700,10 @@ export class AtlasJob extends DurableObject<Env> {
     return raw ? JSON.parse(raw) : null;
   }
 
-  private _appendEvent(event: string, data: unknown): { seq: number; ts: number } {
+  private _appendEvent(
+    event: string,
+    data: unknown,
+  ): { seq: number; ts: number } {
     const ts = Date.now();
     const rows = [
       ...this.sql.exec<{ seq: number }>(
@@ -1692,7 +1771,9 @@ export class AtlasJob extends DurableObject<Env> {
     );
   }
 
-  private _popFrontier(n: number): Array<{ url: string; discovery_depth: number }> {
+  private _popFrontier(
+    n: number,
+  ): Array<{ url: string; discovery_depth: number }> {
     const rows = [
       ...this.sql.exec<FrontierRow>(
         "SELECT url, discovery_depth FROM atlas_crawl_frontier ORDER BY enqueued_at, discovery_depth LIMIT ?",
@@ -1702,7 +1783,10 @@ export class AtlasJob extends DurableObject<Env> {
     for (const r of rows) {
       this.sql.exec("DELETE FROM atlas_crawl_frontier WHERE url = ?", r.url);
     }
-    return rows.map((r) => ({ url: r.url, discovery_depth: r.discovery_depth }));
+    return rows.map((r) => ({
+      url: r.url,
+      discovery_depth: r.discovery_depth,
+    }));
   }
 
   private _countFrontier(): number {
