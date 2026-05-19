@@ -233,12 +233,15 @@ CRAWL_ID=$(
 
 curl -s "$ATLAS_URL/v1/crawl/$CRAWL_ID?offset=0&limit=10" \
   -H "Authorization: Bearer $ATLAS_API_KEY" \
-  | jq '.data | {status, summary, pagination, pages: [.pages[] | {url, status, title, r2_key}]}'
+  | jq '.data | {status, summary, pagination, pages: [.pages[] | {url, status, title, status_code, markdown_chars: (.markdown | length), content_truncated}]}'
 
 curl -s "$ATLAS_URL/v1/crawl/$CRAWL_ID?offset=10&limit=10" \
   -H "Authorization: Bearer $ATLAS_API_KEY" \
   | jq '.data.pagination'
 ```
+
+Crawl page markdown is returned inline in paginated status responses. Very large pages are truncated
+to 100 000 characters per page and marked with `content_truncated: true`.
 
 ## Architecture
 
@@ -246,7 +249,8 @@ curl -s "$ATLAS_URL/v1/crawl/$CRAWL_ID?offset=10&limit=10" \
   `idFromName(job_id)`.
 - **Durable Object `AtlasJob`** (SQLite-backed) — one per async job. Holds plan, sources, excerpts,
   SSE event log. Crash-resumable via persisted state + alarm-driven step loop.
-- **R2** — crawl page markdown artifacts.
+- **R2** — internal storage for crawl page markdown artifacts. Crawl status responses return
+  paginated markdown inline; storage keys are not part of the public API.
 - **Steel** — every browser interaction. The substrate this template is designed around.
 - **Anthropic Claude** — LLM work (Haiku for per-page summarization and extraction, Sonnet for the
   final research report writer).

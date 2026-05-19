@@ -256,7 +256,7 @@ function buildOpenAPIDocument() {
           tags: ["Async"],
           summary: "Submit site crawl",
           description:
-            "Crawl up to 10 000 pages. Markdown artifacts persist to R2; pages list paginated via `?offset=&limit=`.",
+            "Crawl up to 10 000 pages. Page markdown is returned inline from paginated status reads; Atlas stores large page artifacts internally.",
           operationId: "crawlSubmit",
           parameters: [idempotencyHeader],
           requestBody: jsonBody(S.CrawlRequest),
@@ -280,7 +280,7 @@ function buildOpenAPIDocument() {
               name: "limit",
               in: "query" as const,
               required: false,
-              schema: { type: "integer", minimum: 1, maximum: 200 },
+              schema: { type: "integer", minimum: 1, maximum: 50 },
             },
           ],
           responses: jobGetResponses(S.CrawlJobStatusData),

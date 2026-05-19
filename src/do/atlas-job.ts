@@ -33,6 +33,9 @@ const EXTRACT_BATCH_SIZE = 2;
 const VERIFY_BATCH_SIZE = 3;
 const MAX_WRITE_ATTEMPTS = 2;
 const REQUEST_ID_HEADER = "x-atlas-request-id";
+const CRAWL_STATUS_DEFAULT_LIMIT = 10;
+const CRAWL_STATUS_MAX_LIMIT = 50;
+const CRAWL_PAGE_MARKDOWN_CHAR_LIMIT = 100_000;
 // Terminal jobs are reaped 7 days after they finish: SQLite wiped via
 // deleteAll(), crawl artifacts deleted from R2. After that, GET on the
 // job_id returns 404 (E_JOB_NOT_FOUND).
@@ -330,7 +333,7 @@ export class AtlasJob extends DurableObject<Env> {
     );
   }
 
-  private _handleStatus(request: Request): Response {
+  private async _handleStatus(request: Request): Promise<Response> {
     const requestId = this._requestId(request);
     const state = this._loadState();
     if (!state || !this._matchesRequestedOp(state, request)) {
@@ -352,28 +355,20 @@ export class AtlasJob extends DurableObject<Env> {
     return Response.json(envelopeOk({ ...state, result }, requestId));
   }
 
-  private _handleCrawlStatus(state: JobState, request: Request): Response {
+  private async _handleCrawlStatus(state: JobState, request: Request): Promise<Response> {
     const requestId = this._requestId(request);
     const url = new URL(request.url);
     const offsetRaw = url.searchParams.get("offset") ?? "0";
-    const limitRaw = url.searchParams.get("limit") ?? "50";
+    const limitRaw = url.searchParams.get("limit") ?? String(CRAWL_STATUS_DEFAULT_LIMIT);
     const offset = Math.max(0, parseInt(offsetRaw, 10) || 0);
-    const limit = Math.min(200, Math.max(1, parseInt(limitRaw, 10) || 50));
+    const limit = Math.min(
+      CRAWL_STATUS_MAX_LIMIT,
+      Math.max(1, parseInt(limitRaw, 10) || CRAWL_STATUS_DEFAULT_LIMIT),
+    );
 
     const pageRows = this._loadCrawlPages(offset, limit);
     const totalPages = this._countAllCrawlPages();
-    const pages = pageRows.map((r) => ({
-      id: r.id,
-      url: r.url,
-      status: r.status,
-      title: r.title,
-      r2_key: r.r2_key,
-      status_code: r.status_code,
-      chars: r.chars,
-      error: r.error,
-      discovery_depth: r.discovery_depth,
-      finished_at: r.finished_at,
-    }));
+    const pages = await Promise.all(pageRows.map((r) => this._buildCrawlPageResponse(r)));
 
     const hasMore = offset + pages.length < totalPages;
     const result = state.status === "completed" ? this._loadResult() : null;
@@ -401,6 +396,52 @@ export class AtlasJob extends DurableObject<Env> {
         requestId,
       ),
     );
+  }
+
+  private async _buildCrawlPageResponse(r: CrawlPageRow): Promise<{
+    id: string;
+    url: string;
+    status: string;
+    title: string | null;
+    markdown: string | null;
+    content_truncated: boolean;
+    status_code: number | null;
+    chars: number | null;
+    error: string | null;
+    discovery_depth: number;
+    finished_at: number;
+  }> {
+    const { markdown, content_truncated } = await this._loadCrawlMarkdown(r.r2_key);
+    return {
+      id: r.id,
+      url: r.url,
+      status: r.status,
+      title: r.title,
+      markdown,
+      content_truncated,
+      status_code: r.status_code,
+      chars: r.chars,
+      error: r.error,
+      discovery_depth: r.discovery_depth,
+      finished_at: r.finished_at,
+    };
+  }
+
+  private async _loadCrawlMarkdown(r2Key: string | null): Promise<{
+    markdown: string | null;
+    content_truncated: boolean;
+  }> {
+    if (!r2Key) return { markdown: null, content_truncated: false };
+    const object = await this.env.ARTIFACTS.get(r2Key);
+    if (!object) return { markdown: null, content_truncated: false };
+    const markdown = await object.text();
+    if (markdown.length <= CRAWL_PAGE_MARKDOWN_CHAR_LIMIT) {
+      return { markdown, content_truncated: false };
+    }
+    return {
+      markdown: markdown.slice(0, CRAWL_PAGE_MARKDOWN_CHAR_LIMIT),
+      content_truncated: true,
+    };
   }
 
   private _handleStream(request: Request): Response {
