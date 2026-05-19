@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { logger } from "hono/logger";
 import { authMiddleware } from "./auth";
 import type { AppEnv } from "./env";
+import { getOpenAPIDocument, SCALAR_HTML } from "./openapi";
 import { crawlRoute } from "./routes/crawl";
 import { extractRoute } from "./routes/extract";
 import { fetchRoute } from "./routes/fetch";
@@ -36,6 +37,14 @@ app.get("/", (c) =>
       c.get("request_id"),
     ),
   ),
+);
+
+app.get("/openapi.json", (c) => c.json(getOpenAPIDocument()));
+
+app.get("/docs", (c) =>
+  c.html(SCALAR_HTML, 200, {
+    "Cache-Control": "public, max-age=60",
+  }),
 );
 
 const v1 = new Hono<AppEnv>();

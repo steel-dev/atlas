@@ -1,18 +1,9 @@
 import { Hono } from "hono";
-import { z } from "zod";
 import type { AppEnv } from "../env";
+import { FetchRequest } from "../schemas";
 import { envelopeFail, envelopeOk } from "../utils/envelope";
 import { ErrorCodes } from "../utils/errors";
 import { getSteel, looksBlocked } from "../steel";
-
-const FORMATS = ["markdown", "html", "cleaned_html", "readability"] as const;
-
-const FetchRequest = z.object({
-  url: z.string().url(),
-  format: z.enum(FORMATS).default("markdown"),
-  use_proxy: z.boolean().default(false),
-  delay: z.number().int().min(0).max(30_000).optional(),
-});
 
 export const fetchRoute = new Hono<AppEnv>();
 

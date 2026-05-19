@@ -1,8 +1,7 @@
 import { Hono } from "hono";
-import { z } from "zod";
 import type { AppEnv } from "../env";
 import { hasAnthropicKey } from "../llm";
-import { ENGINES } from "../search";
+import { ResearchRequest } from "../schemas";
 import { envelopeFail, envelopeOk } from "../utils/envelope";
 import { ErrorCodes } from "../utils/errors";
 import { newJobId } from "../utils/id";
@@ -11,15 +10,6 @@ import {
   parseIdempotencyHeader,
   sha256Hex,
 } from "../utils/idempotency";
-
-const ResearchRequest = z.object({
-  query: z.string().min(3).max(2048),
-  max_sub_questions: z.number().int().min(1).max(5).default(3),
-  max_results_per_question: z.number().int().min(1).max(10).default(3),
-  max_sources: z.number().int().min(1).max(20).default(10),
-  engine: z.enum(ENGINES).default("ddg"),
-  use_proxy: z.boolean().default(false),
-});
 
 export const researchRoute = new Hono<AppEnv>();
 

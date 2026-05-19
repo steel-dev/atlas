@@ -11,10 +11,15 @@ import {
 } from "../crawl";
 import { extractWithSchema, getAnthropic } from "../llm";
 import {
+  assessCoverage,
+  parseCitations,
   planBriefAndSubQuestions,
   summarizeWebpage,
+  verifyClaim,
   writeReport,
   type CitedSource,
+  type ParsedClaim,
+  type UnsupportedClaim,
 } from "../research";
 import { webSearch, type Engine, type SearchResult } from "../search";
 import { getSteel } from "../steel";
@@ -25,6 +30,8 @@ const SCHEMA_VERSION = 1;
 const STEP_DELAY_MS = 100;
 const CRAWL_BATCH_SIZE = 5;
 const EXTRACT_BATCH_SIZE = 2;
+const VERIFY_BATCH_SIZE = 3;
+const MAX_WRITE_ATTEMPTS = 2;
 const REQUEST_ID_HEADER = "x-atlas-request-id";
 // Terminal jobs are reaped 7 days after they finish: SQLite wiped via
 // deleteAll(), crawl artifacts deleted from R2. After that, GET on the
@@ -50,6 +57,8 @@ export interface ResearchSpec {
   max_sub_questions: number;
   max_results_per_question: number;
   max_sources: number;
+  max_hops: number;
+  verify_threshold: number;
   engine: Engine;
   use_proxy: boolean;
 }
@@ -93,10 +102,30 @@ interface CrawlPageRow {
   finished_at: number;
 }
 
+interface ClaimVerification {
+  claim: string;
+  source_n: number;
+  source_url: string | null;
+  source_title: string | null;
+  supported: boolean;
+  reason: string;
+}
+
+interface AssessmentRecord {
+  round: number;
+  sufficient: boolean;
+  gaps: string[];
+  additional_queries: string[];
+  reason?: string;
+}
+
 interface ResearchInternalState {
-  phase: "brief" | "search" | "fetch" | "write";
+  phase: "brief" | "search" | "fetch" | "assess" | "write" | "verify";
   brief?: string;
   sub_questions?: string[];
+  current_queries?: string[];
+  round?: number;
+  assessments?: AssessmentRecord[];
   fetch_queue?: Array<{
     url: string;
     title: string;
@@ -105,6 +134,20 @@ interface ResearchInternalState {
   }>;
   fetch_idx?: number;
   sources?: CitedSource[];
+  report_markdown?: string;
+  verify_queue?: ParsedClaim[];
+  verify_idx?: number;
+  verifications?: ClaimVerification[];
+  write_attempt?: number;
+  pass_rate_history?: number[];
+}
+
+function urlDomain(u: string): string | null {
+  try {
+    return new URL(u).hostname;
+  } catch {
+    return null;
+  }
 }
 
 export interface JobState {
@@ -635,6 +678,12 @@ export class AtlasJob extends DurableObject<Env> {
           });
           rs.brief = plan.brief;
           rs.sub_questions = plan.sub_questions;
+          rs.current_queries = plan.sub_questions;
+          rs.round = 1;
+          rs.assessments = [];
+          rs.sources = [];
+          rs.write_attempt = 1;
+          rs.pass_rate_history = [];
           rs.phase = "search";
           this._setMeta("research_state", JSON.stringify(rs));
           state.progress.done = 1;
@@ -653,12 +702,21 @@ export class AtlasJob extends DurableObject<Env> {
       }
 
       case "search": {
-        const subQs = rs.sub_questions ?? [];
-        if (subQs.length === 0) return this._failJob(state, "No sub-questions");
+        const currentQs = rs.current_queries ?? [];
+        const round = rs.round ?? 1;
+        if (currentQs.length === 0) {
+          // Nothing left to search — fall through to assess (which will
+          // either accept current sources or end the loop via budget).
+          rs.phase = "assess";
+          this._setMeta("research_state", JSON.stringify(rs));
+          break;
+        }
+
+        await this._emit("round_started", { round, queries: currentQs });
 
         const perQ = await Promise.all(
-          subQs.map(async (q, idx) => {
-            await this._emit("searching", { sub_question_idx: idx, query: q });
+          currentQs.map(async (q, idx) => {
+            await this._emit("searching", { round, idx, query: q });
             const outcome = await webSearch({
               env: this.env,
               query: q,
@@ -668,13 +726,15 @@ export class AtlasJob extends DurableObject<Env> {
             });
             if (!outcome.ok) {
               await this._emit("search_failed", {
-                sub_question_idx: idx,
+                round,
+                idx,
                 error: outcome.error.message,
               });
               return [] as Array<SearchResult & { sub_question_idx: number }>;
             }
             await this._emit("search_results", {
-              sub_question_idx: idx,
+              round,
+              idx,
               count: outcome.results.length,
             });
             return outcome.results.map((r) => ({ ...r, sub_question_idx: idx }));
@@ -682,15 +742,28 @@ export class AtlasJob extends DurableObject<Env> {
         );
 
         const flat = perQ.flat();
+        const alreadyFetched = new Set((rs.sources ?? []).map((s) => s.url));
         const byUrl = new Map<string, (typeof flat)[number]>();
         for (const r of flat) {
+          if (alreadyFetched.has(r.url)) continue;
           if (!byUrl.has(r.url)) byUrl.set(r.url, r);
         }
 
+        // Per-domain cap is global across rounds: seed counts with already-
+        // fetched sources so we don't keep returning to the same domain.
         const byDomain = new Map<string, number>();
+        for (const s of rs.sources ?? []) {
+          const d = urlDomain(s.url);
+          if (d) byDomain.set(d, (byDomain.get(d) ?? 0) + 1);
+        }
+
+        const remaining = Math.max(
+          0,
+          spec.max_sources - (rs.sources?.length ?? 0),
+        );
         const queue: NonNullable<ResearchInternalState["fetch_queue"]> = [];
         for (const r of byUrl.values()) {
-          if (queue.length >= spec.max_sources) break;
+          if (queue.length >= remaining) break;
           const dCount = byDomain.get(r.domain) ?? 0;
           if (dCount >= 2) continue;
           byDomain.set(r.domain, dCount + 1);
@@ -698,18 +771,19 @@ export class AtlasJob extends DurableObject<Env> {
             url: r.url,
             title: r.title,
             snippet: r.snippet,
-            sub_question: subQs[r.sub_question_idx] ?? "",
+            sub_question: currentQs[r.sub_question_idx] ?? "",
           });
         }
 
         rs.fetch_queue = queue;
         rs.fetch_idx = 0;
-        rs.sources = [];
-        rs.phase = queue.length > 0 ? "fetch" : "write";
+        if (rs.sources === undefined) rs.sources = [];
+        rs.phase = queue.length > 0 ? "fetch" : "assess";
         this._setMeta("research_state", JSON.stringify(rs));
 
-        state.progress.done = 2;
-        state.progress.total = 2 + queue.length + 1;
+        const fetched = rs.sources.length;
+        state.progress.done = 2 + fetched;
+        state.progress.total = 2 + fetched + queue.length + 1;
         this._saveState(state);
         break;
       }
@@ -719,7 +793,7 @@ export class AtlasJob extends DurableObject<Env> {
         const idx = rs.fetch_idx ?? 0;
 
         if (idx >= queue.length) {
-          rs.phase = "write";
+          rs.phase = "assess";
           this._setMeta("research_state", JSON.stringify(rs));
           break;
         }
@@ -787,51 +861,138 @@ export class AtlasJob extends DurableObject<Env> {
 
         rs.fetch_idx = idx + 1;
         this._setMeta("research_state", JSON.stringify(rs));
-        state.progress.done = 2 + (idx + 1);
+        state.progress.done = 2 + (rs.sources?.length ?? 0);
         this._saveState(state);
         break;
+      }
+
+      case "assess": {
+        if (this._isCancelled()) return;
+
+        const round = rs.round ?? 1;
+        const sources = rs.sources ?? [];
+
+        // Budget caps short-circuit the LLM call.
+        const hopsUsed = round - 1;
+        const reachedHopCap = hopsUsed >= spec.max_hops;
+        const reachedSourceCap = sources.length >= spec.max_sources;
+
+        if (spec.max_hops === 0 || reachedHopCap || reachedSourceCap) {
+          const reason = reachedSourceCap
+            ? "source cap reached"
+            : reachedHopCap
+              ? "hop cap reached"
+              : "single-round mode";
+          const record: AssessmentRecord = {
+            round,
+            sufficient: true,
+            gaps: [],
+            additional_queries: [],
+            reason,
+          };
+          rs.assessments = [...(rs.assessments ?? []), record];
+          rs.phase = "write";
+          this._setMeta("research_state", JSON.stringify(rs));
+          await this._emit("assessment", record);
+          break;
+        }
+
+        await this._emit("assessing", {
+          round,
+          sources_count: sources.length,
+        });
+
+        try {
+          const anthropic = getAnthropic(this.env);
+          const assessment = await assessCoverage({
+            anthropic,
+            brief: rs.brief ?? "",
+            sub_questions: rs.sub_questions ?? [],
+            sources,
+            rounds_remaining: spec.max_hops - hopsUsed,
+            max_additional_queries: 3,
+          });
+
+          const goingDeeper =
+            !assessment.sufficient && assessment.additional_queries.length > 0;
+
+          const record: AssessmentRecord = {
+            round,
+            sufficient: !goingDeeper,
+            gaps: assessment.gaps,
+            additional_queries: assessment.additional_queries,
+          };
+          rs.assessments = [...(rs.assessments ?? []), record];
+
+          if (goingDeeper) {
+            rs.current_queries = assessment.additional_queries;
+            rs.round = round + 1;
+            rs.phase = "search";
+          } else {
+            rs.current_queries = [];
+            rs.phase = "write";
+          }
+          this._setMeta("research_state", JSON.stringify(rs));
+          await this._emit("assessment", record);
+          break;
+        } catch (err) {
+          // On assess failure, write what we have rather than fail the job.
+          const message = err instanceof Error ? err.message : String(err);
+          await this._emit("assessment_failed", { round, error: message });
+          rs.phase = "write";
+          this._setMeta("research_state", JSON.stringify(rs));
+          break;
+        }
       }
 
       case "write": {
         try {
           if (this._isCancelled()) return;
 
+          const attempt = rs.write_attempt ?? 1;
+          const unsupported: UnsupportedClaim[] | undefined =
+            attempt > 1
+              ? (rs.verifications ?? [])
+                  .filter((v) => !v.supported)
+                  .map((v) => ({
+                    claim: v.claim,
+                    source_n: v.source_n,
+                    reason: v.reason,
+                  }))
+              : undefined;
+
           await this._emit("writing", {
+            attempt,
             sources_count: rs.sources?.length ?? 0,
+            unsupported_count: unsupported?.length ?? 0,
           });
           const anthropic = getAnthropic(this.env);
-          const baseFields = {
-            query: spec.query,
-            brief: rs.brief ?? "",
-            sub_questions: rs.sub_questions ?? [],
-            sources: rs.sources ?? [],
-          };
 
           const report = await writeReport({
             anthropic,
             brief: rs.brief ?? spec.query,
             sources: rs.sources ?? [],
+            unsupported_claims: unsupported,
           });
-          const result = {
-            ...baseFields,
-            markdown: report.markdown,
-          };
-          const completedEvent = {
-            sources_count: baseFields.sources.length,
-            markdown_chars: report.markdown.length,
-          };
 
           if (this._isCancelled()) return;
 
-          this._setMeta("result", JSON.stringify(result));
-          state.status = "completed";
+          rs.report_markdown = report.markdown;
+          // Reset verify-phase state so the next pass operates on the new draft.
+          rs.verify_queue = undefined;
+          rs.verify_idx = undefined;
+          rs.verifications = [];
+          rs.phase = "verify";
+          this._setMeta("research_state", JSON.stringify(rs));
+
           state.progress.done = state.progress.total;
-          state.finished_at = Date.now();
           this._saveState(state);
-          await this._emit("completed", completedEvent);
-          this._closeAllSubscribers();
-          await this._scheduleCleanup();
-          return;
+
+          await this._emit("written", {
+            attempt,
+            markdown_chars: report.markdown.length,
+          });
+          break;
         } catch (err) {
           return this._failJob(
             state,
@@ -839,9 +1000,193 @@ export class AtlasJob extends DurableObject<Env> {
           );
         }
       }
+
+      case "verify": {
+        if (this._isCancelled()) return;
+
+        const md = rs.report_markdown;
+        if (md === undefined) {
+          return this._failJob(state, "verify: report markdown missing");
+        }
+
+        // First entry: parse claims and expand progress total.
+        if (rs.verify_queue === undefined) {
+          const claims = parseCitations(md);
+          rs.verify_queue = claims;
+          rs.verify_idx = 0;
+          rs.verifications = [];
+          this._setMeta("research_state", JSON.stringify(rs));
+
+          state.progress.total = state.progress.total + claims.length;
+          this._saveState(state);
+
+          await this._emit("verifying", { total: claims.length });
+
+          if (claims.length === 0) {
+            return this._finalizeResearch(state, rs, spec);
+          }
+        }
+
+        const queue = rs.verify_queue;
+        const idx = rs.verify_idx ?? 0;
+        if (idx >= queue.length) {
+          return this._finalizeResearch(state, rs, spec);
+        }
+
+        const batchEnd = Math.min(idx + VERIFY_BATCH_SIZE, queue.length);
+        const batch = queue.slice(idx, batchEnd);
+        const anthropic = getAnthropic(this.env);
+        const sourcesByN = new Map(
+          (rs.sources ?? []).map((s) => [s.n, s] as const),
+        );
+
+        const verdicts = await Promise.all(
+          batch.map(async (claim): Promise<ClaimVerification> => {
+            const src = sourcesByN.get(claim.source_n);
+            if (!src) {
+              return {
+                claim: claim.text,
+                source_n: claim.source_n,
+                source_url: null,
+                source_title: null,
+                supported: false,
+                reason: `Source [${claim.source_n}] not found in source list`,
+              };
+            }
+            try {
+              const verdict = await verifyClaim({
+                anthropic,
+                claim: claim.text,
+                source: src,
+              });
+              return {
+                claim: claim.text,
+                source_n: claim.source_n,
+                source_url: src.url,
+                source_title: src.title,
+                supported: verdict.supported,
+                reason: verdict.reason,
+              };
+            } catch (err) {
+              const message = err instanceof Error ? err.message : String(err);
+              return {
+                claim: claim.text,
+                source_n: claim.source_n,
+                source_url: src.url,
+                source_title: src.title,
+                supported: false,
+                reason: `verify error: ${message}`,
+              };
+            }
+          }),
+        );
+
+        if (this._isCancelled()) return;
+
+        rs.verifications = [...(rs.verifications ?? []), ...verdicts];
+        rs.verify_idx = batchEnd;
+        this._setMeta("research_state", JSON.stringify(rs));
+
+        for (const v of verdicts) {
+          await this._emit("verified_claim", {
+            source_n: v.source_n,
+            supported: v.supported,
+            reason: v.reason,
+            progress: { done: rs.verifications.length, total: queue.length },
+          });
+        }
+
+        state.progress.done = state.progress.total - (queue.length - batchEnd);
+        this._saveState(state);
+
+        if (batchEnd >= queue.length) {
+          return this._finalizeResearch(state, rs, spec);
+        }
+        break;
+      }
     }
 
     await this.ctx.storage.setAlarm(Date.now() + STEP_DELAY_MS);
+  }
+
+  private async _finalizeResearch(
+    state: JobState,
+    rs: ResearchInternalState,
+    spec: ResearchSpec,
+  ): Promise<void> {
+    const verifications = rs.verifications ?? [];
+    const total = verifications.length;
+    const supported = verifications.filter((v) => v.supported).length;
+    const pass_rate = total > 0 ? supported / total : 1;
+    const verification_summary = {
+      total,
+      supported,
+      unsupported: total - supported,
+      pass_rate,
+    };
+
+    const attempt = rs.write_attempt ?? 1;
+    const history = [...(rs.pass_rate_history ?? []), pass_rate];
+    rs.pass_rate_history = history;
+
+    // Retry one rewrite if pass rate is below threshold and we still have an
+    // attempt left. The rewrite reuses sources but feeds the unsupported
+    // claims back to the writer.
+    const shouldRetry =
+      pass_rate < spec.verify_threshold &&
+      attempt < MAX_WRITE_ATTEMPTS &&
+      total > 0;
+
+    if (shouldRetry) {
+      rs.write_attempt = attempt + 1;
+      rs.phase = "write";
+      this._setMeta("research_state", JSON.stringify(rs));
+
+      // Expand total to account for the upcoming rewrite + re-verify.
+      // claims.length is unknown until reparsed, so we bump conservatively;
+      // verify init will refine again.
+      state.progress.total = state.progress.total + 1;
+      this._saveState(state);
+
+      await this._emit("verify_failed", {
+        attempt,
+        pass_rate,
+        threshold: spec.verify_threshold,
+        unsupported: total - supported,
+        retrying: true,
+      });
+      await this.ctx.storage.setAlarm(Date.now() + STEP_DELAY_MS);
+      return;
+    }
+
+    const result = {
+      query: spec.query,
+      brief: rs.brief ?? "",
+      sub_questions: rs.sub_questions ?? [],
+      sources: rs.sources ?? [],
+      markdown: rs.report_markdown ?? "",
+      assessments: rs.assessments ?? [],
+      rounds: rs.round ?? 1,
+      attempts: attempt,
+      pass_rate_history: history,
+      verifications,
+      verification_summary,
+    };
+
+    this._setMeta("result", JSON.stringify(result));
+    state.status = "completed";
+    state.progress.done = state.progress.total;
+    state.finished_at = Date.now();
+    this._saveState(state);
+    await this._emit("completed", {
+      sources_count: (rs.sources ?? []).length,
+      markdown_chars: (rs.report_markdown ?? "").length,
+      verification_summary,
+      attempts: attempt,
+      pass_rate_history: history,
+    });
+    this._closeAllSubscribers();
+    await this._scheduleCleanup();
   }
 
   private _crawlProcessedCount(): number {

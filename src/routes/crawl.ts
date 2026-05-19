@@ -1,6 +1,6 @@
 import { Hono } from "hono";
-import { z } from "zod";
 import type { AppEnv } from "../env";
+import { CrawlRequest } from "../schemas";
 import { envelopeFail, envelopeOk } from "../utils/envelope";
 import { ErrorCodes } from "../utils/errors";
 import { newJobId } from "../utils/id";
@@ -9,25 +9,6 @@ import {
   parseIdempotencyHeader,
   sha256Hex,
 } from "../utils/idempotency";
-
-const CrawlRequest = z.object({
-  url: z.string().url(),
-  limit: z.number().int().min(1).max(10_000).default(100),
-  maxDepth: z.number().int().min(0).optional(),
-  maxDiscoveryDepth: z.number().int().min(0).optional(),
-  includePaths: z.array(z.string()).default([]),
-  excludePaths: z.array(z.string()).default([]),
-  crawlEntireDomain: z.boolean().default(false),
-  allowSubdomains: z.boolean().default(false),
-  allowExternalLinks: z.boolean().default(false),
-  ignoreRobotsTxt: z.boolean().default(false),
-  sitemap: z.enum(["skip", "include", "only"]).default("include"),
-  deduplicateSimilarURLs: z.boolean().default(true),
-  ignoreQueryParameters: z.boolean().default(false),
-  regexOnFullURL: z.boolean().default(false),
-  delay: z.number().nonnegative().optional(),
-  use_proxy: z.boolean().default(false),
-});
 
 export const crawlRoute = new Hono<AppEnv>();
 

@@ -1,18 +1,9 @@
 import { Hono } from "hono";
-import { z } from "zod";
 import type { AppEnv } from "../env";
-import { ENGINES, webSearch } from "../search";
+import { SearchRequest } from "../schemas";
+import { webSearch } from "../search";
 import { envelopeFail, envelopeOk } from "../utils/envelope";
 import { ErrorCodes } from "../utils/errors";
-
-const SearchRequest = z.object({
-  query: z.string().min(1).max(2048),
-  limit: z.number().int().min(1).max(50).default(10),
-  engine: z.enum(ENGINES).default("ddg"),
-  country: z.string().length(2).optional(),
-  lang: z.string().min(2).max(5).optional(),
-  use_proxy: z.boolean().default(false),
-});
 
 export const searchRoute = new Hono<AppEnv>();
 

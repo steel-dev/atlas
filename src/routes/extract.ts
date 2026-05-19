@@ -1,7 +1,7 @@
 import { Hono } from "hono";
-import { z } from "zod";
 import type { AppEnv } from "../env";
 import { hasAnthropicKey } from "../llm";
+import { ExtractRequest } from "../schemas";
 import { envelopeFail, envelopeOk } from "../utils/envelope";
 import { ErrorCodes } from "../utils/errors";
 import { newJobId } from "../utils/id";
@@ -10,13 +10,6 @@ import {
   parseIdempotencyHeader,
   sha256Hex,
 } from "../utils/idempotency";
-
-const ExtractRequest = z.object({
-  urls: z.array(z.string().url()).min(1).max(50),
-  schema: z.record(z.string(), z.unknown()),
-  prompt: z.string().max(2048).optional(),
-  use_proxy: z.boolean().default(false),
-});
 
 export const extractRoute = new Hono<AppEnv>();
 
