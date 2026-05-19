@@ -66,18 +66,18 @@ export interface ResearchSpec {
 export interface CrawlSpec {
   url: string;
   limit: number;
-  maxDepth?: number;
-  maxDiscoveryDepth?: number;
-  includePaths: string[];
-  excludePaths: string[];
-  crawlEntireDomain: boolean;
-  allowSubdomains: boolean;
-  allowExternalLinks: boolean;
-  ignoreRobotsTxt: boolean;
+  max_depth?: number;
+  max_discovery_depth?: number;
+  include_paths: string[];
+  exclude_paths: string[];
+  crawl_entire_domain: boolean;
+  allow_subdomains: boolean;
+  allow_external_links: boolean;
+  ignore_robots_txt: boolean;
   sitemap: "skip" | "include" | "only";
-  deduplicateSimilarURLs: boolean;
-  ignoreQueryParameters: boolean;
-  regexOnFullURL: boolean;
+  deduplicate_similar_urls: boolean;
+  ignore_query_parameters: boolean;
+  regex_on_full_url: boolean;
   delay?: number;
   use_proxy: boolean;
 }
@@ -569,14 +569,14 @@ export class AtlasJob extends DurableObject<Env> {
   ): Parameters<typeof filterCandidates>[1] {
     return {
       initialUrl: spec.url,
-      maxDepth: spec.maxDepth,
-      includePaths: spec.includePaths,
-      excludePaths: spec.excludePaths,
-      crawlEntireDomain: spec.crawlEntireDomain,
-      allowSubdomains: spec.allowSubdomains,
-      allowExternalLinks: spec.allowExternalLinks,
-      regexOnFullURL: spec.regexOnFullURL,
-      ignoreQueryParameters: spec.ignoreQueryParameters,
+      maxDepth: spec.max_depth,
+      includePaths: spec.include_paths,
+      excludePaths: spec.exclude_paths,
+      crawlEntireDomain: spec.crawl_entire_domain,
+      allowSubdomains: spec.allow_subdomains,
+      allowExternalLinks: spec.allow_external_links,
+      regexOnFullURL: spec.regex_on_full_url,
+      ignoreQueryParameters: spec.ignore_query_parameters,
       robotsRules,
     };
   }
@@ -1231,7 +1231,7 @@ export class AtlasJob extends DurableObject<Env> {
       if (this._isCancelled()) return;
 
       let robotsRules: RobotsRules | null = null;
-      if (!spec.ignoreRobotsTxt) {
+      if (!spec.ignore_robots_txt) {
         robotsRules = await fetchRobotsTxt(spec.url);
         if (robotsRules) this._setMeta("robots_rules", JSON.stringify(robotsRules));
       }
@@ -1241,10 +1241,10 @@ export class AtlasJob extends DurableObject<Env> {
       // sitemap: "only" — seed frontier from sitemap URLs, not the start URL.
       if (spec.sitemap !== "only") {
         const seedNorm = normalizeUrl(spec.url, {
-          ignoreQueryParameters: spec.ignoreQueryParameters,
+          ignoreQueryParameters: spec.ignore_query_parameters,
         });
         if (seedNorm) {
-          const seedKey = spec.deduplicateSimilarURLs
+          const seedKey = spec.deduplicate_similar_urls
             ? canonicalKey(seedNorm)
             : seedNorm;
           this._markVisited(seedKey);
@@ -1267,7 +1267,7 @@ export class AtlasJob extends DurableObject<Env> {
         let enqueued = 0;
         for (const f of filtered) {
           if (enqueued >= spec.limit) break;
-          const key = spec.deduplicateSimilarURLs ? canonicalKey(f) : f;
+          const key = spec.deduplicate_similar_urls ? canonicalKey(f) : f;
           if (this._isVisited(key)) continue;
           this._markVisited(key);
           this._enqueueFrontier(f, 0);
@@ -1350,8 +1350,8 @@ export class AtlasJob extends DurableObject<Env> {
           });
 
           const withinDiscoveryDepth =
-            spec.maxDiscoveryDepth === undefined ||
-            item.discovery_depth < spec.maxDiscoveryDepth;
+            spec.max_discovery_depth === undefined ||
+            item.discovery_depth < spec.max_discovery_depth;
 
           if (!sitemapOnly && withinDiscoveryDepth && !this._isCancelled()) {
             const candidates: string[] = [];
@@ -1363,7 +1363,7 @@ export class AtlasJob extends DurableObject<Env> {
             let added = 0;
             for (const f of filtered) {
               if (this._countVisited() + added >= spec.limit) break;
-              const key = spec.deduplicateSimilarURLs ? canonicalKey(f) : f;
+              const key = spec.deduplicate_similar_urls ? canonicalKey(f) : f;
               if (this._isVisited(key)) continue;
               this._markVisited(key);
               this._enqueueFrontier(f, item.discovery_depth + 1);

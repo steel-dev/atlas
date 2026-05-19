@@ -226,8 +226,8 @@ CRAWL_ID=$(
     -d '{
       "url": "https://developers.cloudflare.com/durable-objects/",
       "limit": 25,
-      "crawlEntireDomain": true,
-      "maxDiscoveryDepth": 1
+      "crawl_entire_domain": true,
+      "max_discovery_depth": 1
     }' | jq -r '.data.id'
 )
 
