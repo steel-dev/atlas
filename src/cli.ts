@@ -13,7 +13,10 @@ Options:
       --max-sub-questions N   Sub-questions to plan (default 4)
       --max-results-per-q N   SERP results per sub-question (default 5)
       --max-sources N         Cap on cited sources (default 12)
-      --max-hops N            Extra search rounds after the first (default 2)
+      --max-hops N            Max extra search rounds; loop early-exits when sufficient (default 3)
+      --fetch-concurrency N   Parallel page fetches (default 5)
+      --queries-per-subq N    Search queries Haiku expands each sub-question into (default 3)
+      --no-critique           Disable the post-draft peer-review pass
       --verify-threshold F    Min fraction of claims that must verify (default 0.7)
       --engine <e>            ddg | bing | google (default ddg)
       --use-proxy             Route Steel through residential proxy
@@ -79,6 +82,11 @@ function paint(color: string, text: string): string {
 }
 
 function prettyEvent(e: ResearchEvent): string {
+  const tag = (subQ: string) => {
+    if (!subQ) return "";
+    const t = subQ.length > 24 ? subQ.slice(0, 22) + "…" : subQ;
+    return paint(DIM, ` [${t}]`);
+  };
   switch (e.type) {
     case "brief":
       return [
@@ -90,34 +98,58 @@ function prettyEvent(e: ResearchEvent): string {
         ),
         ...e.sub_questions.map((q) => paint(DIM, `    • ${q}`)),
       ].join("\n");
+    case "expanded_queries": {
+      const total = e.expansions.reduce((acc, x) => acc + x.queries.length, 0);
+      return (
+        paint(GREEN, "✓") +
+        ` expanded ${e.expansions.length} sub-question${e.expansions.length === 1 ? "" : "s"} → ${total} queries`
+      );
+    }
+    case "agent_started":
+      return [
+        paint(BLUE, "→") + ` agent: ${e.sub_question}`,
+        ...e.expanded_queries.map((q) => paint(DIM, `    · ${q}`)),
+      ].join("\n");
+    case "agent_finished":
+      return (
+        paint(GREEN, "✓") +
+        ` agent done: ${e.sub_question} — ${e.sources_added} source${e.sources_added === 1 ? "" : "s"}, ${e.rounds} round${e.rounds === 1 ? "" : "s"}`
+      );
     case "round_started":
-      return paint(BLUE, "→") + ` round ${e.round} — ${e.queries.length} ${e.queries.length === 1 ? "query" : "queries"}`;
+      return (
+        paint(BLUE, "→") +
+        tag(e.sub_question) +
+        ` round ${e.round} — ${e.queries.length} ${e.queries.length === 1 ? "query" : "queries"}`
+      );
     case "searching":
-      return paint(DIM, `  search: ${e.query}`);
+      return paint(DIM, `  search:`) + tag(e.sub_question) + ` ${e.query}`;
     case "search_results":
       return paint(DIM, `    ↳ ${e.count} result${e.count === 1 ? "" : "s"}`);
     case "search_failed":
-      return paint(YELLOW, `  ! search failed: ${e.error}`);
+      return paint(YELLOW, `  ! search failed:`) + tag(e.sub_question) + ` ${e.error}`;
     case "fetching":
       return paint(DIM, `  fetch ${e.position}/${e.total}: ${e.url}`);
     case "summarized":
-      return paint(GREEN, `  ✓`) + ` [${e.n}] ${e.url}`;
+      return paint(GREEN, `  ✓`) + ` [${e.n}] ${e.url}` + tag(e.sub_question);
     case "source_skipped":
       return paint(DIM, `  · skipped ${e.url} (${e.reason})`);
     case "source_error":
       return paint(YELLOW, `  ! ${e.url} — ${e.error}`);
     case "assessing":
-      return paint(DIM, `  assessing coverage (${e.sources_count} sources)`);
+      return paint(DIM, `  assessing coverage`) + tag(e.sub_question) + paint(DIM, ` (${e.sources_count} sources)`);
     case "assessment": {
       const r = e.record;
       if (r.sufficient) {
         return (
           paint(GREEN, "✓") +
+          tag(e.sub_question) +
           ` assessment: sufficient${r.reason ? ` (${r.reason})` : ""}`
         );
       }
       return [
-        paint(BLUE, "→") + ` assessment: going deeper (${r.additional_queries.length} more queries)`,
+        paint(BLUE, "→") +
+          tag(e.sub_question) +
+          ` assessment: going deeper (${r.additional_queries.length} more queries)`,
         ...r.gaps.map((g) => paint(DIM, `    • gap: ${g}`)),
       ].join("\n");
     }
@@ -125,6 +157,18 @@ function prettyEvent(e: ResearchEvent): string {
       return paint(BLUE, "→") + ` writing report (attempt ${e.attempt}, ${e.sources_count} sources${e.unsupported_count > 0 ? `, ${e.unsupported_count} unsupported claims to fix` : ""})`;
     case "written":
       return paint(GREEN, "✓") + ` written (${e.markdown_chars.toLocaleString()} chars)`;
+    case "critiquing":
+      return paint(BLUE, "→") + ` critiquing draft (attempt ${e.attempt})`;
+    case "critique_done": {
+      if (!e.needs_revision) {
+        return paint(GREEN, "✓") + " critique: clean";
+      }
+      return [
+        paint(YELLOW, "  !") +
+          ` critique flagged ${e.issues.length} issue${e.issues.length === 1 ? "" : "s"}`,
+        ...e.issues.map((issue) => paint(DIM, `    • ${issue}`)),
+      ].join("\n");
+    }
     case "verifying":
       return paint(BLUE, "→") + ` verifying ${e.total} claim${e.total === 1 ? "" : "s"}`;
     case "verified_claim": {
@@ -157,6 +201,9 @@ async function main(): Promise<void> {
           "max-results-per-q": { type: "string" },
           "max-sources": { type: "string" },
           "max-hops": { type: "string" },
+          "fetch-concurrency": { type: "string" },
+          "queries-per-subq": { type: "string" },
+          "no-critique": { type: "boolean" },
           "verify-threshold": { type: "string" },
           engine: { type: "string" },
           "use-proxy": { type: "boolean" },
@@ -243,6 +290,9 @@ async function main(): Promise<void> {
       maxResultsPerQuestion: parseNumber(values["max-results-per-q"], "--max-results-per-q"),
       maxSources: parseNumber(values["max-sources"], "--max-sources"),
       maxHops: parseNumber(values["max-hops"], "--max-hops"),
+      fetchConcurrency: parseNumber(values["fetch-concurrency"], "--fetch-concurrency"),
+      queriesPerSubq: parseNumber(values["queries-per-subq"], "--queries-per-subq"),
+      critique: values["no-critique"] === true ? false : undefined,
       verifyThreshold: parseNumber(values["verify-threshold"], "--verify-threshold"),
       engine: engine as Engine | undefined,
       useProxy: values["use-proxy"] === true,

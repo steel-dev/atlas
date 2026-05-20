@@ -1,13 +1,17 @@
 import Anthropic from "@anthropic-ai/sdk";
 import {
   assessCoverage,
+  critiqueDraft,
+  expandQueries,
   parseCitations,
   planBriefAndSubQuestions,
   summarizeWebpage,
   verifyClaim,
   writeReport,
   type CitedSource,
+  type CritiqueResult,
   type ParsedClaim,
+  type QueryExpansion,
   type UnsupportedClaim,
 } from "./pipeline.js";
 import { webSearch, type Engine, type SearchResult } from "./search.js";
@@ -17,8 +21,16 @@ const MAX_WRITE_ATTEMPTS = 2;
 const VERIFY_BATCH = 3;
 const PER_DOMAIN_CAP = 2;
 const MAX_ADDITIONAL_QUERIES = 3;
+const DEFAULT_FETCH_CONCURRENCY = 5;
+const STORED_MARKDOWN_CAP = 50_000;
 
-export type { CitedSource, ParsedClaim, UnsupportedClaim } from "./pipeline.js";
+export type {
+  CitedSource,
+  CritiqueResult,
+  ParsedClaim,
+  QueryExpansion,
+  UnsupportedClaim,
+} from "./pipeline.js";
 export type { Engine, SearchResult } from "./search.js";
 
 export interface ClaimVerification {
@@ -45,14 +57,22 @@ export interface VerificationSummary {
   pass_rate: number;
 }
 
+export interface AgentRun {
+  sub_question: string;
+  expanded_queries: string[];
+  source_ns: number[];
+  rounds: number;
+  assessments: AssessmentRecord[];
+}
+
 export interface ResearchResult {
   query: string;
   brief: string;
   sub_questions: string[];
+  agent_runs: AgentRun[];
   sources: CitedSource[];
   markdown: string;
-  assessments: AssessmentRecord[];
-  rounds: number;
+  critiques: CritiqueResult[];
   attempts: number;
   pass_rate_history: number[];
   verifications: ClaimVerification[];
@@ -61,23 +81,84 @@ export interface ResearchResult {
 
 export type ResearchEvent =
   | { type: "brief"; brief: string; sub_questions: string[] }
-  | { type: "round_started"; round: number; queries: string[] }
-  | { type: "searching"; round: number; index: number; query: string }
-  | { type: "search_results"; round: number; index: number; count: number }
-  | { type: "search_failed"; round: number; index: number; error: string }
-  | { type: "fetching"; url: string; position: number; total: number }
+  | { type: "expanded_queries"; expansions: QueryExpansion[] }
+  | {
+      type: "agent_started";
+      sub_question: string;
+      expanded_queries: string[];
+    }
+  | {
+      type: "round_started";
+      sub_question: string;
+      round: number;
+      queries: string[];
+    }
+  | {
+      type: "searching";
+      sub_question: string;
+      round: number;
+      index: number;
+      query: string;
+    }
+  | {
+      type: "search_results";
+      sub_question: string;
+      round: number;
+      index: number;
+      count: number;
+    }
+  | {
+      type: "search_failed";
+      sub_question: string;
+      round: number;
+      index: number;
+      error: string;
+    }
+  | {
+      type: "fetching";
+      sub_question: string;
+      url: string;
+      position: number;
+      total: number;
+    }
   | {
       type: "summarized";
+      sub_question: string;
       url: string;
       n: number;
       summary: string;
       position: number;
       total: number;
     }
-  | { type: "source_skipped"; url: string; reason: string }
-  | { type: "source_error"; url: string; error: string }
-  | { type: "assessing"; round: number; sources_count: number }
-  | { type: "assessment"; record: AssessmentRecord }
+  | {
+      type: "source_skipped";
+      sub_question: string;
+      url: string;
+      reason: string;
+    }
+  | {
+      type: "source_error";
+      sub_question: string;
+      url: string;
+      error: string;
+    }
+  | {
+      type: "assessing";
+      sub_question: string;
+      round: number;
+      sources_count: number;
+    }
+  | {
+      type: "assessment";
+      sub_question: string;
+      record: AssessmentRecord;
+    }
+  | {
+      type: "agent_finished";
+      sub_question: string;
+      sources_added: number;
+      rounds: number;
+    }
   | {
       type: "writing";
       attempt: number;
@@ -85,6 +166,13 @@ export type ResearchEvent =
       unsupported_count: number;
     }
   | { type: "written"; attempt: number; markdown_chars: number }
+  | { type: "critiquing"; attempt: number }
+  | {
+      type: "critique_done";
+      attempt: number;
+      needs_revision: boolean;
+      issues: string[];
+    }
   | { type: "verifying"; total: number }
   | {
       type: "verified_claim";
@@ -112,6 +200,9 @@ export interface ResearchOptions {
   maxResultsPerQuestion?: number;
   maxSources?: number;
   maxHops?: number;
+  fetchConcurrency?: number;
+  queriesPerSubq?: number;
+  critique?: boolean;
   verifyThreshold?: number;
   engine?: Engine;
   useProxy?: boolean;
@@ -121,12 +212,22 @@ export interface ResearchOptions {
   signal?: AbortSignal;
 }
 
-function urlDomain(u: string): string | null {
-  try {
-    return new URL(u).hostname;
-  } catch {
-    return null;
-  }
+async function pMap<T>(
+  items: T[],
+  concurrency: number,
+  fn: (item: T, idx: number) => Promise<void>,
+): Promise<void> {
+  if (items.length === 0) return;
+  const n = Math.max(1, Math.min(concurrency, items.length));
+  let cursor = 0;
+  const workers = Array.from({ length: n }, async () => {
+    while (true) {
+      const i = cursor++;
+      if (i >= items.length) return;
+      await fn(items[i], i);
+    }
+  });
+  await Promise.all(workers);
 }
 
 export async function research(opts: ResearchOptions): Promise<ResearchResult> {
@@ -138,7 +239,10 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
     maxSubQuestions = 4,
     maxResultsPerQuestion = 5,
     maxSources = 12,
-    maxHops = 2,
+    maxHops = 3,
+    fetchConcurrency = DEFAULT_FETCH_CONCURRENCY,
+    queriesPerSubq = 3,
+    critique = true,
     verifyThreshold = 0.7,
     engine = "ddg",
     useProxy = false,
@@ -180,23 +284,62 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
   });
   emit({ type: "brief", brief: plan.brief, sub_questions: plan.sub_questions });
 
-  // ---- phases 2/3/4: search → fetch → assess (looped per hop) ----
-  let round = 1;
-  let currentQueries =
+  // ---- phase 1b: query expansion ----
+  abort();
+  const baseSubQuestions =
     plan.sub_questions.length > 0 ? plan.sub_questions : [query];
+  const expansions = await expandQueries({
+    anthropic,
+    brief: plan.brief || query,
+    sub_questions: baseSubQuestions,
+    queries_per_subq: queriesPerSubq,
+    model: fastModel,
+  });
+  emit({ type: "expanded_queries", expansions });
+
+  // ---- phases 2/3/4: per-sub-question agents (search → fetch → mini-assess) ----
   const sources: CitedSource[] = [];
   const sourceUrls = new Set<string>();
-  const assessments: AssessmentRecord[] = [];
+  const sourceMarkdowns = new Map<number, string>();
+  const globalDomainCounts = new Map<string, number>();
+  const critiques: CritiqueResult[] = [];
 
-  while (true) {
-    abort();
+  // Per-agent budget: each agent gets a fair slice of the global source cap
+  // (+1 slack) so they can compete without starving each other.
+  const numAgents = Math.max(1, expansions.length);
+  const agentSourceCap = Math.max(2, Math.ceil(maxSources / numAgents) + 1);
+  const agentFetchConcurrency = Math.max(
+    1,
+    Math.ceil(fetchConcurrency / numAgents),
+  );
 
-    if (currentQueries.length > 0) {
-      emit({ type: "round_started", round, queries: currentQueries });
+  async function runSubAgent(exp: QueryExpansion): Promise<AgentRun> {
+    const subQ = exp.sub_question;
+    let queries = exp.queries.length > 0 ? exp.queries : [subQ];
+    const myAddedNs: number[] = [];
+    const myAssessments: AssessmentRecord[] = [];
+    let round = 1;
+
+    emit({
+      type: "agent_started",
+      sub_question: subQ,
+      expanded_queries: queries,
+    });
+
+    while (true) {
+      abort();
+
+      emit({ type: "round_started", sub_question: subQ, round, queries });
 
       const perQ = await Promise.all(
-        currentQueries.map(async (q, idx) => {
-          emit({ type: "searching", round, index: idx, query: q });
+        queries.map(async (q, idx) => {
+          emit({
+            type: "searching",
+            sub_question: subQ,
+            round,
+            index: idx,
+            query: q,
+          });
           const outcome = await webSearch({
             steel,
             query: q,
@@ -207,24 +350,28 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
           if (!outcome.ok) {
             emit({
               type: "search_failed",
+              sub_question: subQ,
               round,
               index: idx,
               error: outcome.error.message,
             });
-            return [] as Array<SearchResult & { sub_question_idx: number }>;
+            return [] as SearchResult[];
           }
           emit({
             type: "search_results",
+            sub_question: subQ,
             round,
             index: idx,
             count: outcome.results.length,
           });
-          return outcome.results.map((r) => ({ ...r, sub_question_idx: idx }));
+          return outcome.results;
         }),
       );
 
       abort();
 
+      // Dedupe against the global URL set so agents don't refetch what others
+      // (or earlier rounds) already grabbed.
       const flat = perQ.flat();
       const byUrl = new Map<string, (typeof flat)[number]>();
       for (const r of flat) {
@@ -232,33 +379,25 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
         if (!byUrl.has(r.url)) byUrl.set(r.url, r);
       }
 
-      const byDomain = new Map<string, number>();
-      for (const s of sources) {
-        const d = urlDomain(s.url);
-        if (d) byDomain.set(d, (byDomain.get(d) ?? 0) + 1);
-      }
+      const globalRemaining = Math.max(0, maxSources - sources.length);
+      const agentRemaining = Math.max(0, agentSourceCap - myAddedNs.length);
+      const cap = Math.min(globalRemaining, agentRemaining);
 
-      const remaining = Math.max(0, maxSources - sources.length);
-      const queue: Array<{ url: string; title: string; sub_question: string }> =
-        [];
+      const queue: Array<{ url: string; title: string }> = [];
       for (const r of byUrl.values()) {
-        if (queue.length >= remaining) break;
-        const dCount = byDomain.get(r.domain) ?? 0;
+        if (queue.length >= cap) break;
+        const dCount = globalDomainCounts.get(r.domain) ?? 0;
         if (dCount >= PER_DOMAIN_CAP) continue;
-        byDomain.set(r.domain, dCount + 1);
-        queue.push({
-          url: r.url,
-          title: r.title,
-          sub_question: currentQueries[r.sub_question_idx] ?? "",
-        });
+        globalDomainCounts.set(r.domain, dCount + 1);
+        queue.push({ url: r.url, title: r.title });
       }
 
-      for (let i = 0; i < queue.length; i++) {
+      await pMap(queue, agentFetchConcurrency, async (item, i) => {
         abort();
-        const item = queue[i];
         try {
           emit({
             type: "fetching",
+            sub_question: subQ,
             url: item.url,
             position: i + 1,
             total: queue.length,
@@ -278,23 +417,28 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
             markdown,
             url: item.url,
             title,
-            sub_question: item.sub_question,
+            sub_question: subQ,
             model: fastModel,
           });
 
           if (summary.is_relevant && summary.summary) {
+            // JS event loop is single-threaded: this n-assign + push is atomic
+            // between awaits, so parallel agents won't collide on n.
             const n = sources.length + 1;
-            const src: CitedSource = {
+            sources.push({
               n,
               url: item.url,
               title,
               summary: summary.summary,
               key_excerpts: summary.key_excerpts,
-            };
-            sources.push(src);
+              sub_question: subQ,
+            });
             sourceUrls.add(item.url);
+            sourceMarkdowns.set(n, markdown.slice(0, STORED_MARKDOWN_CAP));
+            myAddedNs.push(n);
             emit({
               type: "summarized",
+              sub_question: subQ,
               url: item.url,
               n,
               summary: summary.summary,
@@ -304,6 +448,7 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
           } else {
             emit({
               type: "source_skipped",
+              sub_question: subQ,
               url: item.url,
               reason: "not relevant",
             });
@@ -311,82 +456,114 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
         } catch (err) {
           abort();
           const message = err instanceof Error ? err.message : String(err);
-          emit({ type: "source_error", url: item.url, error: message });
+          emit({
+            type: "source_error",
+            sub_question: subQ,
+            url: item.url,
+            error: message,
+          });
         }
-      }
-    }
-
-    // ---- assess ----
-    abort();
-
-    const hopsUsed = round - 1;
-    const reachedHopCap = hopsUsed >= maxHops;
-    const reachedSourceCap = sources.length >= maxSources;
-
-    if (maxHops === 0 || reachedHopCap || reachedSourceCap) {
-      const reason = reachedSourceCap
-        ? "source cap reached"
-        : reachedHopCap
-          ? "hop cap reached"
-          : "single-round mode";
-      const rec: AssessmentRecord = {
-        round,
-        sufficient: true,
-        gaps: [],
-        additional_queries: [],
-        reason,
-      };
-      assessments.push(rec);
-      emit({ type: "assessment", record: rec });
-      break;
-    }
-
-    emit({ type: "assessing", round, sources_count: sources.length });
-
-    let goingDeeper = false;
-    let assessmentRec: AssessmentRecord;
-    try {
-      const assessment = await assessCoverage({
-        anthropic,
-        brief: plan.brief,
-        sub_questions: plan.sub_questions,
-        sources,
-        rounds_remaining: maxHops - hopsUsed,
-        max_additional_queries: MAX_ADDITIONAL_QUERIES,
-        model: fastModel,
       });
 
-      goingDeeper =
-        !assessment.sufficient && assessment.additional_queries.length > 0;
-      assessmentRec = {
-        round,
-        sufficient: !goingDeeper,
-        gaps: assessment.gaps,
-        additional_queries: assessment.additional_queries,
-      };
-    } catch (err) {
       abort();
-      assessmentRec = {
+
+      const reachedAgentCap = myAddedNs.length >= agentSourceCap;
+      const reachedGlobalCap = sources.length >= maxSources;
+      const reachedHopCap = round >= maxHops;
+
+      if (reachedAgentCap || reachedGlobalCap || reachedHopCap) {
+        const reason = reachedAgentCap
+          ? "agent source cap reached"
+          : reachedGlobalCap
+            ? "global source cap reached"
+            : "hop cap reached";
+        const rec: AssessmentRecord = {
+          round,
+          sufficient: true,
+          gaps: [],
+          additional_queries: [],
+          reason,
+        };
+        myAssessments.push(rec);
+        emit({ type: "assessment", sub_question: subQ, record: rec });
+        break;
+      }
+
+      emit({
+        type: "assessing",
+        sub_question: subQ,
         round,
-        sufficient: true,
-        gaps: [],
-        additional_queries: [],
-        reason: `assessment failed: ${err instanceof Error ? err.message : String(err)}`,
-      };
+        sources_count: myAddedNs.length,
+      });
+
+      let goingDeeper = false;
+      let assessmentRec: AssessmentRecord;
+      try {
+        const mySet = new Set(myAddedNs);
+        const mySources = sources.filter((s) => mySet.has(s.n));
+        const assessment = await assessCoverage({
+          anthropic,
+          brief: `Specifically cover this sub-question: ${subQ}. (Part of the wider brief: ${plan.brief || query})`,
+          sub_questions: [subQ],
+          sources: mySources,
+          per_subq_coverage: [
+            { sub_question: subQ, source_count: mySources.length },
+          ],
+          rounds_remaining: maxHops - round,
+          max_additional_queries: MAX_ADDITIONAL_QUERIES,
+          model: fastModel,
+        });
+
+        goingDeeper =
+          !assessment.sufficient && assessment.additional_queries.length > 0;
+        assessmentRec = {
+          round,
+          sufficient: !goingDeeper,
+          gaps: assessment.gaps,
+          additional_queries: assessment.additional_queries,
+        };
+      } catch (err) {
+        abort();
+        assessmentRec = {
+          round,
+          sufficient: true,
+          gaps: [],
+          additional_queries: [],
+          reason: `assessment failed: ${err instanceof Error ? err.message : String(err)}`,
+        };
+      }
+
+      myAssessments.push(assessmentRec);
+      emit({ type: "assessment", sub_question: subQ, record: assessmentRec });
+
+      if (!goingDeeper) break;
+      queries = assessmentRec.additional_queries;
+      round += 1;
     }
 
-    assessments.push(assessmentRec);
-    emit({ type: "assessment", record: assessmentRec });
+    emit({
+      type: "agent_finished",
+      sub_question: subQ,
+      sources_added: myAddedNs.length,
+      rounds: round,
+    });
 
-    if (!goingDeeper) break;
-    currentQueries = assessmentRec.additional_queries;
-    round += 1;
+    return {
+      sub_question: subQ,
+      expanded_queries: exp.queries,
+      source_ns: [...myAddedNs],
+      rounds: round,
+      assessments: myAssessments,
+    };
   }
 
-  // ---- phases 5/6: write + verify (one retry on verify fail) ----
+  const agentRuns = await Promise.all(expansions.map(runSubAgent));
+
+  // ---- phases 5/6/7: write → critique → verify (one retry if either flags) ----
   let attempt = 1;
   let markdown = "";
   let verifications: ClaimVerification[] = [];
+  let lastCritiqueIssues: string[] = [];
   const passRateHistory: number[] = [];
 
   while (true) {
@@ -402,6 +579,10 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
               reason: v.reason,
             }))
         : undefined;
+    const critiqueForRewrite =
+      attempt > 1 && lastCritiqueIssues.length > 0
+        ? lastCritiqueIssues
+        : undefined;
 
     emit({
       type: "writing",
@@ -413,11 +594,50 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
       anthropic,
       brief: plan.brief || query,
       sources,
+      source_texts: sourceMarkdowns,
       unsupported_claims: unsupported,
+      critique_issues: critiqueForRewrite,
       model: writerModel,
     });
     markdown = report.markdown;
     emit({ type: "written", attempt, markdown_chars: markdown.length });
+
+    abort();
+
+    // ---- critique ----
+    let critiqueResult: CritiqueResult = { needs_revision: false, issues: [] };
+    if (critique) {
+      emit({ type: "critiquing", attempt });
+      try {
+        critiqueResult = await critiqueDraft({
+          anthropic,
+          brief: plan.brief || query,
+          sub_questions: plan.sub_questions,
+          markdown,
+          sources,
+          model: writerModel,
+        });
+      } catch (err) {
+        abort();
+        // critique failure should NOT fail the whole research
+        critiqueResult = {
+          needs_revision: false,
+          issues: [
+            `critique error: ${err instanceof Error ? err.message : String(err)}`,
+          ],
+        };
+      }
+      emit({
+        type: "critique_done",
+        attempt,
+        needs_revision: critiqueResult.needs_revision,
+        issues: critiqueResult.issues,
+      });
+    }
+    critiques.push(critiqueResult);
+    lastCritiqueIssues = critiqueResult.needs_revision
+      ? critiqueResult.issues
+      : [];
 
     abort();
 
@@ -493,19 +713,21 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
     const passRate = total > 0 ? supported / total : 1;
     passRateHistory.push(passRate);
 
+    const verifyFailed = total > 0 && passRate < verifyThreshold;
+    const critiqueFailed = critique && critiqueResult.needs_revision;
     const shouldRetry =
-      passRate < verifyThreshold &&
-      attempt < MAX_WRITE_ATTEMPTS &&
-      total > 0;
+      (verifyFailed || critiqueFailed) && attempt < MAX_WRITE_ATTEMPTS;
 
     if (shouldRetry) {
-      emit({
-        type: "verify_failed",
-        attempt,
-        pass_rate: passRate,
-        threshold: verifyThreshold,
-        retrying: true,
-      });
+      if (verifyFailed) {
+        emit({
+          type: "verify_failed",
+          attempt,
+          pass_rate: passRate,
+          threshold: verifyThreshold,
+          retrying: true,
+        });
+      }
       attempt += 1;
       continue;
     }
@@ -521,10 +743,10 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
     query,
     brief: plan.brief,
     sub_questions: plan.sub_questions,
+    agent_runs: agentRuns,
     sources,
     markdown,
-    assessments,
-    rounds: round,
+    critiques,
     attempts: attempt,
     pass_rate_history: passRateHistory,
     verifications,
