@@ -79,20 +79,20 @@ atlas "..." --quiet                    # no progress, just markdown
 
 ### Knobs
 
-| Flag                    | Default | What it does                                                       |
-| ----------------------- | ------- | ------------------------------------------------------------------ |
-| `--max-sub-questions N` | 4       | How many sub-questions to plan                                     |
-| `--max-results-per-q N` | 5       | SERP results per sub-question                                      |
-| `--max-sources N`       | 12      | Cap on cited sources                                               |
-| `--max-hops N`          | 3       | Max extra search rounds; loop early-exits when sufficient          |
-| `--fetch-concurrency N` | 5       | How many pages fetch + summarize in parallel                       |
-| `--queries-per-subq N`  | 3       | Search queries Haiku expands each sub-question into                |
-| `--no-critique`         | off     | Disable the post-draft peer-review pass                            |
-| `--verify-threshold F`  | 0.7     | Min fraction of claims that must verify; below → rewrite           |
-| `--engine <e>`          | ddg     | `ddg`, `bing`, or `google`                                         |
-| `--use-proxy`           | off     | Route Steel through its residential proxy (paid add-on)            |
-| `--fast-model <m>`      | Haiku   | Override the per-page / verify / critique-non-writer model         |
-| `--writer-model <m>`    | Sonnet  | Override the report writer and critique reviewer model             |
+| Flag                    | Default | What it does                                               |
+| ----------------------- | ------- | ---------------------------------------------------------- |
+| `--max-sub-questions N` | 4       | How many sub-questions to plan                             |
+| `--max-results-per-q N` | 5       | SERP results per sub-question                              |
+| `--max-sources N`       | 12      | Cap on cited sources                                       |
+| `--max-hops N`          | 3       | Max extra search rounds; loop early-exits when sufficient  |
+| `--fetch-concurrency N` | 5       | How many pages fetch + summarize in parallel               |
+| `--queries-per-subq N`  | 3       | Search queries Haiku expands each sub-question into        |
+| `--no-critique`         | off     | Disable the post-draft peer-review pass                    |
+| `--verify-threshold F`  | 0.7     | Min fraction of claims that must verify; below → rewrite   |
+| `--engine <e>`          | ddg     | `ddg`, `bing`, or `google`                                 |
+| `--use-proxy`           | off     | Route Steel through its residential proxy (paid add-on)    |
+| `--fast-model <m>`      | Haiku   | Override the per-page / verify / critique-non-writer model |
+| `--writer-model <m>`    | Sonnet  | Override the report writer and critique reviewer model     |
 
 Cancel anytime with `Ctrl+C` — Atlas stops between steps and exits 130.
 
