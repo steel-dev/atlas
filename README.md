@@ -4,9 +4,7 @@
 
 **Deep research from your terminal or your code.**
 
-Ask a question, get back a cited markdown report.
-
-Powered by [Steel Browser](https://steel.dev) and [Anthropic Claude](https://www.anthropic.com/).
+Ask a question, get back a cited markdown report. Powered by [Steel Browser](https://steel.dev) and [Anthropic Claude](https://www.anthropic.com/).
 
 ```bash
 npx @steel-dev/atlas "What changed when Cloudflare Durable Objects added SQLite?"
