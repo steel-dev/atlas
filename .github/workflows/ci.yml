@@ -33,8 +33,5 @@ jobs:
       - name: Test
         run: npm run test:run
 
-      - name: Stage wrangler.toml
-        run: cp wrangler.toml.example wrangler.toml
-
-      - name: Verify Worker build
-        run: npx wrangler deploy --dry-run
+      - name: Build
+        run: npm run build

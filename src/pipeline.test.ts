@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseCitations } from "./research";
+import { parseCitations } from "./pipeline.js";
 
 describe("parseCitations", () => {
   it("parses a single trailing citation", () => {

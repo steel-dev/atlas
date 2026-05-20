@@ -1,469 +1,541 @@
-import type Anthropic from "@anthropic-ai/sdk";
+import Anthropic from "@anthropic-ai/sdk";
+import {
+  assessCoverage,
+  parseCitations,
+  planBriefAndSubQuestions,
+  summarizeWebpage,
+  verifyClaim,
+  writeReport,
+  type CitedSource,
+  type ParsedClaim,
+  type UnsupportedClaim,
+} from "./pipeline.js";
+import { webSearch, type Engine, type SearchResult } from "./search.js";
+import { createSteel } from "./steel.js";
 
-const FAST_MODEL = "claude-haiku-4-5-20251001";
-const WRITER_MODEL = "claude-sonnet-4-6";
-const MAX_SOURCE_CHARS = 60_000;
+const MAX_WRITE_ATTEMPTS = 2;
+const VERIFY_BATCH = 3;
+const PER_DOMAIN_CAP = 2;
+const MAX_ADDITIONAL_QUERIES = 3;
 
-export interface ResearchBrief {
-  brief: string;
-  sub_questions: string[];
-}
+export type { CitedSource, ParsedClaim, UnsupportedClaim } from "./pipeline.js";
+export type { Engine, SearchResult } from "./search.js";
 
-export async function planBriefAndSubQuestions(opts: {
-  anthropic: Anthropic;
-  query: string;
-  max_sub_questions: number;
-  model?: string;
-}): Promise<ResearchBrief> {
-  const { anthropic, query, max_sub_questions, model } = opts;
-
-  const system =
-    "You decompose a user's research question into a focused research plan. " +
-    "First, restate the question as a first-person research brief — what we are trying to find out and any implicit constraints (recency, scope, comparison points). " +
-    "Then list the most-informative sub-questions whose answers, taken together, fully address the brief. " +
-    "Sub-questions must be independent (no overlap) and each answerable from a few web sources.";
-
-  const schema = {
-    type: "object",
-    properties: {
-      brief: {
-        type: "string",
-        description: "First-person 1-3 sentence research brief.",
-      },
-      sub_questions: {
-        type: "array",
-        description: `Independent sub-questions, ${max_sub_questions} max.`,
-        items: { type: "string" },
-        minItems: 1,
-        maxItems: max_sub_questions,
-      },
-    },
-    required: ["brief", "sub_questions"],
-  } as const;
-
-  const response = await anthropic.messages.create({
-    model: model ?? FAST_MODEL,
-    max_tokens: 1024,
-    system,
-    tools: [
-      {
-        name: "submit_plan",
-        description: "Submit the research brief and sub-questions.",
-        input_schema: schema as unknown as Anthropic.Tool["input_schema"],
-      },
-    ],
-    tool_choice: { type: "tool", name: "submit_plan" },
-    messages: [{ role: "user", content: `Research question: ${query}` }],
-  });
-
-  const tool = response.content.find(
-    (c): c is Anthropic.ToolUseBlock => c.type === "tool_use",
-  );
-  if (!tool) throw new Error("LLM did not submit research plan");
-  const out = tool.input as ResearchBrief;
-  return {
-    brief: String(out.brief ?? "").trim(),
-    sub_questions: Array.isArray(out.sub_questions)
-      ? out.sub_questions.slice(0, max_sub_questions).map((s) => String(s).trim()).filter(Boolean)
-      : [],
-  };
-}
-
-export interface PageSummary {
-  summary: string;
-  key_excerpts: string[];
-  is_relevant: boolean;
-}
-
-export async function summarizeWebpage(opts: {
-  anthropic: Anthropic;
-  markdown: string;
-  url: string;
-  title: string | null;
-  sub_question: string;
-  model?: string;
-}): Promise<PageSummary> {
-  const { anthropic, markdown, url, title, sub_question, model } = opts;
-
-  const system =
-    "You read one web page and extract what it says about a specific sub-question. " +
-    "Return a tight summary (3-5 sentences) plus up to 4 verbatim key excerpts (each ≤200 chars). " +
-    "If the page is unrelated to the sub-question, set is_relevant=false and return empty arrays.";
-
-  const schema = {
-    type: "object",
-    properties: {
-      summary: { type: "string", description: "3-5 sentence summary tied to the sub-question." },
-      key_excerpts: {
-        type: "array",
-        description: "Verbatim quotes from the source supporting the summary.",
-        items: { type: "string", maxLength: 240 },
-        maxItems: 4,
-      },
-      is_relevant: { type: "boolean", description: "True if page actually addresses the sub-question." },
-    },
-    required: ["summary", "key_excerpts", "is_relevant"],
-  } as const;
-
-  const userPrompt =
-    `Sub-question: ${sub_question}\n` +
-    `Source: ${title ?? "(no title)"} — ${url}\n\n` +
-    `Page content:\n${markdown.slice(0, MAX_SOURCE_CHARS)}`;
-
-  const response = await anthropic.messages.create({
-    model: model ?? FAST_MODEL,
-    max_tokens: 1024,
-    system,
-    tools: [
-      {
-        name: "submit_summary",
-        description: "Submit the page summary, key excerpts, and relevance flag.",
-        input_schema: schema as unknown as Anthropic.Tool["input_schema"],
-      },
-    ],
-    tool_choice: { type: "tool", name: "submit_summary" },
-    messages: [{ role: "user", content: userPrompt }],
-  });
-
-  const tool = response.content.find(
-    (c): c is Anthropic.ToolUseBlock => c.type === "tool_use",
-  );
-  if (!tool) throw new Error("LLM did not submit page summary");
-  const out = tool.input as PageSummary;
-  return {
-    summary: String(out.summary ?? "").trim(),
-    key_excerpts: Array.isArray(out.key_excerpts) ? out.key_excerpts.map((s) => String(s).trim()) : [],
-    is_relevant: Boolean(out.is_relevant ?? true),
-  };
-}
-
-export interface CitedSource {
-  n: number;
-  url: string;
-  title: string;
-  summary: string;
-  key_excerpts: string[];
-}
-
-export interface ParsedClaim {
-  text: string;
+export interface ClaimVerification {
+  claim: string;
   source_n: number;
-}
-
-const SOURCES_HEADING_RE = /^#{1,3}\s*Sources\b/im;
-const CITATION_RE = /\[(\d+(?:\s*,\s*\d+)*)\]/g;
-
-// Extract per-citation claims from a report markdown body. A "claim" is the
-// sentence containing the [n] marker. Multi-source citations like [1, 2] yield
-// one claim entry per source. The `## Sources` section is excluded.
-export function parseCitations(markdown: string): ParsedClaim[] {
-  const sourcesMatch = markdown.match(SOURCES_HEADING_RE);
-  const body =
-    sourcesMatch && sourcesMatch.index !== undefined
-      ? markdown.slice(0, sourcesMatch.index)
-      : markdown;
-
-  const claims: ParsedClaim[] = [];
-  CITATION_RE.lastIndex = 0;
-
-  let m: RegExpExecArray | null;
-  while ((m = CITATION_RE.exec(body)) !== null) {
-    const numbers = m[1]
-      .split(",")
-      .map((s) => Number.parseInt(s.trim(), 10))
-      .filter((n) => Number.isFinite(n) && n > 0);
-    if (numbers.length === 0) continue;
-
-    const sentence = extractSentenceAround(body, m.index, m.index + m[0].length);
-    if (!sentence) continue;
-
-    for (const n of numbers) {
-      claims.push({ text: sentence, source_n: n });
-    }
-  }
-
-  return claims;
-}
-
-function extractSentenceAround(
-  text: string,
-  citationStart: number,
-  citationEnd: number,
-): string {
-  let start = 0;
-  for (let i = citationStart - 1; i >= 0; i--) {
-    const ch = text[i];
-    if (ch === "\n" && i > 0 && text[i - 1] === "\n") {
-      start = i + 1;
-      break;
-    }
-    if (
-      (ch === "." || ch === "!" || ch === "?") &&
-      i + 1 < text.length &&
-      (text[i + 1] === " " || text[i + 1] === "\n")
-    ) {
-      start = i + 2;
-      break;
-    }
-  }
-
-  let end = text.length;
-  for (let i = citationEnd; i < text.length; i++) {
-    const ch = text[i];
-    if (ch === "\n" && i + 1 < text.length && text[i + 1] === "\n") {
-      end = i;
-      break;
-    }
-    if (ch === "." || ch === "!" || ch === "?") {
-      end = i + 1;
-      break;
-    }
-    if (ch === "\n") {
-      end = i;
-      break;
-    }
-  }
-
-  return text.slice(start, end).trim();
-}
-
-export interface AssessmentResult {
-  sufficient: boolean;
-  gaps: string[];
-  additional_queries: string[];
-}
-
-export async function assessCoverage(opts: {
-  anthropic: Anthropic;
-  brief: string;
-  sub_questions: string[];
-  sources: CitedSource[];
-  rounds_remaining: number;
-  max_additional_queries: number;
-  model?: string;
-}): Promise<AssessmentResult> {
-  const {
-    anthropic,
-    brief,
-    sub_questions,
-    sources,
-    rounds_remaining,
-    max_additional_queries,
-    model,
-  } = opts;
-
-  const system =
-    "You audit the coverage of a research effort in progress. " +
-    "Given the brief, sub-questions, and the summaries of sources gathered so far, decide whether the material is sufficient to write a thorough, well-cited report — or whether specific concrete gaps remain. " +
-    "Be conservative: if every sub-question has 2+ corroborating sources and you cannot point to a specific unaddressed angle or contradiction, return sufficient=true. " +
-    "Do NOT generate queries for hypothetical thoroughness or marginal completeness. Only emit queries that target a concrete missing fact, an unaddressed sub-question, or a disagreement that needs adjudication. " +
-    `If you do emit queries, each must be specific (not generic) and at most ${max_additional_queries} total.`;
-
-  const schema = {
-    type: "object",
-    properties: {
-      sufficient: {
-        type: "boolean",
-        description: "True iff current sources suffice to write the report.",
-      },
-      gaps: {
-        type: "array",
-        description: "Concrete gaps in current coverage. Empty if sufficient.",
-        items: { type: "string" },
-      },
-      additional_queries: {
-        type: "array",
-        description: `Specific search queries that would close the gaps. At most ${max_additional_queries}. Empty if sufficient.`,
-        items: { type: "string" },
-        maxItems: max_additional_queries,
-      },
-    },
-    required: ["sufficient", "gaps", "additional_queries"],
-  } as const;
-
-  const sourceBlocks = sources.length
-    ? sources
-        .map((s) => `[${s.n}] ${s.title} — ${s.url}\n  ${s.summary}`)
-        .join("\n\n")
-    : "(none gathered yet)";
-
-  const userPrompt =
-    `Brief: ${brief}\n\n` +
-    `Sub-questions:\n${sub_questions.map((q, i) => `${i + 1}. ${q}`).join("\n")}\n\n` +
-    `Sources so far:\n${sourceBlocks}\n\n` +
-    `Rounds remaining after this one: ${rounds_remaining}.\n` +
-    `Decide: sufficient, or specific concrete gaps + targeted queries?`;
-
-  const response = await anthropic.messages.create({
-    model: model ?? FAST_MODEL,
-    max_tokens: 1024,
-    system,
-    tools: [
-      {
-        name: "submit_assessment",
-        description: "Submit the coverage assessment.",
-        input_schema: schema as unknown as Anthropic.Tool["input_schema"],
-      },
-    ],
-    tool_choice: { type: "tool", name: "submit_assessment" },
-    messages: [{ role: "user", content: userPrompt }],
-  });
-
-  const tool = response.content.find(
-    (c): c is Anthropic.ToolUseBlock => c.type === "tool_use",
-  );
-  if (!tool) throw new Error("LLM did not submit assessment");
-  const out = tool.input as AssessmentResult;
-  const queries = Array.isArray(out.additional_queries)
-    ? out.additional_queries
-        .slice(0, max_additional_queries)
-        .map((q) => String(q).trim())
-        .filter(Boolean)
-    : [];
-  return {
-    sufficient: Boolean(out.sufficient),
-    gaps: Array.isArray(out.gaps)
-      ? out.gaps.map((s) => String(s).trim()).filter(Boolean)
-      : [],
-    additional_queries: queries,
-  };
-}
-
-export interface ClaimVerdict {
+  source_url: string | null;
+  source_title: string | null;
   supported: boolean;
   reason: string;
 }
 
-export async function verifyClaim(opts: {
-  anthropic: Anthropic;
-  claim: string;
-  source: CitedSource;
-  model?: string;
-}): Promise<ClaimVerdict> {
-  const { anthropic, claim, source, model } = opts;
-
-  const system =
-    "You verify whether a single claim from a research report is supported by a specific source. " +
-    "Given the claim and the source's summary plus verbatim key excerpts, decide if the source plausibly states or directly implies the claim. " +
-    "Be strict: vague-but-related sources do NOT count as support — the source must actually contain (or directly imply) the specific factual content. " +
-    "Verbatim excerpts are the strongest evidence; the summary is supplementary.";
-
-  const schema = {
-    type: "object",
-    properties: {
-      supported: {
-        type: "boolean",
-        description: "True iff the source supports the claim.",
-      },
-      reason: {
-        type: "string",
-        description:
-          "One-sentence justification, referencing the specific evidence (e.g., quoting an excerpt).",
-      },
-    },
-    required: ["supported", "reason"],
-  } as const;
-
-  const excerpts = source.key_excerpts.length
-    ? source.key_excerpts.map((e) => `- "${e}"`).join("\n")
-    : "(none)";
-
-  const userPrompt =
-    `Claim from report: ${claim}\n\n` +
-    `Source [${source.n}] ${source.title} — ${source.url}\n` +
-    `Summary: ${source.summary}\n` +
-    `Key excerpts:\n${excerpts}\n\n` +
-    `Does this source support the claim?`;
-
-  const response = await anthropic.messages.create({
-    model: model ?? FAST_MODEL,
-    max_tokens: 512,
-    system,
-    tools: [
-      {
-        name: "submit_verdict",
-        description: "Submit the support verdict and a short justification.",
-        input_schema: schema as unknown as Anthropic.Tool["input_schema"],
-      },
-    ],
-    tool_choice: { type: "tool", name: "submit_verdict" },
-    messages: [{ role: "user", content: userPrompt }],
-  });
-
-  const tool = response.content.find(
-    (c): c is Anthropic.ToolUseBlock => c.type === "tool_use",
-  );
-  if (!tool) throw new Error("LLM did not submit verdict");
-  const out = tool.input as ClaimVerdict;
-  return {
-    supported: Boolean(out.supported),
-    reason: String(out.reason ?? "").trim(),
-  };
+export interface AssessmentRecord {
+  round: number;
+  sufficient: boolean;
+  gaps: string[];
+  additional_queries: string[];
+  reason?: string;
 }
 
-export interface ReportOutput {
-  markdown: string;
+export interface VerificationSummary {
+  total: number;
+  supported: number;
+  unsupported: number;
+  pass_rate: number;
 }
 
-export interface UnsupportedClaim {
-  claim: string;
-  source_n: number;
-  reason: string;
-}
-
-export async function writeReport(opts: {
-  anthropic: Anthropic;
+export interface ResearchResult {
+  query: string;
   brief: string;
+  sub_questions: string[];
   sources: CitedSource[];
-  unsupported_claims?: UnsupportedClaim[];
-  model?: string;
-}): Promise<ReportOutput> {
-  const { anthropic, brief, sources, unsupported_claims, model } = opts;
+  markdown: string;
+  assessments: AssessmentRecord[];
+  rounds: number;
+  attempts: number;
+  pass_rate_history: number[];
+  verifications: ClaimVerification[];
+  verification_summary: VerificationSummary;
+}
 
-  const system =
-    "You write a clear, comprehensive research report in Markdown. " +
-    "Cite every factual claim with bracketed source numbers, e.g., [1] or [1, 3]. " +
-    "Only include claims supported by the provided sources. " +
-    "Structure: a one-paragraph intro, body sections with H2 headings as the material demands, then a final '## Sources' section listing each source as '[n] Title — URL'.";
+export type ResearchEvent =
+  | { type: "brief"; brief: string; sub_questions: string[] }
+  | { type: "round_started"; round: number; queries: string[] }
+  | { type: "searching"; round: number; index: number; query: string }
+  | { type: "search_results"; round: number; index: number; count: number }
+  | { type: "search_failed"; round: number; index: number; error: string }
+  | { type: "fetching"; url: string; position: number; total: number }
+  | {
+      type: "summarized";
+      url: string;
+      n: number;
+      summary: string;
+      position: number;
+      total: number;
+    }
+  | { type: "source_skipped"; url: string; reason: string }
+  | { type: "source_error"; url: string; error: string }
+  | { type: "assessing"; round: number; sources_count: number }
+  | { type: "assessment"; record: AssessmentRecord }
+  | {
+      type: "writing";
+      attempt: number;
+      sources_count: number;
+      unsupported_count: number;
+    }
+  | { type: "written"; attempt: number; markdown_chars: number }
+  | { type: "verifying"; total: number }
+  | {
+      type: "verified_claim";
+      source_n: number;
+      supported: boolean;
+      reason: string;
+      done: number;
+      total: number;
+    }
+  | {
+      type: "verify_failed";
+      attempt: number;
+      pass_rate: number;
+      threshold: number;
+      retrying: boolean;
+    }
+  | { type: "completed"; result: ResearchResult };
 
-  const sourceBlocks = sources
-    .map((s) => {
-      const excerpts = s.key_excerpts.length
-        ? `\nKey excerpts:\n${s.key_excerpts.map((e) => `- "${e}"`).join("\n")}`
-        : "";
-      return `[${s.n}] ${s.title} — ${s.url}\n${s.summary}${excerpts}`;
-    })
-    .join("\n\n");
+export interface ResearchOptions {
+  query: string;
+  anthropicApiKey: string;
+  steelApiKey: string;
+  steelBaseUrl?: string;
+  maxSubQuestions?: number;
+  maxResultsPerQuestion?: number;
+  maxSources?: number;
+  maxHops?: number;
+  verifyThreshold?: number;
+  engine?: Engine;
+  useProxy?: boolean;
+  fastModel?: string;
+  writerModel?: string;
+  onEvent?: (event: ResearchEvent) => void;
+  signal?: AbortSignal;
+}
 
-  const retryBlock =
-    unsupported_claims && unsupported_claims.length > 0
-      ? "\n\nPREVIOUS DRAFT FAILED VERIFICATION on these claims. Revise the report — for each, either remove the claim, hedge it (only if the hedge itself is supportable), or replace with a claim that the cited source actually supports. Do NOT introduce new unsupported claims. Do NOT cite a source that does not address the claim.\n" +
-        unsupported_claims
-          .map(
-            (u) =>
-              `- [${u.source_n}] "${u.claim}" — verifier said: ${u.reason}`,
-          )
-          .join("\n")
-      : "";
+function urlDomain(u: string): string | null {
+  try {
+    return new URL(u).hostname;
+  } catch {
+    return null;
+  }
+}
 
-  const userPrompt =
-    `Research brief: ${brief}\n\n` +
-    `Sources (numbered):\n${sourceBlocks}\n\n` +
-    `Write the report now. Aim for thorough coverage of the brief, with every claim grounded in a numbered source.` +
-    retryBlock;
+export async function research(opts: ResearchOptions): Promise<ResearchResult> {
+  const {
+    query,
+    anthropicApiKey,
+    steelApiKey,
+    steelBaseUrl,
+    maxSubQuestions = 4,
+    maxResultsPerQuestion = 5,
+    maxSources = 12,
+    maxHops = 2,
+    verifyThreshold = 0.7,
+    engine = "ddg",
+    useProxy = false,
+    fastModel,
+    writerModel,
+    onEvent,
+    signal,
+  } = opts;
 
-  const response = await anthropic.messages.create({
-    model: model ?? WRITER_MODEL,
-    max_tokens: 8192,
-    system,
-    messages: [{ role: "user", content: userPrompt }],
+  if (!query || !query.trim()) {
+    throw new Error("research: query is required");
+  }
+  if (!anthropicApiKey) {
+    throw new Error("research: anthropicApiKey is required");
+  }
+  if (!steelApiKey) {
+    throw new Error("research: steelApiKey is required");
+  }
+
+  const emit = (e: ResearchEvent) => {
+    try {
+      onEvent?.(e);
+    } catch {
+      // user callbacks must never break the pipeline
+    }
+  };
+  const abort = () => signal?.throwIfAborted();
+
+  const anthropic = new Anthropic({ apiKey: anthropicApiKey });
+  const steel = createSteel({ apiKey: steelApiKey, baseUrl: steelBaseUrl });
+
+  // ---- phase 1: brief ----
+  abort();
+  const plan = await planBriefAndSubQuestions({
+    anthropic,
+    query,
+    max_sub_questions: maxSubQuestions,
+    model: fastModel,
   });
+  emit({ type: "brief", brief: plan.brief, sub_questions: plan.sub_questions });
 
-  const text = response.content
-    .filter((c): c is Anthropic.TextBlock => c.type === "text")
-    .map((c) => c.text)
-    .join("\n")
-    .trim();
+  // ---- phases 2/3/4: search → fetch → assess (looped per hop) ----
+  let round = 1;
+  let currentQueries =
+    plan.sub_questions.length > 0 ? plan.sub_questions : [query];
+  const sources: CitedSource[] = [];
+  const sourceUrls = new Set<string>();
+  const assessments: AssessmentRecord[] = [];
 
-  return { markdown: text };
+  while (true) {
+    abort();
+
+    if (currentQueries.length > 0) {
+      emit({ type: "round_started", round, queries: currentQueries });
+
+      const perQ = await Promise.all(
+        currentQueries.map(async (q, idx) => {
+          emit({ type: "searching", round, index: idx, query: q });
+          const outcome = await webSearch({
+            steel,
+            query: q,
+            engine,
+            useProxy,
+            limit: maxResultsPerQuestion,
+          });
+          if (!outcome.ok) {
+            emit({
+              type: "search_failed",
+              round,
+              index: idx,
+              error: outcome.error.message,
+            });
+            return [] as Array<SearchResult & { sub_question_idx: number }>;
+          }
+          emit({
+            type: "search_results",
+            round,
+            index: idx,
+            count: outcome.results.length,
+          });
+          return outcome.results.map((r) => ({ ...r, sub_question_idx: idx }));
+        }),
+      );
+
+      abort();
+
+      const flat = perQ.flat();
+      const byUrl = new Map<string, (typeof flat)[number]>();
+      for (const r of flat) {
+        if (sourceUrls.has(r.url)) continue;
+        if (!byUrl.has(r.url)) byUrl.set(r.url, r);
+      }
+
+      const byDomain = new Map<string, number>();
+      for (const s of sources) {
+        const d = urlDomain(s.url);
+        if (d) byDomain.set(d, (byDomain.get(d) ?? 0) + 1);
+      }
+
+      const remaining = Math.max(0, maxSources - sources.length);
+      const queue: Array<{ url: string; title: string; sub_question: string }> =
+        [];
+      for (const r of byUrl.values()) {
+        if (queue.length >= remaining) break;
+        const dCount = byDomain.get(r.domain) ?? 0;
+        if (dCount >= PER_DOMAIN_CAP) continue;
+        byDomain.set(r.domain, dCount + 1);
+        queue.push({
+          url: r.url,
+          title: r.title,
+          sub_question: currentQueries[r.sub_question_idx] ?? "",
+        });
+      }
+
+      for (let i = 0; i < queue.length; i++) {
+        abort();
+        const item = queue[i];
+        try {
+          emit({
+            type: "fetching",
+            url: item.url,
+            position: i + 1,
+            total: queue.length,
+          });
+          const scrape = await steel.scrape({
+            url: item.url,
+            format: ["markdown"],
+            useProxy,
+          });
+          const markdown = scrape.content?.markdown ?? "";
+          const title = scrape.metadata?.title ?? item.title;
+          if (!markdown) throw new Error("Empty markdown from Steel");
+
+          abort();
+          const summary = await summarizeWebpage({
+            anthropic,
+            markdown,
+            url: item.url,
+            title,
+            sub_question: item.sub_question,
+            model: fastModel,
+          });
+
+          if (summary.is_relevant && summary.summary) {
+            const n = sources.length + 1;
+            const src: CitedSource = {
+              n,
+              url: item.url,
+              title,
+              summary: summary.summary,
+              key_excerpts: summary.key_excerpts,
+            };
+            sources.push(src);
+            sourceUrls.add(item.url);
+            emit({
+              type: "summarized",
+              url: item.url,
+              n,
+              summary: summary.summary,
+              position: i + 1,
+              total: queue.length,
+            });
+          } else {
+            emit({
+              type: "source_skipped",
+              url: item.url,
+              reason: "not relevant",
+            });
+          }
+        } catch (err) {
+          abort();
+          const message = err instanceof Error ? err.message : String(err);
+          emit({ type: "source_error", url: item.url, error: message });
+        }
+      }
+    }
+
+    // ---- assess ----
+    abort();
+
+    const hopsUsed = round - 1;
+    const reachedHopCap = hopsUsed >= maxHops;
+    const reachedSourceCap = sources.length >= maxSources;
+
+    if (maxHops === 0 || reachedHopCap || reachedSourceCap) {
+      const reason = reachedSourceCap
+        ? "source cap reached"
+        : reachedHopCap
+          ? "hop cap reached"
+          : "single-round mode";
+      const rec: AssessmentRecord = {
+        round,
+        sufficient: true,
+        gaps: [],
+        additional_queries: [],
+        reason,
+      };
+      assessments.push(rec);
+      emit({ type: "assessment", record: rec });
+      break;
+    }
+
+    emit({ type: "assessing", round, sources_count: sources.length });
+
+    let goingDeeper = false;
+    let assessmentRec: AssessmentRecord;
+    try {
+      const assessment = await assessCoverage({
+        anthropic,
+        brief: plan.brief,
+        sub_questions: plan.sub_questions,
+        sources,
+        rounds_remaining: maxHops - hopsUsed,
+        max_additional_queries: MAX_ADDITIONAL_QUERIES,
+        model: fastModel,
+      });
+
+      goingDeeper =
+        !assessment.sufficient && assessment.additional_queries.length > 0;
+      assessmentRec = {
+        round,
+        sufficient: !goingDeeper,
+        gaps: assessment.gaps,
+        additional_queries: assessment.additional_queries,
+      };
+    } catch (err) {
+      abort();
+      assessmentRec = {
+        round,
+        sufficient: true,
+        gaps: [],
+        additional_queries: [],
+        reason: `assessment failed: ${err instanceof Error ? err.message : String(err)}`,
+      };
+    }
+
+    assessments.push(assessmentRec);
+    emit({ type: "assessment", record: assessmentRec });
+
+    if (!goingDeeper) break;
+    currentQueries = assessmentRec.additional_queries;
+    round += 1;
+  }
+
+  // ---- phases 5/6: write + verify (one retry on verify fail) ----
+  let attempt = 1;
+  let markdown = "";
+  let verifications: ClaimVerification[] = [];
+  const passRateHistory: number[] = [];
+
+  while (true) {
+    abort();
+
+    const unsupported: UnsupportedClaim[] | undefined =
+      attempt > 1
+        ? verifications
+            .filter((v) => !v.supported)
+            .map((v) => ({
+              claim: v.claim,
+              source_n: v.source_n,
+              reason: v.reason,
+            }))
+        : undefined;
+
+    emit({
+      type: "writing",
+      attempt,
+      sources_count: sources.length,
+      unsupported_count: unsupported?.length ?? 0,
+    });
+    const report = await writeReport({
+      anthropic,
+      brief: plan.brief || query,
+      sources,
+      unsupported_claims: unsupported,
+      model: writerModel,
+    });
+    markdown = report.markdown;
+    emit({ type: "written", attempt, markdown_chars: markdown.length });
+
+    abort();
+
+    const claims: ParsedClaim[] = parseCitations(markdown);
+    verifications = [];
+
+    emit({ type: "verifying", total: claims.length });
+
+    if (claims.length > 0) {
+      const sourcesByN = new Map(sources.map((s) => [s.n, s] as const));
+      for (let i = 0; i < claims.length; i += VERIFY_BATCH) {
+        abort();
+        const batch = claims.slice(i, i + VERIFY_BATCH);
+        const verdicts = await Promise.all(
+          batch.map(async (claim): Promise<ClaimVerification> => {
+            const src = sourcesByN.get(claim.source_n);
+            if (!src) {
+              return {
+                claim: claim.text,
+                source_n: claim.source_n,
+                source_url: null,
+                source_title: null,
+                supported: false,
+                reason: `Source [${claim.source_n}] not found in source list`,
+              };
+            }
+            try {
+              const v = await verifyClaim({
+                anthropic,
+                claim: claim.text,
+                source: src,
+                model: fastModel,
+              });
+              return {
+                claim: claim.text,
+                source_n: claim.source_n,
+                source_url: src.url,
+                source_title: src.title,
+                supported: v.supported,
+                reason: v.reason,
+              };
+            } catch (err) {
+              const message =
+                err instanceof Error ? err.message : String(err);
+              return {
+                claim: claim.text,
+                source_n: claim.source_n,
+                source_url: src.url,
+                source_title: src.title,
+                supported: false,
+                reason: `verify error: ${message}`,
+              };
+            }
+          }),
+        );
+
+        verifications.push(...verdicts);
+        for (const v of verdicts) {
+          emit({
+            type: "verified_claim",
+            source_n: v.source_n,
+            supported: v.supported,
+            reason: v.reason,
+            done: verifications.length,
+            total: claims.length,
+          });
+        }
+      }
+    }
+
+    const total = verifications.length;
+    const supported = verifications.filter((v) => v.supported).length;
+    const passRate = total > 0 ? supported / total : 1;
+    passRateHistory.push(passRate);
+
+    const shouldRetry =
+      passRate < verifyThreshold &&
+      attempt < MAX_WRITE_ATTEMPTS &&
+      total > 0;
+
+    if (shouldRetry) {
+      emit({
+        type: "verify_failed",
+        attempt,
+        pass_rate: passRate,
+        threshold: verifyThreshold,
+        retrying: true,
+      });
+      attempt += 1;
+      continue;
+    }
+
+    break;
+  }
+
+  const totalClaims = verifications.length;
+  const supportedClaims = verifications.filter((v) => v.supported).length;
+  const passRate = totalClaims > 0 ? supportedClaims / totalClaims : 1;
+
+  const result: ResearchResult = {
+    query,
+    brief: plan.brief,
+    sub_questions: plan.sub_questions,
+    sources,
+    markdown,
+    assessments,
+    rounds: round,
+    attempts: attempt,
+    pass_rate_history: passRateHistory,
+    verifications,
+    verification_summary: {
+      total: totalClaims,
+      supported: supportedClaims,
+      unsupported: totalClaims - supportedClaims,
+      pass_rate: passRate,
+    },
+  };
+
+  emit({ type: "completed", result });
+  return result;
 }

@@ -2,258 +2,199 @@
 
 [![CI](https://github.com/steel-experiments/atlas/actions/workflows/ci.yml/badge.svg)](https://github.com/steel-experiments/atlas/actions/workflows/ci.yml)
 
-OSS web-data API — search, fetch, extract, research — running on Cloudflare Workers, backed by
-[Steel Browser](https://steel.dev).
+**Deep research from your terminal or your code.**
+
+Ask a question, get back a cited markdown report.
+Atlas plans sub-questions, searches the web, reads pages with a real browser,
+writes a report, and verifies every citation against its source.
+
+Powered by [Steel Browser](https://steel.dev) and [Anthropic Claude](https://www.anthropic.com/).
+No infrastructure, no deploy — just an npm package.
+
+```bash
+npx atlas "What changed when Cloudflare Durable Objects added SQLite?"
+```
 
 ```
-            Cloudflare Workers + Durable Objects (SQLite)
-                              │
-                              ▼
-                Steel Browser  ─────►  the real web
-                              │
-                              ▼
-                       Anthropic Claude
+✓ brief
+  I want to understand what changed when Cloudflare Durable Objects gained
+  SQLite-backed storage — what new capabilities it unlocked, when it shipped,
+  and any limits or trade-offs.
+  3 sub-questions
+    • When did SQLite-backed Durable Objects ship?
+    • What new capabilities did SQLite unlock?
+    • What limits or trade-offs come with the SQLite backend?
+→ round 1 — 3 queries
+  ✓ [1] https://blog.cloudflare.com/...
+  ✓ [2] https://developers.cloudflare.com/...
+  ✓ [3] https://news.ycombinator.com/...
+→ writing report (attempt 1, 6 sources)
+→ verifying 11 claims
+  ✓ [1] (1/11)
+  ✓ [2] (2/11)
+  ...
+✓ done — 6 sources, 11/11 claims supported (100%)
 ```
 
-## Deploy in 5 minutes
+## Install
 
-The fastest path: clone, open in [Claude Code](https://claude.com/claude-code), and run the bundled
-onboarding skill.
+```bash
+# one-off
+npx atlas "<question>"
+
+# project-local
+npm install atlas
+```
+
+Requires Node 20+.
+
+## Get your keys (~2 min)
+
+Atlas needs two keys you bring yourself:
+
+| Key                  | Get it at                                                                           |
+| -------------------- | ----------------------------------------------------------------------------------- |
+| `ANTHROPIC_API_KEY`  | <https://console.anthropic.com>                                                     |
+| `STEEL_API_KEY`      | <https://app.steel.dev>                                                             |
+
+```bash
+export ANTHROPIC_API_KEY=sk-ant-...
+export STEEL_API_KEY=sk_...
+```
+
+## CLI
+
+```bash
+atlas "What's the state of the art in single-image novel view synthesis?"
+```
+
+By default, progress streams to stderr and the markdown report goes to stdout — so you can pipe:
+
+```bash
+atlas "..." > report.md
+atlas "..." --out report.md            # write to file directly
+atlas "..." --json 2> events.jsonl     # machine-readable event log
+atlas "..." --quiet                    # no progress, just markdown
+```
+
+### Knobs
+
+| Flag                      | Default | What it does                                              |
+| ------------------------- | ------- | --------------------------------------------------------- |
+| `--max-sub-questions N`   | 4       | How many sub-questions to plan                            |
+| `--max-results-per-q N`   | 5       | SERP results per sub-question                             |
+| `--max-sources N`         | 12      | Cap on cited sources                                      |
+| `--max-hops N`            | 2       | Extra rounds of search-and-fetch beyond the first         |
+| `--verify-threshold F`    | 0.7     | Min fraction of claims that must verify; below → rewrite  |
+| `--engine <e>`            | ddg     | `ddg`, `bing`, or `google`                                |
+| `--use-proxy`             | off     | Route Steel through its residential proxy (paid add-on)   |
+| `--fast-model <m>`        | Haiku   | Override the per-page / verify model                      |
+| `--writer-model <m>`      | Sonnet  | Override the report writer model                          |
+
+Cancel anytime with `Ctrl+C` — Atlas stops between steps and exits 130.
+
+## Library
+
+```ts
+import { research } from "atlas";
+
+const result = await research({
+  query: "What's the state of the art in single-image novel view synthesis?",
+  anthropicApiKey: process.env.ANTHROPIC_API_KEY!,
+  steelApiKey: process.env.STEEL_API_KEY!,
+
+  // all optional — same defaults as the CLI
+  maxSources: 15,
+  maxHops: 3,
+  engine: "google",
+
+  // progress callback
+  onEvent: (e) => {
+    if (e.type === "summarized") console.log(`  [${e.n}] ${e.url}`);
+  },
+
+  // cancellable
+  signal: AbortSignal.timeout(120_000),
+});
+
+console.log(result.markdown);
+console.log(`${result.verification_summary.supported}/${result.verification_summary.total} claims verified`);
+```
+
+### What you get back
+
+```ts
+interface ResearchResult {
+  query: string;
+  brief: string;                          // first-person research brief
+  sub_questions: string[];                // planned decomposition
+  sources: CitedSource[];                 // numbered, with verbatim excerpts
+  markdown: string;                       // the report
+  assessments: AssessmentRecord[];        // per-round coverage decisions
+  rounds: number;                         // how many search rounds ran
+  attempts: number;                       // 1 or 2 (one rewrite allowed)
+  pass_rate_history: number[];            // verify pass rate per attempt
+  verifications: ClaimVerification[];     // per-claim verdicts
+  verification_summary: {
+    total: number;
+    supported: number;
+    unsupported: number;
+    pass_rate: number;
+  };
+}
+```
+
+### Events
+
+`onEvent` fires for: `brief`, `round_started`, `searching`, `search_results`, `search_failed`, `fetching`, `summarized`, `source_skipped`, `source_error`, `assessing`, `assessment`, `writing`, `written`, `verifying`, `verified_claim`, `verify_failed`, `completed`. Full union types are exported as `ResearchEvent`.
+
+## How it works
+
+```
+plan brief + sub-questions          (Haiku)
+       │
+       ▼
+search each sub-question            (Steel — DDG / Bing / Google SERP)
+       │
+       ▼
+fetch + per-page summarize          (Steel + Haiku)
+       │
+       ▼
+assess coverage ◄────── loop ──────►
+       │  (sufficient?)
+       ▼
+write report                        (Sonnet)
+       │
+       ▼
+verify every [n] citation           (Haiku, parallel batches)
+       │
+       ▼
+pass rate ≥ threshold? ── no ──► rewrite once with unsupported claims marked
+       │ yes
+       ▼
+   final report
+```
+
+- **Sources dedupe** across rounds and cap per domain (≤2) so one site can't dominate.
+- **Citations are verified** — each `[n]` marker is checked against the source's verbatim excerpts. Below `verify_threshold` triggers exactly one rewrite that's told which claims failed.
+- **Cancellable** — `AbortSignal` (or `Ctrl+C` in CLI) cleanly stops between steps.
+- **Bring your own LLM keys** — no Atlas hosted service, no telemetry. Spend is yours.
+
+## Development
 
 ```bash
 git clone https://github.com/steel-experiments/atlas
 cd atlas
 npm install
-claude  # or open the folder in your Claude Code IDE
+
+# run directly without building
+npm run dev -- "your question"
+
+# typecheck, test, build
+npm run typecheck
+npm run test
+npm run build
 ```
-
-Then in Claude Code:
-
-```
-/atlas-onboarding
-```
-
-The skill walks you through (~5 min):
-
-1. Cloudflare login + R2 bucket
-2. Atlas bearer token + Steel API key + Anthropic API key (you bring your own)
-3. `wrangler deploy`
-4. Smoke test against your live URL
-
-## Manual deploy (no Claude Code)
-
-```bash
-# 1. Cloudflare auth
-npx wrangler login
-
-# 2. Pick a deployment suffix (lowercase alphanum, ≤24 chars)
-SUFFIX=mydeploy
-sed -i '' "s/name = \"atlas\"/name = \"atlas-${SUFFIX}\"/" wrangler.toml
-sed -i '' "s/bucket_name = \"atlas-artifacts\"/bucket_name = \"atlas-${SUFFIX}-artifacts\"/" wrangler.toml
-
-# 3. R2 bucket
-npx wrangler r2 bucket create atlas-${SUFFIX}-artifacts
-
-# 4. Secrets
-printf '%s' "your-shared-token" | npx wrangler secret put ATLAS_API_KEY
-printf '%s' "sk_..." | npx wrangler secret put STEEL_API_KEY       # https://app.steel.dev
-printf '%s' "sk-ant-..." | npx wrangler secret put ANTHROPIC_API_KEY  # https://console.anthropic.com
-
-# 5. Deploy
-npx wrangler deploy
-```
-
-## Endpoints
-
-| Method | Path                             | Mode   | Returns                                          |
-| ------ | -------------------------------- | ------ | ------------------------------------------------ |
-| POST   | `/v1/search`                     | sync   | SERP results (DDG default, Bing/Google opt-in)   |
-| POST   | `/v1/fetch`                      | sync   | URL → markdown                                   |
-| POST   | `/v1/extract`                    | async  | URLs + JSON schema → structured data + citations |
-| POST   | `/v1/research`                   | async  | Query → cited markdown report                    |
-| POST   | `/v1/crawl`                      | async  | Site crawl → pages persisted to R2, paginated    |
-| GET    | `/v1/{op}/{id}`                  | —      | Job status + result when complete                |
-| GET    | `/v1/{op}/{id}/stream`           | —      | SSE live progress (Last-Event-ID supported)      |
-| DELETE | `/v1/{op}/{id}`                  | —      | Cancel running job                               |
-
-## API docs
-
-Every deployment serves an OpenAPI 3.1 document and an interactive Scalar reference:
-
-```bash
-export ATLAS_URL="https://atlas-yourdeploy.workers.dev"
-export ATLAS_API_KEY="your-shared-token"
-
-open "$ATLAS_URL/docs"
-curl -s "$ATLAS_URL/openapi.json" | jq '.info'
-```
-
-`/docs` and `/openapi.json` are public. Every `/v1/*` API call requires:
-`Authorization: Bearer $ATLAS_API_KEY`.
-
-### Conventions
-
-- **Authorization**: every `/v1/*` call needs `Authorization: Bearer $ATLAS_API_KEY`.
-- **Proxy default is OFF**: `use_proxy` defaults to `false` on every endpoint. Steel's residential
-  proxy is a paid add-on; flip to `true` per-request only when the target site blocks the default
-  egress (`{"use_proxy": true}`).
-- **Async caps**: `/v1/extract` accepts up to 50 URLs per submission; `/v1/crawl` up to 10 000
-  pages.
-- **Idempotency-Key**: async POSTs (`extract`, `research`, `crawl`) accept an optional
-  `Idempotency-Key: <≤255 printable ASCII>` header. Same key + same body → returns the existing job
-  (200 instead of 202). Same key + different body → `409 E_IDEMPOTENCY_CONFLICT`. Idempotency lasts
-  until the job is reaped (see below).
-- **Job TTL**: 7 days after a job reaches a terminal state (`completed` / `failed` / `cancelled`)
-  the Durable Object self-wipes — SQLite cleared, R2 crawl artifacts deleted. After that,
-  `GET /v1/{op}/{id}` returns `404 E_JOB_NOT_FOUND`. Pull results before the deadline.
-
-## API examples
-
-The examples below assume `ATLAS_URL`, `ATLAS_API_KEY`, and `jq` are available in your shell.
-
-### Search
-
-```bash
-curl -s "$ATLAS_URL/v1/search" \
-  -H "Authorization: Bearer $ATLAS_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "query": "Cloudflare Durable Objects SQLite",
-    "limit": 5,
-    "engine": "ddg"
-  }' | jq
-```
-
-### Fetch
-
-```bash
-curl -s "$ATLAS_URL/v1/fetch" \
-  -H "Authorization: Bearer $ATLAS_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "url": "https://developers.cloudflare.com/durable-objects/",
-    "format": "markdown"
-  }' | jq '.data | {url, title, status_code, content_chars: (.content | length)}'
-```
-
-### Submit an async extraction
-
-```bash
-JOB_ID=$(
-  curl -s "$ATLAS_URL/v1/extract" \
-    -H "Authorization: Bearer $ATLAS_API_KEY" \
-    -H "Content-Type: application/json" \
-    -d '{
-      "urls": ["https://developers.cloudflare.com/durable-objects/"],
-      "schema": {
-        "type": "object",
-        "properties": {
-          "summary": { "type": "string" },
-          "key_features": {
-            "type": "array",
-            "items": { "type": "string" }
-          }
-        },
-        "required": ["summary", "key_features"]
-      }
-    }' | jq -r '.data.id'
-)
-
-echo "$JOB_ID"
-```
-
-### Poll an async job
-
-```bash
-while true; do
-  status_json=$(
-    curl -s "$ATLAS_URL/v1/extract/$JOB_ID" \
-      -H "Authorization: Bearer $ATLAS_API_KEY"
-  )
-
-  echo "$status_json" | jq '.data | {status, progress}'
-
-  status=$(echo "$status_json" | jq -r '.data.status')
-  case "$status" in
-    completed|failed|cancelled) break ;;
-  esac
-
-  sleep 2
-done
-
-echo "$status_json" | jq '.data.result'
-```
-
-### Stream progress with SSE
-
-```bash
-curl -N "$ATLAS_URL/v1/extract/$JOB_ID/stream" \
-  -H "Authorization: Bearer $ATLAS_API_KEY"
-```
-
-If the connection drops, resume after the last event id you received:
-
-```bash
-curl -N "$ATLAS_URL/v1/extract/$JOB_ID/stream" \
-  -H "Authorization: Bearer $ATLAS_API_KEY" \
-  -H "Last-Event-ID: 12"
-```
-
-### Retry safely with Idempotency-Key
-
-```bash
-curl -i "$ATLAS_URL/v1/research" \
-  -H "Authorization: Bearer $ATLAS_API_KEY" \
-  -H "Content-Type: application/json" \
-  -H "Idempotency-Key: research-cloudflare-do-sqlite-v1" \
-  -d '{
-    "query": "What changed when Cloudflare Durable Objects added SQLite?",
-    "max_sub_questions": 3,
-    "max_sources": 8
-  }'
-```
-
-Retrying the same key with the same body returns the existing job (`200`). Reusing the same key with
-a different body returns `409 E_IDEMPOTENCY_CONFLICT`.
-
-### Crawl and paginate pages
-
-```bash
-CRAWL_ID=$(
-  curl -s "$ATLAS_URL/v1/crawl" \
-    -H "Authorization: Bearer $ATLAS_API_KEY" \
-    -H "Content-Type: application/json" \
-    -d '{
-      "url": "https://developers.cloudflare.com/durable-objects/",
-      "limit": 25,
-      "crawl_entire_domain": true,
-      "max_discovery_depth": 1
-    }' | jq -r '.data.id'
-)
-
-curl -s "$ATLAS_URL/v1/crawl/$CRAWL_ID?offset=0&limit=10" \
-  -H "Authorization: Bearer $ATLAS_API_KEY" \
-  | jq '.data | {status, summary, pagination, pages: [.pages[] | {url, status, title, status_code, markdown_chars: (.markdown | length), content_truncated}]}'
-
-curl -s "$ATLAS_URL/v1/crawl/$CRAWL_ID?offset=10&limit=10" \
-  -H "Authorization: Bearer $ATLAS_API_KEY" \
-  | jq '.data.pagination'
-```
-
-Crawl page markdown is returned inline in paginated status responses. Very large pages are truncated
-to 100 000 characters per page and marked with `content_truncated: true`.
-
-## Architecture
-
-- **Workers (Hono)** — sync HTTP entry; routes async submissions to the right DO instance via
-  `idFromName(job_id)`.
-- **Durable Object `AtlasJob`** (SQLite-backed) — one per async job. Holds plan, sources, excerpts,
-  SSE event log. Crash-resumable via persisted state + alarm-driven step loop.
-- **R2** — internal storage for crawl page markdown artifacts. Crawl status responses return
-  paginated markdown inline; storage keys are not part of the public API.
-- **Steel** — every browser interaction. The substrate this template is designed around.
-- **Anthropic Claude** — LLM work (Haiku for per-page summarization and extraction, Sonnet for the
-  final research report writer).
 
 ## License
 

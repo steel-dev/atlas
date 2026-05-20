@@ -1,14 +1,17 @@
 import Steel from "steel-sdk";
-import type { Env } from "./env";
 
-export function getSteel(env: Env): Steel {
-  const key = env.STEEL_API_KEY;
-  if (!key) {
-    throw new Error("STEEL_API_KEY secret is not set");
+export interface SteelOptions {
+  apiKey: string;
+  baseUrl?: string;
+}
+
+export function createSteel(opts: SteelOptions): Steel {
+  if (!opts.apiKey) {
+    throw new Error("Steel API key is required");
   }
   return new Steel({
-    steelAPIKey: key,
-    baseURL: env.STEEL_BASE_URL,
+    steelAPIKey: opts.apiKey,
+    baseURL: opts.baseUrl,
   });
 }
 

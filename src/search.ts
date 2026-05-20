@@ -1,6 +1,6 @@
 import * as cheerio from "cheerio";
-import type { Env } from "./env";
-import { getSteel, looksBlocked } from "./steel";
+import type Steel from "steel-sdk";
+import { looksBlocked } from "./steel.js";
 
 export const ENGINES = ["ddg", "bing", "google"] as const;
 export type Engine = (typeof ENGINES)[number];
@@ -23,18 +23,17 @@ export type WebSearchOutcome =
   | { ok: false; error: WebSearchError };
 
 export async function webSearch(opts: {
-  env: Env;
+  steel: Steel;
   query: string;
   limit?: number;
   engine?: Engine;
   country?: string;
   lang?: string;
-  use_proxy?: boolean;
+  useProxy?: boolean;
 }): Promise<WebSearchOutcome> {
   const limit = opts.limit ?? 10;
   const engine = opts.engine ?? "ddg";
-  const useProxy = opts.use_proxy ?? false;
-  const steel = getSteel(opts.env);
+  const useProxy = opts.useProxy ?? false;
   const serpUrl = buildSerpUrl(engine, opts.query, {
     country: opts.country,
     lang: opts.lang,
@@ -43,7 +42,7 @@ export async function webSearch(opts: {
 
   let html: string;
   try {
-    const result = await steel.scrape({
+    const result = await opts.steel.scrape({
       url: serpUrl,
       format: ["html"],
       useProxy,
