@@ -5,11 +5,8 @@
 **Deep research from your terminal or your code.**
 
 Ask a question, get back a cited markdown report.
-Atlas plans sub-questions, searches the web, reads pages with a real browser,
-writes a report, and verifies every citation against its source.
 
 Powered by [Steel Browser](https://steel.dev) and [Anthropic Claude](https://www.anthropic.com/).
-No infrastructure, no deploy — just an npm package.
 
 ```bash
 npx @steel-dev/atlas "What changed when Cloudflare Durable Objects added SQLite?"
@@ -18,7 +15,7 @@ npx @steel-dev/atlas "What changed when Cloudflare Durable Objects added SQLite?
 ```
 ✓ brief
   I want to understand what changed when Cloudflare Durable Objects gained
-  SQLite-backed storage — what new capabilities it unlocked, when it shipped,
+  SQLite-backed storage - what new capabilities it unlocked, when it shipped,
   and any limits or trade-offs.
   3 sub-questions
     • When did SQLite-backed Durable Objects ship?
@@ -68,7 +65,7 @@ export STEEL_API_KEY=sk_...
 atlas "What's the state of the art in single-image novel view synthesis?"
 ```
 
-By default, progress streams to stderr and the markdown report goes to stdout — so you can pipe:
+By default, progress streams to stderr and the markdown report goes to stdout; so you can pipe:
 
 ```bash
 atlas "..." > report.md
