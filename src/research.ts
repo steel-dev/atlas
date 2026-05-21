@@ -8,11 +8,13 @@ import { type Engine } from "./search.js";
 import { createSteel } from "./steel.js";
 import { runAgenticSubAgent, type AgentContext } from "./tools.js";
 
-const DEFAULT_MAX_LEAD_TURNS = 8;
-const DEFAULT_MAX_SOURCES = 12;
-const DEFAULT_MAX_SUBAGENT_TOOL_CALLS = 12;
-const DEFAULT_SUBAGENT_SOURCE_CAP = 4;
-const PER_DOMAIN_CAP = 2;
+export const RESEARCH_DEFAULTS = {
+  maxLeadTurns: 8,
+  maxSources: 12,
+  maxSubagentToolCalls: 12,
+  subagentSourceCap: 4,
+  perDomainCap: 2,
+} as const;
 
 export type { CitedSource } from "./pipeline.js";
 export type { Engine } from "./search.js";
@@ -108,7 +110,7 @@ const LEAD_TOOLS: Anthropic.Tool[] = [
       "Fire one focused scout sub-agent to research a single sub-question. " +
       "The scout has its own search/fetch tools, picks its own queries and backends, and commits high-quality sources to the shared pool. " +
       "Emit multiple spawn_subagent tool_use blocks in a single turn to run scouts IN PARALLEL — much faster than serial. " +
-      "Returns: which [n] sources the scout added, a short preview of each page, and the scout's finish reason. " +
+      "Returns: which [n] sources the scout added and the scout's finish reason. " +
       "Don't re-spawn for a sub-question already well-covered in the pool.",
     input_schema: {
       type: "object",
@@ -142,9 +144,9 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
     anthropicApiKey,
     steelApiKey,
     steelBaseUrl,
-    maxSources = DEFAULT_MAX_SOURCES,
-    maxLeadTurns = DEFAULT_MAX_LEAD_TURNS,
-    maxToolCalls = DEFAULT_MAX_SUBAGENT_TOOL_CALLS,
+    maxSources = RESEARCH_DEFAULTS.maxSources,
+    maxLeadTurns = RESEARCH_DEFAULTS.maxLeadTurns,
+    maxToolCalls = RESEARCH_DEFAULTS.maxSubagentToolCalls,
     engine = "ddg",
     useProxy = false,
     fastModel,
@@ -196,7 +198,7 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
     defaultEngine: engine,
     useProxy,
     fastModel,
-    perDomainCap: PER_DOMAIN_CAP,
+    perDomainCap: RESEARCH_DEFAULTS.perDomainCap,
     globalSourceCap: maxSources,
     githubToken,
   };
@@ -207,7 +209,7 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
     query,
     maxLeadTurns,
     maxSubagentToolCalls: maxToolCalls,
-    subagentSourceCap: DEFAULT_SUBAGENT_SOURCE_CAP,
+    subagentSourceCap: RESEARCH_DEFAULTS.subagentSourceCap,
     model: leadModel ?? writerModel ?? WRITER_MODEL,
     emit,
     abort,
@@ -330,17 +332,22 @@ async function runLeadAgent(opts: {
       break;
     }
 
-    // Separate finalize from spawn_subagent so we can run all spawns in
-    // parallel before sending tool_results back.
     const finalizeUse = toolUses.find((tu) => tu.name === "finalize");
     const spawnUses = toolUses.filter((tu) => tu.name === "spawn_subagent");
     const unknownUses = toolUses.filter(
       (tu) => tu.name !== "finalize" && tu.name !== "spawn_subagent",
     );
 
-    emit({ type: "lead_turn", turn, spawned: spawnUses.length });
+    if (finalizeUse) {
+      emit({ type: "lead_turn", turn, spawned: 0 });
+      break;
+    }
 
-    const poolFullBeforeSpawn = ctx.sources.length >= ctx.globalSourceCap;
+    if (ctx.sources.length >= ctx.globalSourceCap) {
+      break;
+    }
+
+    emit({ type: "lead_turn", turn, spawned: spawnUses.length });
 
     const toolResults: Anthropic.ToolResultBlockParam[] = [];
 
@@ -353,14 +360,6 @@ async function runLeadAgent(opts: {
         return {
           tu,
           text: "Error: spawn_subagent requires a non-empty `sub_question`.",
-        };
-      }
-      if (poolFullBeforeSpawn) {
-        return {
-          tu,
-          text:
-            `Skipped: global source-pool cap (${ctx.globalSourceCap}) reached before this scout could start. ` +
-            `Call finalize to start the writer.`,
         };
       }
       subQuestions.push(sub_question);
@@ -389,11 +388,7 @@ async function runLeadAgent(opts: {
           .map((n) => {
             const s = ctx.sources.find((x) => x.n === n);
             if (!s) return `  [${n}] (missing)`;
-            const preview = (ctx.sourceMarkdowns.get(n) ?? "")
-              .slice(0, 200)
-              .replace(/\s+/g, " ")
-              .trim();
-            return `  [${n}] ${s.title}${preview ? ` — ${preview}…` : ""}`;
+            return `  [${n}] ${s.title} — ${s.url} (${s.sub_question})`;
           })
           .join("\n");
         const pool = `Pool: ${ctx.sources.length}/${ctx.globalSourceCap}.`;
@@ -435,25 +430,10 @@ async function runLeadAgent(opts: {
       });
     }
 
-    if (finalizeUse) {
-      toolResults.push({
-        type: "tool_result",
-        tool_use_id: finalizeUse.id,
-        content: "Finalized. Writer phase will begin.",
-      });
-      messages.push({ role: "user", content: toolResults });
-      break;
-    }
-
     messages.push({ role: "user", content: toolResults });
 
     if (ctx.sources.length >= ctx.globalSourceCap) {
-      // Pool is full — lead can't add more sources, force-finalize on next
-      // turn by appending a system-style nudge.
-      messages.push({
-        role: "user",
-        content: `Source pool is now at cap (${ctx.sources.length}/${ctx.globalSourceCap}). Call finalize next.`,
-      });
+      break;
     }
   }
 

@@ -1,4 +1,4 @@
-export { research } from "./research.js";
+export { RESEARCH_DEFAULTS, research } from "./research.js";
 export type {
   AgentRun,
   CitedSource,
