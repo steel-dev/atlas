@@ -69,15 +69,15 @@ atlas "..." --quiet                    # no progress, just markdown
 
 ### Knobs
 
-| Flag                   | Default | What it does                                              |
-| ---------------------- | ------- | --------------------------------------------------------- |
-| `--depth <d>`          | standard | Budget preset: `fast`, `standard`, or `deep`             |
-| `--max-sources N`      | 16      | Cap on cited sources                                      |
-| `--max-tool-calls N`   | 20      | Gather-agent tool-call cap (search + fetch + done)        |
-| `--engine <e>`         | ddg     | Default web SERP: `ddg`, `bing`, or `google`              |
-| `--use-proxy`          | off     | Route Steel through its residential proxy (paid add-on)   |
-| `--fast-model <m>`     | Haiku   | Override the gather model                                 |
-| `--writer-model <m>`   | Sonnet  | Override the writer model                                 |
+| Flag                 | Default  | What it does                                            |
+| -------------------- | -------- | ------------------------------------------------------- |
+| `--depth <d>`        | standard | Budget preset: `fast`, `standard`, or `deep`            |
+| `--max-sources N`    | 16       | Cap on cited sources                                    |
+| `--max-tool-calls N` | 20       | Gather-agent tool-call cap (search + fetch + done)      |
+| `--engine <e>`       | ddg      | Default web SERP: `ddg`, `bing`, or `google`            |
+| `--use-proxy`        | off      | Route Steel through its residential proxy (paid add-on) |
+| `--fast-model <m>`   | Haiku    | Override the gather model                               |
+| `--writer-model <m>` | Sonnet   | Override the writer model                               |
 
 Cancel anytime with `Ctrl+C` — Atlas stops between steps and exits 130.
 
