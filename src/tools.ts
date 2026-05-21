@@ -15,6 +15,64 @@ import {
 const STORED_MARKDOWN_CAP = 50_000;
 const FETCH_SNIPPET_CHARS = 2500;
 const DEFAULT_MAX_TOOL_CALLS = 12;
+const DEFAULT_MAX_CONCURRENT_TOOLS = 4;
+
+export interface FetchGate {
+  run<T>(fn: () => Promise<T>): Promise<T>;
+}
+
+export interface SourceReservations {
+  urls: Set<string>;
+  domainCounts: Map<string, number>;
+  sourceSlots: number;
+}
+
+class Semaphore implements FetchGate {
+  private active = 0;
+  private readonly waiting: Array<() => void> = [];
+
+  constructor(private readonly limit: number) {}
+
+  async run<T>(fn: () => Promise<T>): Promise<T> {
+    await this.acquire();
+    try {
+      return await fn();
+    } finally {
+      this.release();
+    }
+  }
+
+  private async acquire(): Promise<void> {
+    if (this.active < this.limit) {
+      this.active++;
+      return;
+    }
+    await new Promise<void>((resolve) =>
+      this.waiting.push(() => {
+        this.active++;
+        resolve();
+      }),
+    );
+  }
+
+  private release(): void {
+    this.active--;
+    this.waiting.shift()?.();
+  }
+}
+
+export function createFetchGate(limit: number): FetchGate {
+  const normalized = Number.isFinite(limit) ? Math.max(1, Math.floor(limit)) : 1;
+  return new Semaphore(normalized);
+}
+
+export function createSourceReservations(): SourceReservations {
+  return {
+    urls: new Set<string>(),
+    domainCounts: new Map<string, number>(),
+    sourceSlots: 0,
+  };
+}
 
 // ----------------------------------------------------------------------------
 // Agentic sub-agent
@@ -48,6 +106,9 @@ export interface AgentContext {
   fastModel?: string;
   perDomainCap: number;
   globalSourceCap: number;
+  maxConcurrentTools?: number;
+  fetchGate: FetchGate;
+  sourceReservations: SourceReservations;
   githubToken?: string;
 }
 
@@ -157,6 +218,63 @@ const AGENT_TOOLS: Anthropic.Tool[] = [
 
 const AGENT_SYSTEM = `You're a research scout. Use search and fetch to gather 2-4 high-quality sources for your sub-question, then stop by emitting a text response with no tool calls. Every fetch commits — choose carefully.`;
 
+function reservedDomainCount(ctx: AgentContext, domain: string): number {
+  return ctx.sourceReservations.domainCounts.get(domain) ?? 0;
+}
+
+function totalDomainCount(ctx: AgentContext, domain: string): number {
+  return (ctx.globalDomainCounts.get(domain) ?? 0) + reservedDomainCount(ctx, domain);
+}
+
+function totalSourceSlots(ctx: AgentContext): number {
+  return ctx.sources.length + ctx.sourceReservations.sourceSlots;
+}
+
+interface FetchReservation {
+  url: string;
+  domain: string;
+}
+
+function reserveFetch(ctx: AgentContext, url: string): FetchReservation | string {
+  if (ctx.sourceUrls.has(url)) {
+    const existing = ctx.sources.find((s) => s.url === url);
+    return `Already in source pool as [${existing?.n ?? "?"}]: ${existing?.title ?? url}. Pick a different result.`;
+  }
+  if (ctx.sourceReservations.urls.has(url)) {
+    return `Already being fetched by another scout: ${url}. Pick a different result.`;
+  }
+
+  const domain = safeDomain(url);
+  if (totalDomainCount(ctx, domain) >= ctx.perDomainCap) {
+    return `Domain cap reached for ${domain} (max ${ctx.perDomainCap}). Pick a different source.`;
+  }
+  if (totalSourceSlots(ctx) >= ctx.globalSourceCap) {
+    return `Global source cap reached (${ctx.globalSourceCap}). Stop fetching.`;
+  }
+
+  ctx.sourceReservations.urls.add(url);
+  ctx.sourceReservations.domainCounts.set(domain, reservedDomainCount(ctx, domain) + 1);
+  ctx.sourceReservations.sourceSlots++;
+  return { url, domain };
+}
+
+function releaseFetchReservation(
+  ctx: AgentContext,
+  reservation: FetchReservation,
+): void {
+  ctx.sourceReservations.urls.delete(reservation.url);
+  const nextDomainCount = reservedDomainCount(ctx, reservation.domain) - 1;
+  if (nextDomainCount > 0) {
+    ctx.sourceReservations.domainCounts.set(reservation.domain, nextDomainCount);
+  } else {
+    ctx.sourceReservations.domainCounts.delete(reservation.domain);
+  }
+  ctx.sourceReservations.sourceSlots = Math.max(
+    0,
+    ctx.sourceReservations.sourceSlots - 1,
+  );
+}
+
 async function execSearch(
   args: SearchToolInput,
   ctx: AgentContext,
@@ -248,12 +366,15 @@ async function execSearch(
   const useful: SearchResult[] = [];
   let filtered = 0;
   for (const r of outcome.results) {
-    if (ctx.sourceUrls.has(r.url)) {
+    if (ctx.sourceUrls.has(r.url) || ctx.sourceReservations.urls.has(r.url)) {
       filtered++;
       continue;
     }
-    const dCount = ctx.globalDomainCounts.get(r.domain) ?? 0;
-    if (dCount >= ctx.perDomainCap) {
+    if (totalDomainCount(ctx, r.domain) >= ctx.perDomainCap) {
+      filtered++;
+      continue;
+    }
+    if (totalSourceSlots(ctx) >= ctx.globalSourceCap) {
       filtered++;
       continue;
     }
@@ -285,6 +406,115 @@ interface FetchOutcome {
   committed_n?: number;
 }
 
+interface ToolExecution {
+  toolResult: Anthropic.ToolResultBlockParam;
+  committed_n?: number;
+}
+
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  limit: number,
+  fn: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  const normalizedLimit = Number.isFinite(limit) ? Math.max(1, Math.floor(limit)) : 1;
+  let next = 0;
+  const workers = Array.from(
+    { length: Math.min(normalizedLimit, items.length) },
+    async () => {
+      while (next < items.length) {
+        const index = next++;
+        results[index] = await fn(items[index], index);
+      }
+    },
+  );
+  await Promise.all(workers);
+  return results;
+}
+
+async function executeToolUse(
+  tu: Anthropic.ToolUseBlock,
+  ctx: AgentContext,
+  subQuestion: string,
+  searchIndex?: number,
+  skipFetchText?: string,
+): Promise<ToolExecution> {
+  if (tu.name === "search") {
+    try {
+      const text = await execSearch(
+        (tu.input as SearchToolInput) ?? {},
+        ctx,
+        subQuestion,
+        searchIndex ?? 0,
+      );
+      return {
+        toolResult: {
+          type: "tool_result",
+          tool_use_id: tu.id,
+          content: text,
+        },
+      };
+    } catch (err) {
+      ctx.abort();
+      return {
+        toolResult: {
+          type: "tool_result",
+          tool_use_id: tu.id,
+          content: `Tool error: ${err instanceof Error ? err.message : String(err)}`,
+          is_error: true,
+        },
+      };
+    }
+  }
+
+  if (tu.name === "fetch") {
+    if (skipFetchText) {
+      return {
+        toolResult: {
+          type: "tool_result",
+          tool_use_id: tu.id,
+          content: skipFetchText,
+        },
+      };
+    }
+
+    try {
+      const out = await execFetch(
+        (tu.input as FetchToolInput) ?? {},
+        ctx,
+        subQuestion,
+      );
+      return {
+        committed_n: out.committed_n,
+        toolResult: {
+          type: "tool_result",
+          tool_use_id: tu.id,
+          content: out.text,
+        },
+      };
+    } catch (err) {
+      ctx.abort();
+      return {
+        toolResult: {
+          type: "tool_result",
+          tool_use_id: tu.id,
+          content: `Tool error: ${err instanceof Error ? err.message : String(err)}`,
+          is_error: true,
+        },
+      };
+    }
+  }
+
+  return {
+    toolResult: {
+      type: "tool_result",
+      tool_use_id: tu.id,
+      content: `Unknown tool: ${tu.name}`,
+      is_error: true,
+    },
+  };
+}
+
 async function execFetch(
   args: FetchToolInput,
   ctx: AgentContext,
@@ -296,39 +526,23 @@ async function execFetch(
     return { text: `Error: not an http(s) URL: ${url}` };
   }
 
-  if (ctx.sourceUrls.has(url)) {
-    const existing = ctx.sources.find((s) => s.url === url);
-    return {
-      text: `Already in source pool as [${existing?.n ?? "?"}]: ${existing?.title ?? url}. Pick a different result.`,
-    };
-  }
-
-  const domain = safeDomain(url);
-  const dCount = ctx.globalDomainCounts.get(domain) ?? 0;
-  if (dCount >= ctx.perDomainCap) {
-    return {
-      text: `Domain cap reached for ${domain} (max ${ctx.perDomainCap}). Pick a different source.`,
-    };
-  }
-
-  if (ctx.sources.length >= ctx.globalSourceCap) {
-    return {
-      text: `Global source cap reached (${ctx.globalSourceCap}). Stop fetching.`,
-    };
-  }
+  const reservation = reserveFetch(ctx, url);
+  if (typeof reservation === "string") return { text: reservation };
 
   ctx.emit({ type: "fetching", sub_question: subQ, url });
 
   let markdown: string;
   let title: string | null = null;
   try {
-    const scrape = await ctx.steel.scrape(
-      {
-        url,
-        format: ["markdown"],
-        useProxy: ctx.useProxy,
-      },
-      { signal: ctx.signal },
+    const scrape = await ctx.fetchGate.run(() =>
+      ctx.steel.scrape(
+        {
+          url,
+          format: ["markdown"],
+          useProxy: ctx.useProxy,
+        },
+        { signal: ctx.signal },
+      ),
     );
     markdown = scrape.content?.markdown ?? "";
     title = scrape.metadata?.title ?? null;
@@ -350,12 +564,13 @@ async function execFetch(
       error: message,
     });
     return { text: `Fetch error: ${message}` };
+  } finally {
+    releaseFetchReservation(ctx, reservation);
   }
 
   ctx.abort();
 
-  // Atomic commit. JS event loop guarantees no interleaving across awaits inside
-  // this block, so parallel sub-agents won't race on n.
+  // Atomic commit. The source slot was reserved before the scrape started.
   const n = ctx.sources.length + 1;
   const resolvedTitle = title ?? url;
   ctx.sources.push({
@@ -366,7 +581,10 @@ async function execFetch(
   });
   ctx.sourceUrls.add(url);
   ctx.sourceMarkdowns.set(n, markdown.slice(0, STORED_MARKDOWN_CAP));
-  ctx.globalDomainCounts.set(domain, dCount + 1);
+  ctx.globalDomainCounts.set(
+    reservation.domain,
+    (ctx.globalDomainCounts.get(reservation.domain) ?? 0) + 1,
+  );
 
   ctx.emit({
     type: "source_committed",
@@ -446,70 +664,39 @@ export async function runAgenticSubAgent(opts: {
       break;
     }
 
-    const toolResults: Anthropic.ToolResultBlockParam[] = [];
-
-    for (const tu of toolUses) {
-      toolCalls++;
-
-      if (tu.name === "search") {
-        searchIndex++;
-        try {
-          const text = await execSearch(
-            (tu.input as SearchToolInput) ?? {},
-            ctx,
-            sub_question,
-            searchIndex,
-          );
-          toolResults.push({
-            type: "tool_result",
-            tool_use_id: tu.id,
-            content: text,
-          });
-        } catch (err) {
-          ctx.abort();
-          toolResults.push({
-            type: "tool_result",
-            tool_use_id: tu.id,
-            content: `Tool error: ${err instanceof Error ? err.message : String(err)}`,
-            is_error: true,
-          });
-        }
-        continue;
+    const remainingToolCalls = maxToolCalls - toolCalls;
+    const activeToolUses = toolUses.slice(0, remainingToolCalls);
+    const searchIndexes = activeToolUses.map((tu) =>
+      tu.name === "search" ? ++searchIndex : undefined,
+    );
+    let remainingFetchSlots = agent_source_cap - myAddedNs.length;
+    const skipFetchTexts = activeToolUses.map((tu) => {
+      if (tu.name !== "fetch") return undefined;
+      if (remainingFetchSlots > 0) {
+        remainingFetchSlots--;
+        return undefined;
       }
+      return `Agent source cap reached (${agent_source_cap}). Stop fetching.`;
+    });
+    toolCalls += activeToolUses.length;
 
-      if (tu.name === "fetch") {
-        try {
-          const out = await execFetch(
-            (tu.input as FetchToolInput) ?? {},
-            ctx,
-            sub_question,
-          );
-          if (out.committed_n !== undefined) {
-            myAddedNs.push(out.committed_n);
-          }
-          toolResults.push({
-            type: "tool_result",
-            tool_use_id: tu.id,
-            content: out.text,
-          });
-        } catch (err) {
-          ctx.abort();
-          toolResults.push({
-            type: "tool_result",
-            tool_use_id: tu.id,
-            content: `Tool error: ${err instanceof Error ? err.message : String(err)}`,
-            is_error: true,
-          });
-        }
-        continue;
+    const executions = await mapWithConcurrency(
+      activeToolUses,
+      ctx.maxConcurrentTools ?? DEFAULT_MAX_CONCURRENT_TOOLS,
+      (tu, index) =>
+        executeToolUse(
+          tu,
+          ctx,
+          sub_question,
+          searchIndexes[index],
+          skipFetchTexts[index],
+        ),
+    );
+    const toolResults = executions.map((e) => e.toolResult);
+    for (const execution of executions) {
+      if (execution.committed_n !== undefined) {
+        myAddedNs.push(execution.committed_n);
       }
-
-      toolResults.push({
-        type: "tool_result",
-        tool_use_id: tu.id,
-        content: `Unknown tool: ${tu.name}`,
-        is_error: true,
-      });
     }
 
     messages.push({ role: "user", content: toolResults });
