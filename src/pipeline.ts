@@ -2,10 +2,10 @@ import type Anthropic from "@anthropic-ai/sdk";
 
 export const FAST_MODEL = "claude-haiku-4-5-20251001";
 export const WRITER_MODEL = "claude-sonnet-4-6";
-const WRITER_MAX_SOURCE_CHARS = 20_000;
-const WRITER_TOTAL_SOURCE_CHARS = 100_000;
-const WRITER_MIN_SOURCE_CHARS = 1_000;
-const MAX_HEADING_OUTLINE_CHARS = 2_000;
+const WRITER_MAX_SOURCE_CHARS = 60_000;
+const WRITER_TOTAL_SOURCE_CHARS = 240_000;
+const WRITER_MIN_SOURCE_CHARS = 4_000;
+const MAX_HEADING_OUTLINE_CHARS = 4_000;
 
 export interface CitedSource {
   n: number;
@@ -28,41 +28,19 @@ function markdownHeadingOutline(markdown: string): string {
   return `Document heading outline:\n${outline}\n\n`;
 }
 
-function clampSegmentStart(raw: string, start: number, length: number): number {
-  if (start <= 0) return 0;
-  const maxStart = Math.max(0, raw.length - length);
-  return Math.min(start, maxStart);
-}
-
-function sampleLongMarkdown(markdown: string, budget: number): string {
-  if (markdown.length <= budget) return markdown;
-
-  const omission = "\n\n[... omitted middle of source page ...]\n\n";
-  const segmentBudget = Math.max(200, budget - omission.length * 2);
-  const headChars = Math.floor(segmentBudget * 0.5);
-  const middleChars = Math.floor(segmentBudget * 0.25);
-  const tailChars = segmentBudget - headChars - middleChars;
-
-  const middleStart = clampSegmentStart(
-    markdown,
-    Math.floor(markdown.length / 2 - middleChars / 2),
-    middleChars,
-  );
-  const tailStart = clampSegmentStart(markdown, markdown.length - tailChars, tailChars);
-
-  return [
-    markdown.slice(0, headChars),
-    markdown.slice(middleStart, middleStart + middleChars),
-    markdown.slice(tailStart),
-  ].join(omission);
-}
-
 function packSourceMarkdown(markdown: string, budget: number): string {
   if (markdown.length <= budget) return markdown;
 
   const outline = markdownHeadingOutline(markdown);
-  const contentBudget = Math.max(WRITER_MIN_SOURCE_CHARS, budget - outline.length);
-  return `${outline}${sampleLongMarkdown(markdown, contentBudget)}`.slice(0, budget);
+  const truncation = "\n\n[... truncated source page ...]";
+  const contentBudget = Math.max(
+    WRITER_MIN_SOURCE_CHARS,
+    budget - outline.length - truncation.length,
+  );
+  return `${outline}${markdown.slice(0, contentBudget)}${truncation}`.slice(
+    0,
+    budget,
+  );
 }
 
 export async function writeReport(opts: {

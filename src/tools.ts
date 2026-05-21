@@ -9,7 +9,7 @@ import {
   type WebSearchOutcome,
 } from "./search.js";
 
-const STORED_MARKDOWN_CAP = 50_000;
+const STORED_MARKDOWN_CAP = 80_000;
 const FETCH_SNIPPET_CHARS = 2500;
 const DEFAULT_MAX_TOOL_CALLS = 12;
 const DEFAULT_MAX_CONCURRENT_TOOLS = 4;
