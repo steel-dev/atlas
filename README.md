@@ -113,16 +113,13 @@ console.log(`${result.sources.length} sources`);
 ```ts
 interface ResearchResult {
   query: string;
-  sub_questions: string[]; // compatibility field; currently [query]
-  lead_turns: number; // compatibility field; currently 0
   agent_runs: AgentRun[]; // one gather-agent run
-  sources: CitedSource[]; // numbered, with title + url + originating sub-question
+  sources: CitedSource[]; // numbered, with title + url
   markdown: string; // the report
   usage_summary: UsageSummary; // accumulated Anthropic token usage
 }
 
 interface AgentRun {
-  sub_question: string;
   source_ns: number[]; // global n's of sources the gather agent contributed
   tool_calls: number; // search + fetch calls used
   finish_reason: string; // why the gather agent stopped
@@ -131,7 +128,7 @@ interface AgentRun {
 
 ### Events
 
-`onEvent` fires for: `agent_started`, `searching`, `search_results`, `search_failed`, `fetching`, `source_committed`, `source_error`, `agent_finished`, `writing`, `written`, `completed`. Gather-agent events carry `sub_question` for compatibility with older event consumers. Full union types are exported as `ResearchEvent`.
+`onEvent` fires for: `agent_started`, `searching`, `search_results`, `search_failed`, `fetching`, `source_committed`, `source_error`, `agent_finished`, `writing`, `written`, `completed`. Full union types are exported as `ResearchEvent`.
 
 ## How it works
 

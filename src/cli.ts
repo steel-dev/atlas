@@ -79,31 +79,24 @@ function paint(color: string, text: string): string {
 }
 
 function prettyEvent(e: ResearchEvent): string {
-  const tag = (subQ: string) => {
-    if (!subQ) return "";
-    const t = subQ.length > 24 ? subQ.slice(0, 22) + "…" : subQ;
-    return paint(DIM, ` [${t}]`);
-  };
   switch (e.type) {
     case "agent_started":
-      return paint(DIM, "  →") + ` agent started${tag(e.sub_question)}`;
+      return paint(DIM, "  →") + " agent started";
     case "agent_finished":
       return (
         paint(DIM, "  ✓") +
-        ` agent done${tag(e.sub_question)} — ${e.sources_added} source${e.sources_added === 1 ? "" : "s"}`
+        ` agent done — ${e.sources_added} source${e.sources_added === 1 ? "" : "s"}`
       );
     case "searching":
-      return paint(DIM, `    search:`) + tag(e.sub_question) + ` ${e.query}`;
+      return paint(DIM, `    search:`) + ` ${e.query}`;
     case "search_results":
       return paint(DIM, `      ↳ ${e.count} result${e.count === 1 ? "" : "s"}`);
     case "search_failed":
-      return (
-        paint(YELLOW, `    ! search failed:`) + tag(e.sub_question) + ` ${e.error}`
-      );
+      return paint(YELLOW, `    ! search failed:`) + ` ${e.error}`;
     case "fetching":
-      return paint(DIM, `    fetch: ${e.url}`) + tag(e.sub_question);
+      return paint(DIM, `    fetch: ${e.url}`);
     case "source_committed":
-      return paint(GREEN, `    ✓`) + ` [${e.n}] ${e.url}` + tag(e.sub_question);
+      return paint(GREEN, `    ✓`) + ` [${e.n}] ${e.url}`;
     case "source_error":
       return paint(YELLOW, `    ! ${e.url} — ${e.error}`);
     case "writing":

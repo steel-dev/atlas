@@ -132,35 +132,31 @@ export interface AgentContext {
 // A loose superset of the research event types this module emits. Kept here
 // to avoid importing from research.ts (which would create a cycle).
 export type AgenticEvent =
-  | { type: "agent_started"; sub_question: string }
+  | { type: "agent_started" }
   | {
       type: "searching";
-      sub_question: string;
       index: number;
       query: string;
     }
   | {
       type: "search_results";
-      sub_question: string;
       index: number;
       count: number;
     }
   | {
       type: "search_failed";
-      sub_question: string;
       index: number;
       error: string;
     }
-  | { type: "fetching"; sub_question: string; url: string }
+  | { type: "fetching"; url: string }
   | {
       type: "source_committed";
-      sub_question: string;
       url: string;
       n: number;
       title: string;
     }
-  | { type: "source_error"; sub_question: string; url: string; error: string }
-  | { type: "agent_finished"; sub_question: string; sources_added: number };
+  | { type: "source_error"; url: string; error: string }
+  | { type: "agent_finished"; sources_added: number };
 
 export interface AgenticRunResult {
   source_ns: number[];
@@ -341,7 +337,6 @@ function releaseFetchReservation(
 async function execSearch(
   args: SearchToolInput,
   ctx: AgentContext,
-  question: string,
   searchIndex: number,
 ): Promise<string> {
   const query = String(args.query ?? "").trim();
@@ -352,7 +347,6 @@ async function execSearch(
 
   ctx.emit({
     type: "searching",
-    sub_question: question,
     index: searchIndex,
     query,
   });
@@ -385,7 +379,6 @@ async function execSearch(
     const error = failures.join("; ") || "all engines failed";
     ctx.emit({
       type: "search_failed",
-      sub_question: question,
       index: searchIndex,
       error,
     });
@@ -394,7 +387,6 @@ async function execSearch(
 
   ctx.emit({
     type: "search_results",
-    sub_question: question,
     index: searchIndex,
     count: outcome.results.length,
   });
@@ -447,7 +439,6 @@ async function mapWithConcurrency<T, R>(
 async function executeToolUse(
   tu: Anthropic.ToolUseBlock,
   ctx: AgentContext,
-  question: string,
   searchIndex?: number,
 ): Promise<ToolExecution> {
   if (tu.name === "search") {
@@ -455,7 +446,6 @@ async function executeToolUse(
       const text = await execSearch(
         (tu.input as SearchToolInput) ?? {},
         ctx,
-        question,
         searchIndex ?? 0,
       );
       return {
@@ -480,11 +470,7 @@ async function executeToolUse(
 
   if (tu.name === "fetch") {
     try {
-      const out = await execFetch(
-        (tu.input as FetchToolInput) ?? {},
-        ctx,
-        question,
-      );
+      const out = await execFetch((tu.input as FetchToolInput) ?? {}, ctx);
       return {
         committed_n: out.committed_n,
         toolResult: {
@@ -529,7 +515,6 @@ async function executeToolUse(
 async function execFetch(
   args: FetchToolInput,
   ctx: AgentContext,
-  subQ: string,
 ): Promise<FetchOutcome> {
   const requestedUrl = String(args.url ?? "").trim();
   if (!requestedUrl) return { text: "Error: fetch requires a `url`." };
@@ -541,7 +526,7 @@ async function execFetch(
   if (typeof reservation === "string") return { text: reservation };
   const url = reservation.url;
 
-  ctx.emit({ type: "fetching", sub_question: subQ, url });
+  ctx.emit({ type: "fetching", url });
 
   try {
     let scrapePromise = ctx.caches.scrape.get(url);
@@ -569,7 +554,6 @@ async function execFetch(
       ctx.caches.scrape.delete(url);
       ctx.emit({
         type: "source_error",
-        sub_question: subQ,
         url,
         error: "Empty markdown",
       });
@@ -586,14 +570,12 @@ async function execFetch(
       n,
       url,
       title: resolvedTitle,
-      sub_question: subQ,
     });
     ctx.sourceUrls.add(url);
     ctx.sourceMarkdowns.set(n, markdown.slice(0, STORED_MARKDOWN_CAP));
 
     ctx.emit({
       type: "source_committed",
-      sub_question: subQ,
       url,
       n,
       title: resolvedTitle,
@@ -609,7 +591,6 @@ async function execFetch(
     const message = err instanceof Error ? err.message : String(err);
     ctx.emit({
       type: "source_error",
-      sub_question: subQ,
       url,
       error: message,
     });
@@ -627,7 +608,7 @@ export async function runGatherAgent(opts: {
   const { ctx, query } = opts;
   const maxToolCalls = opts.max_tool_calls ?? DEFAULT_MAX_TOOL_CALLS;
 
-  ctx.emit({ type: "agent_started", sub_question: query });
+  ctx.emit({ type: "agent_started" });
 
   const myAddedNs: number[] = [];
   let toolCalls = 0;
@@ -699,7 +680,6 @@ export async function runGatherAgent(opts: {
         executeToolUse(
           tu,
           ctx,
-          query,
           searchIndexes[index],
         ),
     );
@@ -724,7 +704,6 @@ export async function runGatherAgent(opts: {
 
   ctx.emit({
     type: "agent_finished",
-    sub_question: query,
     sources_added: myAddedNs.length,
   });
 

@@ -11,7 +11,6 @@ export interface CitedSource {
   n: number;
   url: string;
   title: string;
-  sub_question: string;
 }
 
 export interface ReportOutput {
@@ -98,7 +97,7 @@ export async function writeReport(opts: {
       const rawBlock = raw
         ? `\nPage content (packed to ${sourceBudget.toLocaleString()} chars):\n${packed}`
         : "\n(No page content available.)";
-      return `[${s.n}] ${s.title} — ${s.url}\nSub-question: ${s.sub_question || "(unspecified)"}${rawBlock}`;
+      return `[${s.n}] ${s.title} — ${s.url}${rawBlock}`;
     })
     .join("\n\n---\n\n");
 

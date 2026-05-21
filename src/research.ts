@@ -31,7 +31,6 @@ export interface UsageSummary {
 }
 
 export interface AgentRun {
-  sub_question: string;
   source_ns: number[];
   tool_calls: number;
   finish_reason: string;
@@ -39,8 +38,6 @@ export interface AgentRun {
 
 export interface ResearchResult {
   query: string;
-  sub_questions: string[];
-  lead_turns: number;
   agent_runs: AgentRun[];
   sources: CitedSource[];
   markdown: string;
@@ -48,30 +45,27 @@ export interface ResearchResult {
 }
 
 export type ResearchEvent =
-  | { type: "agent_started"; sub_question: string }
-  | { type: "searching"; sub_question: string; index: number; query: string }
+  | { type: "agent_started" }
+  | { type: "searching"; index: number; query: string }
   | {
       type: "search_results";
-      sub_question: string;
       index: number;
       count: number;
     }
   | {
       type: "search_failed";
-      sub_question: string;
       index: number;
       error: string;
     }
-  | { type: "fetching"; sub_question: string; url: string }
+  | { type: "fetching"; url: string }
   | {
       type: "source_committed";
-      sub_question: string;
       url: string;
       n: number;
       title: string;
     }
-  | { type: "source_error"; sub_question: string; url: string; error: string }
-  | { type: "agent_finished"; sub_question: string; sources_added: number }
+  | { type: "source_error"; url: string; error: string }
+  | { type: "agent_finished"; sources_added: number }
   | { type: "writing"; sources_count: number }
   | { type: "written"; markdown_chars: number }
   | { type: "completed"; result: ResearchResult };
@@ -178,11 +172,8 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
 
   const result: ResearchResult = {
     query,
-    sub_questions: [query],
-    lead_turns: 0,
     agent_runs: [
       {
-        sub_question: query,
         source_ns: gather.source_ns,
         tool_calls: gather.tool_calls,
         finish_reason: gather.finish_reason,
