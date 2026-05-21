@@ -5,6 +5,7 @@ import {
   ENGINES,
   webSearch,
   type Engine,
+  type SearchResult,
   type WebSearchOutcome,
 } from "./search.js";
 
@@ -172,6 +173,12 @@ interface FetchToolInput {
   url?: string;
 }
 
+interface EngineSearchOutcome {
+  engine: Engine;
+  outcome?: WebSearchOutcome;
+  error?: string;
+}
+
 const AGENT_TOOLS: Anthropic.Tool[] = [
   {
     name: "search",
@@ -188,7 +195,8 @@ const AGENT_TOOLS: Anthropic.Tool[] = [
           type: "integer",
           minimum: 1,
           maximum: 10,
-          description: "How many results to return. Default 5.",
+          description:
+            "How many results to request from each search provider. Default 5.",
         },
       },
       required: ["query"],
@@ -300,6 +308,23 @@ async function searchWithCache(
   }
 }
 
+function mergeSearchResults(engineOutcomes: EngineSearchOutcome[]): SearchResult[] {
+  const results: SearchResult[] = [];
+  const seenUrls = new Set<string>();
+
+  for (const engineOutcome of engineOutcomes) {
+    if (!engineOutcome.outcome?.ok) continue;
+    for (const result of engineOutcome.outcome.results) {
+      const urlKey = normalizeFetchUrl(result.url);
+      if (seenUrls.has(urlKey)) continue;
+      seenUrls.add(urlKey);
+      results.push({ ...result, position: results.length + 1 });
+    }
+  }
+
+  return results;
+}
+
 interface FetchReservation {
   url: string;
 }
@@ -351,31 +376,36 @@ async function execSearch(
     query,
   });
 
-  const failures: string[] = [];
-  let successfulEngine: Engine | null = null;
-  let outcome: WebSearchOutcome | null = null;
-
-  for (const engine of searchEnginesInFallbackOrder(ctx.defaultEngine)) {
-    try {
-      const candidate = await searchWithCache(ctx, { query, limit, engine });
-      if (candidate.ok && candidate.results.length > 0) {
-        successfulEngine = engine;
-        outcome = candidate;
-        break;
+  const engineOutcomes: EngineSearchOutcome[] = await Promise.all(
+    searchEnginesInFallbackOrder(ctx.defaultEngine).map(async (engine) => {
+      try {
+        return {
+          engine,
+          outcome: await searchWithCache(ctx, { query, limit, engine }),
+        };
+      } catch (err) {
+        return {
+          engine,
+          error: err instanceof Error ? err.message : String(err),
+        };
       }
-      if (candidate.ok) {
-        successfulEngine ??= engine;
-        outcome ??= candidate;
-      } else {
-        failures.push(`${engine}: ${candidate.error.message}`);
-      }
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      failures.push(`${engine}: ${message}`);
+    }),
+  );
+  const failures = engineOutcomes.flatMap((engineOutcome) => {
+    if (engineOutcome.error) {
+      return [`${engineOutcome.engine}: ${engineOutcome.error}`];
     }
-  }
+    if (engineOutcome.outcome && !engineOutcome.outcome.ok) {
+      return [`${engineOutcome.engine}: ${engineOutcome.outcome.error.message}`];
+    }
+    return [];
+  });
+  const successfulEngines = engineOutcomes
+    .filter((engineOutcome) => engineOutcome.outcome?.ok)
+    .map((engineOutcome) => engineOutcome.engine);
+  const results = mergeSearchResults(engineOutcomes);
 
-  if (!outcome?.ok) {
+  if (successfulEngines.length === 0) {
     const error = failures.join("; ") || "all engines failed";
     ctx.emit({
       type: "search_failed",
@@ -388,21 +418,18 @@ async function execSearch(
   ctx.emit({
     type: "search_results",
     index: searchIndex,
-    count: outcome.results.length,
+    count: results.length,
   });
 
-  if (outcome.results.length === 0) {
+  if (results.length === 0) {
     return "No results for this query.";
   }
-  const lines = outcome.results.map(
+  const lines = results.map(
     (r, i) =>
       `${i + 1}. ${r.title}\n   ${r.url}${r.snippet ? `\n   ${r.snippet.slice(0, 200)}` : ""}`,
   );
-  const engineNote =
-    successfulEngine && successfulEngine !== ctx.defaultEngine
-      ? ` (via ${successfulEngine} fallback)`
-      : "";
-  return `${outcome.results.length} result${outcome.results.length === 1 ? "" : "s"}${engineNote}:\n\n${lines.join("\n\n")}`;
+  const engineNote = ` from ${successfulEngines.join(", ")}`;
+  return `${results.length} merged result${results.length === 1 ? "" : "s"}${engineNote}:\n\n${lines.join("\n\n")}`;
 }
 
 interface FetchOutcome {
