@@ -208,10 +208,10 @@ function parseGoogle(html: string, limit: number): SearchResult[] {
 
       const $a = $h3.closest("a");
       const href = ($a.attr("href") ?? $el.find('a[href^="http"]').first().attr("href") ?? "").trim();
-      if (!href || !/^https?:\/\//i.test(href)) return;
+      if (!href) return;
 
       const url = normalizeGoogleHref(href);
-      if (!url || isGoogleInternal(url) || seen.has(url)) return;
+      if (!url || !/^https?:\/\//i.test(url) || isGoogleInternal(url) || seen.has(url)) return;
       seen.add(url);
 
       const snippet =
@@ -278,3 +278,13 @@ export function safeDomain(url: string): string {
     return "";
   }
 }
+
+export const __testing = {
+  buildSerpUrl,
+  parseSerp,
+  parseDdg,
+  parseBing,
+  parseGoogle,
+  unwrapDdgHref,
+  normalizeGoogleHref,
+};

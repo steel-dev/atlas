@@ -725,3 +725,8 @@ export async function runGatherAgent(opts: {
     finish_reason: finishReason,
   };
 }
+
+export const __testing = {
+  normalizeFetchUrl,
+  searchEnginesInFallbackOrder,
+};
