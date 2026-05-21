@@ -5,6 +5,9 @@ import { looksBlocked } from "./steel.js";
 export const ENGINES = ["ddg", "bing", "google"] as const;
 export type Engine = (typeof ENGINES)[number];
 
+export const BACKENDS = ["web", "arxiv", "github", "hn"] as const;
+export type Backend = (typeof BACKENDS)[number];
+
 export interface SearchResult {
   position: number;
   title: string;
@@ -14,7 +17,7 @@ export interface SearchResult {
 }
 
 export interface WebSearchError {
-  code: "E_STEEL_TIMEOUT" | "E_STEEL_UNAVAILABLE";
+  code: "E_STEEL_TIMEOUT" | "E_STEEL_UNAVAILABLE" | "E_BACKEND_UNAVAILABLE";
   message: string;
 }
 
@@ -267,10 +270,230 @@ function isGoogleInternal(url: string): boolean {
   }
 }
 
-function safeDomain(url: string): string {
+export function safeDomain(url: string): string {
   try {
     return new URL(url).hostname.replace(/^www\./, "");
   } catch {
     return "";
+  }
+}
+
+// ---- non-SERP search backends -----------------------------------------------
+//
+// These hit open JSON/Atom APIs directly (no Steel) because they're not anti-bot
+// gated and the JSON is cheaper than scraping. Errors are normalized into the
+// same WebSearchOutcome shape so the agent loop can treat all backends uniformly.
+
+const ARXIV_API = "http://export.arxiv.org/api/query";
+
+export async function arxivSearch(opts: {
+  query: string;
+  limit?: number;
+  signal?: AbortSignal;
+}): Promise<WebSearchOutcome> {
+  const limit = Math.max(1, opts.limit ?? 5);
+  const params = new URLSearchParams({
+    search_query: `all:${opts.query}`,
+    max_results: String(limit),
+    sortBy: "relevance",
+    sortOrder: "descending",
+  });
+
+  try {
+    const res = await fetch(`${ARXIV_API}?${params}`, { signal: opts.signal });
+    if (!res.ok) {
+      return {
+        ok: false,
+        error: {
+          code: "E_BACKEND_UNAVAILABLE",
+          message: `arXiv: HTTP ${res.status}`,
+        },
+      };
+    }
+    const xml = await res.text();
+    return { ok: true, results: parseArxivAtom(xml, limit) };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return {
+      ok: false,
+      error: { code: "E_BACKEND_UNAVAILABLE", message: `arXiv: ${message}` },
+    };
+  }
+}
+
+function parseArxivAtom(xml: string, limit: number): SearchResult[] {
+  const $ = cheerio.load(xml, { xmlMode: true });
+  const results: SearchResult[] = [];
+  $("entry").each((_idx, el) => {
+    if (results.length >= limit) return false;
+    const $el = $(el);
+    const id = $el.find("id").first().text().trim();
+    const title = $el.find("title").first().text().trim().replace(/\s+/g, " ");
+    const summary = $el
+      .find("summary")
+      .first()
+      .text()
+      .trim()
+      .replace(/\s+/g, " ")
+      .slice(0, 300);
+    if (!id || !title) return;
+    results.push({
+      position: results.length + 1,
+      title,
+      url: id,
+      snippet: summary,
+      domain: "arxiv.org",
+    });
+    return;
+  });
+  return results;
+}
+
+const GITHUB_API = "https://api.github.com/search";
+export type GithubKind = "repositories" | "issues" | "code";
+
+export async function githubSearch(opts: {
+  query: string;
+  kind?: GithubKind;
+  limit?: number;
+  token?: string;
+  signal?: AbortSignal;
+}): Promise<WebSearchOutcome> {
+  const limit = Math.max(1, opts.limit ?? 5);
+  const kind = opts.kind ?? "repositories";
+  const params = new URLSearchParams({
+    q: opts.query,
+    per_page: String(limit),
+  });
+  const headers: Record<string, string> = {
+    Accept: "application/vnd.github+json",
+    "X-GitHub-Api-Version": "2022-11-28",
+    "User-Agent": "atlas-research",
+  };
+  if (opts.token) headers.Authorization = `Bearer ${opts.token}`;
+
+  try {
+    const res = await fetch(`${GITHUB_API}/${kind}?${params}`, {
+      headers,
+      signal: opts.signal,
+    });
+    if (!res.ok) {
+      return {
+        ok: false,
+        error: {
+          code: "E_BACKEND_UNAVAILABLE",
+          message: `GitHub: HTTP ${res.status}`,
+        },
+      };
+    }
+    const data = (await res.json()) as { items?: Array<Record<string, unknown>> };
+    const items = Array.isArray(data.items) ? data.items : [];
+    const results: SearchResult[] = [];
+    for (const item of items) {
+      if (results.length >= limit) break;
+      let title = "";
+      let url = "";
+      let snippet = "";
+      if (kind === "repositories") {
+        title = String(item.full_name ?? "");
+        url = String(item.html_url ?? "");
+        const desc = String(item.description ?? "");
+        const stars = item.stargazers_count;
+        snippet = (typeof stars === "number" ? `★${stars} — ` : "") + desc.slice(0, 240);
+      } else if (kind === "issues") {
+        title = String(item.title ?? "");
+        url = String(item.html_url ?? "");
+        const body = String(item.body ?? "")
+          .replace(/\s+/g, " ")
+          .slice(0, 240);
+        snippet = body;
+      } else {
+        title = String((item.path as string) ?? (item.name as string) ?? "");
+        url = String(item.html_url ?? "");
+        const repo = (item.repository as { full_name?: string })?.full_name ?? "";
+        snippet = repo ? `in ${repo}` : "";
+      }
+      if (!title || !url) continue;
+      results.push({
+        position: results.length + 1,
+        title,
+        url,
+        snippet,
+        domain: "github.com",
+      });
+    }
+    return { ok: true, results };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return {
+      ok: false,
+      error: { code: "E_BACKEND_UNAVAILABLE", message: `GitHub: ${message}` },
+    };
+  }
+}
+
+const HN_API = "https://hn.algolia.com/api/v1/search";
+
+export async function hnSearch(opts: {
+  query: string;
+  limit?: number;
+  signal?: AbortSignal;
+}): Promise<WebSearchOutcome> {
+  const limit = Math.max(1, opts.limit ?? 5);
+  const params = new URLSearchParams({
+    query: opts.query,
+    hitsPerPage: String(limit),
+    tags: "story",
+  });
+  try {
+    const res = await fetch(`${HN_API}?${params}`, { signal: opts.signal });
+    if (!res.ok) {
+      return {
+        ok: false,
+        error: {
+          code: "E_BACKEND_UNAVAILABLE",
+          message: `HN: HTTP ${res.status}`,
+        },
+      };
+    }
+    const data = (await res.json()) as {
+      hits?: Array<{
+        title?: string;
+        story_title?: string;
+        url?: string;
+        objectID?: string;
+        points?: number;
+        num_comments?: number;
+      }>;
+    };
+    const hits = Array.isArray(data.hits) ? data.hits : [];
+    const results: SearchResult[] = [];
+    for (const h of hits) {
+      if (results.length >= limit) break;
+      const title = (h.title || h.story_title || "").trim();
+      const url = h.url
+        ? h.url
+        : h.objectID
+          ? `https://news.ycombinator.com/item?id=${h.objectID}`
+          : "";
+      if (!title || !url) continue;
+      const points = h.points ?? 0;
+      const comments = h.num_comments ?? 0;
+      const snippet = `${points} point${points === 1 ? "" : "s"}, ${comments} comment${comments === 1 ? "" : "s"}`;
+      results.push({
+        position: results.length + 1,
+        title,
+        url,
+        snippet,
+        domain: safeDomain(url) || "news.ycombinator.com",
+      });
+    }
+    return { ok: true, results };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return {
+      ok: false,
+      error: { code: "E_BACKEND_UNAVAILABLE", message: `HN: ${message}` },
+    };
   }
 }

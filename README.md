@@ -19,10 +19,15 @@ npx @steel-dev/atlas "What changed when Cloudflare Durable Objects added SQLite?
     • When did SQLite-backed Durable Objects ship?
     • What new capabilities did SQLite unlock?
     • What limits or trade-offs come with the SQLite backend?
-→ round 1 — 3 queries
+→ agent: When did SQLite-backed Durable Objects ship?
+  search: [web] cloudflare durable objects sqlite release date
+    ↳ 5 results
+  fetch: https://blog.cloudflare.com/...
   ✓ [1] https://blog.cloudflare.com/...
-  ✓ [2] https://developers.cloudflare.com/...
-  ✓ [3] https://news.ycombinator.com/...
+→ agent: What new capabilities did SQLite unlock?
+  search: [github] cloudflare/workers-sdk sqlite durable object
+    ↳ 4 results
+  ✓ [2] https://github.com/cloudflare/workers-sdk/...
 → writing report (attempt 1, 6 sources)
 → verifying 11 claims
   ✓ [1] (1/11)
@@ -77,16 +82,13 @@ atlas "..." --quiet                    # no progress, just markdown
 | Flag                    | Default | What it does                                               |
 | ----------------------- | ------- | ---------------------------------------------------------- |
 | `--max-sub-questions N` | 4       | How many sub-questions to plan                             |
-| `--max-results-per-q N` | 5       | SERP results per sub-question                              |
 | `--max-sources N`       | 12      | Cap on cited sources                                       |
-| `--max-hops N`          | 3       | Max extra search rounds; loop early-exits when sufficient  |
-| `--fetch-concurrency N` | 5       | How many pages fetch + summarize in parallel               |
-| `--queries-per-subq N`  | 3       | Search queries Haiku expands each sub-question into        |
+| `--max-tool-calls N`    | 12      | Per-sub-agent tool-call cap (search / fetch / finish)      |
 | `--no-critique`         | off     | Disable the post-draft peer-review pass                    |
 | `--verify-threshold F`  | 0.7     | Min fraction of claims that must verify; below → rewrite   |
-| `--engine <e>`          | ddg     | `ddg`, `bing`, or `google`                                 |
+| `--engine <e>`          | ddg     | Default web SERP: `ddg`, `bing`, or `google`               |
 | `--use-proxy`           | off     | Route Steel through its residential proxy (paid add-on)    |
-| `--fast-model <m>`      | Haiku   | Override the per-page / verify / critique-non-writer model |
+| `--fast-model <m>`      | Haiku   | Override the scout / page / verify / critique model        |
 | `--writer-model <m>`    | Sonnet  | Override the report writer and critique reviewer model     |
 
 Cancel anytime with `Ctrl+C` — Atlas stops between steps and exits 130.
@@ -103,7 +105,7 @@ const result = await research({
 
   // all optional — same defaults as the CLI
   maxSources: 15,
-  maxHops: 3,
+  maxToolCalls: 18,
   engine: "google",
 
   // progress callback
@@ -128,7 +130,7 @@ interface ResearchResult {
   query: string;
   brief: string; // first-person research brief
   sub_questions: string[]; // planned decomposition
-  agent_runs: AgentRun[]; // one per sub-question, with its own assess history
+  agent_runs: AgentRun[]; // one per sub-question
   sources: CitedSource[]; // numbered, with verbatim excerpts
   markdown: string; // the report
   critiques: CritiqueResult[]; // one per write attempt
@@ -145,16 +147,15 @@ interface ResearchResult {
 
 interface AgentRun {
   sub_question: string;
-  expanded_queries: string[];
   source_ns: number[]; // global n's of sources this agent contributed
-  rounds: number;
-  assessments: AssessmentRecord[]; // mini-assess per round
+  tool_calls: number; // search + fetch + finish calls used
+  finish_reason: string; // why the agent stopped
 }
 ```
 
 ### Events
 
-`onEvent` fires for: `brief`, `expanded_queries`, `agent_started`, `round_started`, `searching`, `search_results`, `search_failed`, `fetching`, `summarized`, `source_skipped`, `source_error`, `assessing`, `assessment`, `agent_finished`, `writing`, `written`, `critiquing`, `critique_done`, `verifying`, `verified_claim`, `verify_failed`, `completed`. Per-agent events (everything between `agent_started` and `agent_finished` for a given sub-question) carry a `sub_question` field so you can demux parallel agents. Full union types are exported as `ResearchEvent`.
+`onEvent` fires for: `brief`, `agent_started`, `searching`, `search_results`, `search_failed`, `fetching`, `summarized`, `source_skipped`, `source_error`, `agent_finished`, `outlining`, `outline_done`, `section_writing`, `section_written`, `writing`, `written`, `critiquing`, `critique_done`, `verifying`, `verified_claim`, `verify_failed`, `completed`. Per-agent events (everything between `agent_started` and `agent_finished` for a given sub-question) carry a `sub_question` field so you can demux parallel agents. Full union types are exported as `ResearchEvent`.
 
 ## How it works
 
@@ -162,47 +163,43 @@ interface AgentRun {
 plan brief + sub-questions             (Haiku)
        │
        ▼
-expand each sub-question into N        (Haiku — angles: definition,
-queries from different angles            recency, comparison, criticism)
-       │
-       ▼
-┌──── per-sub-question agent (all run in parallel) ─────┐
-│  search each expanded query                            │
-│            ↓                                           │
-│  fetch + per-page summarize (parallel within agent)    │
-│            ↓                                           │
-│  mini-assess this agent's coverage ◄── loop ──┐        │
-│            │                                  │        │
-│            ▼  (gaps? more queries)            │        │
-│  ─────────────────────────────────────────────┘        │
+┌──── per-sub-question scout (all run in parallel) ─────┐
+│  Haiku-driven loop with tools:                         │
+│    search(query, source: web|arxiv|github|hn, site?)   │
+│    fetch(url)   ← scrape + summarize + commit          │
+│    finish(reason)                                      │
+│  Budget: max_tool_calls + agent_source_cap.            │
+│  URL dedup, per-domain cap, global cap enforced        │
+│  inside the tools — agent can't break them.            │
 └────────────────────────────────────────────────────────┘
        │
-       ▼  (synthesizer sees all sub-question
-       ▼   sources + raw page markdown)
-write report                           (Sonnet)
+       ▼  (outline from source summaries, then per-section
+       ▼   parallel writes with each section seeing ONLY its
+       ▼   own sources at full raw fidelity)
+plan outline → write sections          (Sonnet)
        │
        ▼
 peer-review critique                   (Sonnet — substantive issues only)
        │
        ▼
-verify every [n] citation              (Haiku, parallel batches)
+verify every [n] citation              (Haiku reads the raw page text,
+                                         excerpts are hints only)
        │
        ▼
 critique-fail OR verify-fail?
-  ── yes ──► rewrite once with both signals fed back
+  ── yes ──► single-pass rewrite with both signals fed back
        │ no
        ▼
    final report
 ```
 
-- **Query expansion** — each sub-question fans out into N short queries hitting it from different angles (definition / recency / comparison / criticism / primary sources). One Haiku call up front; SERP recall jumps without changing search backend.
-- **Per-sub-question agents** — each sub-question becomes its own agent running a full search → fetch → mini-assess loop in parallel with the others. Agents share a global source pool (URL dedupe, per-domain cap) but each gets its own depth budget and decides for itself whether to dig deeper. This is the key SOTA-ish lever vs. a flat shared queue: every sub-question gets actual depth rather than competing in one pool.
-- **Parallel fetch + summarize** — within each agent, pages get pulled and summarized concurrently, so wall-clock scales with the slowest source, not the sum.
-- **Gap-driven depth** — each agent's mini-assess early-exits when its own sub-question is sufficiently covered, and only spends another round when it can name a concrete gap.
-- **Writer sees full pages** — the Sonnet writer is given each source's summary, verbatim excerpts, AND the raw page markdown (truncated per-source). Most OSS pipelines hand the writer only summaries; atlas hands it the source material so it can find specifics summaries miss.
+- **Tool-driven scouts** — each sub-question runs a Haiku loop with `search` / `fetch` / `finish`. The scout decides its own queries (no fixed expansion), its own backends (web for general, arxiv for papers, github for code, hn for community), and when to stop. Easy questions finish in 3 tool calls; deep questions use the full budget.
+- **Tools enforce invariants** — URL dedup, per-domain cap (≤2), and the global source cap live inside the tool implementations. No matter what the scout picks, the pool stays clean.
+- **Targeted fetch** — `fetch(url)` scrapes via Steel, summarizes against the sub-question, and atomically commits to the global pool if relevant. Irrelevant pages return a "not committed" message so the scout learns.
+- **Citation chasing** — when a fetched source references another (a paper, an announcement, a doc), the scout can just `fetch` that URL next. One level deeper than SERP usually beats more searches.
+- **Section-by-section writer** — first attempt plans an outline (Sonnet, from summaries only) then writes each section in parallel with ONLY that section's sources at full raw fidelity. The writer never has to do internal retrieval over the whole source pool, which is the usual hallucination vector. Retry (attempt 2) uses a single-pass rewrite so per-claim feedback can land cleanly.
 - **Peer-review critique** — after each draft, a Sonnet reviewer reads the report against the brief and sub-questions, flagging substantive issues (unaddressed sub-questions, weak hedging, missed contradictions, surface restatement). If it flags issues OR citation verification falls below threshold, one rewrite is triggered with both signals fed in.
-- **Sources dedupe** across rounds and cap per domain (≤2) so one site can't dominate.
-- **Citations are verified** — each `[n]` marker is checked against the source's verbatim excerpts. Below `verify_threshold` triggers exactly one rewrite that's told which claims failed.
+- **Citations verified against raw pages** — each `[n]` marker is checked by Haiku reading the raw page text (the ground truth), with summary + excerpts as convenience hints only. This breaks the circularity where verifying against the scout's own summary would just rubber-stamp whatever the scout said.
 - **Cancellable** — `AbortSignal` (or `Ctrl+C` in CLI) cleanly stops between steps.
 - **Bring your own LLM keys** — no Atlas hosted service, no telemetry. Spend is yours.
 

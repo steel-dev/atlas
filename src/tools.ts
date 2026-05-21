@@ -1,0 +1,616 @@
+import type Anthropic from "@anthropic-ai/sdk";
+import type Steel from "steel-sdk";
+import {
+  FAST_MODEL,
+  summarizeWebpage,
+  type CitedSource,
+} from "./pipeline.js";
+import {
+  arxivSearch,
+  githubSearch,
+  hnSearch,
+  safeDomain,
+  webSearch,
+  type Backend,
+  type Engine,
+  type SearchResult,
+} from "./search.js";
+
+const STORED_MARKDOWN_CAP = 50_000;
+const DEFAULT_MAX_TOOL_CALLS = 12;
+
+// ----------------------------------------------------------------------------
+// Agentic sub-agent
+//
+// Each sub-question gets a Haiku-driven loop with three tools:
+//   - search(query, source?, site?, limit?)
+//   - fetch(url) — scrape + summarize + atomic commit to global pool
+//   - finish(reason)
+//
+// Global invariants (URL dedup, per-domain cap, source cap) are enforced
+// INSIDE the tools, so the agent can't break them no matter what it picks.
+// ----------------------------------------------------------------------------
+
+export interface AgentContext {
+  anthropic: Anthropic;
+  steel: Steel;
+  sources: CitedSource[];
+  sourceUrls: Set<string>;
+  sourceMarkdowns: Map<number, string>;
+  globalDomainCounts: Map<string, number>;
+  emit: (e: AgenticEvent) => void;
+  abort: () => void;
+  defaultEngine: Engine;
+  useProxy: boolean;
+  fastModel?: string;
+  perDomainCap: number;
+  globalSourceCap: number;
+  githubToken?: string;
+}
+
+// A loose superset of the research event types this module emits. Kept here
+// to avoid importing from research.ts (which would create a cycle).
+export type AgenticEvent =
+  | { type: "agent_started"; sub_question: string }
+  | {
+      type: "searching";
+      sub_question: string;
+      index: number;
+      query: string;
+    }
+  | {
+      type: "search_results";
+      sub_question: string;
+      index: number;
+      count: number;
+    }
+  | {
+      type: "search_failed";
+      sub_question: string;
+      index: number;
+      error: string;
+    }
+  | { type: "fetching"; sub_question: string; url: string }
+  | {
+      type: "summarized";
+      sub_question: string;
+      url: string;
+      n: number;
+      summary: string;
+    }
+  | { type: "source_skipped"; sub_question: string; url: string; reason: string }
+  | { type: "source_error"; sub_question: string; url: string; error: string }
+  | { type: "agent_finished"; sub_question: string; sources_added: number };
+
+export interface AgenticRunResult {
+  source_ns: number[];
+  tool_calls: number;
+  finish_reason: string;
+}
+
+interface SearchToolInput {
+  query?: string;
+  source?: Backend;
+  site?: string;
+  limit?: number;
+}
+interface FetchToolInput {
+  url?: string;
+}
+interface FinishToolInput {
+  reason?: string;
+}
+
+const AGENT_TOOLS: Anthropic.Tool[] = [
+  {
+    name: "search",
+    description:
+      "Search for sources addressing the sub-question. Use the `source` parameter to pick a backend:\n" +
+      "  • web (default) — general web SERP\n" +
+      "  • arxiv — academic papers (best for technical / SOTA / research)\n" +
+      "  • github — repositories and code (best for tooling / libraries / implementations)\n" +
+      "  • hn — Hacker News discussions (best for community signal, post-mortems, recent commentary)\n" +
+      "For targeted web search set `site` (e.g., 'docs.cloudflare.com'). Issue 1-3 searches per agent — don't repeat queries.",
+    input_schema: {
+      type: "object",
+      properties: {
+        query: {
+          type: "string",
+          description: "Short, search-engine-friendly query (≤10 words ideal).",
+        },
+        source: {
+          type: "string",
+          enum: ["web", "arxiv", "github", "hn"],
+          description: "Backend. Defaults to web.",
+        },
+        site: {
+          type: "string",
+          description:
+            "Optional site:foo.com filter; only applied when source=web.",
+        },
+        limit: {
+          type: "integer",
+          minimum: 1,
+          maximum: 10,
+          description: "How many results to return. Default 5.",
+        },
+      },
+      required: ["query"],
+    } as Anthropic.Tool["input_schema"],
+  },
+  {
+    name: "fetch",
+    description:
+      "Fetch a URL, summarize its content against the sub-question, and (if relevant) atomically commit it to the global source pool. " +
+      "Returns the assigned [n], a tight summary, and verbatim key excerpts. " +
+      "If the page is irrelevant or duplicate, it is NOT committed and the tool returns why. " +
+      "Fetch the 2-4 most promising results per search; don't fetch obvious off-topic snippets.",
+    input_schema: {
+      type: "object",
+      properties: {
+        url: {
+          type: "string",
+          description: "Absolute http(s) URL of the page to fetch.",
+        },
+      },
+      required: ["url"],
+    } as Anthropic.Tool["input_schema"],
+  },
+  {
+    name: "finish",
+    description:
+      "Stop research for this sub-question. Call when you have 2-4 corroborating sources covering it well, " +
+      "or when further searches are unlikely to add value.",
+    input_schema: {
+      type: "object",
+      properties: {
+        reason: {
+          type: "string",
+          description: "Short note on what's covered or why stopping.",
+        },
+      },
+      required: ["reason"],
+    } as Anthropic.Tool["input_schema"],
+  },
+];
+
+const AGENT_SYSTEM = `You are a research scout focused on ONE sub-question. Your job is to gather a small set of high-quality, diverse sources whose contents together answer it.
+
+Tools available:
+- search(query, source?, site?, limit?) — web (default), arxiv (papers), github (code), hn (discussions). Use \`site:foo.com\` (via the \`site\` argument) for targeted web search.
+- fetch(url) — scrape + summarize + commit. Returns [n] + summary + key excerpts, or "not relevant" if it doesn't address the sub-question.
+- finish(reason) — call when you have enough.
+
+Strategy:
+1. Open with 1-2 broad searches at different angles (definition / recency / comparison / criticism / primary source). Pick the backend that fits the topic.
+2. Skim the search results' titles + snippets. Fetch only the 2-4 most promising — not all of them.
+3. If a fetched source references another (a paper, an announcement URL, a doc), fetch that too. Following citations one level deeper often beats more searches.
+4. Prefer primary sources (official docs, papers, original announcements) over forums/blogs unless community insight is what you want.
+5. Stop early when you have ~2-4 corroborating sources. Hard cap: respect your budget.
+
+Be efficient: don't fetch URLs already in the source pool (the tool will reject them); don't issue the same query twice; don't fetch results whose snippets clearly miss the sub-question.`;
+
+function formatSearchResults(
+  results: SearchResult[],
+  backend: Backend,
+  filteredCount: number,
+): string {
+  if (results.length === 0) {
+    if (filteredCount > 0) {
+      return `No new fetchable results (${filteredCount} duplicates or domain-capped). Try a different query or backend.`;
+    }
+    return `No results for this query on ${backend}.`;
+  }
+  const lines = results.map(
+    (r, i) =>
+      `${i + 1}. ${r.title}\n   ${r.url}${r.snippet ? `\n   ${r.snippet.slice(0, 200)}` : ""}`,
+  );
+  const suffix =
+    filteredCount > 0 ? `\n\n(${filteredCount} duplicate/capped results hidden)` : "";
+  return `${results.length} result${results.length === 1 ? "" : "s"} via ${backend}:\n\n${lines.join("\n\n")}${suffix}`;
+}
+
+async function execSearch(
+  args: SearchToolInput,
+  ctx: AgentContext,
+  subQ: string,
+  searchIndex: number,
+): Promise<string> {
+  const query = String(args.query ?? "").trim();
+  if (!query) return "Error: search requires a non-empty `query`.";
+
+  const backend: Backend = args.source ?? "web";
+  const rawLimit = args.limit ?? 5;
+  const limit = Math.min(Math.max(1, Math.floor(Number(rawLimit))), 10);
+
+  let effectiveQuery = query;
+  if (args.site && backend === "web") {
+    const site = String(args.site).trim().replace(/^https?:\/\//, "");
+    if (site) effectiveQuery = `${query} site:${site}`;
+  }
+
+  ctx.emit({
+    type: "searching",
+    sub_question: subQ,
+    index: searchIndex,
+    query: `[${backend}] ${effectiveQuery}`,
+  });
+
+  let outcome;
+  try {
+    switch (backend) {
+      case "web":
+        outcome = await webSearch({
+          steel: ctx.steel,
+          query: effectiveQuery,
+          engine: ctx.defaultEngine,
+          useProxy: ctx.useProxy,
+          limit,
+        });
+        break;
+      case "arxiv":
+        outcome = await arxivSearch({ query: effectiveQuery, limit });
+        break;
+      case "github":
+        outcome = await githubSearch({
+          query: effectiveQuery,
+          limit,
+          token: ctx.githubToken,
+        });
+        break;
+      case "hn":
+        outcome = await hnSearch({ query: effectiveQuery, limit });
+        break;
+      default: {
+        const _exhaustive: never = backend;
+        return `Error: unknown backend "${_exhaustive}".`;
+      }
+    }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    ctx.emit({
+      type: "search_failed",
+      sub_question: subQ,
+      index: searchIndex,
+      error: message,
+    });
+    return `Search threw: ${message}`;
+  }
+
+  if (!outcome.ok) {
+    ctx.emit({
+      type: "search_failed",
+      sub_question: subQ,
+      index: searchIndex,
+      error: outcome.error.message,
+    });
+    return `Search failed (${backend}): ${outcome.error.message}`;
+  }
+
+  // Hide results the agent can't usefully fetch (already in pool, domain capped).
+  const useful: SearchResult[] = [];
+  let filtered = 0;
+  for (const r of outcome.results) {
+    if (ctx.sourceUrls.has(r.url)) {
+      filtered++;
+      continue;
+    }
+    const dCount = ctx.globalDomainCounts.get(r.domain) ?? 0;
+    if (dCount >= ctx.perDomainCap) {
+      filtered++;
+      continue;
+    }
+    useful.push(r);
+  }
+
+  ctx.emit({
+    type: "search_results",
+    sub_question: subQ,
+    index: searchIndex,
+    count: useful.length,
+  });
+
+  return formatSearchResults(useful, backend, filtered);
+}
+
+interface FetchOutcome {
+  text: string;
+  committed_n?: number;
+}
+
+async function execFetch(
+  args: FetchToolInput,
+  ctx: AgentContext,
+  subQ: string,
+): Promise<FetchOutcome> {
+  const url = String(args.url ?? "").trim();
+  if (!url) return { text: "Error: fetch requires a `url`." };
+  if (!/^https?:\/\//i.test(url)) {
+    return { text: `Error: not an http(s) URL: ${url}` };
+  }
+
+  if (ctx.sourceUrls.has(url)) {
+    const existing = ctx.sources.find((s) => s.url === url);
+    return {
+      text: `Already in source pool as [${existing?.n ?? "?"}]: ${existing?.title ?? url}. Pick a different result.`,
+    };
+  }
+
+  const domain = safeDomain(url);
+  const dCount = ctx.globalDomainCounts.get(domain) ?? 0;
+  if (dCount >= ctx.perDomainCap) {
+    return {
+      text: `Domain cap reached for ${domain} (max ${ctx.perDomainCap}). Pick a different source.`,
+    };
+  }
+
+  if (ctx.sources.length >= ctx.globalSourceCap) {
+    return {
+      text: `Global source cap reached (${ctx.globalSourceCap}). Call finish.`,
+    };
+  }
+
+  ctx.emit({ type: "fetching", sub_question: subQ, url });
+
+  let markdown: string;
+  let title: string | null = null;
+  try {
+    const scrape = await ctx.steel.scrape({
+      url,
+      format: ["markdown"],
+      useProxy: ctx.useProxy,
+    });
+    markdown = scrape.content?.markdown ?? "";
+    title = scrape.metadata?.title ?? null;
+    if (!markdown) {
+      ctx.emit({
+        type: "source_error",
+        sub_question: subQ,
+        url,
+        error: "Empty markdown",
+      });
+      return { text: `Empty page (no content fetched).` };
+    }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    ctx.emit({
+      type: "source_error",
+      sub_question: subQ,
+      url,
+      error: message,
+    });
+    return { text: `Fetch error: ${message}` };
+  }
+
+  ctx.abort();
+
+  let summary;
+  try {
+    summary = await summarizeWebpage({
+      anthropic: ctx.anthropic,
+      markdown,
+      url,
+      title,
+      sub_question: subQ,
+      model: ctx.fastModel,
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    ctx.emit({
+      type: "source_error",
+      sub_question: subQ,
+      url,
+      error: `summarize: ${message}`,
+    });
+    return { text: `Summarize error: ${message}` };
+  }
+
+  if (!summary.is_relevant || !summary.summary) {
+    ctx.emit({
+      type: "source_skipped",
+      sub_question: subQ,
+      url,
+      reason: "not relevant",
+    });
+    return {
+      text: `Not committed — page doesn't address "${subQ}". Try a different result or query.`,
+    };
+  }
+
+  // Atomic commit. JS event loop guarantees no interleaving across awaits inside
+  // this block, so parallel sub-agents won't race on n.
+  const n = ctx.sources.length + 1;
+  ctx.sources.push({
+    n,
+    url,
+    title: title ?? url,
+    summary: summary.summary,
+    key_excerpts: summary.key_excerpts,
+    sub_question: subQ,
+  });
+  ctx.sourceUrls.add(url);
+  ctx.sourceMarkdowns.set(n, markdown.slice(0, STORED_MARKDOWN_CAP));
+  ctx.globalDomainCounts.set(domain, dCount + 1);
+
+  ctx.emit({
+    type: "summarized",
+    sub_question: subQ,
+    url,
+    n,
+    summary: summary.summary,
+  });
+
+  const excerpts = summary.key_excerpts.length
+    ? "\nKey excerpts:\n" + summary.key_excerpts.map((e) => `- "${e}"`).join("\n")
+    : "";
+  return {
+    committed_n: n,
+    text: `Committed as [${n}]: ${title ?? url}\nSummary: ${summary.summary}${excerpts}`,
+  };
+}
+
+export async function runAgenticSubAgent(opts: {
+  ctx: AgentContext;
+  brief: string;
+  sub_question: string;
+  agent_source_cap: number;
+  max_tool_calls?: number;
+}): Promise<AgenticRunResult> {
+  const { ctx, brief, sub_question, agent_source_cap } = opts;
+  const maxToolCalls = opts.max_tool_calls ?? DEFAULT_MAX_TOOL_CALLS;
+
+  ctx.emit({ type: "agent_started", sub_question });
+
+  const myAddedNs: number[] = [];
+  let toolCalls = 0;
+  let finishReason = "tool call budget exhausted";
+  let searchIndex = 0;
+
+  const messages: Anthropic.MessageParam[] = [
+    {
+      role: "user",
+      content:
+        `Brief: ${brief}\n\n` +
+        `Sub-question: ${sub_question}\n\n` +
+        `Budget: at most ${maxToolCalls} tool calls and ${agent_source_cap} sources committed.\n` +
+        `Begin.`,
+    },
+  ];
+
+  while (toolCalls < maxToolCalls && myAddedNs.length < agent_source_cap) {
+    ctx.abort();
+
+    let resp: Anthropic.Message;
+    try {
+      resp = await ctx.anthropic.messages.create({
+        model: ctx.fastModel ?? FAST_MODEL,
+        max_tokens: 2048,
+        system: AGENT_SYSTEM,
+        tools: AGENT_TOOLS,
+        messages,
+      });
+    } catch (err) {
+      // SDK has already retried (maxRetries on client). If we still landed
+      // here, the API is genuinely unavailable for this agent right now.
+      // End the agent gracefully with whatever sources it gathered — DO NOT
+      // throw, or Promise.all kills the entire research run.
+      if ((err as { name?: string })?.name === "AbortError") throw err;
+      const message = err instanceof Error ? err.message : String(err);
+      finishReason = `api error: ${message}`;
+      break;
+    }
+
+    messages.push({ role: "assistant", content: resp.content });
+
+    const toolUses = resp.content.filter(
+      (c): c is Anthropic.ToolUseBlock => c.type === "tool_use",
+    );
+    if (toolUses.length === 0) {
+      finishReason = "agent emitted no tools";
+      break;
+    }
+
+    const toolResults: Anthropic.ToolResultBlockParam[] = [];
+    let sawFinish = false;
+
+    for (const tu of toolUses) {
+      toolCalls++;
+
+      if (tu.name === "finish") {
+        const input = (tu.input as FinishToolInput) ?? {};
+        finishReason = String(input.reason ?? "agent called finish").trim() || "agent called finish";
+        toolResults.push({
+          type: "tool_result",
+          tool_use_id: tu.id,
+          content: "OK — finishing.",
+        });
+        sawFinish = true;
+        continue;
+      }
+
+      if (tu.name === "search") {
+        searchIndex++;
+        try {
+          const text = await execSearch(
+            (tu.input as SearchToolInput) ?? {},
+            ctx,
+            sub_question,
+            searchIndex,
+          );
+          toolResults.push({
+            type: "tool_result",
+            tool_use_id: tu.id,
+            content: text,
+          });
+        } catch (err) {
+          ctx.abort();
+          toolResults.push({
+            type: "tool_result",
+            tool_use_id: tu.id,
+            content: `Tool error: ${err instanceof Error ? err.message : String(err)}`,
+            is_error: true,
+          });
+        }
+        continue;
+      }
+
+      if (tu.name === "fetch") {
+        try {
+          const out = await execFetch(
+            (tu.input as FetchToolInput) ?? {},
+            ctx,
+            sub_question,
+          );
+          if (out.committed_n !== undefined) {
+            myAddedNs.push(out.committed_n);
+          }
+          toolResults.push({
+            type: "tool_result",
+            tool_use_id: tu.id,
+            content: out.text,
+          });
+        } catch (err) {
+          ctx.abort();
+          toolResults.push({
+            type: "tool_result",
+            tool_use_id: tu.id,
+            content: `Tool error: ${err instanceof Error ? err.message : String(err)}`,
+            is_error: true,
+          });
+        }
+        continue;
+      }
+
+      toolResults.push({
+        type: "tool_result",
+        tool_use_id: tu.id,
+        content: `Unknown tool: ${tu.name}`,
+        is_error: true,
+      });
+    }
+
+    messages.push({ role: "user", content: toolResults });
+
+    if (sawFinish) break;
+    if (myAddedNs.length >= agent_source_cap) {
+      finishReason = "agent source cap reached";
+      break;
+    }
+    if (toolCalls >= maxToolCalls) {
+      finishReason = "tool call budget exhausted";
+      break;
+    }
+  }
+
+  ctx.emit({
+    type: "agent_finished",
+    sub_question,
+    sources_added: myAddedNs.length,
+  });
+
+  return {
+    source_ns: [...myAddedNs],
+    tool_calls: toolCalls,
+    finish_reason: finishReason,
+  };
+}

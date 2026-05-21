@@ -10,104 +10,6 @@ export interface ResearchBrief {
   sub_questions: string[];
 }
 
-export interface QueryExpansion {
-  sub_question: string;
-  queries: string[];
-}
-
-export async function expandQueries(opts: {
-  anthropic: Anthropic;
-  brief: string;
-  sub_questions: string[];
-  queries_per_subq: number;
-  model?: string;
-}): Promise<QueryExpansion[]> {
-  const { anthropic, brief, sub_questions, queries_per_subq, model } = opts;
-
-  if (queries_per_subq <= 1) {
-    return sub_questions.map((sq) => ({ sub_question: sq, queries: [sq] }));
-  }
-
-  const system =
-    "You expand each sub-question into multiple short web-search queries that hit it from different angles. " +
-    "Use distinct lenses across the set — definition / overview, recent updates (include the year for time-sensitive topics), comparisons & alternatives, criticism & limits, primary sources. " +
-    "Queries must be short (≤10 words), search-engine-friendly, no natural-language padding, no quotation marks unless searching an exact phrase is essential. " +
-    `Output exactly ${queries_per_subq} queries per sub-question — no more, no fewer.`;
-
-  const schema = {
-    type: "object",
-    properties: {
-      expansions: {
-        type: "array",
-        items: {
-          type: "object",
-          properties: {
-            sub_question: { type: "string" },
-            queries: {
-              type: "array",
-              items: { type: "string" },
-              minItems: queries_per_subq,
-              maxItems: queries_per_subq,
-            },
-          },
-          required: ["sub_question", "queries"],
-        },
-        minItems: sub_questions.length,
-        maxItems: sub_questions.length,
-      },
-    },
-    required: ["expansions"],
-  } as const;
-
-  const userPrompt =
-    `Brief: ${brief}\n\n` +
-    `Sub-questions to expand (${queries_per_subq} queries each):\n${sub_questions
-      .map((q, i) => `${i + 1}. ${q}`)
-      .join("\n")}`;
-
-  const response = await anthropic.messages.create({
-    model: model ?? FAST_MODEL,
-    max_tokens: 2048,
-    system,
-    tools: [
-      {
-        name: "submit_expansions",
-        description: "Submit the expanded query set.",
-        input_schema: schema as unknown as Anthropic.Tool["input_schema"],
-      },
-    ],
-    tool_choice: { type: "tool", name: "submit_expansions" },
-    messages: [{ role: "user", content: userPrompt }],
-  });
-
-  const tool = response.content.find(
-    (c): c is Anthropic.ToolUseBlock => c.type === "tool_use",
-  );
-  if (!tool) throw new Error("LLM did not submit query expansions");
-  const out = tool.input as {
-    expansions?: Array<{ sub_question?: string; queries?: string[] }>;
-  };
-  const raw = Array.isArray(out.expansions) ? out.expansions : [];
-
-  // Reconcile against the requested sub-questions in order. If the LLM dropped
-  // or mangled one, fall back to the sub-question text itself as the lone query.
-  return sub_questions.map((sq, idx) => {
-    const found =
-      raw.find((r) => (r.sub_question ?? "").trim() === sq.trim()) ?? raw[idx];
-    const queries =
-      found && Array.isArray(found.queries)
-        ? found.queries
-            .slice(0, queries_per_subq)
-            .map((q) => String(q).trim())
-            .filter(Boolean)
-        : [];
-    return {
-      sub_question: sq,
-      queries: queries.length > 0 ? queries : [sq],
-    };
-  });
-}
-
 export async function planBriefAndSubQuestions(opts: {
   anthropic: Anthropic;
   query: string;
@@ -324,142 +226,32 @@ function extractSentenceAround(
   return text.slice(start, end).trim();
 }
 
-export interface AssessmentResult {
-  sufficient: boolean;
-  gaps: string[];
-  additional_queries: string[];
-}
-
-export async function assessCoverage(opts: {
-  anthropic: Anthropic;
-  brief: string;
-  sub_questions: string[];
-  sources: CitedSource[];
-  per_subq_coverage: Array<{ sub_question: string; source_count: number }>;
-  rounds_remaining: number;
-  max_additional_queries: number;
-  model?: string;
-}): Promise<AssessmentResult> {
-  const {
-    anthropic,
-    brief,
-    sub_questions,
-    sources,
-    per_subq_coverage,
-    rounds_remaining,
-    max_additional_queries,
-    model,
-  } = opts;
-
-  const system =
-    "You audit the coverage of a research effort in progress. " +
-    "Given the brief, sub-questions, and the summaries of sources gathered so far, decide whether the material is sufficient to write a thorough, well-cited report — or whether specific concrete gaps remain. " +
-    "You will see a per-sub-question source count — use it to spot under-covered sub-questions concretely. " +
-    "Be conservative: if every sub-question has 2+ corroborating sources and you cannot point to a specific unaddressed angle or contradiction, return sufficient=true. " +
-    "Do NOT generate queries for hypothetical thoroughness or marginal completeness. Only emit queries that target a concrete missing fact, an unaddressed (or barely covered) sub-question, or a disagreement that needs adjudication. " +
-    `If you do emit queries, each must be specific (not generic) and at most ${max_additional_queries} total.`;
-
-  const schema = {
-    type: "object",
-    properties: {
-      sufficient: {
-        type: "boolean",
-        description: "True iff current sources suffice to write the report.",
-      },
-      gaps: {
-        type: "array",
-        description: "Concrete gaps in current coverage. Empty if sufficient.",
-        items: { type: "string" },
-      },
-      additional_queries: {
-        type: "array",
-        description: `Specific search queries that would close the gaps. At most ${max_additional_queries}. Empty if sufficient.`,
-        items: { type: "string" },
-        maxItems: max_additional_queries,
-      },
-    },
-    required: ["sufficient", "gaps", "additional_queries"],
-  } as const;
-
-  const sourceBlocks = sources.length
-    ? sources
-        .map(
-          (s) =>
-            `[${s.n}] ${s.title} — ${s.url}\n  Sub-question: ${s.sub_question || "(unspecified)"}\n  ${s.summary}`,
-        )
-        .join("\n\n")
-    : "(none gathered yet)";
-
-  const coverageBlock = per_subq_coverage.length
-    ? per_subq_coverage
-        .map(
-          (c) =>
-            `- "${c.sub_question}" — ${c.source_count} source${c.source_count === 1 ? "" : "s"}${c.source_count < 2 ? "  ← under-covered" : ""}`,
-        )
-        .join("\n")
-    : "(no sub-questions tracked)";
-
-  const userPrompt =
-    `Brief: ${brief}\n\n` +
-    `Sub-questions:\n${sub_questions.map((q, i) => `${i + 1}. ${q}`).join("\n")}\n\n` +
-    `Per-sub-question coverage:\n${coverageBlock}\n\n` +
-    `Sources so far:\n${sourceBlocks}\n\n` +
-    `Rounds remaining after this one: ${rounds_remaining}.\n` +
-    `Decide: sufficient, or specific concrete gaps + targeted queries?`;
-
-  const response = await anthropic.messages.create({
-    model: model ?? FAST_MODEL,
-    max_tokens: 1024,
-    system,
-    tools: [
-      {
-        name: "submit_assessment",
-        description: "Submit the coverage assessment.",
-        input_schema: schema as unknown as Anthropic.Tool["input_schema"],
-      },
-    ],
-    tool_choice: { type: "tool", name: "submit_assessment" },
-    messages: [{ role: "user", content: userPrompt }],
-  });
-
-  const tool = response.content.find(
-    (c): c is Anthropic.ToolUseBlock => c.type === "tool_use",
-  );
-  if (!tool) throw new Error("LLM did not submit assessment");
-  const out = tool.input as AssessmentResult;
-  const queries = Array.isArray(out.additional_queries)
-    ? out.additional_queries
-        .slice(0, max_additional_queries)
-        .map((q) => String(q).trim())
-        .filter(Boolean)
-    : [];
-  return {
-    sufficient: Boolean(out.sufficient),
-    gaps: Array.isArray(out.gaps)
-      ? out.gaps.map((s) => String(s).trim()).filter(Boolean)
-      : [],
-    additional_queries: queries,
-  };
-}
-
 export interface ClaimVerdict {
   supported: boolean;
   reason: string;
 }
 
+const VERIFY_MARKDOWN_BUDGET = 20_000;
+
 export async function verifyClaim(opts: {
   anthropic: Anthropic;
   claim: string;
   source: CitedSource;
+  /** Raw page markdown for the source. Used as the GROUND TRUTH for the
+   *  verdict — summary + excerpts come from the same Haiku that read the page
+   *  during the scout phase, so verifying against them alone is circular.
+   *  Truncated to VERIFY_MARKDOWN_BUDGET chars. */
+  raw_text?: string;
   model?: string;
 }): Promise<ClaimVerdict> {
-  const { anthropic, claim, source, model } = opts;
+  const { anthropic, claim, source, raw_text, model } = opts;
 
   const system =
     "You verify whether a single claim from a research report is supported by a specific source. " +
-    "Given the claim and the source's summary plus verbatim key excerpts, decide if the source plausibly states or directly implies the claim. " +
-    "Be strict: vague-but-related sources do NOT count as support — the source must actually contain (or directly imply) the specific factual content. " +
-    "Verbatim excerpts are the strongest evidence; the summary is supplementary.";
+    "You will see (a) the page's raw content, which is the GROUND TRUTH; (b) a summary and verbatim key excerpts, which are convenience hints — NOT proof. " +
+    "Decide whether the page actually contains, or directly implies, the specific factual content of the claim. " +
+    "Be strict: vague-but-related content does NOT count as support. If the summary or excerpts disagree with the raw page, trust the raw page. " +
+    "When the raw page is absent, fall back to summary + excerpts but be more conservative.";
 
   const schema = {
     type: "object",
@@ -471,7 +263,7 @@ export async function verifyClaim(opts: {
       reason: {
         type: "string",
         description:
-          "One-sentence justification, referencing the specific evidence (e.g., quoting an excerpt).",
+          "One-sentence justification, quoting the specific phrase from the raw page (or excerpt) that supports — or fails to support — the claim.",
       },
     },
     required: ["supported", "reason"],
@@ -481,12 +273,17 @@ export async function verifyClaim(opts: {
     ? source.key_excerpts.map((e) => `- "${e}"`).join("\n")
     : "(none)";
 
+  const rawBlock = raw_text
+    ? `\n\nPage content (GROUND TRUTH, truncated to ${VERIFY_MARKDOWN_BUDGET.toLocaleString()} chars):\n${raw_text.slice(0, VERIFY_MARKDOWN_BUDGET)}`
+    : "\n\n(Raw page content not available — verify against summary + excerpts only.)";
+
   const userPrompt =
     `Claim from report: ${claim}\n\n` +
     `Source [${source.n}] ${source.title} — ${source.url}\n` +
-    `Summary: ${source.summary}\n` +
-    `Key excerpts:\n${excerpts}\n\n` +
-    `Does this source support the claim?`;
+    `Summary (hint): ${source.summary}\n` +
+    `Key excerpts (hint):\n${excerpts}` +
+    rawBlock +
+    `\n\nDoes the source support the claim?`;
 
   const response = await anthropic.messages.create({
     model: model ?? FAST_MODEL,
@@ -677,4 +474,238 @@ export async function writeReport(opts: {
     .trim();
 
   return { markdown: text };
+}
+
+// ----------------------------------------------------------------------------
+// Section-by-section writer
+//
+// Single-pass writeReport above hands the Sonnet writer ~all sources × 20K raw
+// chars in one shot — easy to overwhelm, and the writer ends up doing internal
+// retrieval over its own context (a common hallucination vector).
+//
+// Sectioned writer splits that into:
+//   1. planOutline    — Sonnet decides section structure from summaries only.
+//   2. writeSection   — per section, the writer sees ONLY that section's
+//                       sources at full raw fidelity. Parallel across sections.
+//   3. (research.ts assembles them and appends the Sources list.)
+//
+// The retry path (attempt > 1) keeps using single-pass writeReport so the
+// rewrite can address per-claim verify failures + critique issues in one go.
+// ----------------------------------------------------------------------------
+
+export interface OutlineSection {
+  title: string;
+  source_ns: number[];
+  notes: string;
+}
+
+export interface ReportOutline {
+  sections: OutlineSection[];
+}
+
+export async function planOutline(opts: {
+  anthropic: Anthropic;
+  brief: string;
+  sub_questions: string[];
+  sources: CitedSource[];
+  model?: string;
+}): Promise<ReportOutline> {
+  const { anthropic, brief, sub_questions, sources, model } = opts;
+
+  const system =
+    "You plan the section structure of a research report. " +
+    "Given the brief, the sub-questions, and the source pool (summaries + key excerpts only — no raw text yet), produce an ordered list of 3-6 sections that together fully address the brief. " +
+    "Constraints: " +
+    "(a) Each section title is concrete and specific, NOT generic ('Background', 'Introduction' are bad — 'Pre-SQLite Durable Object storage model' is good). " +
+    "(b) Sections do not overlap — each covers a distinct angle. " +
+    "(c) Order sections by reader flow (context → main findings → caveats/tradeoffs typically). " +
+    "(d) For each section, list the source [n] numbers most relevant. A source can appear in 1-2 sections but try to anchor each primarily in one. " +
+    "(e) Every source [n] in the pool must appear in at least one section. " +
+    "(f) Every sub-question should be addressable from the sections collectively. " +
+    "(g) Each section has a 1-2 sentence `notes` field giving the section writer concrete guidance on what to cover.";
+
+  const validNs = sources.map((s) => s.n);
+  const schema = {
+    type: "object",
+    properties: {
+      sections: {
+        type: "array",
+        minItems: 1,
+        maxItems: 8,
+        items: {
+          type: "object",
+          properties: {
+            title: {
+              type: "string",
+              description:
+                "H2 heading text (≤10 words). Concrete and specific.",
+            },
+            source_ns: {
+              type: "array",
+              items: { type: "integer", minimum: 1 },
+              minItems: 1,
+              description: "Source [n] numbers relevant to this section.",
+            },
+            notes: {
+              type: "string",
+              description:
+                "1-2 sentences guiding the section writer on what to cover.",
+            },
+          },
+          required: ["title", "source_ns", "notes"],
+        },
+      },
+    },
+    required: ["sections"],
+  } as const;
+
+  const sourceBlocks = sources
+    .map((s) => {
+      const excerpts = s.key_excerpts.length
+        ? `\n  Key excerpts:\n${s.key_excerpts.map((e) => `    - "${e}"`).join("\n")}`
+        : "";
+      return `[${s.n}] ${s.title} — ${s.url}\n  Sub-question: ${s.sub_question || "(unspecified)"}\n  Summary: ${s.summary}${excerpts}`;
+    })
+    .join("\n\n");
+
+  const userPrompt =
+    `Brief: ${brief}\n\n` +
+    `Sub-questions:\n${sub_questions.map((q, i) => `${i + 1}. ${q}`).join("\n")}\n\n` +
+    `Source pool (${sources.length} sources, summaries only):\n${sourceBlocks}\n\n` +
+    `Plan the section structure. Valid source numbers: ${validNs.join(", ")}.`;
+
+  const response = await anthropic.messages.create({
+    model: model ?? WRITER_MODEL,
+    max_tokens: 2048,
+    system,
+    tools: [
+      {
+        name: "submit_outline",
+        description: "Submit the report section outline.",
+        input_schema: schema as unknown as Anthropic.Tool["input_schema"],
+      },
+    ],
+    tool_choice: { type: "tool", name: "submit_outline" },
+    messages: [{ role: "user", content: userPrompt }],
+  });
+
+  const tool = response.content.find(
+    (c): c is Anthropic.ToolUseBlock => c.type === "tool_use",
+  );
+  if (!tool) throw new Error("LLM did not submit outline");
+  const out = tool.input as {
+    sections?: Array<{ title?: string; source_ns?: number[]; notes?: string }>;
+  };
+  const raw = Array.isArray(out.sections) ? out.sections : [];
+  const validSet = new Set(validNs);
+
+  const sections: OutlineSection[] = [];
+  for (const s of raw) {
+    const title = String(s.title ?? "").trim();
+    if (!title) continue;
+    const source_ns = Array.isArray(s.source_ns)
+      ? s.source_ns
+          .map((n) => Math.floor(Number(n)))
+          .filter((n) => Number.isFinite(n) && validSet.has(n))
+      : [];
+    if (source_ns.length === 0) continue;
+    sections.push({
+      title,
+      source_ns,
+      notes: String(s.notes ?? "").trim(),
+    });
+  }
+
+  return { sections };
+}
+
+export async function writeSection(opts: {
+  anthropic: Anthropic;
+  brief: string;
+  section: OutlineSection;
+  section_index: number;
+  section_total: number;
+  prior_section_titles: string[];
+  upcoming_section_titles: string[];
+  sources_for_section: CitedSource[];
+  source_texts: Map<number, string>;
+  model?: string;
+}): Promise<{ markdown: string }> {
+  const {
+    anthropic,
+    brief,
+    section,
+    section_index,
+    section_total,
+    prior_section_titles,
+    upcoming_section_titles,
+    sources_for_section,
+    source_texts,
+    model,
+  } = opts;
+
+  const system =
+    "You write ONE section of a research report in Markdown. " +
+    "Cite every factual claim with bracketed source numbers, e.g., [1] or [1, 3]. " +
+    "Only include claims supported by the sources listed below — the per-source summary, the verbatim key excerpts, AND the (truncated) raw page content. " +
+    "Prefer concrete, specific claims grounded in the raw content over generic restatements of the summary. " +
+    "Structure: start with the H2 heading exactly as given, then 2-4 body paragraphs (or a short list/table if appropriate). " +
+    "Do NOT include a Sources list, intro, or other sections — only THIS section's heading and body. " +
+    "Do NOT repeat material that prior sections cover. Stay scoped to this section's notes.";
+
+  const sourceBlocks = sources_for_section
+    .map((s) => {
+      const excerpts = s.key_excerpts.length
+        ? `\nKey excerpts:\n${s.key_excerpts.map((e) => `- "${e}"`).join("\n")}`
+        : "";
+      const raw = source_texts.get(s.n) ?? "";
+      const rawBlock = raw
+        ? `\nFull page content (truncated to ${WRITER_MARKDOWN_BUDGET.toLocaleString()} chars):\n${raw.slice(0, WRITER_MARKDOWN_BUDGET)}`
+        : "";
+      return `[${s.n}] ${s.title} — ${s.url}\nSub-question: ${s.sub_question || "(unspecified)"}\nSummary: ${s.summary}${excerpts}${rawBlock}`;
+    })
+    .join("\n\n---\n\n");
+
+  const priorBlock = prior_section_titles.length
+    ? `\nPrior sections (already covered — don't repeat):\n${prior_section_titles.map((t) => `- ${t}`).join("\n")}`
+    : "";
+  const upcomingBlock = upcoming_section_titles.length
+    ? `\nUpcoming sections (will cover separately — don't preempt):\n${upcoming_section_titles.map((t) => `- ${t}`).join("\n")}`
+    : "";
+
+  const userPrompt =
+    `Research brief: ${brief}\n\n` +
+    `Section ${section_index} of ${section_total}.\n` +
+    `Heading (use exactly): ## ${section.title}\n` +
+    `Section notes: ${section.notes}` +
+    priorBlock +
+    upcomingBlock +
+    `\n\nSources for this section (numbered as in the final report):\n${sourceBlocks}\n\n` +
+    `Write this section now — only the H2 heading and body. No Sources list.`;
+
+  const response = await anthropic.messages.create({
+    model: model ?? WRITER_MODEL,
+    max_tokens: 4096,
+    system,
+    messages: [{ role: "user", content: userPrompt }],
+  });
+
+  const text = response.content
+    .filter((c): c is Anthropic.TextBlock => c.type === "text")
+    .map((c) => c.text)
+    .join("\n")
+    .trim();
+
+  return { markdown: text };
+}
+
+export function assembleSectionedReport(
+  sources: CitedSource[],
+  section_markdowns: string[],
+): string {
+  const body = section_markdowns.map((s) => s.trim()).filter(Boolean).join("\n\n");
+  const sourcesList =
+    "## Sources\n" +
+    sources.map((s) => `[${s.n}] ${s.title} — ${s.url}`).join("\n");
+  return `${body}\n\n${sourcesList}`;
 }

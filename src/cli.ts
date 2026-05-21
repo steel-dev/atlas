@@ -8,17 +8,19 @@ const USAGE = `atlas — deep research from your terminal
 Usage:
   atlas "<question>" [options]
 
+Each sub-question is researched by a Haiku-driven scout with three tools:
+  search(query, source: web|arxiv|github|hn)  /  fetch(url)  /  finish(reason).
+URL dedup, per-domain cap, and global source cap are enforced inside the tools.
+The outer write → critique → verify loop runs on Sonnet.
+
 Options:
   -o, --out <file>            Write the markdown report to <file> (default: stdout)
       --max-sub-questions N   Sub-questions to plan (default 4)
-      --max-results-per-q N   SERP results per sub-question (default 5)
       --max-sources N         Cap on cited sources (default 12)
-      --max-hops N            Max extra search rounds; loop early-exits when sufficient (default 3)
-      --fetch-concurrency N   Parallel page fetches (default 5)
-      --queries-per-subq N    Search queries Haiku expands each sub-question into (default 3)
+      --max-tool-calls N      Per-agent tool-call cap (default 12)
       --no-critique           Disable the post-draft peer-review pass
       --verify-threshold F    Min fraction of claims that must verify (default 0.7)
-      --engine <e>            ddg | bing | google (default ddg)
+      --engine <e>            Default web SERP: ddg | bing | google (default ddg)
       --use-proxy             Route Steel through residential proxy
       --fast-model <m>        Override Haiku model id
       --writer-model <m>      Override Sonnet model id
@@ -31,6 +33,8 @@ Environment:
   ATLAS_ANTHROPIC_API_KEY or ANTHROPIC_API_KEY   required
   ATLAS_STEEL_API_KEY      or STEEL_API_KEY       required
   ATLAS_STEEL_BASE_URL     or STEEL_BASE_URL      optional (self-hosted Steel)
+  ATLAS_GITHUB_TOKEN       or GITHUB_TOKEN        optional (raises github
+                                                  search rate limits)
 
 Examples:
   atlas "What changed when Cloudflare DO added SQLite?"
@@ -98,28 +102,12 @@ function prettyEvent(e: ResearchEvent): string {
         ),
         ...e.sub_questions.map((q) => paint(DIM, `    • ${q}`)),
       ].join("\n");
-    case "expanded_queries": {
-      const total = e.expansions.reduce((acc, x) => acc + x.queries.length, 0);
-      return (
-        paint(GREEN, "✓") +
-        ` expanded ${e.expansions.length} sub-question${e.expansions.length === 1 ? "" : "s"} → ${total} queries`
-      );
-    }
     case "agent_started":
-      return [
-        paint(BLUE, "→") + ` agent: ${e.sub_question}`,
-        ...e.expanded_queries.map((q) => paint(DIM, `    · ${q}`)),
-      ].join("\n");
+      return paint(BLUE, "→") + ` agent: ${e.sub_question}`;
     case "agent_finished":
       return (
         paint(GREEN, "✓") +
-        ` agent done: ${e.sub_question} — ${e.sources_added} source${e.sources_added === 1 ? "" : "s"}, ${e.rounds} round${e.rounds === 1 ? "" : "s"}`
-      );
-    case "round_started":
-      return (
-        paint(BLUE, "→") +
-        tag(e.sub_question) +
-        ` round ${e.round} — ${e.queries.length} ${e.queries.length === 1 ? "query" : "queries"}`
+        ` agent done: ${e.sub_question} — ${e.sources_added} source${e.sources_added === 1 ? "" : "s"}`
       );
     case "searching":
       return paint(DIM, `  search:`) + tag(e.sub_question) + ` ${e.query}`;
@@ -128,31 +116,40 @@ function prettyEvent(e: ResearchEvent): string {
     case "search_failed":
       return paint(YELLOW, `  ! search failed:`) + tag(e.sub_question) + ` ${e.error}`;
     case "fetching":
-      return paint(DIM, `  fetch ${e.position}/${e.total}: ${e.url}`);
+      return paint(DIM, `  fetch: ${e.url}`) + tag(e.sub_question);
     case "summarized":
       return paint(GREEN, `  ✓`) + ` [${e.n}] ${e.url}` + tag(e.sub_question);
     case "source_skipped":
       return paint(DIM, `  · skipped ${e.url} (${e.reason})`);
     case "source_error":
       return paint(YELLOW, `  ! ${e.url} — ${e.error}`);
-    case "assessing":
-      return paint(DIM, `  assessing coverage`) + tag(e.sub_question) + paint(DIM, ` (${e.sources_count} sources)`);
-    case "assessment": {
-      const r = e.record;
-      if (r.sufficient) {
-        return (
-          paint(GREEN, "✓") +
-          tag(e.sub_question) +
-          ` assessment: sufficient${r.reason ? ` (${r.reason})` : ""}`
-        );
-      }
+    case "outlining":
+      return paint(BLUE, "→") + ` outlining sections (attempt ${e.attempt})`;
+    case "outline_done":
       return [
-        paint(BLUE, "→") +
-          tag(e.sub_question) +
-          ` assessment: going deeper (${r.additional_queries.length} more queries)`,
-        ...r.gaps.map((g) => paint(DIM, `    • gap: ${g}`)),
+        paint(GREEN, "✓") +
+          ` outline: ${e.sections.length} section${e.sections.length === 1 ? "" : "s"}`,
+        ...e.sections.map((s) =>
+          paint(
+            DIM,
+            `    • ${s.title} [${s.source_ns.map((n) => `${n}`).join(", ")}]`,
+          ),
+        ),
       ].join("\n");
-    }
+    case "section_writing":
+      return (
+        paint(DIM, `  → section ${e.index}/${e.total}: `) + e.title
+      );
+    case "section_written":
+      return (
+        paint(GREEN, `  ✓`) +
+        ` section ${e.index}/${e.total}: ${e.title} ${paint(DIM, `(${e.markdown_chars.toLocaleString()} chars)`)}`
+      );
+    case "section_failed":
+      return (
+        paint(YELLOW, `  ! section ${e.index}/${e.total} failed: ${e.title}`) +
+        paint(DIM, ` — ${e.error}`)
+      );
     case "writing":
       return paint(BLUE, "→") + ` writing report (attempt ${e.attempt}, ${e.sources_count} sources${e.unsupported_count > 0 ? `, ${e.unsupported_count} unsupported claims to fix` : ""})`;
     case "written":
@@ -173,8 +170,8 @@ function prettyEvent(e: ResearchEvent): string {
       return paint(BLUE, "→") + ` verifying ${e.total} claim${e.total === 1 ? "" : "s"}`;
     case "verified_claim": {
       const mark = e.supported ? paint(GREEN, "  ✓") : paint(RED, "  ✗");
-      const tag = `[${e.source_n}]`;
-      return `${mark} ${tag} ${paint(DIM, `(${e.done}/${e.total})`)} ${e.supported ? "" : paint(DIM, e.reason)}`;
+      const ref = `[${e.source_n}]`;
+      return `${mark} ${ref} ${paint(DIM, `(${e.done}/${e.total})`)} ${e.supported ? "" : paint(DIM, e.reason)}`;
     }
     case "verify_failed":
       return paint(YELLOW, `  ! verify failed at ${(e.pass_rate * 100).toFixed(0)}% (threshold ${(e.threshold * 100).toFixed(0)}%) — retrying`);
@@ -198,11 +195,8 @@ async function main(): Promise<void> {
         options: {
           out: { type: "string", short: "o" },
           "max-sub-questions": { type: "string" },
-          "max-results-per-q": { type: "string" },
           "max-sources": { type: "string" },
-          "max-hops": { type: "string" },
-          "fetch-concurrency": { type: "string" },
-          "queries-per-subq": { type: "string" },
+          "max-tool-calls": { type: "string" },
           "no-critique": { type: "boolean" },
           "verify-threshold": { type: "string" },
           engine: { type: "string" },
@@ -242,6 +236,7 @@ async function main(): Promise<void> {
   );
   const steelApiKey = readEnv("ATLAS_STEEL_API_KEY", "STEEL_API_KEY");
   const steelBaseUrl = readEnv("ATLAS_STEEL_BASE_URL", "STEEL_BASE_URL");
+  const githubToken = readEnv("ATLAS_GITHUB_TOKEN", "GITHUB_TOKEN");
 
   if (!anthropicApiKey) {
     fail("ANTHROPIC_API_KEY (or ATLAS_ANTHROPIC_API_KEY) is not set");
@@ -287,17 +282,15 @@ async function main(): Promise<void> {
       steelApiKey,
       steelBaseUrl,
       maxSubQuestions: parseNumber(values["max-sub-questions"], "--max-sub-questions"),
-      maxResultsPerQuestion: parseNumber(values["max-results-per-q"], "--max-results-per-q"),
       maxSources: parseNumber(values["max-sources"], "--max-sources"),
-      maxHops: parseNumber(values["max-hops"], "--max-hops"),
-      fetchConcurrency: parseNumber(values["fetch-concurrency"], "--fetch-concurrency"),
-      queriesPerSubq: parseNumber(values["queries-per-subq"], "--queries-per-subq"),
+      maxToolCalls: parseNumber(values["max-tool-calls"], "--max-tool-calls"),
       critique: values["no-critique"] === true ? false : undefined,
       verifyThreshold: parseNumber(values["verify-threshold"], "--verify-threshold"),
       engine: engine as Engine | undefined,
       useProxy: values["use-proxy"] === true,
       fastModel: values["fast-model"],
       writerModel: values["writer-model"],
+      githubToken,
       onEvent,
       signal: controller.signal,
     });
