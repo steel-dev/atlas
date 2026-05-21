@@ -2,14 +2,8 @@ import type Anthropic from "@anthropic-ai/sdk";
 import type Steel from "steel-sdk";
 import { FAST_MODEL, type CitedSource } from "./pipeline.js";
 import {
-  arxivSearch,
-  githubSearch,
-  hnSearch,
-  safeDomain,
   webSearch,
-  type Backend,
   type Engine,
-  type SearchResult,
   type WebSearchOutcome,
 } from "./search.js";
 
@@ -24,7 +18,6 @@ export interface SteelGate {
 
 export interface SourceReservations {
   urls: Set<string>;
-  domainCounts: Map<string, number>;
   sourceSlots: number;
 }
 
@@ -87,7 +80,6 @@ export function createResearchCaches(): ResearchCaches {
 export function createSourceReservations(): SourceReservations {
   return {
     urls: new Set<string>(),
-    domainCounts: new Map<string, number>(),
     sourceSlots: 0,
   };
 }
@@ -95,15 +87,15 @@ export function createSourceReservations(): SourceReservations {
 // ----------------------------------------------------------------------------
 // Agentic sub-agent
 //
-// Each sub-question gets a Haiku-driven loop with two tools:
-//   - search(query, source?, site?, limit?)
+// A single Haiku-driven gather loop gets two tools:
+//   - search(query, limit?)
 //   - fetch(url) — scrape + atomic commit to global pool
 //
-// The scout terminates by emitting a final text message with no tool calls
-// (or by hitting its tool/source budget). Every successful fetch commits the
-// page to the pool — choose carefully.
+// The agent terminates by calling done, emitting a final text message with no
+// tool calls, or hitting its tool/source budget. Every successful fetch commits
+// the page to the pool — choose carefully.
 //
-// Global invariants (URL dedup, per-domain cap, source cap) are enforced
+// Global invariants (URL dedup, source cap) are enforced
 // INSIDE the tools, so the agent can't break them no matter what it picks.
 // ----------------------------------------------------------------------------
 
@@ -113,7 +105,6 @@ export interface AgentContext {
   sources: CitedSource[];
   sourceUrls: Set<string>;
   sourceMarkdowns: Map<number, string>;
-  globalDomainCounts: Map<string, number>;
   emit: (e: AgenticEvent) => void;
   abort: () => void;
   /** Forwarded to every Anthropic / Steel / fetch call so cancellation
@@ -122,7 +113,6 @@ export interface AgentContext {
   defaultEngine: Engine;
   useProxy: boolean;
   fastModel?: string;
-  perDomainCap: number;
   globalSourceCap: number;
   maxConcurrentTools?: number;
   steelGate: SteelGate;
@@ -172,8 +162,6 @@ export interface AgenticRunResult {
 
 interface SearchToolInput {
   query?: string;
-  source?: Backend;
-  site?: string;
   limit?: number;
 }
 interface FetchToolInput {
@@ -184,28 +172,13 @@ const AGENT_TOOLS: Anthropic.Tool[] = [
   {
     name: "search",
     description:
-      "Search for sources addressing the sub-question. Use the `source` parameter to pick a backend:\n" +
-      "  • web (default) — general web SERP\n" +
-      "  • arxiv — academic papers (best for technical / SOTA / research)\n" +
-      "  • github — repositories and code (best for tooling / libraries / implementations)\n" +
-      "  • hn — Hacker News discussions (best for community signal, post-mortems, recent commentary)\n" +
-      "For targeted web search set `site` (e.g., 'docs.cloudflare.com'). Issue 1-3 searches per agent — don't repeat queries.",
+      "Search the web for sources addressing the question. Prefer short, specific queries. Use site: filters directly in the query when useful.",
     input_schema: {
       type: "object",
       properties: {
         query: {
           type: "string",
           description: "Short, search-engine-friendly query (≤10 words ideal).",
-        },
-        source: {
-          type: "string",
-          enum: ["web", "arxiv", "github", "hn"],
-          description: "Backend. Defaults to web.",
-        },
-        site: {
-          type: "string",
-          description:
-            "Optional site:foo.com filter; only applied when source=web.",
         },
         limit: {
           type: "integer",
@@ -233,17 +206,19 @@ const AGENT_TOOLS: Anthropic.Tool[] = [
       required: ["url"],
     } as Anthropic.Tool["input_schema"],
   },
+  {
+    name: "done",
+    description:
+      "Call when the source pool covers the question well enough for the writer.",
+    input_schema: {
+      type: "object",
+      properties: {},
+      required: [],
+    } as Anthropic.Tool["input_schema"],
+  },
 ];
 
-const AGENT_SYSTEM = `You're a research scout. Use search and fetch to gather 2-4 high-quality sources for your sub-question, then stop by emitting a text response with no tool calls. Every fetch commits — choose carefully.`;
-
-function reservedDomainCount(ctx: AgentContext, domain: string): number {
-  return ctx.sourceReservations.domainCounts.get(domain) ?? 0;
-}
-
-function totalDomainCount(ctx: AgentContext, domain: string): number {
-  return (ctx.globalDomainCounts.get(domain) ?? 0) + reservedDomainCount(ctx, domain);
-}
+const AGENT_SYSTEM = `You're a research agent. Use search and fetch to gather high-quality sources for the user's question, then call done. Every fetch commits — choose carefully. Prefer primary sources and diverse independent evidence.`;
 
 function totalSourceSlots(ctx: AgentContext): number {
   return ctx.sources.length + ctx.sourceReservations.sourceSlots;
@@ -260,19 +235,15 @@ function normalizeFetchUrl(url: string): string {
 }
 
 function searchCacheKey(opts: {
-  backend: Backend;
   query: string;
   limit: number;
   engine: Engine;
   useProxy: boolean;
-  githubToken?: string;
 }): string {
-  const tokenScope = opts.backend === "github" && opts.githubToken ? "auth" : "anon";
   return [
-    opts.backend,
-    opts.backend === "web" ? opts.engine : "",
-    opts.backend === "web" && opts.useProxy ? "proxy" : "direct",
-    tokenScope,
+    "web",
+    opts.engine,
+    opts.useProxy ? "proxy" : "direct",
     opts.limit,
     opts.query,
   ].join("\0");
@@ -280,7 +251,6 @@ function searchCacheKey(opts: {
 
 interface FetchReservation {
   url: string;
-  domain: string;
 }
 
 function reserveFetch(ctx: AgentContext, url: string): FetchReservation | string {
@@ -293,18 +263,13 @@ function reserveFetch(ctx: AgentContext, url: string): FetchReservation | string
     return `Already being fetched by another scout: ${url}. Pick a different result.`;
   }
 
-  const domain = safeDomain(normalizedUrl);
-  if (totalDomainCount(ctx, domain) >= ctx.perDomainCap) {
-    return `Domain cap reached for ${domain} (max ${ctx.perDomainCap}). Pick a different source.`;
-  }
   if (totalSourceSlots(ctx) >= ctx.globalSourceCap) {
     return `Global source cap reached (${ctx.globalSourceCap}). Stop fetching.`;
   }
 
   ctx.sourceReservations.urls.add(normalizedUrl);
-  ctx.sourceReservations.domainCounts.set(domain, reservedDomainCount(ctx, domain) + 1);
   ctx.sourceReservations.sourceSlots++;
-  return { url: normalizedUrl, domain };
+  return { url: normalizedUrl };
 }
 
 function releaseFetchReservation(
@@ -312,12 +277,6 @@ function releaseFetchReservation(
   reservation: FetchReservation,
 ): void {
   ctx.sourceReservations.urls.delete(reservation.url);
-  const nextDomainCount = reservedDomainCount(ctx, reservation.domain) - 1;
-  if (nextDomainCount > 0) {
-    ctx.sourceReservations.domainCounts.set(reservation.domain, nextDomainCount);
-  } else {
-    ctx.sourceReservations.domainCounts.delete(reservation.domain);
-  }
   ctx.sourceReservations.sourceSlots = Math.max(
     0,
     ctx.sourceReservations.sourceSlots - 1,
@@ -327,77 +286,40 @@ function releaseFetchReservation(
 async function execSearch(
   args: SearchToolInput,
   ctx: AgentContext,
-  subQ: string,
+  question: string,
   searchIndex: number,
 ): Promise<string> {
   const query = String(args.query ?? "").trim();
   if (!query) return "Error: search requires a non-empty `query`.";
 
-  const backend: Backend = args.source ?? "web";
   const rawLimit = args.limit ?? 5;
   const limit = Math.min(Math.max(1, Math.floor(Number(rawLimit))), 10);
 
-  let effectiveQuery = query;
-  if (args.site && backend === "web") {
-    const site = String(args.site).trim().replace(/^https?:\/\//, "");
-    if (site) effectiveQuery = `${query} site:${site}`;
-  }
-
   ctx.emit({
     type: "searching",
-    sub_question: subQ,
+    sub_question: question,
     index: searchIndex,
-    query: `[${backend}] ${effectiveQuery}`,
+    query,
   });
 
   const cacheKey = searchCacheKey({
-    backend,
-    query: effectiveQuery,
+    query,
     limit,
     engine: ctx.defaultEngine,
     useProxy: ctx.useProxy,
-    githubToken: ctx.githubToken,
   });
   let outcomePromise = ctx.caches.serp.get(cacheKey);
   if (!outcomePromise) {
-    outcomePromise = (async () => {
-      switch (backend) {
-        case "web":
-          return await ctx.steelGate.run(() =>
-            webSearch({
-              steel: ctx.steel,
-              query: effectiveQuery,
-              engine: ctx.defaultEngine,
-              useProxy: ctx.useProxy,
-              limit,
-              signal: ctx.signal,
-            }),
-          );
-        case "arxiv":
-          return await arxivSearch({
-            query: effectiveQuery,
-            limit,
-            signal: ctx.signal,
-          });
-        case "github":
-          return await githubSearch({
-            query: effectiveQuery,
-            limit,
-            token: ctx.githubToken,
-            signal: ctx.signal,
-          });
-        case "hn":
-          return await hnSearch({
-            query: effectiveQuery,
-            limit,
-            signal: ctx.signal,
-          });
-        default: {
-          const _exhaustive: never = backend;
-          throw new Error(`unknown backend "${_exhaustive}"`);
-        }
-      }
-    })();
+    outcomePromise = ctx.steelGate.run(() =>
+      webSearch({
+        steel: ctx.steel,
+        query,
+        engine: ctx.defaultEngine,
+        useProxy: ctx.useProxy,
+        limit,
+        signal: ctx.signal,
+      }),
+    );
     ctx.caches.serp.set(cacheKey, outcomePromise);
   }
 
@@ -409,7 +331,7 @@ async function execSearch(
     const message = err instanceof Error ? err.message : String(err);
     ctx.emit({
       type: "search_failed",
-      sub_question: subQ,
+      sub_question: question,
       index: searchIndex,
       error: message,
     });
@@ -419,54 +341,28 @@ async function execSearch(
   if (!outcome.ok) {
     ctx.emit({
       type: "search_failed",
-      sub_question: subQ,
+      sub_question: question,
       index: searchIndex,
       error: outcome.error.message,
     });
-    return `Search failed (${backend}): ${outcome.error.message}`;
-  }
-
-  // Hide results the agent can't usefully fetch (already in pool, domain capped).
-  const useful: SearchResult[] = [];
-  let filtered = 0;
-  for (const r of outcome.results) {
-    const normalizedUrl = normalizeFetchUrl(r.url);
-    if (
-      ctx.sourceUrls.has(normalizedUrl) ||
-      ctx.sourceReservations.urls.has(normalizedUrl)
-    ) {
-      filtered++;
-      continue;
-    }
-    if (totalDomainCount(ctx, r.domain) >= ctx.perDomainCap) {
-      filtered++;
-      continue;
-    }
-    if (totalSourceSlots(ctx) >= ctx.globalSourceCap) {
-      filtered++;
-      continue;
-    }
-    useful.push(r);
+    return `Search failed: ${outcome.error.message}`;
   }
 
   ctx.emit({
     type: "search_results",
-    sub_question: subQ,
+    sub_question: question,
     index: searchIndex,
-    count: useful.length,
+    count: outcome.results.length,
   });
 
-  if (useful.length === 0) {
-    return filtered > 0
-      ? `No new fetchable results (${filtered} duplicates or domain-capped). Try a different query or backend.`
-      : `No results for this query on ${backend}.`;
+  if (outcome.results.length === 0) {
+    return "No results for this query.";
   }
-  const lines = useful.map(
+  const lines = outcome.results.map(
     (r, i) =>
       `${i + 1}. ${r.title}\n   ${r.url}${r.snippet ? `\n   ${r.snippet.slice(0, 200)}` : ""}`,
   );
-  const suffix = filtered > 0 ? `\n\n(${filtered} duplicate/capped results hidden)` : "";
-  return `${useful.length} result${useful.length === 1 ? "" : "s"} via ${backend}:\n\n${lines.join("\n\n")}${suffix}`;
+  return `${outcome.results.length} result${outcome.results.length === 1 ? "" : "s"}:\n\n${lines.join("\n\n")}`;
 }
 
 interface FetchOutcome {
@@ -503,16 +399,15 @@ async function mapWithConcurrency<T, R>(
 async function executeToolUse(
   tu: Anthropic.ToolUseBlock,
   ctx: AgentContext,
-  subQuestion: string,
+  question: string,
   searchIndex?: number,
-  skipFetchText?: string,
 ): Promise<ToolExecution> {
   if (tu.name === "search") {
     try {
       const text = await execSearch(
         (tu.input as SearchToolInput) ?? {},
         ctx,
-        subQuestion,
+        question,
         searchIndex ?? 0,
       );
       return {
@@ -536,21 +431,11 @@ async function executeToolUse(
   }
 
   if (tu.name === "fetch") {
-    if (skipFetchText) {
-      return {
-        toolResult: {
-          type: "tool_result",
-          tool_use_id: tu.id,
-          content: skipFetchText,
-        },
-      };
-    }
-
     try {
       const out = await execFetch(
         (tu.input as FetchToolInput) ?? {},
         ctx,
-        subQuestion,
+        question,
       );
       return {
         committed_n: out.committed_n,
@@ -571,6 +456,16 @@ async function executeToolUse(
         },
       };
     }
+  }
+
+  if (tu.name === "done") {
+    return {
+      toolResult: {
+        type: "tool_result",
+        tool_use_id: tu.id,
+        content: "Done.",
+      },
+    };
   }
 
   return {
@@ -647,10 +542,6 @@ async function execFetch(
     });
     ctx.sourceUrls.add(url);
     ctx.sourceMarkdowns.set(n, markdown.slice(0, STORED_MARKDOWN_CAP));
-    ctx.globalDomainCounts.set(
-      reservation.domain,
-      (ctx.globalDomainCounts.get(reservation.domain) ?? 0) + 1,
-    );
 
     ctx.emit({
       type: "source_committed",
@@ -680,17 +571,15 @@ async function execFetch(
   }
 }
 
-export async function runAgenticSubAgent(opts: {
+export async function runGatherAgent(opts: {
   ctx: AgentContext;
-  brief: string;
-  sub_question: string;
-  agent_source_cap: number;
+  query: string;
   max_tool_calls?: number;
 }): Promise<AgenticRunResult> {
-  const { ctx, brief, sub_question, agent_source_cap } = opts;
+  const { ctx, query } = opts;
   const maxToolCalls = opts.max_tool_calls ?? DEFAULT_MAX_TOOL_CALLS;
 
-  ctx.emit({ type: "agent_started", sub_question });
+  ctx.emit({ type: "agent_started", sub_question: query });
 
   const myAddedNs: number[] = [];
   let toolCalls = 0;
@@ -701,14 +590,13 @@ export async function runAgenticSubAgent(opts: {
     {
       role: "user",
       content:
-        `Brief: ${brief}\n\n` +
-        `Sub-question: ${sub_question}\n\n` +
-        `Budget: at most ${maxToolCalls} tool calls and ${agent_source_cap} sources committed.\n` +
+        `Research question: ${query}\n\n` +
+        `Budget: at most ${maxToolCalls} tool calls and ${ctx.globalSourceCap} sources committed.\n` +
         `Begin.`,
     },
   ];
 
-  while (toolCalls < maxToolCalls && myAddedNs.length < agent_source_cap) {
+  while (toolCalls < maxToolCalls && ctx.sources.length < ctx.globalSourceCap) {
     ctx.abort();
 
     let resp: Anthropic.Message;
@@ -739,7 +627,13 @@ export async function runAgenticSubAgent(opts: {
       (c): c is Anthropic.ToolUseBlock => c.type === "tool_use",
     );
     if (toolUses.length === 0) {
-      finishReason = "scout stopped emitting tools";
+      finishReason = "agent stopped emitting tools";
+      break;
+    }
+
+    if (toolUses.some((tu) => tu.name === "done")) {
+      finishReason = "done";
+      toolCalls += 1;
       break;
     }
 
@@ -748,15 +642,6 @@ export async function runAgenticSubAgent(opts: {
     const searchIndexes = activeToolUses.map((tu) =>
       tu.name === "search" ? ++searchIndex : undefined,
     );
-    let remainingFetchSlots = agent_source_cap - myAddedNs.length;
-    const skipFetchTexts = activeToolUses.map((tu) => {
-      if (tu.name !== "fetch") return undefined;
-      if (remainingFetchSlots > 0) {
-        remainingFetchSlots--;
-        return undefined;
-      }
-      return `Agent source cap reached (${agent_source_cap}). Stop fetching.`;
-    });
     toolCalls += activeToolUses.length;
 
     const executions = await mapWithConcurrency(
@@ -766,9 +651,8 @@ export async function runAgenticSubAgent(opts: {
         executeToolUse(
           tu,
           ctx,
-          sub_question,
+          query,
           searchIndexes[index],
-          skipFetchTexts[index],
         ),
     );
     const toolResults = executions.map((e) => e.toolResult);
@@ -780,8 +664,8 @@ export async function runAgenticSubAgent(opts: {
 
     messages.push({ role: "user", content: toolResults });
 
-    if (myAddedNs.length >= agent_source_cap) {
-      finishReason = "agent source cap reached";
+    if (ctx.sources.length >= ctx.globalSourceCap) {
+      finishReason = "source cap reached";
       break;
     }
     if (toolCalls >= maxToolCalls) {
@@ -792,7 +676,7 @@ export async function runAgenticSubAgent(opts: {
 
   ctx.emit({
     type: "agent_finished",
-    sub_question,
+    sub_question: query,
     sources_added: myAddedNs.length,
   });
 

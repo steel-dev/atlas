@@ -1,6 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
 import {
-  FAST_MODEL,
   writeReport,
   type CitedSource,
 } from "./pipeline.js";
@@ -10,16 +9,13 @@ import {
   createResearchCaches,
   createSourceReservations,
   createSteelGate,
-  runAgenticSubAgent,
+  runGatherAgent,
   type AgentContext,
 } from "./tools.js";
 
 export const RESEARCH_DEFAULTS = {
-  maxLeadTurns: 8,
   maxSources: 12,
   maxSubagentToolCalls: 12,
-  subagentSourceCap: 4,
-  perDomainCap: 2,
   maxConcurrentTools: 4,
   maxConcurrentSteelCalls: 4,
 } as const;
@@ -107,45 +103,6 @@ export interface ResearchOptions {
   signal?: AbortSignal;
 }
 
-interface SpawnSubagentInput {
-  sub_question?: string;
-}
-
-const LEAD_TOOLS: Anthropic.Tool[] = [
-  {
-    name: "spawn_subagent",
-    description:
-      "Fire one focused scout sub-agent to research a single sub-question. " +
-      "The scout has its own search/fetch tools, picks its own queries and backends, and commits high-quality sources to the shared pool. " +
-      "Emit multiple spawn_subagent tool_use blocks in a single turn to run scouts IN PARALLEL — much faster than serial. " +
-      "Returns: which [n] sources the scout added and the scout's finish reason. " +
-      "Don't re-spawn for a sub-question already well-covered in the pool.",
-    input_schema: {
-      type: "object",
-      properties: {
-        sub_question: {
-          type: "string",
-          description:
-            "Focused, independent sub-question. Concrete (specific dates/versions/comparison points), answerable from a few web sources, no overlap with other sub-questions.",
-        },
-      },
-      required: ["sub_question"],
-    } as Anthropic.Tool["input_schema"],
-  },
-  {
-    name: "finalize",
-    description:
-      "Call when the source pool covers the user's question well. The writer phase starts immediately.",
-    input_schema: {
-      type: "object",
-      properties: {},
-      required: [],
-    } as Anthropic.Tool["input_schema"],
-  },
-];
-
-const LEAD_SYSTEM = `You research questions by spawning parallel scout sub-agents and finalizing when the source pool covers the question. Decompose into 3-5 independent concrete sub-questions and spawn them in parallel (emit multiple tool calls in one turn).`;
-
 export async function research(opts: ResearchOptions): Promise<ResearchResult> {
   const {
     query,
@@ -153,13 +110,11 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
     steelApiKey,
     steelBaseUrl,
     maxSources = RESEARCH_DEFAULTS.maxSources,
-    maxLeadTurns = RESEARCH_DEFAULTS.maxLeadTurns,
     maxToolCalls = RESEARCH_DEFAULTS.maxSubagentToolCalls,
     engine = "ddg",
     useProxy = false,
     fastModel,
     writerModel,
-    leadModel,
     githubToken,
     onEvent,
     signal,
@@ -191,7 +146,6 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
   const sources: CitedSource[] = [];
   const sourceUrls = new Set<string>();
   const sourceMarkdowns = new Map<number, string>();
-  const globalDomainCounts = new Map<string, number>();
 
   const ctx: AgentContext = {
     anthropic,
@@ -199,14 +153,12 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
     sources,
     sourceUrls,
     sourceMarkdowns,
-    globalDomainCounts,
     emit,
     abort,
     signal,
     defaultEngine: engine,
     useProxy,
     fastModel,
-    perDomainCap: RESEARCH_DEFAULTS.perDomainCap,
     globalSourceCap: maxSources,
     maxConcurrentTools: RESEARCH_DEFAULTS.maxConcurrentTools,
     steelGate: createSteelGate(RESEARCH_DEFAULTS.maxConcurrentSteelCalls),
@@ -215,16 +167,10 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
     githubToken,
   };
 
-  const lead = await runLeadAgent({
-    anthropic,
+  const gather = await runGatherAgent({
     ctx,
     query,
-    maxLeadTurns,
-    maxSubagentToolCalls: maxToolCalls,
-    subagentSourceCap: RESEARCH_DEFAULTS.subagentSourceCap,
-    model: leadModel ?? fastModel ?? FAST_MODEL,
-    emit,
-    abort,
+    max_tool_calls: maxToolCalls,
   });
 
   abort();
@@ -241,9 +187,16 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
 
   const result: ResearchResult = {
     query,
-    sub_questions: lead.sub_questions,
-    lead_turns: lead.turns,
-    agent_runs: lead.agent_runs,
+    sub_questions: [query],
+    lead_turns: 0,
+    agent_runs: [
+      {
+        sub_question: query,
+        source_ns: gather.source_ns,
+        tool_calls: gather.tool_calls,
+        finish_reason: gather.finish_reason,
+      },
+    ],
     sources,
     markdown,
     usage_summary: { ...usageSummary },
@@ -251,207 +204,6 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
 
   emit({ type: "completed", result });
   return result;
-}
-
-interface LeadResult {
-  sub_questions: string[];
-  agent_runs: AgentRun[];
-  turns: number;
-}
-
-/**
- * Lead agent loop. Tools: spawn_subagent (parallel sub-agent dispatch),
- * finalize. Sub-agent commits flow through the shared AgentContext, so when
- * the loop exits the source pool is fully populated.
- */
-async function runLeadAgent(opts: {
-  anthropic: Anthropic;
-  ctx: AgentContext;
-  query: string;
-  maxLeadTurns: number;
-  maxSubagentToolCalls: number;
-  subagentSourceCap: number;
-  model: string;
-  emit: (e: ResearchEvent) => void;
-  abort: () => void;
-}): Promise<LeadResult> {
-  const {
-    anthropic,
-    ctx,
-    query,
-    maxLeadTurns,
-    maxSubagentToolCalls,
-    subagentSourceCap,
-    model,
-    emit,
-    abort,
-  } = opts;
-
-  const subQuestions: string[] = [];
-  const agentRuns: AgentRun[] = [];
-  let turn = 0;
-
-  const messages: Anthropic.MessageParam[] = [
-    {
-      role: "user",
-      content:
-        `Research question: ${query}\n\n` +
-        `You have at most ${maxLeadTurns} turns and a global source-pool cap of ${ctx.globalSourceCap}. ` +
-        `Each sub-agent has its own tool budget (${maxSubagentToolCalls} tool calls).\n\n` +
-        `Begin: decompose the question into independent sub-questions and spawn parallel scouts.`,
-    },
-  ];
-
-  while (turn < maxLeadTurns) {
-    abort();
-    turn += 1;
-
-    let resp: Anthropic.Message;
-    try {
-      resp = await anthropic.messages.create(
-        {
-          model,
-          max_tokens: 8192,
-          system: LEAD_SYSTEM,
-          tools: LEAD_TOOLS,
-          messages,
-          // ephemeral cache on last cacheable block; the system prompt + early
-          // turns become a reusable prefix as turns accumulate.
-          cache_control: { type: "ephemeral" },
-        },
-        { signal: ctx.signal },
-      );
-    } catch (err) {
-      // SDK abort errors wrap the AbortSignal as APIUserAbortError (name
-      // defaults to "Error"), so check the signal directly.
-      if (ctx.signal?.aborted) throw err;
-      // Lead-side API error: stop gathering but allow phase 2 to proceed
-      // with whatever sources sub-agents already committed.
-      break;
-    }
-
-    messages.push({ role: "assistant", content: resp.content });
-
-    const toolUses = resp.content.filter(
-      (c): c is Anthropic.ToolUseBlock => c.type === "tool_use",
-    );
-
-    if (toolUses.length === 0) {
-      // Lead stopped emitting tools without finalizing. Treat as implicit
-      // finalize so the writer can still run.
-      break;
-    }
-
-    const finalizeUse = toolUses.find((tu) => tu.name === "finalize");
-    const spawnUses = toolUses.filter((tu) => tu.name === "spawn_subagent");
-    const unknownUses = toolUses.filter(
-      (tu) => tu.name !== "finalize" && tu.name !== "spawn_subagent",
-    );
-
-    if (finalizeUse) {
-      emit({ type: "lead_turn", turn, spawned: 0 });
-      break;
-    }
-
-    if (ctx.sources.length >= ctx.globalSourceCap) {
-      break;
-    }
-
-    emit({ type: "lead_turn", turn, spawned: spawnUses.length });
-
-    const toolResults: Anthropic.ToolResultBlockParam[] = [];
-
-    // Spawn sub-agents in parallel. The runAgenticSubAgent function mutates
-    // ctx.sources atomically, so concurrent spawns don't race on n.
-    const spawnPromises = spawnUses.map(async (tu) => {
-      const input = (tu.input as SpawnSubagentInput) ?? {};
-      const sub_question = String(input.sub_question ?? "").trim();
-      if (!sub_question) {
-        return {
-          tu,
-          text: "Error: spawn_subagent requires a non-empty `sub_question`.",
-        };
-      }
-      subQuestions.push(sub_question);
-      try {
-        const result = await runAgenticSubAgent({
-          ctx,
-          brief: query,
-          sub_question,
-          agent_source_cap: subagentSourceCap,
-          max_tool_calls: maxSubagentToolCalls,
-        });
-        agentRuns.push({
-          sub_question,
-          source_ns: result.source_ns,
-          tool_calls: result.tool_calls,
-          finish_reason: result.finish_reason,
-        });
-        const added = result.source_ns;
-        const header =
-          `Scout for "${sub_question}" ` +
-          (added.length === 0
-            ? `finished with no new sources`
-            : `added ${added.length} source${added.length === 1 ? "" : "s"}`) +
-          ` (tool calls: ${result.tool_calls}, reason: ${result.finish_reason})`;
-        const body = added
-          .map((n) => {
-            const s = ctx.sources.find((x) => x.n === n);
-            if (!s) return `  [${n}] (missing)`;
-            return `  [${n}] ${s.title} — ${s.url} (${s.sub_question})`;
-          })
-          .join("\n");
-        const pool = `Pool: ${ctx.sources.length}/${ctx.globalSourceCap}.`;
-        return {
-          tu,
-          text: body ? `${header}:\n${body}\n${pool}` : `${header}. ${pool}`,
-        };
-      } catch (err) {
-        if ((err as { name?: string })?.name === "AbortError") throw err;
-        const message = err instanceof Error ? err.message : String(err);
-        agentRuns.push({
-          sub_question,
-          source_ns: [],
-          tool_calls: 0,
-          finish_reason: `error: ${message}`,
-        });
-        return {
-          tu,
-          text: `Scout for "${sub_question}" errored: ${message}`,
-        };
-      }
-    });
-
-    const spawnResults = await Promise.all(spawnPromises);
-    for (const { tu, text } of spawnResults) {
-      toolResults.push({
-        type: "tool_result",
-        tool_use_id: tu.id,
-        content: text,
-      });
-    }
-
-    for (const tu of unknownUses) {
-      toolResults.push({
-        type: "tool_result",
-        tool_use_id: tu.id,
-        content: `Unknown tool: ${tu.name}`,
-        is_error: true,
-      });
-    }
-
-    messages.push({ role: "user", content: toolResults });
-
-    if (ctx.sources.length >= ctx.globalSourceCap) {
-      break;
-    }
-  }
-
-  return {
-    sub_questions: Array.from(new Set(subQuestions)),
-    agent_runs: agentRuns,
-    turns: turn,
-  };
 }
 
 /**
