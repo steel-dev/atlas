@@ -34,7 +34,6 @@ export interface AgentRun {
 export interface ResearchResult {
   query: string;
   sub_questions: string[];
-  lead_notes: string;
   lead_turns: number;
   agent_runs: AgentRun[];
   sources: CitedSource[];
@@ -46,7 +45,7 @@ export type ResearchEvent =
   | { type: "lead_started"; query: string }
   | { type: "lead_turn"; turn: number; spawned: number }
   | { type: "subagent_spawned"; sub_question: string }
-  | { type: "lead_finalize"; notes: string; sources_count: number }
+  | { type: "lead_finalize"; sources_count: number }
   | { type: "agent_started"; sub_question: string }
   | { type: "searching"; sub_question: string; index: number; query: string }
   | {
@@ -63,17 +62,11 @@ export type ResearchEvent =
     }
   | { type: "fetching"; sub_question: string; url: string }
   | {
-      type: "summarized";
+      type: "source_committed";
       sub_question: string;
       url: string;
       n: number;
-      summary: string;
-    }
-  | {
-      type: "source_skipped";
-      sub_question: string;
-      url: string;
-      reason: string;
+      title: string;
     }
   | { type: "source_error"; sub_question: string; url: string; error: string }
   | { type: "agent_finished"; sub_question: string; sources_added: number }
@@ -111,10 +104,6 @@ interface SpawnSubagentInput {
   sub_question?: string;
 }
 
-interface FinalizeInput {
-  notes?: string;
-}
-
 const LEAD_TOOLS: Anthropic.Tool[] = [
   {
     name: "spawn_subagent",
@@ -122,7 +111,7 @@ const LEAD_TOOLS: Anthropic.Tool[] = [
       "Fire one focused scout sub-agent to research a single sub-question. " +
       "The scout has its own search/fetch tools, picks its own queries and backends, and commits high-quality sources to the shared pool. " +
       "Emit multiple spawn_subagent tool_use blocks in a single turn to run scouts IN PARALLEL — much faster than serial. " +
-      "Returns: which [n] sources the scout added, a short summary of each, and the scout's finish reason. " +
+      "Returns: which [n] sources the scout added, a short preview of each page, and the scout's finish reason. " +
       "Don't re-spawn for a sub-question already well-covered in the pool.",
     input_schema: {
       type: "object",
@@ -139,17 +128,10 @@ const LEAD_TOOLS: Anthropic.Tool[] = [
   {
     name: "finalize",
     description:
-      "Call when the source pool covers the user's question well. The writer phase will start immediately. " +
-      "Provide short notes on structure or angles the writer should make sure to address (1-3 sentences).",
+      "Call when the source pool covers the user's question well. The writer phase starts immediately.",
     input_schema: {
       type: "object",
-      properties: {
-        notes: {
-          type: "string",
-          description:
-            "Optional 1-3 sentence note to the writer on structure, key findings, or angles to make sure to cover. May be empty.",
-        },
-      },
+      properties: {},
       required: [],
     } as Anthropic.Tool["input_schema"],
   },
@@ -159,7 +141,7 @@ const LEAD_SYSTEM = `You are a research lead. Given a user's research question, 
 
 Tools:
 - spawn_subagent(sub_question) — fires a focused scout. Each scout has its own search + fetch tools and adds vetted sources to a shared pool. Emit MULTIPLE spawn_subagent tool_use blocks in ONE turn to run scouts in PARALLEL.
-- finalize(notes?) — signals you're done gathering. The writer composes the report from the source pool. Pass short notes on structure or key angles to address.
+- finalize() — signals you're done gathering. The writer composes the report from the source pool.
 
 Strategy:
 1. FIRST TURN: decompose the question into 3-5 independent, concrete sub-questions, then call spawn_subagent on all of them IN PARALLEL (emit multiple tool_use blocks at once). Independent = no overlap. Concrete = specific (dates, versions, mechanisms, comparison points), answerable from a few web sources.
@@ -261,7 +243,6 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
     query,
     sources,
     source_texts: sourceMarkdowns,
-    lead_notes: lead.notes || undefined,
     model: writerModel,
   });
   emit({ type: "written", markdown_chars: markdown.length });
@@ -269,7 +250,6 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
   const result: ResearchResult = {
     query,
     sub_questions: lead.sub_questions,
-    lead_notes: lead.notes,
     lead_turns: lead.turns,
     agent_runs: lead.agent_runs,
     sources,
@@ -284,7 +264,6 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
 interface LeadResult {
   sub_questions: string[];
   agent_runs: AgentRun[];
-  notes: string;
   turns: number;
 }
 
@@ -318,7 +297,6 @@ async function runLeadAgent(opts: {
 
   const subQuestions: string[] = [];
   const agentRuns: AgentRun[] = [];
-  let notes = "";
   let turn = 0;
 
   const messages: Anthropic.MessageParam[] = [
@@ -352,7 +330,6 @@ async function runLeadAgent(opts: {
       if ((err as { name?: string })?.name === "AbortError") throw err;
       // Lead-side API error: stop gathering but allow phase 2 to proceed
       // with whatever sources sub-agents already committed.
-      notes = `lead error: ${err instanceof Error ? err.message : String(err)}`;
       break;
     }
 
@@ -365,12 +342,6 @@ async function runLeadAgent(opts: {
     if (toolUses.length === 0) {
       // Lead stopped emitting tools without finalizing. Treat as implicit
       // finalize so the writer can still run.
-      const finalText = resp.content
-        .filter((c): c is Anthropic.TextBlock => c.type === "text")
-        .map((c) => c.text)
-        .join("\n")
-        .trim();
-      if (finalText) notes = finalText;
       break;
     }
 
@@ -460,15 +431,13 @@ async function runLeadAgent(opts: {
     }
 
     if (finalizeUse) {
-      const input = (finalizeUse.input as FinalizeInput) ?? {};
-      notes = String(input.notes ?? "").trim();
       toolResults.push({
         type: "tool_result",
         tool_use_id: finalizeUse.id,
         content: "Finalized. Writer phase will begin.",
       });
       messages.push({ role: "user", content: toolResults });
-      emit({ type: "lead_finalize", notes, sources_count: ctx.sources.length });
+      emit({ type: "lead_finalize", sources_count: ctx.sources.length });
       break;
     }
 
@@ -484,16 +453,11 @@ async function runLeadAgent(opts: {
     }
   }
 
-  if (!notes && turn >= maxLeadTurns) {
-    notes = "(lead exhausted turn budget without explicit finalize)";
-  }
-
-  emit({ type: "lead_finalize", notes, sources_count: ctx.sources.length });
+  emit({ type: "lead_finalize", sources_count: ctx.sources.length });
 
   return {
     sub_questions: dedupePreservingOrder(subQuestions),
     agent_runs: agentRuns,
-    notes,
     turns: turn,
   };
 }
@@ -513,8 +477,9 @@ function formatScoutResult(
   const lines = added.map((n) => {
     const s = ctx.sources.find((x) => x.n === n);
     if (!s) return `  [${n}] (missing — internal error)`;
-    const preview = s.summary.length > 200 ? s.summary.slice(0, 197) + "…" : s.summary;
-    return `  [${n}] ${s.title} — ${preview}`;
+    const raw = ctx.sourceMarkdowns.get(n) ?? "";
+    const preview = raw.slice(0, 200).replace(/\s+/g, " ").trim();
+    return `  [${n}] ${s.title}${preview ? ` — ${preview}…` : ""}`;
   });
   return (
     `Scout for "${sub_question}" added ${added.length} source${added.length === 1 ? "" : "s"} ` +

@@ -101,8 +101,7 @@ function prettyEvent(e: ResearchEvent): string {
     case "lead_finalize":
       return (
         paint(GREEN, "✓") +
-        ` lead finalized — ${e.sources_count} source${e.sources_count === 1 ? "" : "s"} gathered` +
-        (e.notes ? "\n" + paint(DIM, `  notes: ${e.notes}`) : "")
+        ` lead finalized — ${e.sources_count} source${e.sources_count === 1 ? "" : "s"} gathered`
       );
     case "agent_started":
       return paint(DIM, "  →") + ` agent started${tag(e.sub_question)}`;
@@ -121,10 +120,8 @@ function prettyEvent(e: ResearchEvent): string {
       );
     case "fetching":
       return paint(DIM, `    fetch: ${e.url}`) + tag(e.sub_question);
-    case "summarized":
+    case "source_committed":
       return paint(GREEN, `    ✓`) + ` [${e.n}] ${e.url}` + tag(e.sub_question);
-    case "source_skipped":
-      return paint(DIM, `    · skipped ${e.url} (${e.reason})`);
     case "source_error":
       return paint(YELLOW, `    ! ${e.url} — ${e.error}`);
     case "writing":

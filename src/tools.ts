@@ -1,10 +1,6 @@
 import type Anthropic from "@anthropic-ai/sdk";
 import type Steel from "steel-sdk";
-import {
-  FAST_MODEL,
-  summarizeWebpage,
-  type CitedSource,
-} from "./pipeline.js";
+import { FAST_MODEL, type CitedSource } from "./pipeline.js";
 import {
   arxivSearch,
   githubSearch,
@@ -17,15 +13,19 @@ import {
 } from "./search.js";
 
 const STORED_MARKDOWN_CAP = 50_000;
+const FETCH_SNIPPET_CHARS = 2500;
 const DEFAULT_MAX_TOOL_CALLS = 12;
 
 // ----------------------------------------------------------------------------
 // Agentic sub-agent
 //
-// Each sub-question gets a Haiku-driven loop with three tools:
+// Each sub-question gets a Haiku-driven loop with two tools:
 //   - search(query, source?, site?, limit?)
-//   - fetch(url) — scrape + summarize + atomic commit to global pool
-//   - finish(reason)
+//   - fetch(url) — scrape + atomic commit to global pool
+//
+// The scout terminates by emitting a final text message with no tool calls
+// (or by hitting its tool/source budget). Every successful fetch commits the
+// page to the pool — choose carefully.
 //
 // Global invariants (URL dedup, per-domain cap, source cap) are enforced
 // INSIDE the tools, so the agent can't break them no matter what it picks.
@@ -72,13 +72,12 @@ export type AgenticEvent =
     }
   | { type: "fetching"; sub_question: string; url: string }
   | {
-      type: "summarized";
+      type: "source_committed";
       sub_question: string;
       url: string;
       n: number;
-      summary: string;
+      title: string;
     }
-  | { type: "source_skipped"; sub_question: string; url: string; reason: string }
   | { type: "source_error"; sub_question: string; url: string; error: string }
   | { type: "agent_finished"; sub_question: string; sources_added: number };
 
@@ -96,9 +95,6 @@ interface SearchToolInput {
 }
 interface FetchToolInput {
   url?: string;
-}
-interface FinishToolInput {
-  reason?: string;
 }
 
 const AGENT_TOOLS: Anthropic.Tool[] = [
@@ -141,10 +137,8 @@ const AGENT_TOOLS: Anthropic.Tool[] = [
   {
     name: "fetch",
     description:
-      "Fetch a URL, summarize its content against the sub-question, and (if relevant) atomically commit it to the global source pool. " +
-      "Returns the assigned [n], a tight summary, and verbatim key excerpts. " +
-      "If the page is irrelevant or duplicate, it is NOT committed and the tool returns why. " +
-      "Fetch the 2-4 most promising results per search; don't fetch obvious off-topic snippets.",
+      "Fetch a URL, atomically commit it to the global source pool, and return the assigned [n] plus the first chars of the page so you can decide whether to chase citations or pivot. " +
+      "Every successful fetch commits — pick the 2-4 most promising results per search, not all of them. Off-topic fetches waste your source budget.",
     input_schema: {
       type: "object",
       properties: {
@@ -156,37 +150,20 @@ const AGENT_TOOLS: Anthropic.Tool[] = [
       required: ["url"],
     } as Anthropic.Tool["input_schema"],
   },
-  {
-    name: "finish",
-    description:
-      "Stop research for this sub-question. Call when you have 2-4 corroborating sources covering it well, " +
-      "or when further searches are unlikely to add value.",
-    input_schema: {
-      type: "object",
-      properties: {
-        reason: {
-          type: "string",
-          description: "Short note on what's covered or why stopping.",
-        },
-      },
-      required: ["reason"],
-    } as Anthropic.Tool["input_schema"],
-  },
 ];
 
 const AGENT_SYSTEM = `You are a research scout focused on ONE sub-question. Your job is to gather a small set of high-quality, diverse sources whose contents together answer it.
 
-Tools available:
+Tools:
 - search(query, source?, site?, limit?) — web (default), arxiv (papers), github (code), hn (discussions). Use \`site:foo.com\` (via the \`site\` argument) for targeted web search.
-- fetch(url) — scrape + summarize + commit. Returns [n] + summary + key excerpts, or "not relevant" if it doesn't address the sub-question.
-- finish(reason) — call when you have enough.
+- fetch(url) — scrape + commit to global source pool. Returns the assigned [n] and the first chars of the page so you can chase citations or pivot. EVERY successful fetch commits — choose carefully.
 
 Strategy:
 1. Open with 1-2 broad searches at different angles (definition / recency / comparison / criticism / primary source). Pick the backend that fits the topic.
-2. Skim the search results' titles + snippets. Fetch only the 2-4 most promising — not all of them.
-3. If a fetched source references another (a paper, an announcement URL, a doc), fetch that too. Following citations one level deeper often beats more searches.
+2. Skim the search results' titles + snippets. Fetch only the 2-4 most promising — not all of them. Off-topic fetches waste your source budget.
+3. If a fetched page references another (a paper, an announcement URL, a doc), fetch that next. Following citations one level deeper often beats more searches.
 4. Prefer primary sources (official docs, papers, original announcements) over forums/blogs unless community insight is what you want.
-5. Stop early when you have ~2-4 corroborating sources. Hard cap: respect your budget.
+5. Stop when you have 2-4 corroborating sources OR your budget is near exhausted: emit a final text message with NO tool calls and the loop will end.
 
 Be efficient: don't fetch URLs already in the source pool (the tool will reject them); don't issue the same query twice; don't fetch results whose snippets clearly miss the sub-question.`;
 
@@ -346,7 +323,7 @@ async function execFetch(
 
   if (ctx.sources.length >= ctx.globalSourceCap) {
     return {
-      text: `Global source cap reached (${ctx.globalSourceCap}). Call finish.`,
+      text: `Global source cap reached (${ctx.globalSourceCap}). Stop fetching.`,
     };
   }
 
@@ -384,48 +361,14 @@ async function execFetch(
 
   ctx.abort();
 
-  let summary;
-  try {
-    summary = await summarizeWebpage({
-      anthropic: ctx.anthropic,
-      markdown,
-      url,
-      title,
-      sub_question: subQ,
-      model: ctx.fastModel,
-    });
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    ctx.emit({
-      type: "source_error",
-      sub_question: subQ,
-      url,
-      error: `summarize: ${message}`,
-    });
-    return { text: `Summarize error: ${message}` };
-  }
-
-  if (!summary.is_relevant || !summary.summary) {
-    ctx.emit({
-      type: "source_skipped",
-      sub_question: subQ,
-      url,
-      reason: "not relevant",
-    });
-    return {
-      text: `Not committed — page doesn't address "${subQ}". Try a different result or query.`,
-    };
-  }
-
   // Atomic commit. JS event loop guarantees no interleaving across awaits inside
   // this block, so parallel sub-agents won't race on n.
   const n = ctx.sources.length + 1;
+  const resolvedTitle = title ?? url;
   ctx.sources.push({
     n,
     url,
-    title: title ?? url,
-    summary: summary.summary,
-    key_excerpts: summary.key_excerpts,
+    title: resolvedTitle,
     sub_question: subQ,
   });
   ctx.sourceUrls.add(url);
@@ -433,19 +376,17 @@ async function execFetch(
   ctx.globalDomainCounts.set(domain, dCount + 1);
 
   ctx.emit({
-    type: "summarized",
+    type: "source_committed",
     sub_question: subQ,
     url,
     n,
-    summary: summary.summary,
+    title: resolvedTitle,
   });
 
-  const excerpts = summary.key_excerpts.length
-    ? "\nKey excerpts:\n" + summary.key_excerpts.map((e) => `- "${e}"`).join("\n")
-    : "";
+  const snippet = markdown.slice(0, FETCH_SNIPPET_CHARS).trim();
   return {
     committed_n: n,
-    text: `Committed as [${n}]: ${title ?? url}\nSummary: ${summary.summary}${excerpts}`,
+    text: `Committed [${n}]: ${resolvedTitle}\nURL: ${url}\nFirst ${FETCH_SNIPPET_CHARS} chars:\n${snippet}`,
   };
 }
 
@@ -488,18 +429,9 @@ export async function runAgenticSubAgent(opts: {
         system: AGENT_SYSTEM,
         tools: AGENT_TOOLS,
         messages,
-        // Multi-turn caching: auto-places ephemeral cache on the last
-        // cacheable block each iteration. Haiku 4.5 needs ≥ 4096 tokens of
-        // prefix to actually cache, so turns 1-2 typically miss; the win
-        // accrues from turn 3+ once fetch summaries and search results
-        // accumulate. Silent miss otherwise — no error.
         cache_control: { type: "ephemeral" },
       });
     } catch (err) {
-      // SDK has already retried (maxRetries on client). If we still landed
-      // here, the API is genuinely unavailable for this agent right now.
-      // End the agent gracefully with whatever sources it gathered — DO NOT
-      // throw, or Promise.all kills the entire research run.
       if ((err as { name?: string })?.name === "AbortError") throw err;
       const message = err instanceof Error ? err.message : String(err);
       finishReason = `api error: ${message}`;
@@ -512,27 +444,14 @@ export async function runAgenticSubAgent(opts: {
       (c): c is Anthropic.ToolUseBlock => c.type === "tool_use",
     );
     if (toolUses.length === 0) {
-      finishReason = "agent emitted no tools";
+      finishReason = "scout stopped emitting tools";
       break;
     }
 
     const toolResults: Anthropic.ToolResultBlockParam[] = [];
-    let sawFinish = false;
 
     for (const tu of toolUses) {
       toolCalls++;
-
-      if (tu.name === "finish") {
-        const input = (tu.input as FinishToolInput) ?? {};
-        finishReason = String(input.reason ?? "agent called finish").trim() || "agent called finish";
-        toolResults.push({
-          type: "tool_result",
-          tool_use_id: tu.id,
-          content: "OK — finishing.",
-        });
-        sawFinish = true;
-        continue;
-      }
 
       if (tu.name === "search") {
         searchIndex++;
@@ -597,7 +516,6 @@ export async function runAgenticSubAgent(opts: {
 
     messages.push({ role: "user", content: toolResults });
 
-    if (sawFinish) break;
     if (myAddedNs.length >= agent_source_cap) {
       finishReason = "agent source cap reached";
       break;
