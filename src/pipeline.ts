@@ -5,6 +5,7 @@ export const WRITER_MODEL = "claude-sonnet-4-6";
 const WRITER_MAX_SOURCE_CHARS = 20_000;
 const WRITER_TOTAL_SOURCE_CHARS = 100_000;
 const WRITER_MIN_SOURCE_CHARS = 1_000;
+const MAX_HEADING_OUTLINE_CHARS = 2_000;
 
 export interface CitedSource {
   n: number;
@@ -15,6 +16,54 @@ export interface CitedSource {
 
 export interface ReportOutput {
   markdown: string;
+}
+
+function markdownHeadingOutline(markdown: string): string {
+  const headings = markdown
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => /^#{1,4}\s+\S/.test(line));
+
+  if (headings.length === 0) return "";
+  const outline = headings.join("\n").slice(0, MAX_HEADING_OUTLINE_CHARS);
+  return `Document heading outline:\n${outline}\n\n`;
+}
+
+function clampSegmentStart(raw: string, start: number, length: number): number {
+  if (start <= 0) return 0;
+  const maxStart = Math.max(0, raw.length - length);
+  return Math.min(start, maxStart);
+}
+
+function sampleLongMarkdown(markdown: string, budget: number): string {
+  if (markdown.length <= budget) return markdown;
+
+  const omission = "\n\n[... omitted middle of source page ...]\n\n";
+  const segmentBudget = Math.max(200, budget - omission.length * 2);
+  const headChars = Math.floor(segmentBudget * 0.5);
+  const middleChars = Math.floor(segmentBudget * 0.25);
+  const tailChars = segmentBudget - headChars - middleChars;
+
+  const middleStart = clampSegmentStart(
+    markdown,
+    Math.floor(markdown.length / 2 - middleChars / 2),
+    middleChars,
+  );
+  const tailStart = clampSegmentStart(markdown, markdown.length - tailChars, tailChars);
+
+  return [
+    markdown.slice(0, headChars),
+    markdown.slice(middleStart, middleStart + middleChars),
+    markdown.slice(tailStart),
+  ].join(omission);
+}
+
+function packSourceMarkdown(markdown: string, budget: number): string {
+  if (markdown.length <= budget) return markdown;
+
+  const outline = markdownHeadingOutline(markdown);
+  const contentBudget = Math.max(WRITER_MIN_SOURCE_CHARS, budget - outline.length);
+  return `${outline}${sampleLongMarkdown(markdown, contentBudget)}`.slice(0, budget);
 }
 
 export async function writeReport(opts: {
@@ -45,8 +94,9 @@ export async function writeReport(opts: {
   const sourceBlocks = sources
     .map((s) => {
       const raw = source_texts.get(s.n) ?? "";
+      const packed = raw ? packSourceMarkdown(raw, sourceBudget) : "";
       const rawBlock = raw
-        ? `\nPage content (truncated to ${sourceBudget.toLocaleString()} chars):\n${raw.slice(0, sourceBudget)}`
+        ? `\nPage content (packed to ${sourceBudget.toLocaleString()} chars):\n${packed}`
         : "\n(No page content available.)";
       return `[${s.n}] ${s.title} — ${s.url}\nSub-question: ${s.sub_question || "(unspecified)"}${rawBlock}`;
     })
