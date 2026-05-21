@@ -277,13 +277,17 @@ export async function verifyClaim(opts: {
     ? `\n\nPage content (GROUND TRUTH, truncated to ${VERIFY_MARKDOWN_BUDGET.toLocaleString()} chars):\n${raw_text.slice(0, VERIFY_MARKDOWN_BUDGET)}`
     : "\n\n(Raw page content not available — verify against summary + excerpts only.)";
 
-  const userPrompt =
-    `Claim from report: ${claim}\n\n` +
+  // Source-first ordering so that N claims against the same source share a
+  // cacheable prefix. The cache_control breakpoint sits on the source block;
+  // the claim is the only thing that varies between calls and lives after.
+  // Haiku's minimum cacheable prefix is ~4096 tokens — small pages won't
+  // cache, but cache_control is silently ignored in that case (no error).
+  const sourceBlock =
     `Source [${source.n}] ${source.title} — ${source.url}\n` +
     `Summary (hint): ${source.summary}\n` +
     `Key excerpts (hint):\n${excerpts}` +
-    rawBlock +
-    `\n\nDoes the source support the claim?`;
+    rawBlock;
+  const claimBlock = `\n\nClaim from report: ${claim}\n\nDoes the source support the claim?`;
 
   const response = await anthropic.messages.create({
     model: model ?? FAST_MODEL,
@@ -297,7 +301,19 @@ export async function verifyClaim(opts: {
       },
     ],
     tool_choice: { type: "tool", name: "submit_verdict" },
-    messages: [{ role: "user", content: userPrompt }],
+    messages: [
+      {
+        role: "user",
+        content: [
+          {
+            type: "text",
+            text: sourceBlock,
+            cache_control: { type: "ephemeral" },
+          },
+          { type: "text", text: claimBlock },
+        ],
+      },
+    ],
   });
 
   const tool = response.content.find(
@@ -362,11 +378,15 @@ export async function critiqueDraft(opts: {
         .join("\n\n")
     : "(none)";
 
-  const userPrompt =
+  // Stable prefix (brief + sub-questions + sources) shared across attempts 1
+  // and 2; only the draft markdown changes between calls. cache_control on
+  // the stable block lets attempt 2 read what attempt 1 wrote.
+  const stableBlock =
     `Brief: ${brief}\n\n` +
     `Sub-questions:\n${sub_questions.map((q, i) => `${i + 1}. ${q}`).join("\n")}\n\n` +
-    `Sources used (numbered):\n${sourceBlocks}\n\n` +
-    `Draft report:\n\n${markdown}\n\n` +
+    `Sources used (numbered):\n${sourceBlocks}`;
+  const draftBlock =
+    `\n\nDraft report:\n\n${markdown}\n\n` +
     `Critique strictly — substantive issues only, max 5.`;
 
   const response = await anthropic.messages.create({
@@ -381,7 +401,19 @@ export async function critiqueDraft(opts: {
       },
     ],
     tool_choice: { type: "tool", name: "submit_critique" },
-    messages: [{ role: "user", content: userPrompt }],
+    messages: [
+      {
+        role: "user",
+        content: [
+          {
+            type: "text",
+            text: stableBlock,
+            cache_control: { type: "ephemeral" },
+          },
+          { type: "text", text: draftBlock },
+        ],
+      },
+    ],
   });
 
   const tool = response.content.find(
@@ -453,10 +485,15 @@ export async function writeReport(opts: {
         critique_issues.map((s) => `- ${s}`).join("\n")
       : "";
 
-  const userPrompt =
+  // Stable prefix (brief + sources) shared across retry attempts; the
+  // instruction tail varies when unsupported_claims / critique_issues land.
+  // cache_control on the stable block makes attempt 2 (and the sectioned-
+  // writer fallback path) reuse the prefix attempt 1 wrote.
+  const stableBlock =
     `Research brief: ${brief}\n\n` +
-    `Sources (numbered):\n${sourceBlocks}\n\n` +
-    `Write the report now. Aim for thorough coverage of the brief, with every claim grounded in a numbered source.` +
+    `Sources (numbered):\n${sourceBlocks}`;
+  const instructionBlock =
+    `\n\nWrite the report now. Aim for thorough coverage of the brief, with every claim grounded in a numbered source.` +
     retryBlock +
     critiqueBlock;
 
@@ -464,7 +501,19 @@ export async function writeReport(opts: {
     model: model ?? WRITER_MODEL,
     max_tokens: 16384,
     system,
-    messages: [{ role: "user", content: userPrompt }],
+    messages: [
+      {
+        role: "user",
+        content: [
+          {
+            type: "text",
+            text: stableBlock,
+            cache_control: { type: "ephemeral" },
+          },
+          { type: "text", text: instructionBlock },
+        ],
+      },
+    ],
   });
 
   const text = response.content

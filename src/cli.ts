@@ -177,11 +177,28 @@ function prettyEvent(e: ResearchEvent): string {
       return paint(YELLOW, `  ! verify failed at ${(e.pass_rate * 100).toFixed(0)}% (threshold ${(e.threshold * 100).toFixed(0)}%) — retrying`);
     case "completed": {
       const vs = e.result.verification_summary;
+      const us = e.result.usage_summary;
       const tail =
         vs.total > 0
           ? `${vs.supported}/${vs.total} claims supported (${(vs.pass_rate * 100).toFixed(0)}%)`
           : "no claims to verify";
-      return paint(GREEN, "✓") + ` done — ${e.result.sources.length} sources, ${tail}`;
+      const totalInput =
+        us.input_tokens +
+        us.cache_creation_input_tokens +
+        us.cache_read_input_tokens;
+      const cacheHitPct =
+        totalInput > 0
+          ? (us.cache_read_input_tokens / totalInput) * 100
+          : 0;
+      const tokenLine = paint(
+        DIM,
+        `  ↳ ${totalInput.toLocaleString()} in / ${us.output_tokens.toLocaleString()} out tok · cache ${cacheHitPct.toFixed(0)}% hit (${us.cache_read_input_tokens.toLocaleString()} read, ${us.cache_creation_input_tokens.toLocaleString()} write)`,
+      );
+      return (
+        paint(GREEN, "✓") +
+        ` done — ${e.result.sources.length} sources, ${tail}\n` +
+        tokenLine
+      );
     }
   }
 }

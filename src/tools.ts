@@ -488,6 +488,12 @@ export async function runAgenticSubAgent(opts: {
         system: AGENT_SYSTEM,
         tools: AGENT_TOOLS,
         messages,
+        // Multi-turn caching: auto-places ephemeral cache on the last
+        // cacheable block each iteration. Haiku 4.5 needs ≥ 4096 tokens of
+        // prefix to actually cache, so turns 1-2 typically miss; the win
+        // accrues from turn 3+ once fetch summaries and search results
+        // accumulate. Silent miss otherwise — no error.
+        cache_control: { type: "ephemeral" },
       });
     } catch (err) {
       // SDK has already retried (maxRetries on client). If we still landed

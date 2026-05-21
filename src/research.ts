@@ -45,6 +45,13 @@ export interface VerificationSummary {
   pass_rate: number;
 }
 
+export interface UsageSummary {
+  input_tokens: number;
+  output_tokens: number;
+  cache_creation_input_tokens: number;
+  cache_read_input_tokens: number;
+}
+
 export interface AgentRun {
   sub_question: string;
   source_ns: number[];
@@ -64,6 +71,7 @@ export interface ResearchResult {
   pass_rate_history: number[];
   verifications: ClaimVerification[];
   verification_summary: VerificationSummary;
+  usage_summary: UsageSummary;
 }
 
 export type ResearchEvent =
@@ -225,6 +233,10 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
   // and 5xx with exp backoff + retry-after, so this transparently absorbs
   // most concurrent-connection bursts. 5 retries → ~1–2 min worst case.
   const anthropic = new Anthropic({ apiKey: anthropicApiKey, maxRetries: 5 });
+  // Monkey-patch messages.create to accumulate per-call usage into a single
+  // object that flows into the final ResearchResult. Atlas never streams, so
+  // every response carries a Message with .usage — safe to read directly.
+  const usageSummary = instrumentAnthropic(anthropic);
   const steel = createSteel({ apiKey: steelApiKey, baseUrl: steelBaseUrl });
 
   // ---- phase 1: brief ----
@@ -604,8 +616,40 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
       unsupported: totalClaims - supportedClaims,
       pass_rate: passRate,
     },
+    usage_summary: { ...usageSummary },
   };
 
   emit({ type: "completed", result });
   return result;
+}
+
+/**
+ * Wrap `client.messages.create` so every call's `usage` is accumulated into
+ * the returned summary object. Caller holds the same reference and reads it
+ * after the research run finishes. Atlas only uses the non-stream overload,
+ * so the cast is safe in practice.
+ */
+function instrumentAnthropic(client: Anthropic): UsageSummary {
+  const usage: UsageSummary = {
+    input_tokens: 0,
+    output_tokens: 0,
+    cache_creation_input_tokens: 0,
+    cache_read_input_tokens: 0,
+  };
+  const origCreate = client.messages.create.bind(client.messages);
+  const wrapped = async (
+    ...args: Parameters<typeof origCreate>
+  ): Promise<Awaited<ReturnType<typeof origCreate>>> => {
+    const res = await origCreate(...args);
+    if (res && typeof res === "object" && "usage" in res && res.usage) {
+      const u = res.usage;
+      usage.input_tokens += u.input_tokens ?? 0;
+      usage.output_tokens += u.output_tokens ?? 0;
+      usage.cache_creation_input_tokens += u.cache_creation_input_tokens ?? 0;
+      usage.cache_read_input_tokens += u.cache_read_input_tokens ?? 0;
+    }
+    return res;
+  };
+  client.messages.create = wrapped as typeof client.messages.create;
+  return usage;
 }
