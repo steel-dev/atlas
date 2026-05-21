@@ -1,6 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import {
-  WRITER_MODEL,
+  FAST_MODEL,
   writeReport,
   type CitedSource,
 } from "./pipeline.js";
@@ -222,7 +222,7 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
     maxLeadTurns,
     maxSubagentToolCalls: maxToolCalls,
     subagentSourceCap: RESEARCH_DEFAULTS.subagentSourceCap,
-    model: leadModel ?? writerModel ?? WRITER_MODEL,
+    model: leadModel ?? fastModel ?? FAST_MODEL,
     emit,
     abort,
   });
@@ -312,8 +312,6 @@ async function runLeadAgent(opts: {
         {
           model,
           max_tokens: 8192,
-          thinking: { type: "adaptive" },
-          output_config: { effort: "high" },
           system: LEAD_SYSTEM,
           tools: LEAD_TOOLS,
           messages,

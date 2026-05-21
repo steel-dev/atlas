@@ -2,7 +2,9 @@ import type Anthropic from "@anthropic-ai/sdk";
 
 export const FAST_MODEL = "claude-haiku-4-5-20251001";
 export const WRITER_MODEL = "claude-sonnet-4-6";
-const WRITER_MARKDOWN_BUDGET = 20_000;
+const WRITER_MAX_SOURCE_CHARS = 20_000;
+const WRITER_TOTAL_SOURCE_CHARS = 100_000;
+const WRITER_MIN_SOURCE_CHARS = 1_000;
 
 export interface CitedSource {
   n: number;
@@ -32,11 +34,19 @@ export async function writeReport(opts: {
     "Prefer concrete, specific claims grounded in the page content over vague generalities. " +
     "Structure: a one-paragraph intro, body sections with H2 headings as the material demands, then a final '## Sources' section listing each source as '[n] Title — URL'.";
 
+  const sourceBudget = Math.max(
+    WRITER_MIN_SOURCE_CHARS,
+    Math.min(
+      WRITER_MAX_SOURCE_CHARS,
+      Math.floor(WRITER_TOTAL_SOURCE_CHARS / Math.max(1, sources.length)),
+    ),
+  );
+
   const sourceBlocks = sources
     .map((s) => {
       const raw = source_texts.get(s.n) ?? "";
       const rawBlock = raw
-        ? `\nPage content (truncated to ${WRITER_MARKDOWN_BUDGET.toLocaleString()} chars):\n${raw.slice(0, WRITER_MARKDOWN_BUDGET)}`
+        ? `\nPage content (truncated to ${sourceBudget.toLocaleString()} chars):\n${raw.slice(0, sourceBudget)}`
         : "\n(No page content available.)";
       return `[${s.n}] ${s.title} — ${s.url}\nSub-question: ${s.sub_question || "(unspecified)"}${rawBlock}`;
     })
