@@ -8,21 +8,18 @@ const USAGE = `atlas — deep research from your terminal
 Usage:
   atlas "<question>" [options]
 
-A research-lead agent (Sonnet) decomposes your question and dispatches parallel
-scout sub-agents (Haiku) with search + fetch tools. After the lead finalizes,
-a single writer composes the cited report from all sources.
+A gather agent searches and fetches sources, then a single writer composes the
+cited report from all sources.
 
 Options:
   -o, --out <file>            Write the markdown report to <file> (default: stdout)
       --max-sources N         Cap on cited sources (default 12)
-      --max-lead-turns N      Cap on lead-agent turns (default 8)
-      --max-tool-calls N      Per-sub-agent tool-call cap (default 12)
+      --max-tool-calls N      Gather-agent tool-call cap (default 12)
       --timeout N             Overall wall-clock budget in seconds (default: none)
       --engine <e>            Default web SERP: ddg | bing | google (default ddg)
       --use-proxy             Route Steel through residential proxy
-      --fast-model <m>        Override Haiku (scout / page-summarize) model id
+      --fast-model <m>        Override Haiku gather model id
       --writer-model <m>      Override Sonnet writer model id
-      --lead-model <m>        Override lead-agent model id (defaults to writer model)
       --json                  Emit one JSON event per line on stderr
   -q, --quiet                 Suppress progress events on stderr
   -h, --help                  Show this help
@@ -32,8 +29,6 @@ Environment:
   ATLAS_ANTHROPIC_API_KEY or ANTHROPIC_API_KEY   required
   ATLAS_STEEL_API_KEY      or STEEL_API_KEY       required
   ATLAS_STEEL_BASE_URL     or STEEL_BASE_URL      optional (self-hosted Steel)
-  ATLAS_GITHUB_TOKEN       or GITHUB_TOKEN        optional (raises github
-                                                  search rate limits)
 
 Examples:
   atlas "What changed when Cloudflare DO added SQLite?"
@@ -90,11 +85,6 @@ function prettyEvent(e: ResearchEvent): string {
     return paint(DIM, ` [${t}]`);
   };
   switch (e.type) {
-    case "lead_turn":
-      return (
-        paint(BLUE, "→") +
-        ` turn ${e.turn}: spawning ${e.spawned} scout${e.spawned === 1 ? "" : "s"}`
-      );
     case "agent_started":
       return paint(DIM, "  →") + ` agent started${tag(e.sub_question)}`;
     case "agent_finished":
@@ -157,14 +147,12 @@ async function main(): Promise<void> {
         options: {
           out: { type: "string", short: "o" },
           "max-sources": { type: "string" },
-          "max-lead-turns": { type: "string" },
           "max-tool-calls": { type: "string" },
           timeout: { type: "string" },
           engine: { type: "string" },
           "use-proxy": { type: "boolean" },
           "fast-model": { type: "string" },
           "writer-model": { type: "string" },
-          "lead-model": { type: "string" },
           json: { type: "boolean" },
           quiet: { type: "boolean", short: "q" },
           help: { type: "boolean", short: "h" },
@@ -198,7 +186,6 @@ async function main(): Promise<void> {
   );
   const steelApiKey = readEnv("ATLAS_STEEL_API_KEY", "STEEL_API_KEY");
   const steelBaseUrl = readEnv("ATLAS_STEEL_BASE_URL", "STEEL_BASE_URL");
-  const githubToken = readEnv("ATLAS_GITHUB_TOKEN", "GITHUB_TOKEN");
 
   if (!anthropicApiKey) {
     fail("ANTHROPIC_API_KEY (or ATLAS_ANTHROPIC_API_KEY) is not set");
@@ -256,14 +243,11 @@ async function main(): Promise<void> {
       steelApiKey,
       steelBaseUrl,
       maxSources: parseNumber(values["max-sources"], "--max-sources"),
-      maxLeadTurns: parseNumber(values["max-lead-turns"], "--max-lead-turns"),
       maxToolCalls: parseNumber(values["max-tool-calls"], "--max-tool-calls"),
       engine: engine as Engine | undefined,
       useProxy: values["use-proxy"] === true,
       fastModel: values["fast-model"],
       writerModel: values["writer-model"],
-      leadModel: values["lead-model"],
-      githubToken,
       onEvent,
       signal,
     });

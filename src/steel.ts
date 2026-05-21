@@ -14,7 +14,7 @@ export function createSteel(opts: SteelOptions): Steel {
     baseURL: opts.baseUrl,
     // Internal retries make AbortSignal less effective (a retry can resume
     // after the user cancelled) and amplify worst-case wall-clock. Atlas
-    // surfaces failures to the scout LLM, which can pivot to a different URL.
+    // surfaces failures to the gather agent, which can pivot to a different URL.
     maxRetries: 0,
   });
 }

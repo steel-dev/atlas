@@ -85,7 +85,7 @@ export function createSourceReservations(): SourceReservations {
 }
 
 // ----------------------------------------------------------------------------
-// Agentic sub-agent
+// Agentic gather loop
 //
 // A single Haiku-driven gather loop gets two tools:
 //   - search(query, limit?)
@@ -118,7 +118,6 @@ export interface AgentContext {
   steelGate: SteelGate;
   sourceReservations: SourceReservations;
   caches: ResearchCaches;
-  githubToken?: string;
 }
 
 // A loose superset of the research event types this module emits. Kept here
@@ -260,7 +259,7 @@ function reserveFetch(ctx: AgentContext, url: string): FetchReservation | string
     return `Already in source pool as [${existing?.n ?? "?"}]: ${existing?.title ?? url}. Pick a different result.`;
   }
   if (ctx.sourceReservations.urls.has(normalizedUrl)) {
-    return `Already being fetched by another scout: ${url}. Pick a different result.`;
+    return `Already being fetched: ${url}. Pick a different result.`;
   }
 
   if (totalSourceSlots(ctx) >= ctx.globalSourceCap) {
@@ -531,7 +530,7 @@ async function execFetch(
     ctx.abort();
 
     // Commit while the reservation is still held so source numbers and caps stay
-    // consistent across concurrent scouts.
+    // consistent across parallel tool calls.
     const n = ctx.sources.length + 1;
     const resolvedTitle = title ?? url;
     ctx.sources.push({

@@ -48,7 +48,6 @@ export interface ResearchResult {
 }
 
 export type ResearchEvent =
-  | { type: "lead_turn"; turn: number; spawned: number }
   | { type: "agent_started"; sub_question: string }
   | { type: "searching"; sub_question: string; index: number; query: string }
   | {
@@ -84,21 +83,15 @@ export interface ResearchOptions {
   steelBaseUrl?: string;
   /** Cap on cited sources. Default 12. */
   maxSources?: number;
-  /** Cap on lead-agent turns (each turn can spawn multiple sub-agents in parallel). Default 8. */
-  maxLeadTurns?: number;
-  /** Per-sub-agent cap on tool calls (search / fetch / finish). Default 12. */
+  /** Cap on gather-agent tool calls (search / fetch / done). Default 12. */
   maxToolCalls?: number;
-  /** Default backend for the web search tool. */
+  /** Web SERP engine. */
   engine?: Engine;
   useProxy?: boolean;
-  /** Override the sub-agent scout / page-summarizer / verifier model (Haiku by default). */
+  /** Override the gather model (Haiku by default). */
   fastModel?: string;
-  /** Override the lead-agent + writer model (Sonnet by default). */
+  /** Override the writer model (Sonnet by default). */
   writerModel?: string;
-  /** Override JUST the lead-agent model. Falls back to writerModel. */
-  leadModel?: string;
-  /** Optional GitHub token used by the github search backend (raises rate limit). */
-  githubToken?: string;
   onEvent?: (event: ResearchEvent) => void;
   signal?: AbortSignal;
 }
@@ -115,7 +108,6 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
     useProxy = false,
     fastModel,
     writerModel,
-    githubToken,
     onEvent,
     signal,
   } = opts;
@@ -164,7 +156,6 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
     steelGate: createSteelGate(RESEARCH_DEFAULTS.maxConcurrentSteelCalls),
     sourceReservations: createSourceReservations(),
     caches: createResearchCaches(),
-    githubToken,
   };
 
   const gather = await runGatherAgent({
