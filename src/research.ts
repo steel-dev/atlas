@@ -178,8 +178,6 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
   const usageSummary = instrumentAnthropic(anthropic);
   const steel = createSteel({ apiKey: steelApiKey, baseUrl: steelBaseUrl });
 
-  // Shared source pool. Sub-agents commit atomically via fetch; the lead sees
-  // commits via spawn_subagent tool results.
   const sources: CitedSource[] = [];
   const sourceUrls = new Set<string>();
   const sourceMarkdowns = new Map<number, string>();
@@ -194,6 +192,7 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
     globalDomainCounts,
     emit,
     abort,
+    signal,
     defaultEngine: engine,
     useProxy,
     fastModel,
@@ -202,7 +201,6 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
     githubToken,
   };
 
-  // ---- Phase 1: lead orchestration ----
   const lead = await runLeadAgent({
     anthropic,
     ctx,
@@ -215,7 +213,6 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
     abort,
   });
 
-  // ---- Phase 2: writer ----
   abort();
   emit({ type: "writing", sources_count: sources.length });
   const { markdown } = await writeReport({
@@ -224,6 +221,7 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
     sources,
     source_texts: sourceMarkdowns,
     model: writerModel,
+    signal,
   });
   emit({ type: "written", markdown_chars: markdown.length });
 
@@ -296,18 +294,25 @@ async function runLeadAgent(opts: {
 
     let resp: Anthropic.Message;
     try {
-      resp = await anthropic.messages.create({
-        model,
-        max_tokens: 2048,
-        system: LEAD_SYSTEM,
-        tools: LEAD_TOOLS,
-        messages,
-        // ephemeral cache on last cacheable block; the system prompt + early
-        // turns become a reusable prefix as turns accumulate.
-        cache_control: { type: "ephemeral" },
-      });
+      resp = await anthropic.messages.create(
+        {
+          model,
+          max_tokens: 8192,
+          thinking: { type: "adaptive" },
+          output_config: { effort: "high" },
+          system: LEAD_SYSTEM,
+          tools: LEAD_TOOLS,
+          messages,
+          // ephemeral cache on last cacheable block; the system prompt + early
+          // turns become a reusable prefix as turns accumulate.
+          cache_control: { type: "ephemeral" },
+        },
+        { signal: ctx.signal },
+      );
     } catch (err) {
-      if ((err as { name?: string })?.name === "AbortError") throw err;
+      // SDK abort errors wrap the AbortSignal as APIUserAbortError (name
+      // defaults to "Error"), so check the signal directly.
+      if (ctx.signal?.aborted) throw err;
       // Lead-side API error: stop gathering but allow phase 2 to proceed
       // with whatever sources sub-agents already committed.
       break;
@@ -335,7 +340,6 @@ async function runLeadAgent(opts: {
 
     emit({ type: "lead_turn", turn, spawned: spawnUses.length });
 
-    // Pre-flight: if the pool is already at cap, skip spawning new scouts.
     const poolFullBeforeSpawn = ctx.sources.length >= ctx.globalSourceCap;
 
     const toolResults: Anthropic.ToolResultBlockParam[] = [];

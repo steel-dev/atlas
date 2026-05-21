@@ -21,8 +21,9 @@ export async function writeReport(opts: {
   sources: CitedSource[];
   source_texts: Map<number, string>;
   model?: string;
+  signal?: AbortSignal;
 }): Promise<ReportOutput> {
-  const { anthropic, query, sources, source_texts, model } = opts;
+  const { anthropic, query, sources, source_texts, model, signal } = opts;
 
   const system =
     "You write a clear, comprehensive research report in Markdown answering the user's question. " +
@@ -47,24 +48,29 @@ export async function writeReport(opts: {
   const instructionBlock =
     `\n\nWrite the report now. Aim for thorough coverage of the question, with every claim grounded in a numbered source.`;
 
-  const response = await anthropic.messages.create({
-    model: model ?? WRITER_MODEL,
-    max_tokens: 16384,
-    system,
-    messages: [
-      {
-        role: "user",
-        content: [
-          {
-            type: "text",
-            text: stableBlock,
-            cache_control: { type: "ephemeral" },
-          },
-          { type: "text", text: instructionBlock },
-        ],
-      },
-    ],
-  });
+  const response = await anthropic.messages.create(
+    {
+      model: model ?? WRITER_MODEL,
+      max_tokens: 16384,
+      thinking: { type: "adaptive" },
+      output_config: { effort: "high" },
+      system,
+      messages: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "text",
+              text: stableBlock,
+              cache_control: { type: "ephemeral" },
+            },
+            { type: "text", text: instructionBlock },
+          ],
+        },
+      ],
+    },
+    { signal },
+  );
 
   const text = response.content
     .filter((c): c is Anthropic.TextBlock => c.type === "text")

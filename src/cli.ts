@@ -17,6 +17,7 @@ Options:
       --max-sources N         Cap on cited sources (default 12)
       --max-lead-turns N      Cap on lead-agent turns (default 8)
       --max-tool-calls N      Per-sub-agent tool-call cap (default 12)
+      --timeout N             Overall wall-clock budget in seconds (default: none)
       --engine <e>            Default web SERP: ddg | bing | google (default ddg)
       --use-proxy             Route Steel through residential proxy
       --fast-model <m>        Override Haiku (scout / page-summarize) model id
@@ -158,6 +159,7 @@ async function main(): Promise<void> {
           "max-sources": { type: "string" },
           "max-lead-turns": { type: "string" },
           "max-tool-calls": { type: "string" },
+          timeout: { type: "string" },
           engine: { type: "string" },
           "use-proxy": { type: "boolean" },
           "fast-model": { type: "string" },
@@ -218,6 +220,18 @@ async function main(): Promise<void> {
   process.on("SIGINT", onSigint);
   process.on("SIGTERM", onSigint);
 
+  const timeoutSeconds = parseNumber(values.timeout, "--timeout");
+  if (timeoutSeconds !== undefined && timeoutSeconds <= 0) {
+    fail(`--timeout must be > 0 (got ${timeoutSeconds})`);
+  }
+  const signal =
+    timeoutSeconds !== undefined
+      ? AbortSignal.any([
+          controller.signal,
+          AbortSignal.timeout(Math.floor(timeoutSeconds * 1000)),
+        ])
+      : controller.signal;
+
   const json = values.json === true;
   const quiet = values.quiet === true;
 
@@ -251,7 +265,7 @@ async function main(): Promise<void> {
       leadModel: values["lead-model"],
       githubToken,
       onEvent,
-      signal: controller.signal,
+      signal,
     });
 
     if (values.out) {
@@ -272,7 +286,16 @@ async function main(): Promise<void> {
       }
     }
   } catch (err) {
-    if ((err as { name?: string })?.name === "AbortError") {
+    // SDK abort errors don't preserve the original DOMException, so inspect
+    // the signal directly to distinguish timeout vs SIGINT vs API error.
+    if (signal.aborted) {
+      const reason = signal.reason as { name?: string } | undefined;
+      if (reason?.name === "TimeoutError") {
+        process.stderr.write(
+          `atlas: timed out after ${timeoutSeconds}s (--timeout)\n`,
+        );
+        process.exit(124);
+      }
       process.exit(130);
     }
     fail(err instanceof Error ? err.message : String(err));

@@ -33,6 +33,7 @@ export async function webSearch(opts: {
   country?: string;
   lang?: string;
   useProxy?: boolean;
+  signal?: AbortSignal;
 }): Promise<WebSearchOutcome> {
   const limit = opts.limit ?? 10;
   const engine = opts.engine ?? "ddg";
@@ -45,11 +46,14 @@ export async function webSearch(opts: {
 
   let html: string;
   try {
-    const result = await opts.steel.scrape({
-      url: serpUrl,
-      format: ["html"],
-      useProxy,
-    });
+    const result = await opts.steel.scrape(
+      {
+        url: serpUrl,
+        format: ["html"],
+        useProxy,
+      },
+      { signal: opts.signal },
+    );
     html = result.content?.html ?? "";
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

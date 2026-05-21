@@ -40,6 +40,9 @@ export interface AgentContext {
   globalDomainCounts: Map<string, number>;
   emit: (e: AgenticEvent) => void;
   abort: () => void;
+  /** Forwarded to every Anthropic / Steel / fetch call so cancellation
+   *  interrupts in-flight requests, not just step boundaries. */
+  signal?: AbortSignal;
   defaultEngine: Engine;
   useProxy: boolean;
   fastModel?: string;
@@ -190,20 +193,30 @@ async function execSearch(
           engine: ctx.defaultEngine,
           useProxy: ctx.useProxy,
           limit,
+          signal: ctx.signal,
         });
         break;
       case "arxiv":
-        outcome = await arxivSearch({ query: effectiveQuery, limit });
+        outcome = await arxivSearch({
+          query: effectiveQuery,
+          limit,
+          signal: ctx.signal,
+        });
         break;
       case "github":
         outcome = await githubSearch({
           query: effectiveQuery,
           limit,
           token: ctx.githubToken,
+          signal: ctx.signal,
         });
         break;
       case "hn":
-        outcome = await hnSearch({ query: effectiveQuery, limit });
+        outcome = await hnSearch({
+          query: effectiveQuery,
+          limit,
+          signal: ctx.signal,
+        });
         break;
       default: {
         const _exhaustive: never = backend;
@@ -309,11 +322,14 @@ async function execFetch(
   let markdown: string;
   let title: string | null = null;
   try {
-    const scrape = await ctx.steel.scrape({
-      url,
-      format: ["markdown"],
-      useProxy: ctx.useProxy,
-    });
+    const scrape = await ctx.steel.scrape(
+      {
+        url,
+        format: ["markdown"],
+        useProxy: ctx.useProxy,
+      },
+      { signal: ctx.signal },
+    );
     markdown = scrape.content?.markdown ?? "";
     title = scrape.metadata?.title ?? null;
     if (!markdown) {
@@ -400,16 +416,21 @@ export async function runAgenticSubAgent(opts: {
 
     let resp: Anthropic.Message;
     try {
-      resp = await ctx.anthropic.messages.create({
-        model: ctx.fastModel ?? FAST_MODEL,
-        max_tokens: 2048,
-        system: AGENT_SYSTEM,
-        tools: AGENT_TOOLS,
-        messages,
-        cache_control: { type: "ephemeral" },
-      });
+      resp = await ctx.anthropic.messages.create(
+        {
+          model: ctx.fastModel ?? FAST_MODEL,
+          max_tokens: 2048,
+          system: AGENT_SYSTEM,
+          tools: AGENT_TOOLS,
+          messages,
+          cache_control: { type: "ephemeral" },
+        },
+        { signal: ctx.signal },
+      );
     } catch (err) {
-      if ((err as { name?: string })?.name === "AbortError") throw err;
+      // SDK abort errors wrap the AbortSignal as APIUserAbortError (name
+      // defaults to "Error"), so check the signal directly.
+      if (ctx.signal?.aborted) throw err;
       const message = err instanceof Error ? err.message : String(err);
       finishReason = `api error: ${message}`;
       break;
