@@ -1,7 +1,13 @@
 #!/usr/bin/env node
 import { writeFileSync } from "node:fs";
 import { parseArgs } from "node:util";
-import { research, type Engine, type ResearchEvent } from "./research.js";
+import {
+  RESEARCH_DEPTHS,
+  research,
+  type Engine,
+  type ResearchDepth,
+  type ResearchEvent,
+} from "./research.js";
 
 const USAGE = `atlas — deep research from your terminal
 
@@ -15,6 +21,7 @@ Options:
   -o, --out <file>            Write the markdown report to <file> (default: stdout)
       --max-sources N         Cap on cited sources (default 16)
       --max-tool-calls N      Gather-agent tool-call cap (default 20)
+      --depth <d>             Budget preset: fast | standard | deep (default standard)
       --timeout N             Overall wall-clock budget in seconds (default: none)
       --engine <e>            Default web SERP: ddg | bing | google (default ddg)
       --use-proxy             Route Steel through residential proxy
@@ -39,6 +46,7 @@ Examples:
 const VERSION = "0.1.0";
 
 const ENGINES: Engine[] = ["ddg", "bing", "google"];
+const DEPTHS: ResearchDepth[] = [...RESEARCH_DEPTHS];
 
 function fail(message: string, code = 1): never {
   process.stderr.write(`atlas: ${message}\n`);
@@ -62,6 +70,10 @@ function parseNumber(raw: string | undefined, name: string): number | undefined 
 
 function isEngine(s: string): s is Engine {
   return (ENGINES as string[]).includes(s);
+}
+
+function isDepth(s: string): s is ResearchDepth {
+  return (DEPTHS as string[]).includes(s);
 }
 
 const DIM = "\x1b[2m";
@@ -141,6 +153,7 @@ async function main(): Promise<void> {
           out: { type: "string", short: "o" },
           "max-sources": { type: "string" },
           "max-tool-calls": { type: "string" },
+          depth: { type: "string" },
           timeout: { type: "string" },
           engine: { type: "string" },
           "use-proxy": { type: "boolean" },
@@ -192,6 +205,11 @@ async function main(): Promise<void> {
     fail(`--engine must be one of ${ENGINES.join(", ")} (got "${engine}")`);
   }
 
+  const depth = values.depth;
+  if (depth !== undefined && !isDepth(depth)) {
+    fail(`--depth must be one of ${DEPTHS.join(", ")} (got "${depth}")`);
+  }
+
   const controller = new AbortController();
   const onSigint = () => {
     process.stderr.write("\natlas: cancelling…\n");
@@ -237,6 +255,7 @@ async function main(): Promise<void> {
       steelBaseUrl,
       maxSources: parseNumber(values["max-sources"], "--max-sources"),
       maxToolCalls: parseNumber(values["max-tool-calls"], "--max-tool-calls"),
+      depth: depth as ResearchDepth | undefined,
       engine: engine as Engine | undefined,
       useProxy: values["use-proxy"] === true,
       fastModel: values["fast-model"],

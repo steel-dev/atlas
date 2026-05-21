@@ -2,10 +2,13 @@ import type Anthropic from "@anthropic-ai/sdk";
 
 export const FAST_MODEL = "claude-haiku-4-5-20251001";
 export const WRITER_MODEL = "claude-sonnet-4-6";
-const WRITER_MAX_SOURCE_CHARS = 60_000;
-const WRITER_TOTAL_SOURCE_CHARS = 240_000;
+const DEFAULT_WRITER_MAX_SOURCE_CHARS = 60_000;
+const DEFAULT_WRITER_TOTAL_SOURCE_CHARS = 240_000;
 const WRITER_MIN_SOURCE_CHARS = 4_000;
+const DEFAULT_WRITER_MAX_TOKENS = 16_384;
 const MAX_HEADING_OUTLINE_CHARS = 4_000;
+
+export type WriterEffort = "low" | "medium" | "high" | "xhigh" | "max";
 
 export interface CitedSource {
   n: number;
@@ -49,9 +52,24 @@ export async function writeReport(opts: {
   sources: CitedSource[];
   source_texts: Map<number, string>;
   model?: string;
+  writerEffort?: WriterEffort;
+  writerMaxTokens?: number;
+  writerMaxSourceChars?: number;
+  writerTotalSourceChars?: number;
   signal?: AbortSignal;
 }): Promise<ReportOutput> {
-  const { anthropic, query, sources, source_texts, model, signal } = opts;
+  const {
+    anthropic,
+    query,
+    sources,
+    source_texts,
+    model,
+    writerEffort,
+    writerMaxTokens,
+    writerMaxSourceChars,
+    writerTotalSourceChars,
+    signal,
+  } = opts;
 
   const system =
     "You write a clear, comprehensive research report in Markdown answering the user's question. " +
@@ -63,8 +81,11 @@ export async function writeReport(opts: {
   const sourceBudget = Math.max(
     WRITER_MIN_SOURCE_CHARS,
     Math.min(
-      WRITER_MAX_SOURCE_CHARS,
-      Math.floor(WRITER_TOTAL_SOURCE_CHARS / Math.max(1, sources.length)),
+      writerMaxSourceChars ?? DEFAULT_WRITER_MAX_SOURCE_CHARS,
+      Math.floor(
+        (writerTotalSourceChars ?? DEFAULT_WRITER_TOTAL_SOURCE_CHARS) /
+          Math.max(1, sources.length),
+      ),
     ),
   );
 
@@ -88,9 +109,9 @@ export async function writeReport(opts: {
   const response = await anthropic.messages.create(
     {
       model: model ?? WRITER_MODEL,
-      max_tokens: 16384,
+      max_tokens: writerMaxTokens ?? DEFAULT_WRITER_MAX_TOKENS,
       thinking: { type: "adaptive" },
-      output_config: { effort: "high" },
+      output_config: { effort: writerEffort ?? "high" },
       system,
       messages: [
         {

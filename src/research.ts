@@ -2,6 +2,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import {
   writeReport,
   type CitedSource,
+  type WriterEffort,
 } from "./pipeline.js";
 import { type Engine } from "./search.js";
 import { createSteel } from "./steel.js";
@@ -19,6 +20,46 @@ export const RESEARCH_DEFAULTS = {
   maxConcurrentTools: 6,
   maxConcurrentSteelCalls: 4,
 } as const;
+
+export const RESEARCH_DEPTHS = ["fast", "standard", "deep"] as const;
+export type ResearchDepth = (typeof RESEARCH_DEPTHS)[number];
+
+export const RESEARCH_DEPTH_PRESETS = {
+  fast: {
+    maxSources: 8,
+    maxToolCalls: 10,
+    writerEffort: "medium",
+    writerMaxTokens: 8192,
+    writerMaxSourceChars: 40_000,
+    writerTotalSourceChars: 120_000,
+  },
+  standard: {
+    maxSources: RESEARCH_DEFAULTS.maxSources,
+    maxToolCalls: RESEARCH_DEFAULTS.maxSubagentToolCalls,
+    writerEffort: "high",
+    writerMaxTokens: 16_384,
+    writerMaxSourceChars: 60_000,
+    writerTotalSourceChars: 240_000,
+  },
+  deep: {
+    maxSources: 24,
+    maxToolCalls: 32,
+    writerEffort: "xhigh",
+    writerMaxTokens: 16_384,
+    writerMaxSourceChars: 80_000,
+    writerTotalSourceChars: 360_000,
+  },
+} satisfies Record<
+  ResearchDepth,
+  {
+    maxSources: number;
+    maxToolCalls: number;
+    writerEffort: WriterEffort;
+    writerMaxTokens: number;
+    writerMaxSourceChars: number;
+    writerTotalSourceChars: number;
+  }
+>;
 
 export type { CitedSource } from "./pipeline.js";
 export type { Engine } from "./search.js";
@@ -79,6 +120,8 @@ export interface ResearchOptions {
   maxSources?: number;
   /** Cap on gather-agent tool calls (search / fetch / done). Default 20. */
   maxToolCalls?: number;
+  /** One-knob budget/effort preset. Explicit maxSources/maxToolCalls override it. */
+  depth?: ResearchDepth;
   /** Web SERP engine. */
   engine?: Engine;
   useProxy?: boolean;
@@ -96,8 +139,9 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
     anthropicApiKey,
     steelApiKey,
     steelBaseUrl,
-    maxSources = RESEARCH_DEFAULTS.maxSources,
-    maxToolCalls = RESEARCH_DEFAULTS.maxSubagentToolCalls,
+    maxSources: maxSourcesOverride,
+    maxToolCalls: maxToolCallsOverride,
+    depth = "standard",
     engine = "ddg",
     useProxy = false,
     fastModel,
@@ -115,6 +159,13 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
   if (!steelApiKey) {
     throw new Error("research: steelApiKey is required");
   }
+  if (!(depth in RESEARCH_DEPTH_PRESETS)) {
+    throw new Error(`research: depth must be one of ${RESEARCH_DEPTHS.join(", ")}`);
+  }
+
+  const depthPreset = RESEARCH_DEPTH_PRESETS[depth];
+  const maxSources = maxSourcesOverride ?? depthPreset.maxSources;
+  const maxToolCalls = maxToolCallsOverride ?? depthPreset.maxToolCalls;
 
   const emit = (e: ResearchEvent) => {
     try {
@@ -166,6 +217,10 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
     sources,
     source_texts: sourceMarkdowns,
     model: writerModel,
+    writerEffort: depthPreset.writerEffort,
+    writerMaxTokens: depthPreset.writerMaxTokens,
+    writerMaxSourceChars: depthPreset.writerMaxSourceChars,
+    writerTotalSourceChars: depthPreset.writerTotalSourceChars,
     signal,
   });
   emit({ type: "written", markdown_chars: markdown.length });

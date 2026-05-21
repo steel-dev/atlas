@@ -71,6 +71,7 @@ atlas "..." --quiet                    # no progress, just markdown
 
 | Flag                   | Default | What it does                                              |
 | ---------------------- | ------- | --------------------------------------------------------- |
+| `--depth <d>`          | standard | Budget preset: `fast`, `standard`, or `deep`             |
 | `--max-sources N`      | 16      | Cap on cited sources                                      |
 | `--max-tool-calls N`   | 20      | Gather-agent tool-call cap (search + fetch + done)        |
 | `--engine <e>`         | ddg     | Default web SERP: `ddg`, `bing`, or `google`              |
@@ -91,6 +92,7 @@ const result = await research({
   steelApiKey: process.env.STEEL_API_KEY!,
 
   // all optional — same defaults as the CLI
+  depth: "standard",
   maxSources: 15,
   maxToolCalls: 18,
   engine: "google",
