@@ -42,10 +42,7 @@ export interface ResearchResult {
 }
 
 export type ResearchEvent =
-  | { type: "lead_started"; query: string }
   | { type: "lead_turn"; turn: number; spawned: number }
-  | { type: "subagent_spawned"; sub_question: string }
-  | { type: "lead_finalize"; sources_count: number }
   | { type: "agent_started"; sub_question: string }
   | { type: "searching"; sub_question: string; index: number; query: string }
   | {
@@ -137,23 +134,7 @@ const LEAD_TOOLS: Anthropic.Tool[] = [
   },
 ];
 
-const LEAD_SYSTEM = `You are a research lead. Given a user's research question, you orchestrate a small team of scout sub-agents to gather high-quality sources, then signal when the writer should start.
-
-Tools:
-- spawn_subagent(sub_question) — fires a focused scout. Each scout has its own search + fetch tools and adds vetted sources to a shared pool. Emit MULTIPLE spawn_subagent tool_use blocks in ONE turn to run scouts in PARALLEL.
-- finalize() — signals you're done gathering. The writer composes the report from the source pool.
-
-Strategy:
-1. FIRST TURN: decompose the question into 3-5 independent, concrete sub-questions, then call spawn_subagent on all of them IN PARALLEL (emit multiple tool_use blocks at once). Independent = no overlap. Concrete = specific (dates, versions, mechanisms, comparison points), answerable from a few web sources.
-2. After scouts return, read what each one found. Look for: missing angles (community signal, primary source, criticism), thin sub-questions (only 1 source), unreconciled contradictions, missing specifics (exact dates / version numbers / benchmark figures).
-3. If you find concrete gaps, spawn 1-3 more focused scouts (parallel again, narrow queries — NOT re-statements of round-1 sub-questions). If coverage looks good, call finalize.
-4. The shared pool has a global source cap. Once it's near full, scouts return "cap reached" — call finalize.
-
-Be efficient:
-- Don't re-spawn for a sub-question that's already well covered.
-- Don't ask the same thing as a prior sub-question with different wording.
-- Don't speculate about content — only the scouts can actually fetch pages. You orchestrate, they read.
-- Most research questions need 1-2 turns total (initial parallel batch + at most one followup). More than 3 turns is usually a sign of poor planning.`;
+const LEAD_SYSTEM = `You research questions by spawning parallel scout sub-agents and finalizing when the source pool covers the question. Decompose into 3-5 independent concrete sub-questions and spawn them in parallel (emit multiple tool calls in one turn).`;
 
 export async function research(opts: ResearchOptions): Promise<ResearchResult> {
   const {
@@ -222,7 +203,6 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
   };
 
   // ---- Phase 1: lead orchestration ----
-  emit({ type: "lead_started", query });
   const lead = await runLeadAgent({
     anthropic,
     ctx,
@@ -380,7 +360,6 @@ async function runLeadAgent(opts: {
         };
       }
       subQuestions.push(sub_question);
-      emit({ type: "subagent_spawned", sub_question });
       try {
         const result = await runAgenticSubAgent({
           ctx,
@@ -395,7 +374,29 @@ async function runLeadAgent(opts: {
           tool_calls: result.tool_calls,
           finish_reason: result.finish_reason,
         });
-        return { tu, text: formatScoutResult(sub_question, result, ctx) };
+        const added = result.source_ns;
+        const header =
+          `Scout for "${sub_question}" ` +
+          (added.length === 0
+            ? `finished with no new sources`
+            : `added ${added.length} source${added.length === 1 ? "" : "s"}`) +
+          ` (tool calls: ${result.tool_calls}, reason: ${result.finish_reason})`;
+        const body = added
+          .map((n) => {
+            const s = ctx.sources.find((x) => x.n === n);
+            if (!s) return `  [${n}] (missing)`;
+            const preview = (ctx.sourceMarkdowns.get(n) ?? "")
+              .slice(0, 200)
+              .replace(/\s+/g, " ")
+              .trim();
+            return `  [${n}] ${s.title}${preview ? ` — ${preview}…` : ""}`;
+          })
+          .join("\n");
+        const pool = `Pool: ${ctx.sources.length}/${ctx.globalSourceCap}.`;
+        return {
+          tu,
+          text: body ? `${header}:\n${body}\n${pool}` : `${header}. ${pool}`,
+        };
       } catch (err) {
         if ((err as { name?: string })?.name === "AbortError") throw err;
         const message = err instanceof Error ? err.message : String(err);
@@ -437,7 +438,6 @@ async function runLeadAgent(opts: {
         content: "Finalized. Writer phase will begin.",
       });
       messages.push({ role: "user", content: toolResults });
-      emit({ type: "lead_finalize", sources_count: ctx.sources.length });
       break;
     }
 
@@ -453,51 +453,11 @@ async function runLeadAgent(opts: {
     }
   }
 
-  emit({ type: "lead_finalize", sources_count: ctx.sources.length });
-
   return {
-    sub_questions: dedupePreservingOrder(subQuestions),
+    sub_questions: Array.from(new Set(subQuestions)),
     agent_runs: agentRuns,
     turns: turn,
   };
-}
-
-function formatScoutResult(
-  sub_question: string,
-  result: { source_ns: number[]; tool_calls: number; finish_reason: string },
-  ctx: AgentContext,
-): string {
-  const added = result.source_ns;
-  if (added.length === 0) {
-    return (
-      `Scout for "${sub_question}" finished with no new sources (tool calls: ${result.tool_calls}, reason: ${result.finish_reason}). ` +
-      `Pool: ${ctx.sources.length}/${ctx.globalSourceCap}.`
-    );
-  }
-  const lines = added.map((n) => {
-    const s = ctx.sources.find((x) => x.n === n);
-    if (!s) return `  [${n}] (missing — internal error)`;
-    const raw = ctx.sourceMarkdowns.get(n) ?? "";
-    const preview = raw.slice(0, 200).replace(/\s+/g, " ").trim();
-    return `  [${n}] ${s.title}${preview ? ` — ${preview}…` : ""}`;
-  });
-  return (
-    `Scout for "${sub_question}" added ${added.length} source${added.length === 1 ? "" : "s"} ` +
-    `(tool calls: ${result.tool_calls}, reason: ${result.finish_reason}):\n` +
-    lines.join("\n") +
-    `\nPool: ${ctx.sources.length}/${ctx.globalSourceCap}.`
-  );
-}
-
-function dedupePreservingOrder(xs: string[]): string[] {
-  const seen = new Set<string>();
-  const out: string[] = [];
-  for (const x of xs) {
-    if (seen.has(x)) continue;
-    seen.add(x);
-    out.push(x);
-  }
-  return out;
 }
 
 /**

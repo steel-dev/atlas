@@ -89,19 +89,10 @@ function prettyEvent(e: ResearchEvent): string {
     return paint(DIM, ` [${t}]`);
   };
   switch (e.type) {
-    case "lead_started":
-      return paint(BLUE, "→") + ` lead planning: ${e.query}`;
     case "lead_turn":
       return (
-        paint(DIM, `  turn ${e.turn}: `) +
-        `spawning ${e.spawned} scout${e.spawned === 1 ? "" : "s"}`
-      );
-    case "subagent_spawned":
-      return paint(BLUE, "  ↳") + ` scout: ${e.sub_question}`;
-    case "lead_finalize":
-      return (
-        paint(GREEN, "✓") +
-        ` lead finalized — ${e.sources_count} source${e.sources_count === 1 ? "" : "s"} gathered`
+        paint(BLUE, "→") +
+        ` turn ${e.turn}: spawning ${e.spawned} scout${e.spawned === 1 ? "" : "s"}`
       );
     case "agent_started":
       return paint(DIM, "  →") + ` agent started${tag(e.sub_question)}`;

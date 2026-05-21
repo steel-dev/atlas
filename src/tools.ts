@@ -152,40 +152,7 @@ const AGENT_TOOLS: Anthropic.Tool[] = [
   },
 ];
 
-const AGENT_SYSTEM = `You are a research scout focused on ONE sub-question. Your job is to gather a small set of high-quality, diverse sources whose contents together answer it.
-
-Tools:
-- search(query, source?, site?, limit?) — web (default), arxiv (papers), github (code), hn (discussions). Use \`site:foo.com\` (via the \`site\` argument) for targeted web search.
-- fetch(url) — scrape + commit to global source pool. Returns the assigned [n] and the first chars of the page so you can chase citations or pivot. EVERY successful fetch commits — choose carefully.
-
-Strategy:
-1. Open with 1-2 broad searches at different angles (definition / recency / comparison / criticism / primary source). Pick the backend that fits the topic.
-2. Skim the search results' titles + snippets. Fetch only the 2-4 most promising — not all of them. Off-topic fetches waste your source budget.
-3. If a fetched page references another (a paper, an announcement URL, a doc), fetch that next. Following citations one level deeper often beats more searches.
-4. Prefer primary sources (official docs, papers, original announcements) over forums/blogs unless community insight is what you want.
-5. Stop when you have 2-4 corroborating sources OR your budget is near exhausted: emit a final text message with NO tool calls and the loop will end.
-
-Be efficient: don't fetch URLs already in the source pool (the tool will reject them); don't issue the same query twice; don't fetch results whose snippets clearly miss the sub-question.`;
-
-function formatSearchResults(
-  results: SearchResult[],
-  backend: Backend,
-  filteredCount: number,
-): string {
-  if (results.length === 0) {
-    if (filteredCount > 0) {
-      return `No new fetchable results (${filteredCount} duplicates or domain-capped). Try a different query or backend.`;
-    }
-    return `No results for this query on ${backend}.`;
-  }
-  const lines = results.map(
-    (r, i) =>
-      `${i + 1}. ${r.title}\n   ${r.url}${r.snippet ? `\n   ${r.snippet.slice(0, 200)}` : ""}`,
-  );
-  const suffix =
-    filteredCount > 0 ? `\n\n(${filteredCount} duplicate/capped results hidden)` : "";
-  return `${results.length} result${results.length === 1 ? "" : "s"} via ${backend}:\n\n${lines.join("\n\n")}${suffix}`;
-}
+const AGENT_SYSTEM = `You're a research scout. Use search and fetch to gather 2-4 high-quality sources for your sub-question, then stop by emitting a text response with no tool calls. Every fetch commits — choose carefully.`;
 
 async function execSearch(
   args: SearchToolInput,
@@ -287,7 +254,17 @@ async function execSearch(
     count: useful.length,
   });
 
-  return formatSearchResults(useful, backend, filtered);
+  if (useful.length === 0) {
+    return filtered > 0
+      ? `No new fetchable results (${filtered} duplicates or domain-capped). Try a different query or backend.`
+      : `No results for this query on ${backend}.`;
+  }
+  const lines = useful.map(
+    (r, i) =>
+      `${i + 1}. ${r.title}\n   ${r.url}${r.snippet ? `\n   ${r.snippet.slice(0, 200)}` : ""}`,
+  );
+  const suffix = filtered > 0 ? `\n\n(${filtered} duplicate/capped results hidden)` : "";
+  return `${useful.length} result${useful.length === 1 ? "" : "s"} via ${backend}:\n\n${lines.join("\n\n")}${suffix}`;
 }
 
 interface FetchOutcome {

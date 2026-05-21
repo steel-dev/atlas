@@ -11,12 +11,11 @@ npx @steel-dev/atlas "What changed when Cloudflare Durable Objects added SQLite?
 ```
 
 ```
-→ lead planning: What changed when Cloudflare Durable Objects added SQLite?
-  turn 1: spawning 4 scouts
-  ↳ scout: When did SQLite-backed Durable Objects ship?
-  ↳ scout: What new capabilities did SQLite unlock?
-  ↳ scout: What limits or trade-offs come with the SQLite backend?
-  ↳ scout: How does SQLite-backed DO compare to the KV backend?
+→ turn 1: spawning 4 scouts
+  → agent started [When did SQLite-backed...]
+  → agent started [What new capabilities...]
+  → agent started [What limits or trade-offs...]
+  → agent started [How does it compare to KV...]
     search: [web] cloudflare durable objects sqlite release date
       ↳ 5 results
     fetch: https://blog.cloudflare.com/...
@@ -25,7 +24,6 @@ npx @steel-dev/atlas "What changed when Cloudflare Durable Objects added SQLite?
     ...
   ✓ agent done — 2 sources
   ...
-✓ lead finalized — 8 sources gathered
 → writing report (8 sources)
 ✓ written (4,231 chars)
 ✓ done — 8 sources
@@ -138,7 +136,7 @@ interface AgentRun {
 
 ### Events
 
-`onEvent` fires for: `lead_started`, `lead_turn`, `subagent_spawned`, `lead_finalize`, `agent_started`, `searching`, `search_results`, `search_failed`, `fetching`, `source_committed`, `source_error`, `agent_finished`, `writing`, `written`, `completed`. Per-scout events (everything between `agent_started` and `agent_finished` for a given sub-question) carry a `sub_question` field so you can demux parallel scouts. Full union types are exported as `ResearchEvent`.
+`onEvent` fires for: `lead_turn`, `agent_started`, `searching`, `search_results`, `search_failed`, `fetching`, `source_committed`, `source_error`, `agent_finished`, `writing`, `written`, `completed`. Per-scout events (everything between `agent_started` and `agent_finished` for a given sub-question) carry a `sub_question` field so you can demux parallel scouts. Full union types are exported as `ResearchEvent`.
 
 ## How it works
 
