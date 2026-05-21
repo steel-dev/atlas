@@ -14,9 +14,9 @@ import {
 } from "./tools.js";
 
 export const RESEARCH_DEFAULTS = {
-  maxSources: 12,
-  maxSubagentToolCalls: 12,
-  maxConcurrentTools: 4,
+  maxSources: 16,
+  maxSubagentToolCalls: 20,
+  maxConcurrentTools: 6,
   maxConcurrentSteelCalls: 4,
 } as const;
 
@@ -81,9 +81,9 @@ export interface ResearchOptions {
   anthropicApiKey: string;
   steelApiKey: string;
   steelBaseUrl?: string;
-  /** Cap on cited sources. Default 12. */
+  /** Cap on cited sources. Default 16. */
   maxSources?: number;
-  /** Cap on gather-agent tool calls (search / fetch / done). Default 12. */
+  /** Cap on gather-agent tool calls (search / fetch / done). Default 20. */
   maxToolCalls?: number;
   /** Web SERP engine. */
   engine?: Engine;

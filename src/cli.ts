@@ -13,8 +13,8 @@ cited report from all sources.
 
 Options:
   -o, --out <file>            Write the markdown report to <file> (default: stdout)
-      --max-sources N         Cap on cited sources (default 12)
-      --max-tool-calls N      Gather-agent tool-call cap (default 12)
+      --max-sources N         Cap on cited sources (default 16)
+      --max-tool-calls N      Gather-agent tool-call cap (default 20)
       --timeout N             Overall wall-clock budget in seconds (default: none)
       --engine <e>            Default web SERP: ddg | bing | google (default ddg)
       --use-proxy             Route Steel through residential proxy

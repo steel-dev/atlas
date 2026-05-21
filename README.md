@@ -71,8 +71,8 @@ atlas "..." --quiet                    # no progress, just markdown
 
 | Flag                   | Default | What it does                                              |
 | ---------------------- | ------- | --------------------------------------------------------- |
-| `--max-sources N`      | 12      | Cap on cited sources                                      |
-| `--max-tool-calls N`   | 12      | Gather-agent tool-call cap (search + fetch + done)        |
+| `--max-sources N`      | 16      | Cap on cited sources                                      |
+| `--max-tool-calls N`   | 20      | Gather-agent tool-call cap (search + fetch + done)        |
 | `--engine <e>`         | ddg     | Default web SERP: `ddg`, `bing`, or `google`              |
 | `--use-proxy`          | off     | Route Steel through its residential proxy (paid add-on)   |
 | `--fast-model <m>`     | Haiku   | Override the gather model                                 |
