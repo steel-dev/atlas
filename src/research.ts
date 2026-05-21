@@ -1,11 +1,8 @@
 import Anthropic from "@anthropic-ai/sdk";
 import {
   WRITER_MODEL,
-  parseCitations,
-  verifyClaim,
   writeReport,
   type CitedSource,
-  type ParsedClaim,
 } from "./pipeline.js";
 import { type Engine } from "./search.js";
 import { createSteel } from "./steel.js";
@@ -16,26 +13,9 @@ const DEFAULT_MAX_SOURCES = 12;
 const DEFAULT_MAX_SUBAGENT_TOOL_CALLS = 12;
 const DEFAULT_SUBAGENT_SOURCE_CAP = 4;
 const PER_DOMAIN_CAP = 2;
-const VERIFY_BATCH = 3;
 
-export type { CitedSource, ParsedClaim } from "./pipeline.js";
+export type { CitedSource } from "./pipeline.js";
 export type { Engine } from "./search.js";
-
-export interface ClaimVerification {
-  claim: string;
-  source_n: number;
-  source_url: string | null;
-  source_title: string | null;
-  supported: boolean;
-  reason: string;
-}
-
-export interface VerificationSummary {
-  total: number;
-  supported: number;
-  unsupported: number;
-  pass_rate: number;
-}
 
 export interface UsageSummary {
   input_tokens: number;
@@ -59,8 +39,6 @@ export interface ResearchResult {
   agent_runs: AgentRun[];
   sources: CitedSource[];
   markdown: string;
-  verifications: ClaimVerification[];
-  verification_summary: VerificationSummary;
   usage_summary: UsageSummary;
 }
 
@@ -101,15 +79,6 @@ export type ResearchEvent =
   | { type: "agent_finished"; sub_question: string; sources_added: number }
   | { type: "writing"; sources_count: number }
   | { type: "written"; markdown_chars: number }
-  | { type: "verifying"; total: number }
-  | {
-      type: "verified_claim";
-      source_n: number;
-      supported: boolean;
-      reason: string;
-      done: number;
-      total: number;
-    }
   | { type: "completed"; result: ResearchResult };
 
 export interface ResearchOptions {
@@ -297,78 +266,6 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
   });
   emit({ type: "written", markdown_chars: markdown.length });
 
-  // ---- Phase 3: verify ----
-  abort();
-  const claims: ParsedClaim[] = parseCitations(markdown);
-  emit({ type: "verifying", total: claims.length });
-
-  const verifications: ClaimVerification[] = [];
-  if (claims.length > 0) {
-    const sourcesByN = new Map(sources.map((s) => [s.n, s] as const));
-    for (let i = 0; i < claims.length; i += VERIFY_BATCH) {
-      abort();
-      const batch = claims.slice(i, i + VERIFY_BATCH);
-      const verdicts = await Promise.all(
-        batch.map(async (claim): Promise<ClaimVerification> => {
-          const src = sourcesByN.get(claim.source_n);
-          if (!src) {
-            return {
-              claim: claim.text,
-              source_n: claim.source_n,
-              source_url: null,
-              source_title: null,
-              supported: false,
-              reason: `Source [${claim.source_n}] not found in source list`,
-            };
-          }
-          try {
-            const v = await verifyClaim({
-              anthropic,
-              claim: claim.text,
-              source: src,
-              raw_text: sourceMarkdowns.get(claim.source_n),
-              model: fastModel,
-            });
-            return {
-              claim: claim.text,
-              source_n: claim.source_n,
-              source_url: src.url,
-              source_title: src.title,
-              supported: v.supported,
-              reason: v.reason,
-            };
-          } catch (err) {
-            const message = err instanceof Error ? err.message : String(err);
-            return {
-              claim: claim.text,
-              source_n: claim.source_n,
-              source_url: src.url,
-              source_title: src.title,
-              supported: false,
-              reason: `verify error: ${message}`,
-            };
-          }
-        }),
-      );
-
-      verifications.push(...verdicts);
-      for (const v of verdicts) {
-        emit({
-          type: "verified_claim",
-          source_n: v.source_n,
-          supported: v.supported,
-          reason: v.reason,
-          done: verifications.length,
-          total: claims.length,
-        });
-      }
-    }
-  }
-
-  const total = verifications.length;
-  const supported = verifications.filter((v) => v.supported).length;
-  const passRate = total > 0 ? supported / total : 1;
-
   const result: ResearchResult = {
     query,
     sub_questions: lead.sub_questions,
@@ -377,13 +274,6 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
     agent_runs: lead.agent_runs,
     sources,
     markdown,
-    verifications,
-    verification_summary: {
-      total,
-      supported,
-      unsupported: total - supported,
-      pass_rate: passRate,
-    },
     usage_summary: { ...usageSummary },
   };
 

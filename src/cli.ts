@@ -10,8 +10,7 @@ Usage:
 
 A research-lead agent (Sonnet) decomposes your question and dispatches parallel
 scout sub-agents (Haiku) with search + fetch tools. After the lead finalizes,
-a single writer composes the report from all sources, and a verifier checks
-every citation against the raw page.
+a single writer composes the cited report from all sources.
 
 Options:
   -o, --out <file>            Write the markdown report to <file> (default: stdout)
@@ -20,7 +19,7 @@ Options:
       --max-tool-calls N      Per-sub-agent tool-call cap (default 12)
       --engine <e>            Default web SERP: ddg | bing | google (default ddg)
       --use-proxy             Route Steel through residential proxy
-      --fast-model <m>        Override Haiku (scout / summarize / verify) model id
+      --fast-model <m>        Override Haiku (scout / page-summarize) model id
       --writer-model <m>      Override Sonnet writer model id
       --lead-model <m>        Override lead-agent model id (defaults to writer model)
       --json                  Emit one JSON event per line on stderr
@@ -72,7 +71,6 @@ function isEngine(s: string): s is Engine {
 const DIM = "\x1b[2m";
 const RESET = "\x1b[0m";
 const GREEN = "\x1b[32m";
-const RED = "\x1b[31m";
 const YELLOW = "\x1b[33m";
 const BLUE = "\x1b[34m";
 
@@ -138,23 +136,8 @@ function prettyEvent(e: ResearchEvent): string {
       return (
         paint(GREEN, "✓") + ` written (${e.markdown_chars.toLocaleString()} chars)`
       );
-    case "verifying":
-      return (
-        paint(BLUE, "→") +
-        ` verifying ${e.total} claim${e.total === 1 ? "" : "s"}`
-      );
-    case "verified_claim": {
-      const mark = e.supported ? paint(GREEN, "  ✓") : paint(RED, "  ✗");
-      const ref = `[${e.source_n}]`;
-      return `${mark} ${ref} ${paint(DIM, `(${e.done}/${e.total})`)} ${e.supported ? "" : paint(DIM, e.reason)}`;
-    }
     case "completed": {
-      const vs = e.result.verification_summary;
       const us = e.result.usage_summary;
-      const tail =
-        vs.total > 0
-          ? `${vs.supported}/${vs.total} claims supported (${(vs.pass_rate * 100).toFixed(0)}%)`
-          : "no claims to verify";
       const totalInput =
         us.input_tokens +
         us.cache_creation_input_tokens +
@@ -169,7 +152,7 @@ function prettyEvent(e: ResearchEvent): string {
       );
       return (
         paint(GREEN, "✓") +
-        ` done — ${e.result.sources.length} sources, ${tail}\n` +
+        ` done — ${e.result.sources.length} sources\n` +
         tokenLine
       );
     }

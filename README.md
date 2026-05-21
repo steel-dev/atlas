@@ -29,11 +29,7 @@ npx @steel-dev/atlas "What changed when Cloudflare Durable Objects added SQLite?
   notes: cover (1) release timeline, (2) capability deltas vs KV, (3) limits.
 → writing report (8 sources)
 ✓ written (4,231 chars)
-→ verifying 11 claims
-  ✓ [1] (1/11)
-  ✓ [2] (2/11)
-  ...
-✓ done — 8 sources, 11/11 claims supported (100%)
+✓ done — 8 sources
 ```
 
 ## Install
@@ -86,7 +82,7 @@ atlas "..." --quiet                    # no progress, just markdown
 | `--max-tool-calls N`   | 12      | Per-sub-agent tool-call cap (search / fetch / finish)     |
 | `--engine <e>`         | ddg     | Default web SERP: `ddg`, `bing`, or `google`              |
 | `--use-proxy`          | off     | Route Steel through its residential proxy (paid add-on)   |
-| `--fast-model <m>`     | Haiku   | Override scout / page-summarize / verify model            |
+| `--fast-model <m>`     | Haiku   | Override scout / page-summarize model                     |
 | `--writer-model <m>`   | Sonnet  | Override the writer model                                 |
 | `--lead-model <m>`     | Sonnet  | Override JUST the lead-agent model (defaults to writer)   |
 
@@ -117,9 +113,7 @@ const result = await research({
 });
 
 console.log(result.markdown);
-console.log(
-  `${result.verification_summary.supported}/${result.verification_summary.total} claims verified`,
-);
+console.log(`${result.sources.length} sources`);
 ```
 
 ### What you get back
@@ -133,13 +127,6 @@ interface ResearchResult {
   agent_runs: AgentRun[]; // one per scout
   sources: CitedSource[]; // numbered, with verbatim excerpts
   markdown: string; // the report
-  verifications: ClaimVerification[]; // per-claim verdicts
-  verification_summary: {
-    total: number;
-    supported: number;
-    unsupported: number;
-    pass_rate: number;
-  };
   usage_summary: UsageSummary; // accumulated Anthropic token usage
 }
 
@@ -153,7 +140,7 @@ interface AgentRun {
 
 ### Events
 
-`onEvent` fires for: `lead_started`, `lead_turn`, `subagent_spawned`, `lead_finalize`, `agent_started`, `searching`, `search_results`, `search_failed`, `fetching`, `summarized`, `source_skipped`, `source_error`, `agent_finished`, `writing`, `written`, `verifying`, `verified_claim`, `completed`. Per-scout events (everything between `agent_started` and `agent_finished` for a given sub-question) carry a `sub_question` field so you can demux parallel scouts. Full union types are exported as `ResearchEvent`.
+`onEvent` fires for: `lead_started`, `lead_turn`, `subagent_spawned`, `lead_finalize`, `agent_started`, `searching`, `search_results`, `search_failed`, `fetching`, `summarized`, `source_skipped`, `source_error`, `agent_finished`, `writing`, `written`, `completed`. Per-scout events (everything between `agent_started` and `agent_finished` for a given sub-question) carry a `sub_question` field so you can demux parallel scouts. Full union types are exported as `ResearchEvent`.
 
 ## How it works
 
@@ -178,10 +165,6 @@ lead agent (Sonnet)
 writer (Sonnet) — single pass, all sources + raw page text
         │
         ▼
-verify every [n] citation (Haiku reads the raw page text,
-                            excerpts are hints only)
-        │
-        ▼
    final report
 ```
 
@@ -191,7 +174,6 @@ verify every [n] citation (Haiku reads the raw page text,
 - **Targeted fetch** — `fetch(url)` scrapes via Steel, summarizes against the sub-question, and atomically commits to the global pool if relevant. Irrelevant pages return a "not committed" message so the scout learns.
 - **Citation chasing** — when a fetched source references another (a paper, an announcement, a doc), the scout can just `fetch` that URL next. One level deeper than SERP usually beats more searches.
 - **Single-pass writer, full raw fidelity** — once the lead finalizes, the writer (Sonnet) sees ALL sources at full raw fidelity in one call. No outline planning, no per-section split — just write the report. The pre-finalize source pool is the writer's working set.
-- **Citations verified against raw pages** — each `[n]` marker is checked by Haiku reading the raw page text (the ground truth), with summary + excerpts as convenience hints only. This breaks the circularity where verifying against the scout's own summary would just rubber-stamp whatever the scout said.
 - **Cancellable** — `AbortSignal` (or `Ctrl+C` in CLI) cleanly stops between steps.
 - **Bring your own LLM keys** — no Atlas hosted service, no telemetry. Spend is yours.
 
