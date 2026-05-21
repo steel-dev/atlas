@@ -2,6 +2,7 @@ import type Anthropic from "@anthropic-ai/sdk";
 import type Steel from "steel-sdk";
 import { FAST_MODEL, type CitedSource } from "./pipeline.js";
 import {
+  ENGINES,
   webSearch,
   type Engine,
   type WebSearchOutcome,
@@ -248,6 +249,46 @@ function searchCacheKey(opts: {
   ].join("\0");
 }
 
+function searchEnginesInFallbackOrder(defaultEngine: Engine): Engine[] {
+  return [
+    defaultEngine,
+    ...ENGINES.filter((engine) => engine !== defaultEngine),
+  ];
+}
+
+async function searchWithCache(
+  ctx: AgentContext,
+  opts: { query: string; limit: number; engine: Engine },
+): Promise<WebSearchOutcome> {
+  const cacheKey = searchCacheKey({
+    query: opts.query,
+    limit: opts.limit,
+    engine: opts.engine,
+    useProxy: ctx.useProxy,
+  });
+  let outcomePromise = ctx.caches.serp.get(cacheKey);
+  if (!outcomePromise) {
+    outcomePromise = ctx.steelGate.run(() =>
+      webSearch({
+        steel: ctx.steel,
+        query: opts.query,
+        engine: opts.engine,
+        useProxy: ctx.useProxy,
+        limit: opts.limit,
+        signal: ctx.signal,
+      }),
+    );
+    ctx.caches.serp.set(cacheKey, outcomePromise);
+  }
+
+  try {
+    return await outcomePromise;
+  } catch (err) {
+    ctx.caches.serp.delete(cacheKey);
+    throw err;
+  }
+}
+
 interface FetchReservation {
   url: string;
 }
@@ -301,50 +342,39 @@ async function execSearch(
     query,
   });
 
-  const cacheKey = searchCacheKey({
-    query,
-    limit,
-    engine: ctx.defaultEngine,
-    useProxy: ctx.useProxy,
-  });
-  let outcomePromise = ctx.caches.serp.get(cacheKey);
-  if (!outcomePromise) {
-    outcomePromise = ctx.steelGate.run(() =>
-      webSearch({
-        steel: ctx.steel,
-        query,
-        engine: ctx.defaultEngine,
-        useProxy: ctx.useProxy,
-        limit,
-        signal: ctx.signal,
-      }),
-    );
-    ctx.caches.serp.set(cacheKey, outcomePromise);
+  const failures: string[] = [];
+  let successfulEngine: Engine | null = null;
+  let outcome: WebSearchOutcome | null = null;
+
+  for (const engine of searchEnginesInFallbackOrder(ctx.defaultEngine)) {
+    try {
+      const candidate = await searchWithCache(ctx, { query, limit, engine });
+      if (candidate.ok && candidate.results.length > 0) {
+        successfulEngine = engine;
+        outcome = candidate;
+        break;
+      }
+      if (candidate.ok) {
+        successfulEngine ??= engine;
+        outcome ??= candidate;
+      } else {
+        failures.push(`${engine}: ${candidate.error.message}`);
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      failures.push(`${engine}: ${message}`);
+    }
   }
 
-  let outcome: WebSearchOutcome;
-  try {
-    outcome = await outcomePromise;
-  } catch (err) {
-    ctx.caches.serp.delete(cacheKey);
-    const message = err instanceof Error ? err.message : String(err);
+  if (!outcome?.ok) {
+    const error = failures.join("; ") || "all engines failed";
     ctx.emit({
       type: "search_failed",
       sub_question: question,
       index: searchIndex,
-      error: message,
+      error,
     });
-    return `Search threw: ${message}`;
-  }
-
-  if (!outcome.ok) {
-    ctx.emit({
-      type: "search_failed",
-      sub_question: question,
-      index: searchIndex,
-      error: outcome.error.message,
-    });
-    return `Search failed: ${outcome.error.message}`;
+    return `Search failed: ${error}`;
   }
 
   ctx.emit({
@@ -361,7 +391,11 @@ async function execSearch(
     (r, i) =>
       `${i + 1}. ${r.title}\n   ${r.url}${r.snippet ? `\n   ${r.snippet.slice(0, 200)}` : ""}`,
   );
-  return `${outcome.results.length} result${outcome.results.length === 1 ? "" : "s"}:\n\n${lines.join("\n\n")}`;
+  const engineNote =
+    successfulEngine && successfulEngine !== ctx.defaultEngine
+      ? ` (via ${successfulEngine} fallback)`
+      : "";
+  return `${outcome.results.length} result${outcome.results.length === 1 ? "" : "s"}${engineNote}:\n\n${lines.join("\n\n")}`;
 }
 
 interface FetchOutcome {
