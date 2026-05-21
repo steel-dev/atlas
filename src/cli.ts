@@ -18,6 +18,7 @@ Options:
       --max-sub-questions N   Sub-questions to plan (default 4)
       --max-sources N         Cap on cited sources (default 12)
       --max-tool-calls N      Per-agent tool-call cap (default 12)
+      --max-rounds N          Scout rounds (default 2; 1 = single-pass, no gap detection)
       --no-critique           Disable the post-draft peer-review pass
       --verify-threshold F    Min fraction of claims that must verify (default 0.7)
       --engine <e>            Default web SERP: ddg | bing | google (default ddg)
@@ -109,6 +110,18 @@ function prettyEvent(e: ResearchEvent): string {
         paint(GREEN, "✓") +
         ` agent done: ${e.sub_question} — ${e.sources_added} source${e.sources_added === 1 ? "" : "s"}`
       );
+    case "analyzing_gaps":
+      return paint(BLUE, "→") + ` round ${e.round}: analyzing coverage gaps`;
+    case "gaps_found":
+      return [
+        paint(YELLOW, "  !") +
+          ` round ${e.round}: ${e.gaps.length} gap${e.gaps.length === 1 ? "" : "s"} found`,
+        ...e.gaps.map((g) =>
+          paint(DIM, `    • ${g.missing} → "${g.refined_query}"`),
+        ),
+      ].join("\n");
+    case "gap_analysis_skipped":
+      return paint(GREEN, "✓") + ` round ${e.round} skipped (${e.reason})`;
     case "searching":
       return paint(DIM, `  search:`) + tag(e.sub_question) + ` ${e.query}`;
     case "search_results":
@@ -214,6 +227,7 @@ async function main(): Promise<void> {
           "max-sub-questions": { type: "string" },
           "max-sources": { type: "string" },
           "max-tool-calls": { type: "string" },
+          "max-rounds": { type: "string" },
           "no-critique": { type: "boolean" },
           "verify-threshold": { type: "string" },
           engine: { type: "string" },
@@ -301,6 +315,7 @@ async function main(): Promise<void> {
       maxSubQuestions: parseNumber(values["max-sub-questions"], "--max-sub-questions"),
       maxSources: parseNumber(values["max-sources"], "--max-sources"),
       maxToolCalls: parseNumber(values["max-tool-calls"], "--max-tool-calls"),
+      maxRounds: parseNumber(values["max-rounds"], "--max-rounds"),
       critique: values["no-critique"] === true ? false : undefined,
       verifyThreshold: parseNumber(values["verify-threshold"], "--verify-threshold"),
       engine: engine as Engine | undefined,

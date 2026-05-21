@@ -1,5 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import {
+  analyzeGaps,
   assembleSectionedReport,
   critiqueDraft,
   parseCitations,
@@ -10,6 +11,7 @@ import {
   writeSection,
   type CitedSource,
   type CritiqueResult,
+  type GapResult,
   type ParsedClaim,
   type UnsupportedClaim,
 } from "./pipeline.js";
@@ -24,6 +26,7 @@ const PER_DOMAIN_CAP = 2;
 export type {
   CitedSource,
   CritiqueResult,
+  GapResult,
   ParsedClaim,
   UnsupportedClaim,
 } from "./pipeline.js";
@@ -57,6 +60,8 @@ export interface AgentRun {
   source_ns: number[];
   tool_calls: number;
   finish_reason: string;
+  /** 1 for the original sub-question scouts; 2+ for gap-driven followups. */
+  round: number;
 }
 
 export interface ResearchResult {
@@ -106,6 +111,13 @@ export type ResearchEvent =
     }
   | { type: "source_error"; sub_question: string; url: string; error: string }
   | { type: "agent_finished"; sub_question: string; sources_added: number }
+  | { type: "analyzing_gaps"; round: number }
+  | {
+      type: "gaps_found";
+      round: number;
+      gaps: GapResult[];
+    }
+  | { type: "gap_analysis_skipped"; round: number; reason: string }
   | { type: "outlining"; attempt: number }
   | {
       type: "outline_done";
@@ -183,6 +195,12 @@ export interface ResearchOptions {
   writerModel?: string;
   /** Per-sub-agent cap on tool calls (search / fetch / finish). Default 12. */
   maxToolCalls?: number;
+  /** Number of scout rounds. Round 1 covers the original sub-questions.
+   *  Rounds 2+ are gap-driven: after each round, a Haiku pass identifies
+   *  coverage gaps and fires narrow followup scouts to fill them. Loop
+   *  ends early if gap analysis finds nothing OR the global source cap
+   *  is reached. Default 2. Set 1 for the old single-pass behavior. */
+  maxRounds?: number;
   /** Optional GitHub token used by the github search backend (raises rate
    *  limit). */
   githubToken?: string;
@@ -205,6 +223,7 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
     fastModel,
     writerModel,
     maxToolCalls,
+    maxRounds = 2,
     githubToken,
     onEvent,
     signal,
@@ -259,10 +278,15 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
   const globalDomainCounts = new Map<string, number>();
   const critiques: CritiqueResult[] = [];
 
-  // Each agent gets a fair slice of the global source cap (+1 slack) so they
-  // can compete without starving each other.
+  // Each agent gets a fair slice of the global source cap. With maxRounds > 1
+  // we tighten round 1's per-agent cap (floor instead of ceil + slack) so that
+  // gap-driven followup rounds have room to commit new sources before hitting
+  // the global cap. Single-pass runs keep the slacker slice.
   const numAgents = Math.max(1, subQuestions.length);
-  const agentSourceCap = Math.max(2, Math.ceil(maxSources / numAgents) + 1);
+  const agentSourceCap =
+    maxRounds > 1
+      ? Math.max(2, Math.floor(maxSources / numAgents))
+      : Math.max(2, Math.ceil(maxSources / numAgents) + 1);
 
   // Shared context. All parallel agents alias the same sources / sourceUrls /
   // sourceMarkdowns / globalDomainCounts, so commits from one are visible to
@@ -284,7 +308,7 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
     githubToken,
   };
 
-  const agentRuns = await Promise.all(
+  const agentRuns: AgentRun[] = await Promise.all(
     subQuestions.map(async (sub_question): Promise<AgentRun> => {
       const result = await runAgenticSubAgent({
         ctx,
@@ -298,9 +322,92 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
         source_ns: result.source_ns,
         tool_calls: result.tool_calls,
         finish_reason: result.finish_reason,
+        round: 1,
       };
     }),
   );
+
+  // ---- phase 2.5: iterative gap detection (rounds 2..maxRounds) ----
+  // After round 1, run a Haiku pass over the source pool to identify concrete
+  // coverage gaps (thin sub-question, missing angle, missing specific, or
+  // unreconciled contradiction). For each gap, fire one narrow followup scout
+  // (tight tool-call and source caps). Same ctx → same atomic commit, URL
+  // dedup, and global source cap apply transparently.
+  //
+  // Loop ends early when: gap analysis returns no gaps, the global source cap
+  // is reached, or analyzeGaps throws. Followup scout failures are absorbed
+  // (no different from round 1 — they just produce a finish_reason).
+  const FOLLOWUP_MAX_GAPS_PER_ROUND = 3;
+  const FOLLOWUP_TOOL_CALL_CAP = 6;
+  const FOLLOWUP_SOURCE_CAP = 2;
+
+  for (let round = 2; round <= maxRounds; round++) {
+    abort();
+
+    if (sources.length >= maxSources) {
+      emit({
+        type: "gap_analysis_skipped",
+        round,
+        reason: "global source cap reached",
+      });
+      break;
+    }
+
+    emit({ type: "analyzing_gaps", round });
+
+    let gaps: GapResult[];
+    try {
+      gaps = await analyzeGaps({
+        anthropic,
+        brief: plan.brief || query,
+        sub_questions: plan.sub_questions,
+        sources,
+        round,
+        max_gaps: FOLLOWUP_MAX_GAPS_PER_ROUND,
+        model: fastModel,
+      });
+    } catch (err) {
+      abort();
+      emit({
+        type: "gap_analysis_skipped",
+        round,
+        reason: `analysis error: ${err instanceof Error ? err.message : String(err)}`,
+      });
+      break;
+    }
+
+    if (gaps.length === 0) {
+      emit({
+        type: "gap_analysis_skipped",
+        round,
+        reason: "no gaps identified",
+      });
+      break;
+    }
+
+    emit({ type: "gaps_found", round, gaps });
+
+    const followupRuns = await Promise.all(
+      gaps.map(async (gap): Promise<AgentRun> => {
+        const result = await runAgenticSubAgent({
+          ctx,
+          brief: plan.brief || query,
+          sub_question: gap.refined_query,
+          agent_source_cap: FOLLOWUP_SOURCE_CAP,
+          max_tool_calls: FOLLOWUP_TOOL_CALL_CAP,
+        });
+        return {
+          sub_question: gap.refined_query,
+          source_ns: result.source_ns,
+          tool_calls: result.tool_calls,
+          finish_reason: result.finish_reason,
+          round,
+        };
+      }),
+    );
+
+    agentRuns.push(...followupRuns);
+  }
 
   // ---- phases 3/4/5: write → critique → verify (one retry if either flags) ----
   let attempt = 1;

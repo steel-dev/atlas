@@ -758,3 +758,140 @@ export function assembleSectionedReport(
     sources.map((s) => `[${s.n}] ${s.title} — ${s.url}`).join("\n");
   return `${body}\n\n${sourcesList}`;
 }
+
+// ----------------------------------------------------------------------------
+// Iterative gap detection
+//
+// After round 1 scouts finish, this looks at the sources gathered against the
+// brief and sub-questions and returns concrete coverage gaps a narrow followup
+// scout could fill: thin sub-question, missing angle, missing specific, or an
+// unreconciled contradiction. Returns empty when coverage is already adequate.
+//
+// The followup scout consumes `refined_query` directly as a new sub_question,
+// reusing the same agentic loop and source-pool invariants.
+// ----------------------------------------------------------------------------
+
+export interface GapResult {
+  sub_question: string;
+  missing: string;
+  refined_query: string;
+}
+
+export async function analyzeGaps(opts: {
+  anthropic: Anthropic;
+  brief: string;
+  sub_questions: string[];
+  sources: CitedSource[];
+  round: number;
+  max_gaps: number;
+  model?: string;
+}): Promise<GapResult[]> {
+  const { anthropic, brief, sub_questions, sources, round, max_gaps, model } =
+    opts;
+
+  const system =
+    "You evaluate coverage of a research brief after one round of scouting and identify CONCRETE gaps that one more narrow scout could fill. " +
+    "Look at the brief, sub-questions, and the source pool gathered so far (summaries + excerpts only — you don't see raw pages). " +
+    "Classify each gap into one of: " +
+    "(a) thin sub-question — only 1 source, or all sources from one viewpoint; " +
+    "(b) missing angle — community / criticism / primary source not represented; " +
+    "(c) missing specific — exact date, version, benchmark number, limit; " +
+    "(d) unreconciled contradiction — two sources disagree on a key fact. " +
+    "For each gap, write a NEW narrow `refined_query` (≤15 words) that targets exactly what is missing — NOT a restatement of the original sub-question. " +
+    "Good: 'Cloudflare Durable Objects SQLite GA date and prior beta limits'. " +
+    "Bad: 'When did SQLite-backed Durable Objects ship?' (already asked in round 1). " +
+    "If the source pool already covers the brief adequately, return an EMPTY list — do NOT manufacture gaps for the sake of filling the quota.";
+
+  const schema = {
+    type: "object",
+    properties: {
+      gaps: {
+        type: "array",
+        description: `Concrete coverage gaps, at most ${max_gaps}. Empty if coverage is adequate.`,
+        maxItems: max_gaps,
+        items: {
+          type: "object",
+          properties: {
+            sub_question: {
+              type: "string",
+              description:
+                "Original sub-question this gap belongs to, or a short label for a cross-cutting gap.",
+            },
+            missing: {
+              type: "string",
+              description:
+                "1-2 sentences naming the gap class (thin / angle / specific / contradiction) and what is missing.",
+            },
+            refined_query: {
+              type: "string",
+              description:
+                "Narrow, search-friendly query for one more scout to fill the gap. ≤15 words. Concrete, not a restatement.",
+            },
+          },
+          required: ["sub_question", "missing", "refined_query"],
+        },
+      },
+    },
+    required: ["gaps"],
+  } as const;
+
+  const sourceBlocks = sources.length
+    ? sources
+        .map((s) => {
+          const excerpts = s.key_excerpts.length
+            ? `\n  Key excerpts:\n${s.key_excerpts.map((e) => `    - "${e}"`).join("\n")}`
+            : "";
+          return `[${s.n}] ${s.title} — ${s.url}\n  Sub-question: ${s.sub_question}\n  Summary: ${s.summary}${excerpts}`;
+        })
+        .join("\n\n")
+    : "(none — round 1 returned no usable sources)";
+
+  const userPrompt =
+    `Round ${round} gap analysis.\n\n` +
+    `Brief: ${brief}\n\n` +
+    `Sub-questions:\n${sub_questions.map((q, i) => `${i + 1}. ${q}`).join("\n")}\n\n` +
+    `Source pool (${sources.length} sources):\n${sourceBlocks}\n\n` +
+    `Identify up to ${max_gaps} concrete gaps. If coverage is adequate, return an empty list.`;
+
+  const response = await anthropic.messages.create({
+    model: model ?? FAST_MODEL,
+    max_tokens: 1024,
+    system,
+    tools: [
+      {
+        name: "submit_gaps",
+        description: "Submit the identified coverage gaps.",
+        input_schema: schema as unknown as Anthropic.Tool["input_schema"],
+      },
+    ],
+    tool_choice: { type: "tool", name: "submit_gaps" },
+    messages: [{ role: "user", content: userPrompt }],
+  });
+
+  const tool = response.content.find(
+    (c): c is Anthropic.ToolUseBlock => c.type === "tool_use",
+  );
+  if (!tool) return [];
+  const out = tool.input as {
+    gaps?: Array<{
+      sub_question?: string;
+      missing?: string;
+      refined_query?: string;
+    }>;
+  };
+  const raw = Array.isArray(out.gaps) ? out.gaps : [];
+  const result: GapResult[] = [];
+  for (const g of raw) {
+    const refined = String(g.refined_query ?? "").trim();
+    if (!refined) continue; // unactionable
+    const sq = String(g.sub_question ?? "").trim();
+    const missing = String(g.missing ?? "").trim();
+    result.push({
+      sub_question: sq || refined,
+      missing: missing || "(unspecified)",
+      refined_query: refined,
+    });
+    if (result.length >= max_gaps) break;
+  }
+  return result;
+}
