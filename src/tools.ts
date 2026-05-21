@@ -10,6 +10,7 @@ import {
   type Backend,
   type Engine,
   type SearchResult,
+  type WebSearchOutcome,
 } from "./search.js";
 
 const STORED_MARKDOWN_CAP = 50_000;
@@ -17,7 +18,7 @@ const FETCH_SNIPPET_CHARS = 2500;
 const DEFAULT_MAX_TOOL_CALLS = 12;
 const DEFAULT_MAX_CONCURRENT_TOOLS = 4;
 
-export interface FetchGate {
+export interface SteelGate {
   run<T>(fn: () => Promise<T>): Promise<T>;
 }
 
@@ -27,7 +28,17 @@ export interface SourceReservations {
   sourceSlots: number;
 }
 
-class Semaphore implements FetchGate {
+interface ScrapeCacheEntry {
+  markdown: string;
+  title: string | null;
+}
+
+export interface ResearchCaches {
+  serp: Map<string, Promise<WebSearchOutcome>>;
+  scrape: Map<string, Promise<ScrapeCacheEntry>>;
+}
+
+class Semaphore implements SteelGate {
   private active = 0;
   private readonly waiting: Array<() => void> = [];
 
@@ -61,9 +72,16 @@ class Semaphore implements FetchGate {
   }
 }
 
-export function createFetchGate(limit: number): FetchGate {
+export function createSteelGate(limit: number): SteelGate {
   const normalized = Number.isFinite(limit) ? Math.max(1, Math.floor(limit)) : 1;
   return new Semaphore(normalized);
+}
+
+export function createResearchCaches(): ResearchCaches {
+  return {
+    serp: new Map<string, Promise<WebSearchOutcome>>(),
+    scrape: new Map<string, Promise<ScrapeCacheEntry>>(),
+  };
 }
 
 export function createSourceReservations(): SourceReservations {
@@ -107,8 +125,9 @@ export interface AgentContext {
   perDomainCap: number;
   globalSourceCap: number;
   maxConcurrentTools?: number;
-  fetchGate: FetchGate;
+  steelGate: SteelGate;
   sourceReservations: SourceReservations;
+  caches: ResearchCaches;
   githubToken?: string;
 }
 
@@ -230,21 +249,51 @@ function totalSourceSlots(ctx: AgentContext): number {
   return ctx.sources.length + ctx.sourceReservations.sourceSlots;
 }
 
+function normalizeFetchUrl(url: string): string {
+  try {
+    const u = new URL(url);
+    u.hash = "";
+    return u.toString();
+  } catch {
+    return url;
+  }
+}
+
+function searchCacheKey(opts: {
+  backend: Backend;
+  query: string;
+  limit: number;
+  engine: Engine;
+  useProxy: boolean;
+  githubToken?: string;
+}): string {
+  const tokenScope = opts.backend === "github" && opts.githubToken ? "auth" : "anon";
+  return [
+    opts.backend,
+    opts.backend === "web" ? opts.engine : "",
+    opts.backend === "web" && opts.useProxy ? "proxy" : "direct",
+    tokenScope,
+    opts.limit,
+    opts.query,
+  ].join("\0");
+}
+
 interface FetchReservation {
   url: string;
   domain: string;
 }
 
 function reserveFetch(ctx: AgentContext, url: string): FetchReservation | string {
-  if (ctx.sourceUrls.has(url)) {
-    const existing = ctx.sources.find((s) => s.url === url);
+  const normalizedUrl = normalizeFetchUrl(url);
+  if (ctx.sourceUrls.has(normalizedUrl)) {
+    const existing = ctx.sources.find((s) => normalizeFetchUrl(s.url) === normalizedUrl);
     return `Already in source pool as [${existing?.n ?? "?"}]: ${existing?.title ?? url}. Pick a different result.`;
   }
-  if (ctx.sourceReservations.urls.has(url)) {
+  if (ctx.sourceReservations.urls.has(normalizedUrl)) {
     return `Already being fetched by another scout: ${url}. Pick a different result.`;
   }
 
-  const domain = safeDomain(url);
+  const domain = safeDomain(normalizedUrl);
   if (totalDomainCount(ctx, domain) >= ctx.perDomainCap) {
     return `Domain cap reached for ${domain} (max ${ctx.perDomainCap}). Pick a different source.`;
   }
@@ -252,10 +301,10 @@ function reserveFetch(ctx: AgentContext, url: string): FetchReservation | string
     return `Global source cap reached (${ctx.globalSourceCap}). Stop fetching.`;
   }
 
-  ctx.sourceReservations.urls.add(url);
+  ctx.sourceReservations.urls.add(normalizedUrl);
   ctx.sourceReservations.domainCounts.set(domain, reservedDomainCount(ctx, domain) + 1);
   ctx.sourceReservations.sourceSlots++;
-  return { url, domain };
+  return { url: normalizedUrl, domain };
 }
 
 function releaseFetchReservation(
@@ -301,47 +350,62 @@ async function execSearch(
     query: `[${backend}] ${effectiveQuery}`,
   });
 
-  let outcome;
-  try {
-    switch (backend) {
-      case "web":
-        outcome = await webSearch({
-          steel: ctx.steel,
-          query: effectiveQuery,
-          engine: ctx.defaultEngine,
-          useProxy: ctx.useProxy,
-          limit,
-          signal: ctx.signal,
-        });
-        break;
-      case "arxiv":
-        outcome = await arxivSearch({
-          query: effectiveQuery,
-          limit,
-          signal: ctx.signal,
-        });
-        break;
-      case "github":
-        outcome = await githubSearch({
-          query: effectiveQuery,
-          limit,
-          token: ctx.githubToken,
-          signal: ctx.signal,
-        });
-        break;
-      case "hn":
-        outcome = await hnSearch({
-          query: effectiveQuery,
-          limit,
-          signal: ctx.signal,
-        });
-        break;
-      default: {
-        const _exhaustive: never = backend;
-        return `Error: unknown backend "${_exhaustive}".`;
+  const cacheKey = searchCacheKey({
+    backend,
+    query: effectiveQuery,
+    limit,
+    engine: ctx.defaultEngine,
+    useProxy: ctx.useProxy,
+    githubToken: ctx.githubToken,
+  });
+  let outcomePromise = ctx.caches.serp.get(cacheKey);
+  if (!outcomePromise) {
+    outcomePromise = (async () => {
+      switch (backend) {
+        case "web":
+          return await ctx.steelGate.run(() =>
+            webSearch({
+              steel: ctx.steel,
+              query: effectiveQuery,
+              engine: ctx.defaultEngine,
+              useProxy: ctx.useProxy,
+              limit,
+              signal: ctx.signal,
+            }),
+          );
+        case "arxiv":
+          return await arxivSearch({
+            query: effectiveQuery,
+            limit,
+            signal: ctx.signal,
+          });
+        case "github":
+          return await githubSearch({
+            query: effectiveQuery,
+            limit,
+            token: ctx.githubToken,
+            signal: ctx.signal,
+          });
+        case "hn":
+          return await hnSearch({
+            query: effectiveQuery,
+            limit,
+            signal: ctx.signal,
+          });
+        default: {
+          const _exhaustive: never = backend;
+          throw new Error(`unknown backend "${_exhaustive}"`);
+        }
       }
-    }
+    })();
+    ctx.caches.serp.set(cacheKey, outcomePromise);
+  }
+
+  let outcome: WebSearchOutcome;
+  try {
+    outcome = await outcomePromise;
   } catch (err) {
+    ctx.caches.serp.delete(cacheKey);
     const message = err instanceof Error ? err.message : String(err);
     ctx.emit({
       type: "search_failed",
@@ -366,7 +430,11 @@ async function execSearch(
   const useful: SearchResult[] = [];
   let filtered = 0;
   for (const r of outcome.results) {
-    if (ctx.sourceUrls.has(r.url) || ctx.sourceReservations.urls.has(r.url)) {
+    const normalizedUrl = normalizeFetchUrl(r.url);
+    if (
+      ctx.sourceUrls.has(normalizedUrl) ||
+      ctx.sourceReservations.urls.has(normalizedUrl)
+    ) {
       filtered++;
       continue;
     }
@@ -520,33 +588,42 @@ async function execFetch(
   ctx: AgentContext,
   subQ: string,
 ): Promise<FetchOutcome> {
-  const url = String(args.url ?? "").trim();
-  if (!url) return { text: "Error: fetch requires a `url`." };
-  if (!/^https?:\/\//i.test(url)) {
-    return { text: `Error: not an http(s) URL: ${url}` };
+  const requestedUrl = String(args.url ?? "").trim();
+  if (!requestedUrl) return { text: "Error: fetch requires a `url`." };
+  if (!/^https?:\/\//i.test(requestedUrl)) {
+    return { text: `Error: not an http(s) URL: ${requestedUrl}` };
   }
 
-  const reservation = reserveFetch(ctx, url);
+  const reservation = reserveFetch(ctx, requestedUrl);
   if (typeof reservation === "string") return { text: reservation };
+  const url = reservation.url;
 
   ctx.emit({ type: "fetching", sub_question: subQ, url });
 
-  let markdown: string;
-  let title: string | null = null;
   try {
-    const scrape = await ctx.fetchGate.run(() =>
-      ctx.steel.scrape(
-        {
-          url,
-          format: ["markdown"],
-          useProxy: ctx.useProxy,
-        },
-        { signal: ctx.signal },
-      ),
-    );
-    markdown = scrape.content?.markdown ?? "";
-    title = scrape.metadata?.title ?? null;
+    let scrapePromise = ctx.caches.scrape.get(url);
+    if (!scrapePromise) {
+      scrapePromise = ctx.steelGate
+        .run(() =>
+          ctx.steel.scrape(
+            {
+              url,
+              format: ["markdown"],
+              useProxy: ctx.useProxy,
+            },
+            { signal: ctx.signal },
+          ),
+        )
+        .then((scrape) => ({
+          markdown: scrape.content?.markdown ?? "",
+          title: scrape.metadata?.title ?? null,
+        }));
+      ctx.caches.scrape.set(url, scrapePromise);
+    }
+
+    const { markdown, title } = await scrapePromise;
     if (!markdown) {
+      ctx.caches.scrape.delete(url);
       ctx.emit({
         type: "source_error",
         sub_question: subQ,
@@ -555,7 +632,41 @@ async function execFetch(
       });
       return { text: `Empty page (no content fetched).` };
     }
+
+    ctx.abort();
+
+    // Commit while the reservation is still held so source numbers and caps stay
+    // consistent across concurrent scouts.
+    const n = ctx.sources.length + 1;
+    const resolvedTitle = title ?? url;
+    ctx.sources.push({
+      n,
+      url,
+      title: resolvedTitle,
+      sub_question: subQ,
+    });
+    ctx.sourceUrls.add(url);
+    ctx.sourceMarkdowns.set(n, markdown.slice(0, STORED_MARKDOWN_CAP));
+    ctx.globalDomainCounts.set(
+      reservation.domain,
+      (ctx.globalDomainCounts.get(reservation.domain) ?? 0) + 1,
+    );
+
+    ctx.emit({
+      type: "source_committed",
+      sub_question: subQ,
+      url,
+      n,
+      title: resolvedTitle,
+    });
+
+    const snippet = markdown.slice(0, FETCH_SNIPPET_CHARS).trim();
+    return {
+      committed_n: n,
+      text: `Committed [${n}]: ${resolvedTitle}\nURL: ${url}\nFirst ${FETCH_SNIPPET_CHARS} chars:\n${snippet}`,
+    };
   } catch (err) {
+    ctx.caches.scrape.delete(url);
     const message = err instanceof Error ? err.message : String(err);
     ctx.emit({
       type: "source_error",
@@ -567,38 +678,6 @@ async function execFetch(
   } finally {
     releaseFetchReservation(ctx, reservation);
   }
-
-  ctx.abort();
-
-  // Atomic commit. The source slot was reserved before the scrape started.
-  const n = ctx.sources.length + 1;
-  const resolvedTitle = title ?? url;
-  ctx.sources.push({
-    n,
-    url,
-    title: resolvedTitle,
-    sub_question: subQ,
-  });
-  ctx.sourceUrls.add(url);
-  ctx.sourceMarkdowns.set(n, markdown.slice(0, STORED_MARKDOWN_CAP));
-  ctx.globalDomainCounts.set(
-    reservation.domain,
-    (ctx.globalDomainCounts.get(reservation.domain) ?? 0) + 1,
-  );
-
-  ctx.emit({
-    type: "source_committed",
-    sub_question: subQ,
-    url,
-    n,
-    title: resolvedTitle,
-  });
-
-  const snippet = markdown.slice(0, FETCH_SNIPPET_CHARS).trim();
-  return {
-    committed_n: n,
-    text: `Committed [${n}]: ${resolvedTitle}\nURL: ${url}\nFirst ${FETCH_SNIPPET_CHARS} chars:\n${snippet}`,
-  };
 }
 
 export async function runAgenticSubAgent(opts: {

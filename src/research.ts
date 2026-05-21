@@ -7,8 +7,9 @@ import {
 import { type Engine } from "./search.js";
 import { createSteel } from "./steel.js";
 import {
-  createFetchGate,
+  createResearchCaches,
   createSourceReservations,
+  createSteelGate,
   runAgenticSubAgent,
   type AgentContext,
 } from "./tools.js";
@@ -20,7 +21,7 @@ export const RESEARCH_DEFAULTS = {
   subagentSourceCap: 4,
   perDomainCap: 2,
   maxConcurrentTools: 4,
-  maxConcurrentFetches: 4,
+  maxConcurrentSteelCalls: 4,
 } as const;
 
 export type { CitedSource } from "./pipeline.js";
@@ -208,8 +209,9 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
     perDomainCap: RESEARCH_DEFAULTS.perDomainCap,
     globalSourceCap: maxSources,
     maxConcurrentTools: RESEARCH_DEFAULTS.maxConcurrentTools,
-    fetchGate: createFetchGate(RESEARCH_DEFAULTS.maxConcurrentFetches),
+    steelGate: createSteelGate(RESEARCH_DEFAULTS.maxConcurrentSteelCalls),
     sourceReservations: createSourceReservations(),
+    caches: createResearchCaches(),
     githubToken,
   };
 
