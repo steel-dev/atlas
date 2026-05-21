@@ -8,23 +8,21 @@ const USAGE = `atlas — deep research from your terminal
 Usage:
   atlas "<question>" [options]
 
-Each sub-question is researched by a Haiku-driven scout with three tools:
-  search(query, source: web|arxiv|github|hn)  /  fetch(url)  /  finish(reason).
-URL dedup, per-domain cap, and global source cap are enforced inside the tools.
-The outer write → critique → verify loop runs on Sonnet.
+A research-lead agent (Sonnet) decomposes your question and dispatches parallel
+scout sub-agents (Haiku) with search + fetch tools. After the lead finalizes,
+a single writer composes the report from all sources, and a verifier checks
+every citation against the raw page.
 
 Options:
   -o, --out <file>            Write the markdown report to <file> (default: stdout)
-      --max-sub-questions N   Sub-questions to plan (default 4)
       --max-sources N         Cap on cited sources (default 12)
-      --max-tool-calls N      Per-agent tool-call cap (default 12)
-      --max-rounds N          Scout rounds (default 2; 1 = single-pass, no gap detection)
-      --no-critique           Disable the post-draft peer-review pass
-      --verify-threshold F    Min fraction of claims that must verify (default 0.7)
+      --max-lead-turns N      Cap on lead-agent turns (default 8)
+      --max-tool-calls N      Per-sub-agent tool-call cap (default 12)
       --engine <e>            Default web SERP: ddg | bing | google (default ddg)
       --use-proxy             Route Steel through residential proxy
-      --fast-model <m>        Override Haiku model id
-      --writer-model <m>      Override Sonnet model id
+      --fast-model <m>        Override Haiku (scout / summarize / verify) model id
+      --writer-model <m>      Override Sonnet writer model id
+      --lead-model <m>        Override lead-agent model id (defaults to writer model)
       --json                  Emit one JSON event per line on stderr
   -q, --quiet                 Suppress progress events on stderr
   -h, --help                  Show this help
@@ -93,101 +91,63 @@ function prettyEvent(e: ResearchEvent): string {
     return paint(DIM, ` [${t}]`);
   };
   switch (e.type) {
-    case "brief":
-      return [
-        paint(GREEN, "✓") + " brief",
-        paint(DIM, `  ${e.brief}`),
-        paint(
-          DIM,
-          `  ${e.sub_questions.length} sub-question${e.sub_questions.length === 1 ? "" : "s"}`,
-        ),
-        ...e.sub_questions.map((q) => paint(DIM, `    • ${q}`)),
-      ].join("\n");
+    case "lead_started":
+      return paint(BLUE, "→") + ` lead planning: ${e.query}`;
+    case "lead_turn":
+      return (
+        paint(DIM, `  turn ${e.turn}: `) +
+        `spawning ${e.spawned} scout${e.spawned === 1 ? "" : "s"}`
+      );
+    case "subagent_spawned":
+      return paint(BLUE, "  ↳") + ` scout: ${e.sub_question}`;
+    case "lead_finalize":
+      return (
+        paint(GREEN, "✓") +
+        ` lead finalized — ${e.sources_count} source${e.sources_count === 1 ? "" : "s"} gathered` +
+        (e.notes ? "\n" + paint(DIM, `  notes: ${e.notes}`) : "")
+      );
     case "agent_started":
-      return paint(BLUE, "→") + ` agent: ${e.sub_question}`;
+      return paint(DIM, "  →") + ` agent started${tag(e.sub_question)}`;
     case "agent_finished":
       return (
-        paint(GREEN, "✓") +
-        ` agent done: ${e.sub_question} — ${e.sources_added} source${e.sources_added === 1 ? "" : "s"}`
+        paint(DIM, "  ✓") +
+        ` agent done${tag(e.sub_question)} — ${e.sources_added} source${e.sources_added === 1 ? "" : "s"}`
       );
-    case "analyzing_gaps":
-      return paint(BLUE, "→") + ` round ${e.round}: analyzing coverage gaps`;
-    case "gaps_found":
-      return [
-        paint(YELLOW, "  !") +
-          ` round ${e.round}: ${e.gaps.length} gap${e.gaps.length === 1 ? "" : "s"} found`,
-        ...e.gaps.map((g) =>
-          paint(DIM, `    • ${g.missing} → "${g.refined_query}"`),
-        ),
-      ].join("\n");
-    case "gap_analysis_skipped":
-      return paint(GREEN, "✓") + ` round ${e.round} skipped (${e.reason})`;
     case "searching":
-      return paint(DIM, `  search:`) + tag(e.sub_question) + ` ${e.query}`;
+      return paint(DIM, `    search:`) + tag(e.sub_question) + ` ${e.query}`;
     case "search_results":
-      return paint(DIM, `    ↳ ${e.count} result${e.count === 1 ? "" : "s"}`);
+      return paint(DIM, `      ↳ ${e.count} result${e.count === 1 ? "" : "s"}`);
     case "search_failed":
-      return paint(YELLOW, `  ! search failed:`) + tag(e.sub_question) + ` ${e.error}`;
+      return (
+        paint(YELLOW, `    ! search failed:`) + tag(e.sub_question) + ` ${e.error}`
+      );
     case "fetching":
-      return paint(DIM, `  fetch: ${e.url}`) + tag(e.sub_question);
+      return paint(DIM, `    fetch: ${e.url}`) + tag(e.sub_question);
     case "summarized":
-      return paint(GREEN, `  ✓`) + ` [${e.n}] ${e.url}` + tag(e.sub_question);
+      return paint(GREEN, `    ✓`) + ` [${e.n}] ${e.url}` + tag(e.sub_question);
     case "source_skipped":
-      return paint(DIM, `  · skipped ${e.url} (${e.reason})`);
+      return paint(DIM, `    · skipped ${e.url} (${e.reason})`);
     case "source_error":
-      return paint(YELLOW, `  ! ${e.url} — ${e.error}`);
-    case "outlining":
-      return paint(BLUE, "→") + ` outlining sections (attempt ${e.attempt})`;
-    case "outline_done":
-      return [
-        paint(GREEN, "✓") +
-          ` outline: ${e.sections.length} section${e.sections.length === 1 ? "" : "s"}`,
-        ...e.sections.map((s) =>
-          paint(
-            DIM,
-            `    • ${s.title} [${s.source_ns.map((n) => `${n}`).join(", ")}]`,
-          ),
-        ),
-      ].join("\n");
-    case "section_writing":
-      return (
-        paint(DIM, `  → section ${e.index}/${e.total}: `) + e.title
-      );
-    case "section_written":
-      return (
-        paint(GREEN, `  ✓`) +
-        ` section ${e.index}/${e.total}: ${e.title} ${paint(DIM, `(${e.markdown_chars.toLocaleString()} chars)`)}`
-      );
-    case "section_failed":
-      return (
-        paint(YELLOW, `  ! section ${e.index}/${e.total} failed: ${e.title}`) +
-        paint(DIM, ` — ${e.error}`)
-      );
+      return paint(YELLOW, `    ! ${e.url} — ${e.error}`);
     case "writing":
-      return paint(BLUE, "→") + ` writing report (attempt ${e.attempt}, ${e.sources_count} sources${e.unsupported_count > 0 ? `, ${e.unsupported_count} unsupported claims to fix` : ""})`;
+      return (
+        paint(BLUE, "→") +
+        ` writing report (${e.sources_count} source${e.sources_count === 1 ? "" : "s"})`
+      );
     case "written":
-      return paint(GREEN, "✓") + ` written (${e.markdown_chars.toLocaleString()} chars)`;
-    case "critiquing":
-      return paint(BLUE, "→") + ` critiquing draft (attempt ${e.attempt})`;
-    case "critique_done": {
-      if (!e.needs_revision) {
-        return paint(GREEN, "✓") + " critique: clean";
-      }
-      return [
-        paint(YELLOW, "  !") +
-          ` critique flagged ${e.issues.length} issue${e.issues.length === 1 ? "" : "s"}`,
-        ...e.issues.map((issue) => paint(DIM, `    • ${issue}`)),
-      ].join("\n");
-    }
+      return (
+        paint(GREEN, "✓") + ` written (${e.markdown_chars.toLocaleString()} chars)`
+      );
     case "verifying":
-      return paint(BLUE, "→") + ` verifying ${e.total} claim${e.total === 1 ? "" : "s"}`;
+      return (
+        paint(BLUE, "→") +
+        ` verifying ${e.total} claim${e.total === 1 ? "" : "s"}`
+      );
     case "verified_claim": {
       const mark = e.supported ? paint(GREEN, "  ✓") : paint(RED, "  ✗");
       const ref = `[${e.source_n}]`;
       return `${mark} ${ref} ${paint(DIM, `(${e.done}/${e.total})`)} ${e.supported ? "" : paint(DIM, e.reason)}`;
     }
-    case "verify_failed":
-      return paint(YELLOW, `  ! verify failed at ${(e.pass_rate * 100).toFixed(0)}% (threshold ${(e.threshold * 100).toFixed(0)}%) — retrying`);
     case "completed": {
       const vs = e.result.verification_summary;
       const us = e.result.usage_summary;
@@ -224,16 +184,14 @@ async function main(): Promise<void> {
         allowPositionals: true,
         options: {
           out: { type: "string", short: "o" },
-          "max-sub-questions": { type: "string" },
           "max-sources": { type: "string" },
+          "max-lead-turns": { type: "string" },
           "max-tool-calls": { type: "string" },
-          "max-rounds": { type: "string" },
-          "no-critique": { type: "boolean" },
-          "verify-threshold": { type: "string" },
           engine: { type: "string" },
           "use-proxy": { type: "boolean" },
           "fast-model": { type: "string" },
           "writer-model": { type: "string" },
+          "lead-model": { type: "string" },
           json: { type: "boolean" },
           quiet: { type: "boolean", short: "q" },
           help: { type: "boolean", short: "h" },
@@ -312,16 +270,14 @@ async function main(): Promise<void> {
       anthropicApiKey,
       steelApiKey,
       steelBaseUrl,
-      maxSubQuestions: parseNumber(values["max-sub-questions"], "--max-sub-questions"),
       maxSources: parseNumber(values["max-sources"], "--max-sources"),
+      maxLeadTurns: parseNumber(values["max-lead-turns"], "--max-lead-turns"),
       maxToolCalls: parseNumber(values["max-tool-calls"], "--max-tool-calls"),
-      maxRounds: parseNumber(values["max-rounds"], "--max-rounds"),
-      critique: values["no-critique"] === true ? false : undefined,
-      verifyThreshold: parseNumber(values["verify-threshold"], "--verify-threshold"),
       engine: engine as Engine | undefined,
       useProxy: values["use-proxy"] === true,
       fastModel: values["fast-model"],
       writerModel: values["writer-model"],
+      leadModel: values["lead-model"],
       githubToken,
       onEvent,
       signal: controller.signal,

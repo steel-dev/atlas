@@ -3,12 +3,11 @@ export type {
   AgentRun,
   CitedSource,
   ClaimVerification,
-  CritiqueResult,
   Engine,
   ParsedClaim,
   ResearchEvent,
   ResearchOptions,
   ResearchResult,
-  UnsupportedClaim,
+  UsageSummary,
   VerificationSummary,
 } from "./research.js";
