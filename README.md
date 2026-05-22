@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/steel-experiments/atlas/actions/workflows/ci.yml/badge.svg)](https://github.com/steel-experiments/atlas/actions/workflows/ci.yml)
 
-**Deep research that returns receipts.**
+**Deep research that just works.**
 
 Ask a messy question. Atlas searches the web, opens pages in a real browser, follows the useful trails, and writes a cited Markdown report.
 
