@@ -4,13 +4,13 @@
 
 **Deep research that just works.**
 
-Ask a messy question. Atlas searches the web, opens pages in a real browser, follows the useful trails, and writes a cited Markdown report.
+Ask a messy question. Atlas searches the web, fetches regular pages directly, falls back to a real browser when needed, follows the useful trails, and writes a cited Markdown report.
 
 ```bash
 npx @steel-dev/atlas "What changed when Cloudflare Durable Objects added SQLite?" > report.md
 ```
 
-Powered by [Steel Browser](https://steel.dev) and [Anthropic Claude](https://www.anthropic.com/). Bring your own keys, run it from the terminal, or call it from TypeScript.
+Powered by [Steel Browser](https://steel.dev) and [Anthropic Claude](https://www.anthropic.com/). Steel is used for pages that need browser rendering, anti-bot handling, or session behavior; plain documents are fetched without spending browser quota.
 
 ## Quick Start
 

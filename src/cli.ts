@@ -109,6 +109,8 @@ function prettyEvent(e: ResearchEvent): string {
       return paint(DIM, `    fetch: ${e.url}`);
     case "inspecting":
       return paint(DIM, `    inspect: ${e.url}`);
+    case "steel_fallback":
+      return paint(DIM, `      browser fallback: ${e.url} — ${e.reason}`);
     case "rate_limited":
       return (
         paint(YELLOW, "    ! rate limited:") +

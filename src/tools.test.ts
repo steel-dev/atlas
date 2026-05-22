@@ -1,6 +1,6 @@
 import type Anthropic from "@anthropic-ai/sdk";
 import type Steel from "steel-sdk";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   __testing,
   createResearchCaches,
@@ -37,6 +37,10 @@ function toolUse(
 ): Anthropic.ToolUseBlock {
   return { type: "tool_use", id, name, input } as unknown as Anthropic.ToolUseBlock;
 }
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 describe("tool helpers", () => {
   it("normalizes fetch URLs for dedupe keys", () => {
@@ -75,6 +79,14 @@ describe("tool helpers", () => {
 
 describe("gather loop cache integration", () => {
   it("reuses cached SERPs across repeated search tool calls", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response("enable javascript and cookies", {
+          headers: { "content-type": "text/html" },
+        }),
+      ),
+    );
     const ddgHtml = `
       <div class="result">
         <a class="result__a" href="https://example.com/result">Result</a>
@@ -127,6 +139,23 @@ describe("gather loop cache integration", () => {
   });
 
   it("reuses inspected page content when committing the same URL", async () => {
+    const fetch = vi.fn(async () => {
+      const body = `
+        <html>
+          <head><title>Primary Source</title></head>
+          <body>
+            <main>
+              <h1>Primary Source</h1>
+              ${"<p>Detailed source body with enough useful research text for plain extraction.</p>".repeat(20)}
+            </main>
+          </body>
+        </html>
+      `;
+      return new Response(body, {
+        headers: { "content-type": "text/html; charset=utf-8" },
+      });
+    });
+    vi.stubGlobal("fetch", fetch);
     const scrape = vi.fn(async () => ({
       content: { markdown: "# Primary Source\n\nDetailed source body." },
       metadata: { title: "Primary Source" },
@@ -171,7 +200,8 @@ describe("gather loop cache integration", () => {
     });
 
     expect(result.finish_reason).toBe("done");
-    expect(scrape).toHaveBeenCalledTimes(1);
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(scrape).not.toHaveBeenCalled();
     expect(ctx.sources).toEqual([
       {
         n: 1,
@@ -179,10 +209,73 @@ describe("gather loop cache integration", () => {
         title: "Primary Source",
       },
     ]);
-    expect(ctx.sourceMarkdowns.get(1)).toContain("Detailed source body.");
+    expect(ctx.sourceMarkdowns.get(1)).toContain("Detailed source body");
+  });
+
+  it("falls back to Steel when plain fetch has too little readable text", async () => {
+    const fetch = vi.fn(async () =>
+      new Response("<html><body><div id=\"root\"></div></body></html>", {
+        headers: { "content-type": "text/html" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetch);
+    const scrape = vi.fn(async () => ({
+      content: { markdown: "# Steel Fallback\n\nRendered browser content." },
+      metadata: { title: "Steel Fallback" },
+    }));
+    const messagesCreate = vi
+      .fn()
+      .mockResolvedValueOnce(
+        messageWith([
+          toolUse("fetch_1", "fetch", { url: "https://example.com/js-app" }),
+        ]),
+      )
+      .mockResolvedValueOnce(messageWith([toolUse("done_1", "done")]));
+
+    const ctx: AgentContext = {
+      anthropic: {
+        messages: { create: messagesCreate },
+      } as unknown as Anthropic,
+      steel: { scrape } as unknown as Steel,
+      sources: [],
+      sourceUrls: new Set(),
+      sourceMarkdowns: new Map(),
+      emit: vi.fn(),
+      abort: vi.fn(),
+      defaultEngine: "ddg",
+      useProxy: false,
+      globalSourceCap: 4,
+      maxConcurrentTools: 2,
+      steelGate: createSteelGate(2),
+      sourceReservations: createSourceReservations(),
+      caches: createResearchCaches(),
+    };
+
+    const result = await runGatherAgent({
+      ctx,
+      query: "What is Atlas?",
+      max_tool_calls: 2,
+    });
+
+    expect(result.finish_reason).toBe("done");
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(scrape).toHaveBeenCalledTimes(1);
+    expect(ctx.sources[0]).toMatchObject({
+      n: 1,
+      url: "https://example.com/js-app",
+      title: "Steel Fallback",
+    });
   });
 
   it("aggregates search results across engines when configured", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response("enable javascript and cookies", {
+          headers: { "content-type": "text/html" },
+        }),
+      ),
+    );
     const scrape = vi.fn(async ({ url }: { url: string }) => {
       if (url.includes("bing.com")) {
         return {

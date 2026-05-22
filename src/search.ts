@@ -4,6 +4,8 @@ import { looksBlocked } from "./steel.js";
 
 export const ENGINES = ["ddg", "bing", "google"] as const;
 export type Engine = (typeof ENGINES)[number];
+const SEARCH_USER_AGENT =
+  "Mozilla/5.0 (compatible; AtlasResearchBot/0.1; +https://github.com/steel-experiments/atlas)";
 
 export interface SearchResult {
   position: number;
@@ -42,6 +44,16 @@ export async function webSearch(opts: {
   });
 
   let html: string;
+  let plainFailure: string | undefined;
+  if (!useProxy) {
+    const plain = await fetchPlainSerpHtml(serpUrl, opts.signal);
+    if (plain.ok) {
+      html = plain.html;
+      return { ok: true, results: parseSerp(engine, html, limit) };
+    }
+    plainFailure = plain.reason;
+  }
+
   try {
     const result = await opts.steel.scrape(
       {
@@ -55,23 +67,66 @@ export async function webSearch(opts: {
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     const status = (err as { status?: number })?.status;
+    if (status === 429) throw err;
+    const combinedMessage = plainFailure
+      ? `plain fetch failed (${plainFailure}); Steel scrape failed: ${message}`
+      : message;
     if (status === 408 || /timeout/i.test(message)) {
-      return { ok: false, error: { code: "E_STEEL_TIMEOUT", message } };
+      return { ok: false, error: { code: "E_STEEL_TIMEOUT", message: combinedMessage } };
     }
-    return { ok: false, error: { code: "E_STEEL_UNAVAILABLE", message } };
+    return { ok: false, error: { code: "E_STEEL_UNAVAILABLE", message: combinedMessage } };
   }
 
   if (!html || looksBlocked(html)) {
+    const message = plainFailure
+      ? `${engine} returned an anti-bot challenge or empty body after plain fetch failed (${plainFailure})`
+      : `${engine} returned an anti-bot challenge or empty body`;
     return {
       ok: false,
       error: {
         code: "E_STEEL_UNAVAILABLE",
-        message: `${engine} returned an anti-bot challenge or empty body`,
+        message,
       },
     };
   }
 
   return { ok: true, results: parseSerp(engine, html, limit) };
+}
+
+type PlainSerpOutcome =
+  | { ok: true; html: string }
+  | { ok: false; reason: string };
+
+async function fetchPlainSerpHtml(
+  url: string,
+  signal?: AbortSignal,
+): Promise<PlainSerpOutcome> {
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      signal,
+      headers: {
+        "user-agent": SEARCH_USER_AGENT,
+        accept:
+          "text/html,application/xhtml+xml,text/plain;q=0.8,*/*;q=0.5",
+      },
+    });
+  } catch (err) {
+    return { ok: false, reason: err instanceof Error ? err.message : String(err) };
+  }
+
+  if (!response.ok) return { ok: false, reason: `HTTP ${response.status}` };
+
+  const contentType = response.headers.get("content-type") ?? "";
+  if (contentType && !/html|text/i.test(contentType)) {
+    return { ok: false, reason: `Unsupported content-type: ${contentType}` };
+  }
+
+  const html = await response.text();
+  if (!html.trim()) return { ok: false, reason: "Empty body" };
+  if (looksBlocked(html)) return { ok: false, reason: "Blocked or challenge page" };
+
+  return { ok: true, html };
 }
 
 function buildSerpUrl(
@@ -281,6 +336,7 @@ export function safeDomain(url: string): string {
 
 export const __testing = {
   buildSerpUrl,
+  fetchPlainSerpHtml,
   parseSerp,
   parseDdg,
   parseBing,

@@ -1,5 +1,10 @@
-import { describe, expect, it } from "vitest";
-import { __testing, safeDomain } from "./search.js";
+import type Steel from "steel-sdk";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { __testing, safeDomain, webSearch } from "./search.js";
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 describe("SERP parsing", () => {
   it("parses DuckDuckGo results and unwraps redirect URLs", () => {
@@ -75,5 +80,72 @@ describe("SERP parsing", () => {
   it("extracts domains defensively", () => {
     expect(safeDomain("https://www.example.com/path")).toBe("example.com");
     expect(safeDomain("not a url")).toBe("");
+  });
+
+  it("uses plain HTTP for SERP fetches before Steel", async () => {
+    const fetch = vi.fn(async () =>
+      new Response(`
+        <div class="result">
+          <a class="result__a" href="https://example.com/plain">Plain Result</a>
+          <a class="result__snippet">Plain snippet.</a>
+        </div>
+      `, {
+        headers: { "content-type": "text/html" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetch);
+    const scrape = vi.fn();
+
+    const outcome = await webSearch({
+      steel: { scrape } as unknown as Steel,
+      query: "plain query",
+      engine: "ddg",
+    });
+
+    expect(outcome).toEqual({
+      ok: true,
+      results: [
+        {
+          position: 1,
+          title: "Plain Result",
+          url: "https://example.com/plain",
+          snippet: "Plain snippet.",
+          domain: "example.com",
+        },
+      ],
+    });
+    expect(scrape).not.toHaveBeenCalled();
+  });
+
+  it("falls back to Steel when plain SERP fetch is blocked", async () => {
+    const fetch = vi.fn(async () =>
+      new Response("enable javascript and cookies", {
+        headers: { "content-type": "text/html" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetch);
+    const scrape = vi.fn(async () => ({
+      content: {
+        html: `
+          <div class="result">
+            <a class="result__a" href="https://example.com/steel">Steel Result</a>
+            <a class="result__snippet">Steel snippet.</a>
+          </div>
+        `,
+      },
+      metadata: {},
+    }));
+
+    const outcome = await webSearch({
+      steel: { scrape } as unknown as Steel,
+      query: "blocked query",
+      engine: "ddg",
+    });
+
+    expect(outcome.ok).toBe(true);
+    if (outcome.ok) {
+      expect(outcome.results[0]?.url).toBe("https://example.com/steel");
+    }
+    expect(scrape).toHaveBeenCalledTimes(1);
   });
 });

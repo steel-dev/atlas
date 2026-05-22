@@ -57,7 +57,7 @@ export const RESEARCH_DEPTH_PRESETS = {
     searchMode: "aggregate",
     defaultSearchLimit: 12,
     gatherModel: WRITER_MODEL,
-    writerEffort: "xhigh",
+    writerEffort: "max",
     writerMaxTokens: 24_576,
     writerMaxSourceChars: 100_000,
     writerTotalSourceChars: 900_000,
@@ -117,6 +117,7 @@ export type ResearchEvent =
     }
   | { type: "fetching"; url: string }
   | { type: "inspecting"; url: string }
+  | { type: "steel_fallback"; url: string; reason: string }
   | {
       type: "rate_limited";
       retry_after_seconds: number;

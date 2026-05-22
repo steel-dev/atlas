@@ -8,7 +8,7 @@ const WRITER_MIN_SOURCE_CHARS = 4_000;
 const DEFAULT_WRITER_MAX_TOKENS = 16_384;
 const MAX_HEADING_OUTLINE_CHARS = 4_000;
 
-export type WriterEffort = "low" | "medium" | "high" | "xhigh" | "max";
+export type WriterEffort = "low" | "medium" | "high" | "max";
 
 export interface CitedSource {
   n: number;
@@ -19,6 +19,19 @@ export interface CitedSource {
 export interface ReportOutput {
   markdown: string;
 }
+
+type MessageStreamEvent =
+  {
+    type: string;
+    content_block?: {
+      type?: string;
+      text?: string;
+    };
+    delta?: {
+      type?: string;
+      text?: string;
+    };
+  };
 
 function markdownHeadingOutline(markdown: string): string {
   const headings = markdown
@@ -106,10 +119,11 @@ export async function writeReport(opts: {
   const instructionBlock =
     `\n\nWrite the report now. Aim for thorough coverage of the question, with every claim grounded in a numbered source.`;
 
-  const response = await anthropic.messages.create(
+  const stream = await anthropic.messages.create(
     {
       model: model ?? WRITER_MODEL,
       max_tokens: writerMaxTokens ?? DEFAULT_WRITER_MAX_TOKENS,
+      stream: true,
       thinking: { type: "adaptive" },
       output_config: { effort: writerEffort ?? "high" },
       system,
@@ -130,11 +144,25 @@ export async function writeReport(opts: {
     { signal },
   );
 
-  const text = response.content
-    .filter((c): c is Anthropic.TextBlock => c.type === "text")
-    .map((c) => c.text)
-    .join("\n")
-    .trim();
+  const chunks: string[] = [];
+  for await (const event of stream as AsyncIterable<MessageStreamEvent>) {
+    if (
+      event.type === "content_block_start" &&
+      event.content_block?.type === "text" &&
+      event.content_block.text
+    ) {
+      chunks.push(event.content_block.text);
+    }
+    if (
+      event.type === "content_block_delta" &&
+      event.delta?.type === "text_delta" &&
+      event.delta.text
+    ) {
+      chunks.push(event.delta.text);
+    }
+  }
+
+  const text = chunks.join("").trim();
 
   return { markdown: text };
 }

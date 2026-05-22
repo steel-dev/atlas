@@ -8,6 +8,7 @@ import {
   type SearchResult,
   type WebSearchOutcome,
 } from "./search.js";
+import { fetchPlainPage } from "./plain-fetch.js";
 
 const STORED_MARKDOWN_CAP = 120_000;
 const FETCH_SNIPPET_CHARS = 2500;
@@ -160,6 +161,7 @@ export type AgenticEvent =
     }
   | { type: "fetching"; url: string }
   | { type: "inspecting"; url: string }
+  | { type: "steel_fallback"; url: string; reason: string }
   | {
       type: "rate_limited";
       retry_after_seconds: number;
@@ -766,19 +768,29 @@ async function scrapeWithCache(
 ): Promise<ScrapeCacheEntry> {
   let scrapePromise = ctx.caches.scrape.get(url);
   if (!scrapePromise) {
-    scrapePromise = runSteelRequest(ctx, () =>
-      ctx.steel.scrape(
-        {
-          url,
-          format: ["markdown"],
-          useProxy: ctx.useProxy,
-        },
-        { signal: ctx.signal },
-      ),
-    ).then((scrape) => ({
+    scrapePromise = fetchPlainPage({ url, signal: ctx.signal }).then(async (plain) => {
+      if (plain.ok) return plain.page;
+
+      ctx.emit({
+        type: "steel_fallback",
+        url,
+        reason: plain.reason,
+      });
+      const scrape = await runSteelRequest(ctx, () =>
+        ctx.steel.scrape(
+          {
+            url,
+            format: ["markdown"],
+            useProxy: ctx.useProxy,
+          },
+          { signal: ctx.signal },
+        ),
+      );
+      return {
         markdown: scrape.content?.markdown ?? "",
         title: scrape.metadata?.title ?? null,
-      }));
+      };
+    });
     ctx.caches.scrape.set(url, scrapePromise);
   }
 
