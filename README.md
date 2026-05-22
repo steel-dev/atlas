@@ -4,23 +4,19 @@
 
 **Deep research that just works.**
 
-Ask a messy question. Atlas searches the web, fetches regular pages directly, falls back to a real browser when needed, follows the useful trails, and writes a cited Markdown report.
-
 ```bash
-npx @steel-dev/atlas "What changed when Cloudflare Durable Objects added SQLite?" > report.md
+npx @steel-dev/atlas "What is deep research?" > report.md
 ```
 
-Powered by [Steel Browser](https://steel.dev) and [Anthropic Claude](https://www.anthropic.com/). Steel is used for pages that need browser rendering, anti-bot handling, or session behavior; plain documents are fetched without spending browser quota.
+Ask a messy question. Atlas searches the web, fetches regular pages directly, falls back to a real browser when needed, follows the useful trails, and writes a cited Markdown report.
 
 ## Quick Start
-
-Requires Node 20+.
 
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-...
 export STEEL_API_KEY=sk_...
 
-npx @steel-dev/atlas "What are the strongest arguments for SQLite on the edge?"
+npx @steel-dev/atlas "What are the strongest deep research framework?"
 ```
 
 Get keys from [Anthropic](https://console.anthropic.com) and [Steel](https://app.steel.dev).
@@ -44,8 +40,6 @@ import { research } from "@steel-dev/atlas";
 
 const result = await research({
   query: "What's changing in browser automation for AI agents?",
-  anthropicApiKey: process.env.ANTHROPIC_API_KEY!,
-  steelApiKey: process.env.STEEL_API_KEY!,
 });
 
 console.log(result.markdown);
