@@ -32,7 +32,7 @@ function messageWith(content: unknown[]): Anthropic.Message {
 
 function toolUse(
   id: string,
-  name: "search" | "fetch" | "done",
+  name: "search" | "inspect" | "fetch" | "done",
   input: Record<string, unknown> = {},
 ): Anthropic.ToolUseBlock {
   return { type: "tool_use", id, name, input } as unknown as Anthropic.ToolUseBlock;
@@ -53,6 +53,23 @@ describe("tool helpers", () => {
       "ddg",
       "google",
     ]);
+  });
+
+  it("parses Steel retry-after hints from rate limit errors", () => {
+    expect(
+      __testing.parseRetryAfterSeconds(
+        Object.assign(new Error("Rate limit exceeded. Try again in 11 seconds."), {
+          status: 429,
+        }),
+      ),
+    ).toBe(11);
+    expect(
+      __testing.parseRetryAfterSeconds({
+        status: 429,
+        headers: { "retry-after": "7" },
+      }),
+    ).toBe(7);
+    expect(__testing.parseRetryAfterSeconds(new Error("not rate limited"))).toBeNull();
   });
 });
 
@@ -107,5 +124,144 @@ describe("gather loop cache integration", () => {
     expect(messagesCreate).toHaveBeenCalledTimes(3);
     expect(scrape).toHaveBeenCalledTimes(1);
     expect(ctx.caches.serp.size).toBe(1);
+  });
+
+  it("reuses inspected page content when committing the same URL", async () => {
+    const scrape = vi.fn(async () => ({
+      content: { markdown: "# Primary Source\n\nDetailed source body." },
+      metadata: { title: "Primary Source" },
+    }));
+    const messagesCreate = vi
+      .fn()
+      .mockResolvedValueOnce(
+        messageWith([
+          toolUse("inspect_1", "inspect", { url: "https://example.com/source" }),
+        ]),
+      )
+      .mockResolvedValueOnce(
+        messageWith([
+          toolUse("fetch_1", "fetch", { url: "https://example.com/source" }),
+        ]),
+      )
+      .mockResolvedValueOnce(messageWith([toolUse("done_1", "done")]));
+
+    const ctx: AgentContext = {
+      anthropic: {
+        messages: { create: messagesCreate },
+      } as unknown as Anthropic,
+      steel: { scrape } as unknown as Steel,
+      sources: [],
+      sourceUrls: new Set(),
+      sourceMarkdowns: new Map(),
+      emit: vi.fn(),
+      abort: vi.fn(),
+      defaultEngine: "ddg",
+      useProxy: false,
+      globalSourceCap: 4,
+      maxConcurrentTools: 2,
+      steelGate: createSteelGate(2),
+      sourceReservations: createSourceReservations(),
+      caches: createResearchCaches(),
+    };
+
+    const result = await runGatherAgent({
+      ctx,
+      query: "What is Atlas?",
+      max_tool_calls: 3,
+    });
+
+    expect(result.finish_reason).toBe("done");
+    expect(scrape).toHaveBeenCalledTimes(1);
+    expect(ctx.sources).toEqual([
+      {
+        n: 1,
+        url: "https://example.com/source",
+        title: "Primary Source",
+      },
+    ]);
+    expect(ctx.sourceMarkdowns.get(1)).toContain("Detailed source body.");
+  });
+
+  it("aggregates search results across engines when configured", async () => {
+    const scrape = vi.fn(async ({ url }: { url: string }) => {
+      if (url.includes("bing.com")) {
+        return {
+          content: {
+            html: `
+              <li class="b_algo">
+                <h2><a href="https://example.com/bing">Bing Result</a></h2>
+                <div class="b_caption"><p>Bing snippet.</p></div>
+              </li>
+            `,
+          },
+          metadata: {},
+        };
+      }
+      if (url.includes("google.com")) {
+        return {
+          content: {
+            html: `
+              <div class="g">
+                <a href="/url?q=${encodeURIComponent("https://example.com/google")}"><h3>Google Result</h3></a>
+                <div class="VwiC3b">Google snippet.</div>
+              </div>
+            `,
+          },
+          metadata: {},
+        };
+      }
+      return {
+        content: {
+          html: `
+            <div class="result">
+              <a class="result__a" href="https://example.com/ddg">DDG Result</a>
+              <a class="result__snippet">DDG snippet.</a>
+            </div>
+          `,
+        },
+        metadata: {},
+      };
+    });
+    const messagesCreate = vi
+      .fn()
+      .mockResolvedValueOnce(
+        messageWith([toolUse("search_1", "search", { query: "same query" })]),
+      )
+      .mockResolvedValueOnce(messageWith([toolUse("done_1", "done")]));
+
+    const ctx: AgentContext = {
+      anthropic: {
+        messages: { create: messagesCreate },
+      } as unknown as Anthropic,
+      steel: { scrape } as unknown as Steel,
+      sources: [],
+      sourceUrls: new Set(),
+      sourceMarkdowns: new Map(),
+      emit: vi.fn(),
+      abort: vi.fn(),
+      defaultEngine: "ddg",
+      searchMode: "aggregate",
+      defaultSearchLimit: 10,
+      useProxy: false,
+      globalSourceCap: 4,
+      maxConcurrentTools: 2,
+      steelGate: createSteelGate(2),
+      sourceReservations: createSourceReservations(),
+      caches: createResearchCaches(),
+    };
+
+    const result = await runGatherAgent({
+      ctx,
+      query: "What is Atlas?",
+      max_tool_calls: 2,
+    });
+
+    expect(result.finish_reason).toBe("done");
+    expect(scrape).toHaveBeenCalledTimes(3);
+    expect(ctx.emit).toHaveBeenCalledWith({
+      type: "search_results",
+      index: 1,
+      count: 3,
+    });
   });
 });

@@ -19,13 +19,13 @@ cited report from all sources.
 
 Options:
   -o, --out <file>            Write the markdown report to <file> (default: stdout)
-      --max-sources N         Cap on cited sources (default 16)
-      --max-tool-calls N      Gather-agent tool-call cap (default 20)
+      --max-sources N         Cap on cited sources (default 24)
+      --max-tool-calls N      Gather-agent tool-call cap (default 48)
       --depth <d>             Budget preset: fast | standard | deep (default standard)
       --timeout N             Overall wall-clock budget in seconds (default: none)
       --engine <e>            Default web SERP: ddg | bing | google (default ddg)
       --use-proxy             Route Steel through residential proxy
-      --fast-model <m>        Override Haiku gather model id
+      --fast-model <m>        Override gather model id
       --writer-model <m>      Override Sonnet writer model id
       --json                  Emit one JSON event per line on stderr
   -q, --quiet                 Suppress progress events on stderr
@@ -107,6 +107,13 @@ function prettyEvent(e: ResearchEvent): string {
       return paint(YELLOW, `    ! search failed:`) + ` ${e.error}`;
     case "fetching":
       return paint(DIM, `    fetch: ${e.url}`);
+    case "inspecting":
+      return paint(DIM, `    inspect: ${e.url}`);
+    case "rate_limited":
+      return (
+        paint(YELLOW, "    ! rate limited:") +
+        ` waiting ${e.retry_after_seconds}s (retry ${e.attempt}/${e.max_attempts - 1})`
+      );
     case "source_committed":
       return paint(GREEN, `    ✓`) + ` [${e.n}] ${e.url}`;
     case "source_error":

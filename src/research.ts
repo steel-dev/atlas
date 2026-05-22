@@ -1,5 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import {
+  WRITER_MODEL,
   writeReport,
   type CitedSource,
   type WriterEffort,
@@ -15,9 +16,9 @@ import {
 } from "./tools.js";
 
 export const RESEARCH_DEFAULTS = {
-  maxSources: 16,
-  maxSubagentToolCalls: 20,
-  maxConcurrentTools: 6,
+  maxSources: 24,
+  maxSubagentToolCalls: 48,
+  maxConcurrentTools: 8,
   maxConcurrentSteelCalls: 4,
 } as const;
 
@@ -28,6 +29,10 @@ export const RESEARCH_DEPTH_PRESETS = {
   fast: {
     maxSources: 8,
     maxToolCalls: 10,
+    gatherMaxTokens: 2048,
+    searchMode: "fallback",
+    defaultSearchLimit: 5,
+    gatherModel: undefined,
     writerEffort: "medium",
     writerMaxTokens: 8192,
     writerMaxSourceChars: 40_000,
@@ -36,24 +41,36 @@ export const RESEARCH_DEPTH_PRESETS = {
   standard: {
     maxSources: RESEARCH_DEFAULTS.maxSources,
     maxToolCalls: RESEARCH_DEFAULTS.maxSubagentToolCalls,
+    gatherMaxTokens: 3072,
+    searchMode: "aggregate",
+    defaultSearchLimit: 8,
+    gatherModel: undefined,
     writerEffort: "high",
     writerMaxTokens: 16_384,
-    writerMaxSourceChars: 60_000,
-    writerTotalSourceChars: 240_000,
+    writerMaxSourceChars: 80_000,
+    writerTotalSourceChars: 420_000,
   },
   deep: {
-    maxSources: 24,
-    maxToolCalls: 32,
+    maxSources: 72,
+    maxToolCalls: 160,
+    gatherMaxTokens: 4096,
+    searchMode: "aggregate",
+    defaultSearchLimit: 12,
+    gatherModel: WRITER_MODEL,
     writerEffort: "xhigh",
-    writerMaxTokens: 16_384,
-    writerMaxSourceChars: 80_000,
-    writerTotalSourceChars: 360_000,
+    writerMaxTokens: 24_576,
+    writerMaxSourceChars: 100_000,
+    writerTotalSourceChars: 900_000,
   },
 } satisfies Record<
   ResearchDepth,
   {
     maxSources: number;
     maxToolCalls: number;
+    gatherMaxTokens: number;
+    searchMode: "fallback" | "aggregate";
+    defaultSearchLimit: number;
+    gatherModel: string | undefined;
     writerEffort: WriterEffort;
     writerMaxTokens: number;
     writerMaxSourceChars: number;
@@ -99,6 +116,13 @@ export type ResearchEvent =
       error: string;
     }
   | { type: "fetching"; url: string }
+  | { type: "inspecting"; url: string }
+  | {
+      type: "rate_limited";
+      retry_after_seconds: number;
+      attempt: number;
+      max_attempts: number;
+    }
   | {
       type: "source_committed";
       url: string;
@@ -118,14 +142,14 @@ export interface ResearchOptions {
   steelBaseUrl?: string;
   /** Cap on cited sources. Default 16. */
   maxSources?: number;
-  /** Cap on gather-agent tool calls (search / fetch / done). Default 20. */
+  /** Cap on gather-agent tool calls (search / inspect / fetch / done). Default 20. */
   maxToolCalls?: number;
   /** One-knob budget/effort preset. Explicit maxSources/maxToolCalls override it. */
   depth?: ResearchDepth;
   /** Web SERP engine. */
   engine?: Engine;
   useProxy?: boolean;
-  /** Override the gather model (Haiku by default). */
+  /** Override the gather model. */
   fastModel?: string;
   /** Override the writer model (Sonnet by default). */
   writerModel?: string;
@@ -166,6 +190,7 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
   const depthPreset = RESEARCH_DEPTH_PRESETS[depth];
   const maxSources = maxSourcesOverride ?? depthPreset.maxSources;
   const maxToolCalls = maxToolCallsOverride ?? depthPreset.maxToolCalls;
+  const gatherModel = fastModel ?? depthPreset.gatherModel;
 
   const emit = (e: ResearchEvent) => {
     try {
@@ -195,8 +220,11 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
     signal,
     defaultEngine: engine,
     useProxy,
-    fastModel,
+    fastModel: gatherModel,
     globalSourceCap: maxSources,
+    gatherMaxTokens: depthPreset.gatherMaxTokens,
+    searchMode: depthPreset.searchMode,
+    defaultSearchLimit: depthPreset.defaultSearchLimit,
     maxConcurrentTools: RESEARCH_DEFAULTS.maxConcurrentTools,
     steelGate: createSteelGate(RESEARCH_DEFAULTS.maxConcurrentSteelCalls),
     sourceReservations: createSourceReservations(),
