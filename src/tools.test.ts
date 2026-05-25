@@ -30,6 +30,16 @@ function messageWith(content: unknown[]): Anthropic.Message {
   } as unknown as Anthropic.Message;
 }
 
+function finalReport(): Anthropic.Message {
+  return messageWith([
+    {
+      type: "text",
+      text:
+        "# Test Report\n\nA concise supported finding [1].\n\n## Sources\n\n[1] Source — https://example.com/source",
+    },
+  ]);
+}
+
 function toolUse(
   id: string,
   name: "search" | "inspect" | "fetch",
@@ -105,7 +115,7 @@ describe("gather loop cache integration", () => {
       .mockResolvedValueOnce(
         messageWith([toolUse("search_2", "search", { query: "same query" })]),
       )
-      .mockResolvedValueOnce(messageWith([]));
+      .mockResolvedValueOnce(finalReport());
 
     const ctx: AgentContext = {
       anthropic: {
@@ -133,7 +143,8 @@ describe("gather loop cache integration", () => {
       max_tool_calls: 3,
     });
 
-    expect(result.finish_reason).toBe("agent stopped emitting tools");
+    expect(result.finish_reason).toBe("final report");
+    expect(result.markdown).toContain("# Test Report");
     expect(messagesCreate).toHaveBeenCalledTimes(3);
     expect(scrape).toHaveBeenCalledTimes(1);
     expect(ctx.caches.serp.size).toBe(1);
@@ -173,7 +184,7 @@ describe("gather loop cache integration", () => {
           toolUse("fetch_1", "fetch", { url: "https://example.com/source" }),
         ]),
       )
-      .mockResolvedValueOnce(messageWith([]));
+      .mockResolvedValueOnce(finalReport());
 
     const ctx: AgentContext = {
       anthropic: {
@@ -201,7 +212,8 @@ describe("gather loop cache integration", () => {
       max_tool_calls: 3,
     });
 
-    expect(result.finish_reason).toBe("agent stopped emitting tools");
+    expect(result.finish_reason).toBe("final report");
+    expect(result.markdown).toContain("# Test Report");
     expect(fetch).toHaveBeenCalledTimes(1);
     expect(scrape).not.toHaveBeenCalled();
     expect(ctx.sources).toEqual([
@@ -217,7 +229,7 @@ describe("gather loop cache integration", () => {
   it("starts gather runs with existing sources and budget hints", async () => {
     const messagesCreate = vi
       .fn()
-      .mockResolvedValueOnce(messageWith([]));
+      .mockResolvedValueOnce(finalReport());
     const ctx: AgentContext = {
       anthropic: {
         messages: { create: messagesCreate },
@@ -254,7 +266,8 @@ describe("gather loop cache integration", () => {
       messages: Array<{ content: string }>;
     };
 
-    expect(result.finish_reason).toBe("agent stopped emitting tools");
+    expect(result.finish_reason).toBe("final report");
+    expect(result.markdown).toContain("# Test Report");
     expect(request.messages[0]?.content).toContain("Existing source pool");
     expect(request.messages[0]?.content).toContain("User budget hint: up to $2.00");
     expect(request.messages[0]?.content).toContain(
@@ -268,8 +281,8 @@ describe("gather loop cache integration", () => {
   it("continues when the agent stops with too few sources", async () => {
     const messagesCreate = vi
       .fn()
-      .mockResolvedValueOnce(messageWith([]))
-      .mockResolvedValueOnce(messageWith([]));
+      .mockResolvedValueOnce(finalReport())
+      .mockResolvedValueOnce(finalReport());
     const ctx: AgentContext = {
       anthropic: {
         messages: { create: messagesCreate },
@@ -325,7 +338,7 @@ describe("gather loop cache integration", () => {
           toolUse("fetch_1", "fetch", { url: "https://example.com/js-app" }),
         ]),
       )
-      .mockResolvedValueOnce(messageWith([]));
+      .mockResolvedValueOnce(finalReport());
 
     const ctx: AgentContext = {
       anthropic: {
@@ -353,7 +366,8 @@ describe("gather loop cache integration", () => {
       max_tool_calls: 2,
     });
 
-    expect(result.finish_reason).toBe("agent stopped emitting tools");
+    expect(result.finish_reason).toBe("final report");
+    expect(result.markdown).toContain("# Test Report");
     expect(fetch).toHaveBeenCalledTimes(1);
     expect(scrape).toHaveBeenCalledTimes(1);
     expect(ctx.sources[0]).toMatchObject({
@@ -416,7 +430,7 @@ describe("gather loop cache integration", () => {
       .mockResolvedValueOnce(
         messageWith([toolUse("search_1", "search", { query: "same query" })]),
       )
-      .mockResolvedValueOnce(messageWith([]));
+      .mockResolvedValueOnce(finalReport());
 
     const ctx: AgentContext = {
       anthropic: {
@@ -446,7 +460,8 @@ describe("gather loop cache integration", () => {
       max_tool_calls: 2,
     });
 
-    expect(result.finish_reason).toBe("agent stopped emitting tools");
+    expect(result.finish_reason).toBe("final report");
+    expect(result.markdown).toContain("# Test Report");
     expect(scrape).toHaveBeenCalledTimes(3);
     expect(ctx.emit).toHaveBeenCalledWith({
       type: "search_results",

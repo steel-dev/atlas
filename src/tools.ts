@@ -1,6 +1,6 @@
 import type Anthropic from "@anthropic-ai/sdk";
 import type Steel from "steel-sdk";
-import { FAST_MODEL, type CitedSource } from "./pipeline.js";
+import { FAST_MODEL, type CitedSource, type WriterEffort } from "./pipeline.js";
 import {
   ENGINES,
   webSearch,
@@ -11,8 +11,8 @@ import {
 import { fetchPlainPage } from "./plain-fetch.js";
 
 const STORED_MARKDOWN_CAP = 120_000;
-const FETCH_SNIPPET_CHARS = 2500;
-const INSPECT_SNIPPET_CHARS = 4000;
+const FETCH_SNIPPET_CHARS = 8000;
+const INSPECT_SNIPPET_CHARS = 6000;
 const SEARCH_SNIPPET_CHARS = 500;
 const DEFAULT_MAX_TOOL_CALLS = 12;
 const DEFAULT_MAX_CONCURRENT_TOOLS = 4;
@@ -184,6 +184,7 @@ export interface AgenticRunResult {
   tool_calls: number;
   finish_reason: string;
   messages: Anthropic.MessageParam[];
+  markdown: string;
 }
 
 interface SearchToolInput {
@@ -249,7 +250,7 @@ const AGENT_TOOLS: Anthropic.Tool[] = [
   },
 ];
 
-const AGENT_SYSTEM = `You're a research agent. Use search, inspect, and fetch to gather high-quality sources for the user's question. Work within the user's dollar/time budget. Do not spend most of the run repeatedly searching; after useful search results appear, inspect or fetch the strongest candidates. Inspect promising pages before committing them when relevance is uncertain. Commit enough primary, recent, and independent sources to let the writer answer deeply. Prefer chasing citations and original documents over stopping at summaries. When the source pool is strong enough, stop using tools and briefly say the sources are ready. Do not write the final report.`;
+const AGENT_SYSTEM = `You're a deep research agent. Use search, inspect, and fetch to gather high-quality sources for the user's question. Work within the user's dollar/time budget. Do not spend most of the run repeatedly searching; after useful search results appear, inspect or fetch the strongest candidates. Inspect promising pages before committing them when relevance is uncertain. Commit enough primary, recent, and independent sources to answer deeply. Prefer chasing citations and original documents over stopping at summaries. When the source pool is strong enough, stop using tools and write the final Markdown report directly. Cite every factual claim with bracketed source numbers, e.g. [1] or [1, 3], and end with a '## Sources' section listing committed sources as '[n] Title — URL'.`;
 
 function totalSourceSlots(ctx: AgentContext): number {
   return ctx.sources.length + ctx.sourceReservations.sourceSlots;
@@ -325,9 +326,27 @@ function minSourcesBeforeStop(ctx: AgentContext): number {
 function insufficientSourcesMessage(ctx: AgentContext): string {
   return (
     `Not enough sources yet: the source pool has only ${ctx.sources.length} committed source${ctx.sources.length === 1 ? "" : "s"}. ` +
-    `For deep research, fetch more independent, topical sources before stopping. ` +
+    `For deep research, fetch more independent, topical sources before writing the final report. ` +
     `Use strong candidates from searches already performed; avoid another broad search unless it fills a specific gap.`
   );
+}
+
+function finalReportRequest(ctx: AgentContext): string {
+  return (
+    `The source pool has ${ctx.sources.length} committed sources, so you may now finish. ` +
+    `Write the final Markdown report directly. Answer the exact question, synthesize rather than merely summarize sources, cite every factual claim with bracketed source numbers, and end with a '## Sources' section.`
+  );
+}
+
+function textFromContent(content: Anthropic.Message["content"]): string {
+  return content
+    .map((block) => (block.type === "text" ? block.text : ""))
+    .join("")
+    .trim();
+}
+
+function looksLikeFinalReport(text: string): boolean {
+  return /^#\s+\S/m.test(text) && /^##\s+Sources\b/im.test(text);
 }
 
 function gatherStartPrompt(opts: {
@@ -351,7 +370,7 @@ function gatherStartPrompt(opts: {
     `Runtime safety limits: at most ${opts.maxToolCalls} tool calls and ${opts.sourceCap} committed sources.\n\n` +
     sourcePool +
     `The runtime will ask you to continue until at least ${minSourcesBeforeStop(opts.ctx)} sources are committed, because fewer sources is too thin for deep research.\n\n` +
-    `Gather enough evidence for a strong cited report. Avoid search-only loops: use search to discover candidates, then inspect or fetch the best sources. When the source pool is strong enough, stop emitting tool calls.`
+    `Gather enough evidence for a strong cited report. Avoid search-only loops: use search to discover candidates, then inspect or fetch the best sources. When the source pool is strong enough, stop emitting tool calls and write the final Markdown report directly.`
   );
 }
 
@@ -944,6 +963,7 @@ export async function runGatherAgent(opts: {
   query: string;
   max_tool_calls?: number;
   budgetUsd?: number;
+  effort?: WriterEffort;
 }): Promise<AgenticRunResult> {
   const { ctx, query } = opts;
   const maxToolCalls = opts.max_tool_calls ?? DEFAULT_MAX_TOOL_CALLS;
@@ -953,6 +973,7 @@ export async function runGatherAgent(opts: {
   const myAddedNs: number[] = [];
   let toolCalls = 0;
   let finishReason = "tool call budget exhausted";
+  let markdown = "";
   let searchIndex = 0;
 
   const messages: Anthropic.MessageParam[] = [
@@ -972,6 +993,12 @@ export async function runGatherAgent(opts: {
     ctx.abort();
 
     let resp: Anthropic.Message;
+    const effortConfig = opts.effort
+      ? {
+          thinking: { type: "adaptive" as const },
+          output_config: { effort: opts.effort },
+        }
+      : {};
     try {
       resp = await ctx.anthropic.messages.create(
         {
@@ -981,6 +1008,7 @@ export async function runGatherAgent(opts: {
           tools: AGENT_TOOLS,
           messages,
           cache_control: { type: "ephemeral" },
+          ...effortConfig,
         },
         { signal: ctx.signal },
       );
@@ -999,15 +1027,20 @@ export async function runGatherAgent(opts: {
       (c): c is Anthropic.ToolUseBlock => c.type === "tool_use",
     );
     if (toolUses.length === 0) {
-      if (ctx.sources.length >= minSourcesBeforeStop(ctx)) {
-        finishReason = "agent stopped emitting tools";
+      const text = textFromContent(resp.content);
+      const content =
+        ctx.sources.length < minSourcesBeforeStop(ctx)
+          ? insufficientSourcesMessage(ctx)
+          : looksLikeFinalReport(text)
+            ? null
+            : finalReportRequest(ctx);
+      if (content === null) {
+        markdown = text;
+        finishReason = "final report";
         break;
       }
 
-      messages.push({
-        role: "user",
-        content: insufficientSourcesMessage(ctx),
-      });
+      messages.push({ role: "user", content });
       toolCalls += 1;
       if (toolCalls >= maxToolCalls) {
         finishReason = "tool call budget exhausted";
@@ -1062,6 +1095,7 @@ export async function runGatherAgent(opts: {
     tool_calls: toolCalls,
     finish_reason: finishReason,
     messages: [...messages],
+    markdown,
   };
 }
 
