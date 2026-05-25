@@ -12,11 +12,16 @@ import { fetchPlainPage } from "./plain-fetch.js";
 
 const STORED_MARKDOWN_CAP = 120_000;
 const FETCH_SNIPPET_CHARS = 8000;
+const DELEGATE_FETCH_SNIPPET_CHARS = 60_000;
 const INSPECT_SNIPPET_CHARS = 6000;
+const READ_SOURCE_CHUNK_CHARS = 3500;
+const READ_SOURCE_MAX_CHUNKS = 4;
 const SEARCH_SNIPPET_CHARS = 500;
 const DEFAULT_MAX_TOOL_CALLS = 12;
 const DEFAULT_MAX_CONCURRENT_TOOLS = 4;
 const DEFAULT_MIN_SOURCES_BEFORE_STOP = 6;
+const DEFAULT_DELEGATE_MAX_TOOL_CALLS = 64;
+const DEFAULT_MAX_DELEGATES = 8;
 const STEEL_RATE_LIMIT_MAX_ATTEMPTS = 6;
 const DEFAULT_RATE_LIMIT_RETRY_SECONDS = 15;
 type SearchMode = "fallback" | "aggregate";
@@ -36,6 +41,11 @@ export interface SteelGate {
 export interface SourceReservations {
   urls: Set<string>;
   sourceSlots: number;
+}
+
+export interface DelegateState {
+  calls: number;
+  maxCalls: number;
 }
 
 interface ScrapeCacheEntry {
@@ -137,6 +147,11 @@ export interface AgentContext {
   defaultSearchLimit?: number;
   maxConcurrentTools?: number;
   minSourcesBeforeStop?: number;
+  fetchSnippetChars?: number;
+  delegateGate?: SteelGate;
+  delegateState?: DelegateState;
+  delegateDepth?: number;
+  delegateMaxToolCalls?: number;
   steelGate: SteelGate;
   sourceReservations: SourceReservations;
   caches: ResearchCaches;
@@ -194,8 +209,15 @@ interface SearchToolInput {
 interface UrlToolInput {
   url?: string;
 }
+interface ReadSourceToolInput {
+  n?: number;
+  query?: string;
+}
+interface DelegateToolInput {
+  task?: string;
+}
 
-const AGENT_TOOLS: Anthropic.Tool[] = [
+const BASE_AGENT_TOOLS: Anthropic.Tool[] = [
   {
     name: "search",
     description:
@@ -248,9 +270,51 @@ const AGENT_TOOLS: Anthropic.Tool[] = [
       required: ["url"],
     } as Anthropic.Tool["input_schema"],
   },
+  {
+    name: "read_source",
+    description:
+      "Read deeper into a committed source by number. Use this after fetch when you need details, methods, exact evidence, contradictions, or sections relevant to a specific claim.",
+    input_schema: {
+      type: "object",
+      properties: {
+        n: {
+          type: "integer",
+          minimum: 1,
+          description: "Committed source number, e.g. 7 for [7].",
+        },
+        query: {
+          type: "string",
+          description:
+            "Optional focused question or keywords. When provided, Atlas returns the most relevant chunks from the stored source text.",
+        },
+      },
+      required: ["n"],
+    } as Anthropic.Tool["input_schema"],
+  },
 ];
 
-const AGENT_SYSTEM = `You're a deep research agent. Use search, inspect, and fetch to gather high-quality sources for the user's question. Work within the user's dollar/time budget. Do not spend most of the run repeatedly searching; after useful search results appear, inspect or fetch the strongest candidates. Inspect promising pages before committing them when relevance is uncertain. Commit enough primary, recent, and independent sources to answer deeply. Prefer chasing citations and original documents over stopping at summaries. When the source pool is strong enough, stop using tools and write the final Markdown report directly. Cite every factual claim with bracketed source numbers, e.g. [1] or [1, 3], and end with a '## Sources' section listing committed sources as '[n] Title — URL'.`;
+const AGENT_TOOLS: Anthropic.Tool[] = [
+  ...BASE_AGENT_TOOLS,
+  {
+    name: "delegate",
+    description:
+      "Spawn a focused research subtask when parallel or isolated investigation would materially improve the answer. The child uses its own local sources and returns a concise brief plus URLs worth fetching in the parent.",
+    input_schema: {
+      type: "object",
+      properties: {
+        task: {
+          type: "string",
+          description:
+            "A focused natural-language research task for the child agent.",
+        },
+      },
+      required: ["task"],
+    } as Anthropic.Tool["input_schema"],
+  },
+];
+
+const AGENT_SYSTEM = `You're a deep research agent. Use search, inspect, fetch, read_source, and delegate to answer the user's question. Work within the user's dollar/time budget. Do not spend most of the run repeatedly searching; after useful search results appear, inspect or fetch the strongest candidates. Use read_source to read deeper into committed sources before relying on detailed claims, methods, numbers, or citations. Use delegate when an isolated sub-investigation would materially improve breadth or depth. Delegate briefs are not final citation sources; if a delegated finding matters, fetch the relevant URL in the parent before citing it. Commit enough primary, recent, and independent sources to answer deeply. Prefer chasing citations and original documents over stopping at summaries. When the source pool is strong enough, stop using tools and write the final Markdown report directly. Cite every factual claim with bracketed source numbers, e.g. [1] or [1, 3], and end with a '## Sources' section listing committed sources as '[n] Title — URL'.`;
+const CHILD_AGENT_SYSTEM = `You're a focused research subagent. Use search, inspect, fetch, and read_source to investigate the delegated task. Your sources are local to this subtask and are not valid parent citations. Read deeply enough to produce a useful brief. When you have enough evidence, stop using tools and write a concise Markdown brief with: key findings, local source numbers, URLs the parent should fetch if this matters, and open uncertainties. Do not write the parent report.`;
 
 function totalSourceSlots(ctx: AgentContext): number {
   return ctx.sources.length + ctx.sourceReservations.sourceSlots;
@@ -311,6 +375,72 @@ function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+function queryTerms(query: string): string[] {
+  return [
+    ...new Set(
+      query
+        .toLowerCase()
+        .split(/[^a-z0-9]+/i)
+        .filter((term) => term.length >= 3),
+    ),
+  ];
+}
+
+function markdownHeadingOutline(markdown: string): string {
+  const headings = markdown
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => /^#{1,4}\s+\S/.test(line))
+    .slice(0, 80);
+
+  return headings.length > 0 ? `Heading outline:\n${headings.join("\n")}` : "";
+}
+
+function chunkMarkdown(markdown: string, chunkChars: number): string[] {
+  const paragraphs = markdown.split(/\n{2,}/);
+  const chunks: string[] = [];
+  let current = "";
+
+  for (const paragraph of paragraphs) {
+    const next = current ? `${current}\n\n${paragraph}` : paragraph;
+    if (next.length <= chunkChars || !current) {
+      current = next;
+      continue;
+    }
+    chunks.push(current);
+    current = paragraph;
+  }
+  if (current) chunks.push(current);
+  return chunks;
+}
+
+function bestSourceChunks(markdown: string, query: string): string[] {
+  const chunks = chunkMarkdown(markdown, READ_SOURCE_CHUNK_CHARS);
+  if (!query.trim()) return chunks.slice(0, READ_SOURCE_MAX_CHUNKS);
+
+  const terms = queryTerms(query);
+  if (terms.length === 0) return chunks.slice(0, READ_SOURCE_MAX_CHUNKS);
+
+  return chunks
+    .map((chunk, index) => {
+      const lower = chunk.toLowerCase();
+      const score = terms.reduce((sum, term) => {
+        const matches = lower.match(new RegExp(`\\b${escapeRegExp(term)}\\b`, "g"));
+        return sum + (matches?.length ?? 0);
+      }, 0);
+      return { chunk, index, score };
+    })
+    .filter((item) => item.score > 0)
+    .sort((a, b) => b.score - a.score || a.index - b.index)
+    .slice(0, READ_SOURCE_MAX_CHUNKS)
+    .sort((a, b) => a.index - b.index)
+    .map((item) => item.chunk);
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 function sourcePoolSummary(ctx: AgentContext): string {
   if (ctx.sources.length === 0) return "No sources committed yet.";
 
@@ -338,6 +468,12 @@ function finalReportRequest(ctx: AgentContext): string {
   );
 }
 
+function finalBriefRequest(): string {
+  return (
+    `Write a concise Markdown brief for the delegated task. Include key findings, local source numbers used, URLs the parent should fetch if this matters, and any open uncertainties.`
+  );
+}
+
 function textFromContent(content: Anthropic.Message["content"]): string {
   return content
     .map((block) => (block.type === "text" ? block.text : ""))
@@ -349,12 +485,23 @@ function looksLikeFinalReport(text: string): boolean {
   return /^#\s+\S/m.test(text) && /^##\s+Sources\b/im.test(text);
 }
 
+function delegateState(ctx: AgentContext): DelegateState {
+  if (!ctx.delegateState) {
+    ctx.delegateState = {
+      calls: 0,
+      maxCalls: DEFAULT_MAX_DELEGATES,
+    };
+  }
+  return ctx.delegateState;
+}
+
 function gatherStartPrompt(opts: {
   query: string;
   maxToolCalls: number;
   sourceCap: number;
   ctx: AgentContext;
   budgetUsd?: number;
+  mode: "report" | "brief";
 }): string {
   const dollarBudget =
     opts.budgetUsd !== undefined
@@ -364,13 +511,19 @@ function gatherStartPrompt(opts: {
     opts.ctx.sources.length > 0
       ? `Existing source pool:\n${sourcePoolSummary(opts.ctx)}\n\n`
       : "";
+  const terminalInstruction =
+    opts.mode === "report"
+      ? `When the source pool is strong enough, stop emitting tool calls and write the final Markdown report directly.`
+      : `When you have investigated the delegated task enough, stop emitting tool calls and write a concise cited Markdown brief for the parent agent.`;
   return (
     `Research question: ${opts.query}\n\n` +
     dollarBudget +
     `Runtime safety limits: at most ${opts.maxToolCalls} tool calls and ${opts.sourceCap} committed sources.\n\n` +
     sourcePool +
-    `The runtime will ask you to continue until at least ${minSourcesBeforeStop(opts.ctx)} sources are committed, because fewer sources is too thin for deep research.\n\n` +
-    `Gather enough evidence for a strong cited report. Avoid search-only loops: use search to discover candidates, then inspect or fetch the best sources. When the source pool is strong enough, stop emitting tool calls and write the final Markdown report directly.`
+    (opts.mode === "report"
+      ? `The runtime will ask you to continue until at least ${minSourcesBeforeStop(opts.ctx)} sources are committed, because fewer sources is too thin for deep research.\n\n`
+      : "") +
+    `Gather enough evidence. Avoid search-only loops: use search to discover candidates, then inspect or fetch the best sources. Use read_source on committed sources when you need more than the initial fetch excerpt. ${terminalInstruction}`
   );
 }
 
@@ -681,6 +834,43 @@ async function execSearch(
   }
 }
 
+async function execReadSource(
+  args: ReadSourceToolInput,
+  ctx: AgentContext,
+): Promise<string> {
+  const n = Math.floor(Number(args.n));
+  if (!Number.isFinite(n) || n <= 0) {
+    return "Error: read_source requires a positive source number `n`.";
+  }
+
+  const source = ctx.sources.find((item) => item.n === n);
+  if (!source) {
+    return `Error: source [${n}] is not in the committed source pool.`;
+  }
+
+  const markdown = ctx.sourceMarkdowns.get(n);
+  if (!markdown?.trim()) {
+    return `Source [${n}] has no stored markdown text.`;
+  }
+
+  const query = String(args.query ?? "").trim();
+  const outline = markdownHeadingOutline(markdown);
+  const chunks = bestSourceChunks(markdown, query);
+  const chunkText =
+    chunks.length > 0
+      ? chunks
+          .map((chunk, index) => `Chunk ${index + 1}:\n${chunk.trim()}`)
+          .join("\n\n---\n\n")
+      : markdown.slice(0, READ_SOURCE_CHUNK_CHARS).trim();
+  const queryLine = query ? `\nQuery: ${query}` : "";
+
+  return (
+    `Source [${n}]: ${source.title}\nURL: ${source.url}${queryLine}\n\n` +
+    (outline ? `${outline}\n\n` : "") +
+    `Relevant source text:\n${chunkText}`
+  );
+}
+
 interface FetchOutcome {
   text: string;
   committed_n?: number;
@@ -710,6 +900,58 @@ async function mapWithConcurrency<T, R>(
   );
   await Promise.all(workers);
   return results;
+}
+
+async function execDelegate(
+  args: DelegateToolInput,
+  ctx: AgentContext,
+): Promise<string> {
+  const task = String(args.task ?? "").trim();
+  if (!task) return "Error: delegate requires a non-empty `task`.";
+
+  const state = delegateState(ctx);
+  if (state.calls >= state.maxCalls) {
+    return `Delegate limit reached (${state.maxCalls}). Continue in the parent thread.`;
+  }
+  state.calls++;
+
+  const runChild = async () => {
+    const childSources: CitedSource[] = [];
+    const childSourceUrls = new Set<string>();
+    const childSourceMarkdowns = new Map<number, string>();
+    const child = await runGatherAgent({
+      ctx: {
+        ...ctx,
+        sources: childSources,
+        sourceUrls: childSourceUrls,
+        sourceMarkdowns: childSourceMarkdowns,
+        sourceReservations: createSourceReservations(),
+        delegateDepth: (ctx.delegateDepth ?? 0) + 1,
+        minSourcesBeforeStop: 0,
+        fetchSnippetChars: DELEGATE_FETCH_SNIPPET_CHARS,
+      },
+      query: task,
+      max_tool_calls: ctx.delegateMaxToolCalls ?? DEFAULT_DELEGATE_MAX_TOOL_CALLS,
+      mode: "brief",
+      allowDelegate: false,
+    });
+    const brief = child.markdown.trim() || "(Child produced no brief.)";
+    const localSources =
+      childSources.length > 0
+        ? childSources
+            .map((source) => `[${source.n}] ${source.title} — ${source.url}`)
+            .join("\n")
+        : "No local sources committed.";
+    return (
+      `Delegate completed: ${task}\n` +
+      `Local sources: ${childSources.length}; child tool calls: ${child.tool_calls}; finish reason: ${child.finish_reason}.\n` +
+      `These local source numbers are not parent citations. The parent must fetch any URL it wants to cite.\n\n` +
+      `Local source list:\n${localSources}\n\n` +
+      brief
+    );
+  };
+
+  return ctx.delegateGate ? ctx.delegateGate.run(runChild) : runChild();
 }
 
 async function executeToolUse(
@@ -776,6 +1018,55 @@ async function executeToolUse(
           type: "tool_result",
           tool_use_id: tu.id,
           content: out.text,
+        },
+      };
+    } catch (err) {
+      ctx.abort();
+      return {
+        toolResult: {
+          type: "tool_result",
+          tool_use_id: tu.id,
+          content: `Tool error: ${err instanceof Error ? err.message : String(err)}`,
+          is_error: true,
+        },
+      };
+    }
+  }
+
+  if (tu.name === "read_source") {
+    try {
+      const text = await execReadSource(
+        (tu.input as ReadSourceToolInput) ?? {},
+        ctx,
+      );
+      return {
+        toolResult: {
+          type: "tool_result",
+          tool_use_id: tu.id,
+          content: text,
+        },
+      };
+    } catch (err) {
+      ctx.abort();
+      return {
+        toolResult: {
+          type: "tool_result",
+          tool_use_id: tu.id,
+          content: `Tool error: ${err instanceof Error ? err.message : String(err)}`,
+          is_error: true,
+        },
+      };
+    }
+  }
+
+  if (tu.name === "delegate") {
+    try {
+      const text = await execDelegate((tu.input as DelegateToolInput) ?? {}, ctx);
+      return {
+        toolResult: {
+          type: "tool_result",
+          tool_use_id: tu.id,
+          content: text,
         },
       };
     } catch (err) {
@@ -939,10 +1230,12 @@ async function execFetch(
       title: resolvedTitle,
     });
 
-    const snippet = markdown.slice(0, FETCH_SNIPPET_CHARS).trim();
+    const snippet = markdown
+      .slice(0, ctx.fetchSnippetChars ?? FETCH_SNIPPET_CHARS)
+      .trim();
     return {
       committed_n: n,
-      text: `Committed [${n}]: ${resolvedTitle}\nURL: ${url}\nFirst ${FETCH_SNIPPET_CHARS} chars:\n${snippet}`,
+      text: `Committed [${n}]: ${resolvedTitle}\nURL: ${url}\nFirst ${(ctx.fetchSnippetChars ?? FETCH_SNIPPET_CHARS).toLocaleString()} chars:\n${snippet}`,
     };
   } catch (err) {
     ctx.caches.scrape.delete(url);
@@ -964,9 +1257,12 @@ export async function runGatherAgent(opts: {
   max_tool_calls?: number;
   budgetUsd?: number;
   effort?: WriterEffort;
+  mode?: "report" | "brief";
+  allowDelegate?: boolean;
 }): Promise<AgenticRunResult> {
   const { ctx, query } = opts;
   const maxToolCalls = opts.max_tool_calls ?? DEFAULT_MAX_TOOL_CALLS;
+  const mode = opts.mode ?? "report";
 
   ctx.emit({ type: "agent_started" });
 
@@ -985,6 +1281,7 @@ export async function runGatherAgent(opts: {
         sourceCap: ctx.globalSourceCap,
         ctx,
         budgetUsd: opts.budgetUsd,
+        mode,
       }),
     },
   ];
@@ -1004,8 +1301,8 @@ export async function runGatherAgent(opts: {
         {
           model: ctx.fastModel ?? FAST_MODEL,
           max_tokens: ctx.gatherMaxTokens ?? 2048,
-          system: AGENT_SYSTEM,
-          tools: AGENT_TOOLS,
+          system: mode === "brief" ? CHILD_AGENT_SYSTEM : AGENT_SYSTEM,
+          tools: opts.allowDelegate === false ? BASE_AGENT_TOOLS : AGENT_TOOLS,
           messages,
           cache_control: { type: "ephemeral" },
           ...effortConfig,
@@ -1029,14 +1326,18 @@ export async function runGatherAgent(opts: {
     if (toolUses.length === 0) {
       const text = textFromContent(resp.content);
       const content =
-        ctx.sources.length < minSourcesBeforeStop(ctx)
-          ? insufficientSourcesMessage(ctx)
-          : looksLikeFinalReport(text)
-            ? null
-            : finalReportRequest(ctx);
+        mode === "brief" && text
+          ? null
+          : mode === "brief"
+            ? finalBriefRequest()
+            : ctx.sources.length < minSourcesBeforeStop(ctx)
+              ? insufficientSourcesMessage(ctx)
+              : looksLikeFinalReport(text)
+                ? null
+                : finalReportRequest(ctx);
       if (content === null) {
         markdown = text;
-        finishReason = "final report";
+        finishReason = mode === "brief" ? "brief" : "final report";
         break;
       }
 

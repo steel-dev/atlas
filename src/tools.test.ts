@@ -42,7 +42,7 @@ function finalReport(): Anthropic.Message {
 
 function toolUse(
   id: string,
-  name: "search" | "inspect" | "fetch",
+  name: "search" | "inspect" | "fetch" | "read_source" | "delegate",
   input: Record<string, unknown> = {},
 ): Anthropic.ToolUseBlock {
   return { type: "tool_use", id, name, input } as unknown as Anthropic.ToolUseBlock;
@@ -226,6 +226,80 @@ describe("gather loop cache integration", () => {
     expect(ctx.sourceMarkdowns.get(1)).toContain("Detailed source body");
   });
 
+  it("reads relevant chunks from committed source markdown", async () => {
+    const fetch = vi.fn(async () => {
+      const body = `
+        <html>
+          <head><title>Flavor Study</title></head>
+          <body>
+            <main>
+              <h1>Flavor Study</h1>
+              <h2>Methods</h2>
+              ${"<p>Methods text about sampling and controls.</p>".repeat(20)}
+              <h2>Volatile Compounds</h2>
+              ${"<p>Isoamyl acetate and ester compounds increased during ripening.</p>".repeat(20)}
+              <h2>Storage</h2>
+              ${"<p>Storage conditions changed firmness and color.</p>".repeat(20)}
+            </main>
+          </body>
+        </html>
+      `;
+      return new Response(body, {
+        headers: { "content-type": "text/html; charset=utf-8" },
+      });
+    });
+    vi.stubGlobal("fetch", fetch);
+    const messagesCreate = vi
+      .fn()
+      .mockResolvedValueOnce(
+        messageWith([
+          toolUse("fetch_1", "fetch", { url: "https://example.com/flavor" }),
+        ]),
+      )
+      .mockResolvedValueOnce(
+        messageWith([
+          toolUse("read_1", "read_source", {
+            n: 1,
+            query: "isoamyl acetate ester ripening",
+          }),
+        ]),
+      )
+      .mockResolvedValueOnce(finalReport());
+    const ctx: AgentContext = {
+      anthropic: {
+        messages: { create: messagesCreate },
+      } as unknown as Anthropic,
+      steel: { scrape: vi.fn() } as unknown as Steel,
+      sources: [],
+      sourceUrls: new Set(),
+      sourceMarkdowns: new Map(),
+      emit: vi.fn(),
+      abort: vi.fn(),
+      defaultEngine: "ddg",
+      useProxy: false,
+      globalSourceCap: 4,
+      maxConcurrentTools: 2,
+      minSourcesBeforeStop: 0,
+      steelGate: createSteelGate(2),
+      sourceReservations: createSourceReservations(),
+      caches: createResearchCaches(),
+    };
+
+    const result = await runGatherAgent({
+      ctx,
+      query: "What is Atlas?",
+      max_tool_calls: 3,
+    });
+    const finalRequest = messagesCreate.mock.calls[2]?.[0] as {
+      messages: Array<{ content: unknown }>;
+    };
+
+    expect(result.finish_reason).toBe("final report");
+    expect(JSON.stringify(finalRequest.messages)).toContain("Source [1]: Flavor Study");
+    expect(JSON.stringify(finalRequest.messages)).toContain("Isoamyl acetate");
+    expect(JSON.stringify(finalRequest.messages)).toContain("Heading outline");
+  });
+
   it("starts gather runs with existing sources and budget hints", async () => {
     const messagesCreate = vi
       .fn()
@@ -375,6 +449,93 @@ describe("gather loop cache integration", () => {
       url: "https://example.com/js-app",
       title: "Steel Fallback",
     });
+  });
+
+  it("runs delegated subtasks with isolated local sources", async () => {
+    const fetch = vi.fn(async () => {
+      const body = `
+        <html>
+          <head><title>Delegate Source</title></head>
+          <body>
+            <main>
+              <h1>Delegate Source</h1>
+              ${"<p>Detailed delegated research evidence with enough readable text.</p>".repeat(20)}
+            </main>
+          </body>
+        </html>
+      `;
+      return new Response(body, {
+        headers: { "content-type": "text/html; charset=utf-8" },
+      });
+    });
+    vi.stubGlobal("fetch", fetch);
+    const messagesCreate = vi
+      .fn()
+      .mockResolvedValueOnce(
+        messageWith([
+          toolUse("delegate_1", "delegate", {
+            task: "Investigate one focused angle.",
+          }),
+        ]),
+      )
+      .mockResolvedValueOnce(
+        messageWith([
+          toolUse("fetch_1", "fetch", { url: "https://example.com/delegate" }),
+        ]),
+      )
+      .mockResolvedValueOnce(
+        messageWith([
+          {
+            type: "text",
+            text: "## Brief\n\nThe delegated angle has evidence [1].",
+          },
+        ]),
+      )
+      .mockResolvedValueOnce(finalReport());
+    const ctx: AgentContext = {
+      anthropic: {
+        messages: { create: messagesCreate },
+      } as unknown as Anthropic,
+      steel: { scrape: vi.fn() } as unknown as Steel,
+      sources: [],
+      sourceUrls: new Set(),
+      sourceMarkdowns: new Map(),
+      emit: vi.fn(),
+      abort: vi.fn(),
+      defaultEngine: "ddg",
+      useProxy: false,
+      globalSourceCap: 8,
+      maxConcurrentTools: 2,
+      minSourcesBeforeStop: 0,
+      delegateGate: createSteelGate(1),
+      delegateState: { calls: 0, maxCalls: 2 },
+      delegateMaxToolCalls: 4,
+      steelGate: createSteelGate(2),
+      sourceReservations: createSourceReservations(),
+      caches: createResearchCaches(),
+    };
+
+    const result = await runGatherAgent({
+      ctx,
+      query: "What is Atlas?",
+      max_tool_calls: 4,
+    });
+    const parentFollowup = messagesCreate.mock.calls[3]?.[0] as {
+      messages: Array<{ content: unknown }>;
+    };
+
+    expect(result.finish_reason).toBe("final report");
+    expect(result.markdown).toContain("# Test Report");
+    expect(ctx.sources).toEqual([]);
+    expect(JSON.stringify(parentFollowup.messages)).toContain("Delegate completed");
+    expect(JSON.stringify(parentFollowup.messages)).toContain("Local source list");
+    expect(JSON.stringify(parentFollowup.messages)).toContain(
+      "https://example.com/delegate",
+    );
+    expect(JSON.stringify(parentFollowup.messages)).toContain(
+      "not parent citations",
+    );
+    expect(JSON.stringify(parentFollowup.messages)).toContain("The delegated angle has evidence [1]");
   });
 
   it("aggregates search results across engines when configured", async () => {
