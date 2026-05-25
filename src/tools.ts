@@ -16,6 +16,7 @@ const INSPECT_SNIPPET_CHARS = 4000;
 const SEARCH_SNIPPET_CHARS = 500;
 const DEFAULT_MAX_TOOL_CALLS = 12;
 const DEFAULT_MAX_CONCURRENT_TOOLS = 4;
+const DEFAULT_MIN_SOURCES_BEFORE_STOP = 6;
 const STEEL_RATE_LIMIT_MAX_ATTEMPTS = 6;
 const DEFAULT_RATE_LIMIT_RETRY_SECONDS = 15;
 type SearchMode = "fallback" | "aggregate";
@@ -108,9 +109,9 @@ export function createSourceReservations(): SourceReservations {
 //   - inspect(url) — scrape without committing
 //   - fetch(url) — scrape + atomic commit to global pool
 //
-// The agent terminates by calling done, emitting a final text message with no
-// tool calls, or hitting its tool/source budget. The agent can inspect freely
-// before committing the strongest pages as cited sources.
+// The agent terminates by emitting a final message with no tool calls, or by
+// hitting a runtime safety limit. The agent can inspect freely before committing
+// the strongest pages as cited sources.
 //
 // Global invariants (URL dedup, source cap) are enforced
 // INSIDE the tools, so the agent can't break them no matter what it picks.
@@ -135,17 +136,16 @@ export interface AgentContext {
   searchMode?: SearchMode;
   defaultSearchLimit?: number;
   maxConcurrentTools?: number;
+  minSourcesBeforeStop?: number;
   steelGate: SteelGate;
   sourceReservations: SourceReservations;
   caches: ResearchCaches;
 }
 
-export type GatherPhase = "initial" | "coverage";
-
 // A loose superset of the research event types this module emits. Kept here
 // to avoid importing from research.ts (which would create a cycle).
 export type AgenticEvent =
-  | { type: "agent_started"; phase?: GatherPhase }
+  | { type: "agent_started" }
   | {
       type: "searching";
       index: number;
@@ -177,13 +177,13 @@ export type AgenticEvent =
       title: string;
     }
   | { type: "source_error"; url: string; error: string }
-  | { type: "agent_finished"; sources_added: number; phase?: GatherPhase };
+  | { type: "agent_finished"; sources_added: number };
 
 export interface AgenticRunResult {
   source_ns: number[];
   tool_calls: number;
   finish_reason: string;
-  phase: GatherPhase;
+  messages: Anthropic.MessageParam[];
 }
 
 interface SearchToolInput {
@@ -211,7 +211,7 @@ const AGENT_TOOLS: Anthropic.Tool[] = [
           minimum: 1,
           maximum: 20,
           description:
-            "How many results to request from each search provider. Default depends on the research plan.",
+            "How many results to request from each search provider. Default depends on the runtime limits.",
         },
       },
       required: ["query"],
@@ -247,19 +247,9 @@ const AGENT_TOOLS: Anthropic.Tool[] = [
       required: ["url"],
     } as Anthropic.Tool["input_schema"],
   },
-  {
-    name: "done",
-    description:
-      "Call when the source pool covers the question well enough for the writer.",
-    input_schema: {
-      type: "object",
-      properties: {},
-      required: [],
-    } as Anthropic.Tool["input_schema"],
-  },
 ];
 
-const AGENT_SYSTEM = `You're a research agent. Use search, inspect, and fetch to gather high-quality sources for the user's question, then call done. Inspect promising pages before committing them when relevance is uncertain. Commit enough primary, recent, and independent sources to let the writer answer deeply. Prefer chasing citations and original documents over stopping at summaries. Do not write the final report.`;
+const AGENT_SYSTEM = `You're a research agent. Use search, inspect, and fetch to gather high-quality sources for the user's question. Work within the user's dollar/time budget. Do not spend most of the run repeatedly searching; after useful search results appear, inspect or fetch the strongest candidates. Inspect promising pages before committing them when relevance is uncertain. Commit enough primary, recent, and independent sources to let the writer answer deeply. Prefer chasing citations and original documents over stopping at summaries. When the source pool is strong enough, stop using tools and briefly say the sources are ready. Do not write the final report.`;
 
 function totalSourceSlots(ctx: AgentContext): number {
   return ctx.sources.length + ctx.sourceReservations.sourceSlots;
@@ -328,26 +318,40 @@ function sourcePoolSummary(ctx: AgentContext): string {
     .join("\n");
 }
 
+function minSourcesBeforeStop(ctx: AgentContext): number {
+  return ctx.minSourcesBeforeStop ?? DEFAULT_MIN_SOURCES_BEFORE_STOP;
+}
+
+function insufficientSourcesMessage(ctx: AgentContext): string {
+  return (
+    `Not enough sources yet: the source pool has only ${ctx.sources.length} committed source${ctx.sources.length === 1 ? "" : "s"}. ` +
+    `For deep research, fetch more independent, topical sources before stopping. ` +
+    `Use strong candidates from searches already performed; avoid another broad search unless it fills a specific gap.`
+  );
+}
+
 function gatherStartPrompt(opts: {
   query: string;
   maxToolCalls: number;
   sourceCap: number;
-  phase: GatherPhase;
   ctx: AgentContext;
+  budgetUsd?: number;
 }): string {
-  const base =
-    `Research question: ${opts.query}\n\n` +
-    `Budget: at most ${opts.maxToolCalls} tool calls in this pass and ${opts.sourceCap} total sources committed.\n`;
-
-  if (opts.phase === "initial") {
-    return `${base}Begin.`;
-  }
-
+  const dollarBudget =
+    opts.budgetUsd !== undefined
+      ? `User budget hint: up to $${opts.budgetUsd.toFixed(2)} for this run. Use it when more evidence will materially improve the answer.\n`
+      : "";
+  const sourcePool =
+    opts.ctx.sources.length > 0
+      ? `Existing source pool:\n${sourcePoolSummary(opts.ctx)}\n\n`
+      : "";
   return (
-    `${base}` +
-    `Existing source pool:\n${sourcePoolSummary(opts.ctx)}\n\n` +
-    `Coverage pass: before the writer starts, audit whether the source pool is missing any important angle, contrary evidence, primary/original source, recency, definitions, or quantitative backing. ` +
-    `If the pool is already strong enough, call done immediately. If not, use targeted search, inspect, and fetch calls for the highest-value gaps, then call done.`
+    `Research question: ${opts.query}\n\n` +
+    dollarBudget +
+    `Runtime safety limits: at most ${opts.maxToolCalls} tool calls and ${opts.sourceCap} committed sources.\n\n` +
+    sourcePool +
+    `The runtime will ask you to continue until at least ${minSourcesBeforeStop(opts.ctx)} sources are committed, because fewer sources is too thin for deep research.\n\n` +
+    `Gather enough evidence for a strong cited report. Avoid search-only loops: use search to discover candidates, then inspect or fetch the best sources. When the source pool is strong enough, stop emitting tool calls.`
   );
 }
 
@@ -768,16 +772,6 @@ async function executeToolUse(
     }
   }
 
-  if (tu.name === "done") {
-    return {
-      toolResult: {
-        type: "tool_result",
-        tool_use_id: tu.id,
-        content: "Done.",
-      },
-    };
-  }
-
   return {
     toolResult: {
       type: "tool_result",
@@ -949,13 +943,12 @@ export async function runGatherAgent(opts: {
   ctx: AgentContext;
   query: string;
   max_tool_calls?: number;
-  phase?: GatherPhase;
+  budgetUsd?: number;
 }): Promise<AgenticRunResult> {
   const { ctx, query } = opts;
   const maxToolCalls = opts.max_tool_calls ?? DEFAULT_MAX_TOOL_CALLS;
-  const phase = opts.phase ?? "initial";
 
-  ctx.emit({ type: "agent_started", phase });
+  ctx.emit({ type: "agent_started" });
 
   const myAddedNs: number[] = [];
   let toolCalls = 0;
@@ -969,8 +962,8 @@ export async function runGatherAgent(opts: {
         query,
         maxToolCalls,
         sourceCap: ctx.globalSourceCap,
-        phase,
         ctx,
+        budgetUsd: opts.budgetUsd,
       }),
     },
   ];
@@ -1006,14 +999,21 @@ export async function runGatherAgent(opts: {
       (c): c is Anthropic.ToolUseBlock => c.type === "tool_use",
     );
     if (toolUses.length === 0) {
-      finishReason = "agent stopped emitting tools";
-      break;
-    }
+      if (ctx.sources.length >= minSourcesBeforeStop(ctx)) {
+        finishReason = "agent stopped emitting tools";
+        break;
+      }
 
-    if (toolUses.some((tu) => tu.name === "done")) {
-      finishReason = "done";
+      messages.push({
+        role: "user",
+        content: insufficientSourcesMessage(ctx),
+      });
       toolCalls += 1;
-      break;
+      if (toolCalls >= maxToolCalls) {
+        finishReason = "tool call budget exhausted";
+        break;
+      }
+      continue;
     }
 
     const remainingToolCalls = maxToolCalls - toolCalls;
@@ -1055,14 +1055,13 @@ export async function runGatherAgent(opts: {
   ctx.emit({
     type: "agent_finished",
     sources_added: myAddedNs.length,
-    phase,
   });
 
   return {
     source_ns: [...myAddedNs],
     tool_calls: toolCalls,
     finish_reason: finishReason,
-    phase,
+    messages: [...messages],
   };
 }
 

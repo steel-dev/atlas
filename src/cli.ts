@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { writeFileSync } from "node:fs";
 import { parseArgs } from "node:util";
-import { research, type ResearchEvent } from "./research.js";
+import { research, type ResearchEvent, type WriterEffort } from "./research.js";
 
 const USAGE = `atlas — deep research from your terminal
 
@@ -13,7 +13,9 @@ cited report from all sources.
 
 Options:
   -o, --out <file>            Write the markdown report to <file> (default: stdout)
+      --budget-usd N          Per-run dollar budget hint (actual caps are provider-enforced)
       --timeout N             Overall wall-clock budget in seconds (default: none)
+      --effort LEVEL          Writer effort: low, medium, high, max (default: high)
       --json                  Emit one JSON event per line on stderr
   -q, --quiet                 Suppress progress events on stderr
   -h, --help                  Show this help
@@ -27,6 +29,7 @@ Environment:
 Examples:
   atlas "What changed when Cloudflare DO added SQLite?"
   atlas "..." --out report.md
+  atlas "..." --budget-usd 5 --effort max
   atlas "..." --timeout 300
   atlas "..." --json 2> events.jsonl > report.md
 `;
@@ -43,6 +46,14 @@ function parseNumber(raw: string | undefined, name: string): number | undefined 
   const n = Number(raw);
   if (!Number.isFinite(n)) fail(`${name} must be a number (got "${raw}")`);
   return n;
+}
+
+const WRITER_EFFORTS = new Set<WriterEffort>(["low", "medium", "high", "max"]);
+
+function parseEffort(raw: string | undefined): WriterEffort | undefined {
+  if (raw === undefined) return undefined;
+  if (WRITER_EFFORTS.has(raw as WriterEffort)) return raw as WriterEffort;
+  fail(`--effort must be one of: low, medium, high, max (got "${raw}")`);
 }
 
 const DIM = "\x1b[2m";
@@ -62,14 +73,11 @@ function paint(color: string, text: string): string {
 function prettyEvent(e: ResearchEvent): string {
   switch (e.type) {
     case "agent_started":
-      return (
-        paint(DIM, "  →") +
-        (e.phase === "coverage" ? " coverage pass started" : " agent started")
-      );
+      return paint(DIM, "  →") + " agent started";
     case "agent_finished":
       return (
         paint(DIM, "  ✓") +
-        `${e.phase === "coverage" ? " coverage done" : " agent done"} — ${e.sources_added} source${e.sources_added === 1 ? "" : "s"}`
+        ` agent done — ${e.sources_added} source${e.sources_added === 1 ? "" : "s"}`
       );
     case "searching":
       return paint(DIM, `    search:`) + ` ${e.query}`;
@@ -132,7 +140,9 @@ async function main(): Promise<void> {
         allowPositionals: true,
         options: {
           out: { type: "string", short: "o" },
+          "budget-usd": { type: "string" },
           timeout: { type: "string" },
+          effort: { type: "string" },
           json: { type: "boolean" },
           quiet: { type: "boolean", short: "q" },
           help: { type: "boolean", short: "h" },
@@ -172,6 +182,11 @@ async function main(): Promise<void> {
   if (timeoutSeconds !== undefined && timeoutSeconds <= 0) {
     fail(`--timeout must be > 0 (got ${timeoutSeconds})`);
   }
+  const budgetUsd = parseNumber(values["budget-usd"], "--budget-usd");
+  if (budgetUsd !== undefined && budgetUsd <= 0) {
+    fail(`--budget-usd must be > 0 (got ${budgetUsd})`);
+  }
+  const effort = parseEffort(values.effort);
   const signal =
     timeoutSeconds !== undefined
       ? AbortSignal.any([
@@ -200,6 +215,8 @@ async function main(): Promise<void> {
   try {
     const result = await research({
       query,
+      budgetUsd,
+      effort,
       onEvent,
       signal,
     });

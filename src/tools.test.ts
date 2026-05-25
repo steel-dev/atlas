@@ -32,7 +32,7 @@ function messageWith(content: unknown[]): Anthropic.Message {
 
 function toolUse(
   id: string,
-  name: "search" | "inspect" | "fetch" | "done",
+  name: "search" | "inspect" | "fetch",
   input: Record<string, unknown> = {},
 ): Anthropic.ToolUseBlock {
   return { type: "tool_use", id, name, input } as unknown as Anthropic.ToolUseBlock;
@@ -105,7 +105,7 @@ describe("gather loop cache integration", () => {
       .mockResolvedValueOnce(
         messageWith([toolUse("search_2", "search", { query: "same query" })]),
       )
-      .mockResolvedValueOnce(messageWith([toolUse("done_1", "done")]));
+      .mockResolvedValueOnce(messageWith([]));
 
     const ctx: AgentContext = {
       anthropic: {
@@ -121,6 +121,7 @@ describe("gather loop cache integration", () => {
       useProxy: false,
       globalSourceCap: 4,
       maxConcurrentTools: 2,
+      minSourcesBeforeStop: 0,
       steelGate: createSteelGate(2),
       sourceReservations: createSourceReservations(),
       caches: createResearchCaches(),
@@ -132,7 +133,7 @@ describe("gather loop cache integration", () => {
       max_tool_calls: 3,
     });
 
-    expect(result.finish_reason).toBe("done");
+    expect(result.finish_reason).toBe("agent stopped emitting tools");
     expect(messagesCreate).toHaveBeenCalledTimes(3);
     expect(scrape).toHaveBeenCalledTimes(1);
     expect(ctx.caches.serp.size).toBe(1);
@@ -172,7 +173,7 @@ describe("gather loop cache integration", () => {
           toolUse("fetch_1", "fetch", { url: "https://example.com/source" }),
         ]),
       )
-      .mockResolvedValueOnce(messageWith([toolUse("done_1", "done")]));
+      .mockResolvedValueOnce(messageWith([]));
 
     const ctx: AgentContext = {
       anthropic: {
@@ -188,6 +189,7 @@ describe("gather loop cache integration", () => {
       useProxy: false,
       globalSourceCap: 4,
       maxConcurrentTools: 2,
+      minSourcesBeforeStop: 0,
       steelGate: createSteelGate(2),
       sourceReservations: createSourceReservations(),
       caches: createResearchCaches(),
@@ -199,7 +201,7 @@ describe("gather loop cache integration", () => {
       max_tool_calls: 3,
     });
 
-    expect(result.finish_reason).toBe("done");
+    expect(result.finish_reason).toBe("agent stopped emitting tools");
     expect(fetch).toHaveBeenCalledTimes(1);
     expect(scrape).not.toHaveBeenCalled();
     expect(ctx.sources).toEqual([
@@ -212,10 +214,10 @@ describe("gather loop cache integration", () => {
     expect(ctx.sourceMarkdowns.get(1)).toContain("Detailed source body");
   });
 
-  it("starts coverage passes with the existing source pool", async () => {
+  it("starts gather runs with existing sources and budget hints", async () => {
     const messagesCreate = vi
       .fn()
-      .mockResolvedValueOnce(messageWith([toolUse("done_1", "done")]));
+      .mockResolvedValueOnce(messageWith([]));
     const ctx: AgentContext = {
       anthropic: {
         messages: { create: messagesCreate },
@@ -236,6 +238,7 @@ describe("gather loop cache integration", () => {
       useProxy: false,
       globalSourceCap: 4,
       maxConcurrentTools: 2,
+      minSourcesBeforeStop: 0,
       steelGate: createSteelGate(2),
       sourceReservations: createSourceReservations(),
       caches: createResearchCaches(),
@@ -245,22 +248,63 @@ describe("gather loop cache integration", () => {
       ctx,
       query: "What is Atlas?",
       max_tool_calls: 3,
-      phase: "coverage",
+      budgetUsd: 2,
     });
     const request = messagesCreate.mock.calls[0]?.[0] as {
       messages: Array<{ content: string }>;
     };
 
-    expect(result.phase).toBe("coverage");
-    expect(result.finish_reason).toBe("done");
-    expect(request.messages[0]?.content).toContain("Coverage pass");
+    expect(result.finish_reason).toBe("agent stopped emitting tools");
+    expect(request.messages[0]?.content).toContain("Existing source pool");
+    expect(request.messages[0]?.content).toContain("User budget hint: up to $2.00");
     expect(request.messages[0]?.content).toContain(
       "[1] Primary Source — https://example.com/primary",
     );
     expect(ctx.emit).toHaveBeenCalledWith({
       type: "agent_started",
-      phase: "coverage",
     });
+  });
+
+  it("continues when the agent stops with too few sources", async () => {
+    const messagesCreate = vi
+      .fn()
+      .mockResolvedValueOnce(messageWith([]))
+      .mockResolvedValueOnce(messageWith([]));
+    const ctx: AgentContext = {
+      anthropic: {
+        messages: { create: messagesCreate },
+      } as unknown as Anthropic,
+      steel: { scrape: vi.fn() } as unknown as Steel,
+      sources: [
+        { n: 1, url: "https://example.com/one", title: "One" },
+        { n: 2, url: "https://example.com/two", title: "Two" },
+      ],
+      sourceUrls: new Set(["https://example.com/one", "https://example.com/two"]),
+      sourceMarkdowns: new Map(),
+      emit: vi.fn(),
+      abort: vi.fn(),
+      defaultEngine: "ddg",
+      useProxy: false,
+      globalSourceCap: 4,
+      maxConcurrentTools: 2,
+      minSourcesBeforeStop: 3,
+      steelGate: createSteelGate(2),
+      sourceReservations: createSourceReservations(),
+      caches: createResearchCaches(),
+    };
+
+    const result = await runGatherAgent({
+      ctx,
+      query: "What is Atlas?",
+      max_tool_calls: 2,
+    });
+    const secondRequest = messagesCreate.mock.calls[1]?.[0] as {
+      messages: Array<{ content: unknown }>;
+    };
+
+    expect(result.finish_reason).toBe("tool call budget exhausted");
+    expect(JSON.stringify(secondRequest.messages)).toContain("Not enough sources yet");
+    expect(JSON.stringify(secondRequest.messages)).toContain("only 2 committed sources");
   });
 
   it("falls back to Steel when plain fetch has too little readable text", async () => {
@@ -281,7 +325,7 @@ describe("gather loop cache integration", () => {
           toolUse("fetch_1", "fetch", { url: "https://example.com/js-app" }),
         ]),
       )
-      .mockResolvedValueOnce(messageWith([toolUse("done_1", "done")]));
+      .mockResolvedValueOnce(messageWith([]));
 
     const ctx: AgentContext = {
       anthropic: {
@@ -297,6 +341,7 @@ describe("gather loop cache integration", () => {
       useProxy: false,
       globalSourceCap: 4,
       maxConcurrentTools: 2,
+      minSourcesBeforeStop: 0,
       steelGate: createSteelGate(2),
       sourceReservations: createSourceReservations(),
       caches: createResearchCaches(),
@@ -308,7 +353,7 @@ describe("gather loop cache integration", () => {
       max_tool_calls: 2,
     });
 
-    expect(result.finish_reason).toBe("done");
+    expect(result.finish_reason).toBe("agent stopped emitting tools");
     expect(fetch).toHaveBeenCalledTimes(1);
     expect(scrape).toHaveBeenCalledTimes(1);
     expect(ctx.sources[0]).toMatchObject({
@@ -371,7 +416,7 @@ describe("gather loop cache integration", () => {
       .mockResolvedValueOnce(
         messageWith([toolUse("search_1", "search", { query: "same query" })]),
       )
-      .mockResolvedValueOnce(messageWith([toolUse("done_1", "done")]));
+      .mockResolvedValueOnce(messageWith([]));
 
     const ctx: AgentContext = {
       anthropic: {
@@ -389,6 +434,7 @@ describe("gather loop cache integration", () => {
       useProxy: false,
       globalSourceCap: 4,
       maxConcurrentTools: 2,
+      minSourcesBeforeStop: 0,
       steelGate: createSteelGate(2),
       sourceReservations: createSourceReservations(),
       caches: createResearchCaches(),
@@ -400,7 +446,7 @@ describe("gather loop cache integration", () => {
       max_tool_calls: 2,
     });
 
-    expect(result.finish_reason).toBe("done");
+    expect(result.finish_reason).toBe("agent stopped emitting tools");
     expect(scrape).toHaveBeenCalledTimes(3);
     expect(ctx.emit).toHaveBeenCalledWith({
       type: "search_results",

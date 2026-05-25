@@ -1,7 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import {
   WRITER_MODEL,
-  writeReport,
   type CitedSource,
   type WriterEffort,
 } from "./pipeline.js";
@@ -14,10 +13,9 @@ import {
   type AgentContext,
 } from "./tools.js";
 
-const DEFAULT_RESEARCH_PLAN = {
-  sourceHardCap: 24,
-  maxToolCalls: 48,
-  coverageMaxToolCalls: 12,
+const DEFAULT_RUNTIME_LIMITS = {
+  safetySourceCap: 200,
+  safetyMaxToolCalls: 200,
   maxConcurrentTools: 8,
   maxConcurrentSteelCalls: 4,
   gatherMaxTokens: 3072,
@@ -30,9 +28,8 @@ const DEFAULT_RESEARCH_PLAN = {
   writerMaxSourceChars: 80_000,
   writerTotalSourceChars: 420_000,
 } satisfies {
-  sourceHardCap: number;
-  maxToolCalls: number;
-  coverageMaxToolCalls: number;
+  safetySourceCap: number;
+  safetyMaxToolCalls: number;
   maxConcurrentTools: number;
   maxConcurrentSteelCalls: number;
   gatherMaxTokens: number;
@@ -46,7 +43,10 @@ const DEFAULT_RESEARCH_PLAN = {
   writerTotalSourceChars: number;
 };
 
-export type { CitedSource } from "./pipeline.js";
+const WRITER_MIN_SOURCE_CHARS = 4_000;
+const MAX_HEADING_OUTLINE_CHARS = 4_000;
+
+export type { CitedSource, WriterEffort } from "./pipeline.js";
 
 export interface UsageSummary {
   input_tokens: number;
@@ -59,7 +59,6 @@ export interface AgentRun {
   source_ns: number[];
   tool_calls: number;
   finish_reason: string;
-  phase: "initial" | "coverage";
 }
 
 export interface ResearchResult {
@@ -71,7 +70,7 @@ export interface ResearchResult {
 }
 
 export type ResearchEvent =
-  | { type: "agent_started"; phase?: "initial" | "coverage" }
+  | { type: "agent_started" }
   | { type: "searching"; index: number; query: string }
   | {
       type: "search_results";
@@ -99,11 +98,7 @@ export type ResearchEvent =
       title: string;
     }
   | { type: "source_error"; url: string; error: string }
-  | {
-      type: "agent_finished";
-      sources_added: number;
-      phase?: "initial" | "coverage";
-    }
+  | { type: "agent_finished"; sources_added: number }
   | { type: "writing"; sources_count: number }
   | { type: "written"; markdown_chars: number }
   | { type: "completed"; result: ResearchResult };
@@ -114,9 +109,24 @@ export interface ResearchOptions {
   steelApiKey?: string;
   steelBaseUrl?: string;
   timeoutMs?: number;
+  budgetUsd?: number;
+  effort?: WriterEffort;
   onEvent?: (event: ResearchEvent) => void;
   signal?: AbortSignal;
 }
+
+type MessageStreamEvent =
+  {
+    type: string;
+    content_block?: {
+      type?: string;
+      text?: string;
+    };
+    delta?: {
+      type?: string;
+      text?: string;
+    };
+  };
 
 export async function research(opts: ResearchOptions): Promise<ResearchResult> {
   const {
@@ -125,6 +135,8 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
     steelApiKey: steelApiKeyOverride,
     steelBaseUrl: steelBaseUrlOverride,
     timeoutMs,
+    budgetUsd,
+    effort,
     onEvent,
     signal,
   } = opts;
@@ -153,14 +165,13 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
     throw new Error("research: STEEL_API_KEY or ATLAS_STEEL_API_KEY is required");
   }
 
-  const plan = DEFAULT_RESEARCH_PLAN;
-  const sourceHardCap = plan.sourceHardCap;
-  const maxToolCalls = plan.maxToolCalls;
-  const coverageMaxToolCalls = splitCoverageToolBudget(
-    maxToolCalls,
-    plan.coverageMaxToolCalls,
-  );
-  const initialMaxToolCalls = maxToolCalls - coverageMaxToolCalls;
+  if (budgetUsd !== undefined && (!Number.isFinite(budgetUsd) || budgetUsd <= 0)) {
+    throw new Error(`research: budgetUsd must be > 0 (got ${budgetUsd})`);
+  }
+
+  const limits = DEFAULT_RUNTIME_LIMITS;
+  const safetySourceCap = limits.safetySourceCap;
+  const safetyMaxToolCalls = limits.safetyMaxToolCalls;
   const runSignal = combineSignals(signal, timeoutMs);
 
   const emit = (e: ResearchEvent) => {
@@ -191,13 +202,13 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
     signal: runSignal,
     defaultEngine: "ddg",
     useProxy: false,
-    fastModel: plan.gatherModel,
-    globalSourceCap: sourceHardCap,
-    gatherMaxTokens: plan.gatherMaxTokens,
-    searchMode: plan.searchMode,
-    defaultSearchLimit: plan.defaultSearchLimit,
-    maxConcurrentTools: plan.maxConcurrentTools,
-    steelGate: createSteelGate(plan.maxConcurrentSteelCalls),
+    fastModel: limits.gatherModel,
+    globalSourceCap: safetySourceCap,
+    gatherMaxTokens: limits.gatherMaxTokens,
+    searchMode: limits.searchMode,
+    defaultSearchLimit: limits.defaultSearchLimit,
+    maxConcurrentTools: limits.maxConcurrentTools,
+    steelGate: createSteelGate(limits.maxConcurrentSteelCalls),
     sourceReservations: createSourceReservations(),
     caches: createResearchCaches(),
   };
@@ -205,45 +216,30 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
   const gather = await runGatherAgent({
     ctx,
     query,
-    max_tool_calls: initialMaxToolCalls,
-    phase: "initial",
+    max_tool_calls: safetyMaxToolCalls,
+    budgetUsd,
   });
   const agentRuns: AgentRun[] = [
     {
       source_ns: gather.source_ns,
       tool_calls: gather.tool_calls,
       finish_reason: gather.finish_reason,
-      phase: gather.phase,
     },
   ];
 
-  if (coverageMaxToolCalls > 0 && sources.length < sourceHardCap) {
-    const coverage = await runGatherAgent({
-      ctx,
-      query,
-      max_tool_calls: coverageMaxToolCalls,
-      phase: "coverage",
-    });
-    agentRuns.push({
-      source_ns: coverage.source_ns,
-      tool_calls: coverage.tool_calls,
-      finish_reason: coverage.finish_reason,
-      phase: coverage.phase,
-    });
-  }
-
   abort();
   emit({ type: "writing", sources_count: sources.length });
-  const { markdown } = await writeReport({
+  const markdown = await writeFinalReportInThread({
     anthropic,
     query,
     sources,
-    source_texts: sourceMarkdowns,
-    model: plan.writerModel,
-    writerEffort: plan.writerEffort,
-    writerMaxTokens: plan.writerMaxTokens,
-    writerMaxSourceChars: plan.writerMaxSourceChars,
-    writerTotalSourceChars: plan.writerTotalSourceChars,
+    sourceTexts: sourceMarkdowns,
+    messages: gather.messages,
+    model: limits.writerModel,
+    writerEffort: effort ?? limits.writerEffort,
+    writerMaxTokens: limits.writerMaxTokens,
+    writerMaxSourceChars: limits.writerMaxSourceChars,
+    writerTotalSourceChars: limits.writerTotalSourceChars,
     signal: runSignal,
   });
   emit({ type: "written", markdown_chars: markdown.length });
@@ -260,16 +256,134 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
   return result;
 }
 
-function splitCoverageToolBudget(
-  maxToolCalls: number,
-  presetCoverageMaxToolCalls: number,
-): number {
-  if (presetCoverageMaxToolCalls <= 0 || maxToolCalls <= 1) return 0;
-  return Math.min(
-    presetCoverageMaxToolCalls,
-    Math.floor(maxToolCalls * 0.25),
-    maxToolCalls - 1,
+function markdownHeadingOutline(markdown: string): string {
+  const headings = markdown
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => /^#{1,4}\s+\S/.test(line));
+
+  if (headings.length === 0) return "";
+  const outline = headings.join("\n").slice(0, MAX_HEADING_OUTLINE_CHARS);
+  return `Document heading outline:\n${outline}\n\n`;
+}
+
+function packSourceMarkdown(markdown: string, budget: number): string {
+  if (markdown.length <= budget) return markdown;
+
+  const outline = markdownHeadingOutline(markdown);
+  const truncation = "\n\n[... truncated source page ...]";
+  const contentBudget = Math.max(
+    WRITER_MIN_SOURCE_CHARS,
+    budget - outline.length - truncation.length,
   );
+  return `${outline}${markdown.slice(0, contentBudget)}${truncation}`.slice(
+    0,
+    budget,
+  );
+}
+
+function sourceBlocks(opts: {
+  sources: CitedSource[];
+  sourceTexts: Map<number, string>;
+  writerMaxSourceChars: number;
+  writerTotalSourceChars: number;
+}): string {
+  const sourceBudget = Math.max(
+    WRITER_MIN_SOURCE_CHARS,
+    Math.min(
+      opts.writerMaxSourceChars,
+      Math.floor(opts.writerTotalSourceChars / Math.max(1, opts.sources.length)),
+    ),
+  );
+
+  return opts.sources
+    .map((source) => {
+      const raw = opts.sourceTexts.get(source.n) ?? "";
+      const packed = raw ? packSourceMarkdown(raw, sourceBudget) : "";
+      const rawBlock = raw
+        ? `\nPage content (packed to ${sourceBudget.toLocaleString()} chars):\n${packed}`
+        : "\n(No page content available.)";
+      return `[${source.n}] ${source.title} — ${source.url}${rawBlock}`;
+    })
+    .join("\n\n---\n\n");
+}
+
+async function writeFinalReportInThread(opts: {
+  anthropic: Anthropic;
+  query: string;
+  sources: CitedSource[];
+  sourceTexts: Map<number, string>;
+  messages: Anthropic.MessageParam[];
+  model: string;
+  writerEffort: WriterEffort;
+  writerMaxTokens: number;
+  writerMaxSourceChars: number;
+  writerTotalSourceChars: number;
+  signal?: AbortSignal;
+}): Promise<string> {
+  const system =
+    "You are the same research agent that just gathered sources. " +
+    "Write a clear, comprehensive research report in Markdown answering the user's question. " +
+    "Use the research trail from this thread and the committed source pages provided in the final instruction. " +
+    "Cite every factual claim with bracketed source numbers, e.g. [1] or [1, 3]. " +
+    "Only include claims supported by the committed source pages. " +
+    "Distinguish genuinely recent progress from background context, and call out uncertainty or weak evidence when relevant. " +
+    "Structure: a one-paragraph intro, body sections with H2 headings as the material demands, then a final '## Sources' section listing each source as '[n] Title — URL'.";
+
+  const finalInstruction =
+    `Research question: ${opts.query}\n\n` +
+    `Committed source pages:\n${sourceBlocks({
+      sources: opts.sources,
+      sourceTexts: opts.sourceTexts,
+      writerMaxSourceChars: opts.writerMaxSourceChars,
+      writerTotalSourceChars: opts.writerTotalSourceChars,
+    })}\n\n` +
+    `Now write the final report. Answer the exact question first. Do not merely summarize sources; synthesize what changed, what is known, what remains uncertain, and which sources are strongest.`;
+
+  const stream = await opts.anthropic.messages.create(
+    {
+      model: opts.model,
+      max_tokens: opts.writerMaxTokens,
+      stream: true,
+      thinking: { type: "adaptive" },
+      output_config: { effort: opts.writerEffort },
+      system,
+      messages: [
+        ...opts.messages,
+        {
+          role: "user",
+          content: [
+            {
+              type: "text",
+              text: finalInstruction,
+              cache_control: { type: "ephemeral" },
+            },
+          ],
+        },
+      ],
+    },
+    { signal: opts.signal },
+  );
+
+  const chunks: string[] = [];
+  for await (const event of stream as AsyncIterable<MessageStreamEvent>) {
+    if (
+      event.type === "content_block_start" &&
+      event.content_block?.type === "text" &&
+      event.content_block.text
+    ) {
+      chunks.push(event.content_block.text);
+    }
+    if (
+      event.type === "content_block_delta" &&
+      event.delta?.type === "text_delta" &&
+      event.delta.text
+    ) {
+      chunks.push(event.delta.text);
+    }
+  }
+
+  return chunks.join("").trim();
 }
 
 function readEnv(...keys: string[]): string | undefined {
