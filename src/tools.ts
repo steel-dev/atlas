@@ -140,10 +140,12 @@ export interface AgentContext {
   caches: ResearchCaches;
 }
 
+export type GatherPhase = "initial" | "coverage";
+
 // A loose superset of the research event types this module emits. Kept here
 // to avoid importing from research.ts (which would create a cycle).
 export type AgenticEvent =
-  | { type: "agent_started" }
+  | { type: "agent_started"; phase?: GatherPhase }
   | {
       type: "searching";
       index: number;
@@ -175,12 +177,13 @@ export type AgenticEvent =
       title: string;
     }
   | { type: "source_error"; url: string; error: string }
-  | { type: "agent_finished"; sources_added: number };
+  | { type: "agent_finished"; sources_added: number; phase?: GatherPhase };
 
 export interface AgenticRunResult {
   source_ns: number[];
   tool_calls: number;
   finish_reason: string;
+  phase: GatherPhase;
 }
 
 interface SearchToolInput {
@@ -208,7 +211,7 @@ const AGENT_TOOLS: Anthropic.Tool[] = [
           minimum: 1,
           maximum: 20,
           description:
-            "How many results to request from each search provider. Default depends on research depth.",
+            "How many results to request from each search provider. Default depends on the research plan.",
         },
       },
       required: ["query"],
@@ -256,7 +259,7 @@ const AGENT_TOOLS: Anthropic.Tool[] = [
   },
 ];
 
-const AGENT_SYSTEM = `You're a research agent. Use search, inspect, and fetch to gather high-quality sources for the user's question, then call done. Inspect promising pages before committing them when relevance is uncertain. Commit enough primary, recent, and independent sources to let the writer answer deeply. Prefer chasing citations and original documents over stopping at summaries.`;
+const AGENT_SYSTEM = `You're a research agent. Use search, inspect, and fetch to gather high-quality sources for the user's question, then call done. Inspect promising pages before committing them when relevance is uncertain. Commit enough primary, recent, and independent sources to let the writer answer deeply. Prefer chasing citations and original documents over stopping at summaries. Do not write the final report.`;
 
 function totalSourceSlots(ctx: AgentContext): number {
   return ctx.sources.length + ctx.sourceReservations.sourceSlots;
@@ -315,6 +318,37 @@ function formatSearchResult(
 
 function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+function sourcePoolSummary(ctx: AgentContext): string {
+  if (ctx.sources.length === 0) return "No sources committed yet.";
+
+  return ctx.sources
+    .map((source) => `[${source.n}] ${source.title} — ${source.url}`)
+    .join("\n");
+}
+
+function gatherStartPrompt(opts: {
+  query: string;
+  maxToolCalls: number;
+  sourceCap: number;
+  phase: GatherPhase;
+  ctx: AgentContext;
+}): string {
+  const base =
+    `Research question: ${opts.query}\n\n` +
+    `Budget: at most ${opts.maxToolCalls} tool calls in this pass and ${opts.sourceCap} total sources committed.\n`;
+
+  if (opts.phase === "initial") {
+    return `${base}Begin.`;
+  }
+
+  return (
+    `${base}` +
+    `Existing source pool:\n${sourcePoolSummary(opts.ctx)}\n\n` +
+    `Coverage pass: before the writer starts, audit whether the source pool is missing any important angle, contrary evidence, primary/original source, recency, definitions, or quantitative backing. ` +
+    `If the pool is already strong enough, call done immediately. If not, use targeted search, inspect, and fetch calls for the highest-value gaps, then call done.`
+  );
 }
 
 function readHeader(headers: unknown, name: string): string | undefined {
@@ -915,11 +949,13 @@ export async function runGatherAgent(opts: {
   ctx: AgentContext;
   query: string;
   max_tool_calls?: number;
+  phase?: GatherPhase;
 }): Promise<AgenticRunResult> {
   const { ctx, query } = opts;
   const maxToolCalls = opts.max_tool_calls ?? DEFAULT_MAX_TOOL_CALLS;
+  const phase = opts.phase ?? "initial";
 
-  ctx.emit({ type: "agent_started" });
+  ctx.emit({ type: "agent_started", phase });
 
   const myAddedNs: number[] = [];
   let toolCalls = 0;
@@ -929,10 +965,13 @@ export async function runGatherAgent(opts: {
   const messages: Anthropic.MessageParam[] = [
     {
       role: "user",
-      content:
-        `Research question: ${query}\n\n` +
-        `Budget: at most ${maxToolCalls} tool calls and ${ctx.globalSourceCap} sources committed.\n` +
-        `Begin.`,
+      content: gatherStartPrompt({
+        query,
+        maxToolCalls,
+        sourceCap: ctx.globalSourceCap,
+        phase,
+        ctx,
+      }),
     },
   ];
 
@@ -1016,12 +1055,14 @@ export async function runGatherAgent(opts: {
   ctx.emit({
     type: "agent_finished",
     sources_added: myAddedNs.length,
+    phase,
   });
 
   return {
     source_ns: [...myAddedNs],
     tool_calls: toolCalls,
     finish_reason: finishReason,
+    phase,
   };
 }
 

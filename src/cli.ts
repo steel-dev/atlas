@@ -1,13 +1,7 @@
 #!/usr/bin/env node
 import { writeFileSync } from "node:fs";
 import { parseArgs } from "node:util";
-import {
-  RESEARCH_DEPTHS,
-  research,
-  type Engine,
-  type ResearchDepth,
-  type ResearchEvent,
-} from "./research.js";
+import { research, type ResearchEvent } from "./research.js";
 
 const USAGE = `atlas — deep research from your terminal
 
@@ -19,14 +13,7 @@ cited report from all sources.
 
 Options:
   -o, --out <file>            Write the markdown report to <file> (default: stdout)
-      --max-sources N         Cap on cited sources (default 24)
-      --max-tool-calls N      Gather-agent tool-call cap (default 48)
-      --depth <d>             Budget preset: fast | standard | deep (default standard)
       --timeout N             Overall wall-clock budget in seconds (default: none)
-      --engine <e>            Default web SERP: ddg | bing | google (default ddg)
-      --use-proxy             Route Steel through residential proxy
-      --fast-model <m>        Override gather model id
-      --writer-model <m>      Override Sonnet writer model id
       --json                  Emit one JSON event per line on stderr
   -q, --quiet                 Suppress progress events on stderr
   -h, --help                  Show this help
@@ -39,26 +26,16 @@ Environment:
 
 Examples:
   atlas "What changed when Cloudflare DO added SQLite?"
-  atlas "..." --out report.md --max-sources 20 --engine google
+  atlas "..." --out report.md
+  atlas "..." --timeout 300
   atlas "..." --json 2> events.jsonl > report.md
 `;
 
 const VERSION = "0.1.0";
 
-const ENGINES: Engine[] = ["ddg", "bing", "google"];
-const DEPTHS: ResearchDepth[] = [...RESEARCH_DEPTHS];
-
 function fail(message: string, code = 1): never {
   process.stderr.write(`atlas: ${message}\n`);
   process.exit(code);
-}
-
-function readEnv(...keys: string[]): string | undefined {
-  for (const k of keys) {
-    const v = process.env[k];
-    if (v && v.trim()) return v.trim();
-  }
-  return undefined;
 }
 
 function parseNumber(raw: string | undefined, name: string): number | undefined {
@@ -66,14 +43,6 @@ function parseNumber(raw: string | undefined, name: string): number | undefined 
   const n = Number(raw);
   if (!Number.isFinite(n)) fail(`${name} must be a number (got "${raw}")`);
   return n;
-}
-
-function isEngine(s: string): s is Engine {
-  return (ENGINES as string[]).includes(s);
-}
-
-function isDepth(s: string): s is ResearchDepth {
-  return (DEPTHS as string[]).includes(s);
 }
 
 const DIM = "\x1b[2m";
@@ -93,11 +62,14 @@ function paint(color: string, text: string): string {
 function prettyEvent(e: ResearchEvent): string {
   switch (e.type) {
     case "agent_started":
-      return paint(DIM, "  →") + " agent started";
+      return (
+        paint(DIM, "  →") +
+        (e.phase === "coverage" ? " coverage pass started" : " agent started")
+      );
     case "agent_finished":
       return (
         paint(DIM, "  ✓") +
-        ` agent done — ${e.sources_added} source${e.sources_added === 1 ? "" : "s"}`
+        `${e.phase === "coverage" ? " coverage done" : " agent done"} — ${e.sources_added} source${e.sources_added === 1 ? "" : "s"}`
       );
     case "searching":
       return paint(DIM, `    search:`) + ` ${e.query}`;
@@ -160,14 +132,7 @@ async function main(): Promise<void> {
         allowPositionals: true,
         options: {
           out: { type: "string", short: "o" },
-          "max-sources": { type: "string" },
-          "max-tool-calls": { type: "string" },
-          depth: { type: "string" },
           timeout: { type: "string" },
-          engine: { type: "string" },
-          "use-proxy": { type: "boolean" },
-          "fast-model": { type: "string" },
-          "writer-model": { type: "string" },
           json: { type: "boolean" },
           quiet: { type: "boolean", short: "q" },
           help: { type: "boolean", short: "h" },
@@ -193,30 +158,6 @@ async function main(): Promise<void> {
   if (!query) {
     process.stderr.write(USAGE);
     process.exit(2);
-  }
-
-  const anthropicApiKey = readEnv(
-    "ATLAS_ANTHROPIC_API_KEY",
-    "ANTHROPIC_API_KEY",
-  );
-  const steelApiKey = readEnv("ATLAS_STEEL_API_KEY", "STEEL_API_KEY");
-  const steelBaseUrl = readEnv("ATLAS_STEEL_BASE_URL", "STEEL_BASE_URL");
-
-  if (!anthropicApiKey) {
-    fail("ANTHROPIC_API_KEY (or ATLAS_ANTHROPIC_API_KEY) is not set");
-  }
-  if (!steelApiKey) {
-    fail("STEEL_API_KEY (or ATLAS_STEEL_API_KEY) is not set");
-  }
-
-  const engine = values.engine;
-  if (engine !== undefined && !isEngine(engine)) {
-    fail(`--engine must be one of ${ENGINES.join(", ")} (got "${engine}")`);
-  }
-
-  const depth = values.depth;
-  if (depth !== undefined && !isDepth(depth)) {
-    fail(`--depth must be one of ${DEPTHS.join(", ")} (got "${depth}")`);
   }
 
   const controller = new AbortController();
@@ -259,16 +200,6 @@ async function main(): Promise<void> {
   try {
     const result = await research({
       query,
-      anthropicApiKey,
-      steelApiKey,
-      steelBaseUrl,
-      maxSources: parseNumber(values["max-sources"], "--max-sources"),
-      maxToolCalls: parseNumber(values["max-tool-calls"], "--max-tool-calls"),
-      depth: depth as ResearchDepth | undefined,
-      engine: engine as Engine | undefined,
-      useProxy: values["use-proxy"] === true,
-      fastModel: values["fast-model"],
-      writerModel: values["writer-model"],
       onEvent,
       signal,
     });

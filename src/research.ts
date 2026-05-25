@@ -5,7 +5,6 @@ import {
   type CitedSource,
   type WriterEffort,
 } from "./pipeline.js";
-import { type Engine } from "./search.js";
 import { createSteel } from "./steel.js";
 import {
   createResearchCaches,
@@ -15,71 +14,39 @@ import {
   type AgentContext,
 } from "./tools.js";
 
-export const RESEARCH_DEFAULTS = {
-  maxSources: 24,
-  maxSubagentToolCalls: 48,
+const DEFAULT_RESEARCH_PLAN = {
+  sourceHardCap: 24,
+  maxToolCalls: 48,
+  coverageMaxToolCalls: 12,
   maxConcurrentTools: 8,
   maxConcurrentSteelCalls: 4,
-} as const;
-
-export const RESEARCH_DEPTHS = ["fast", "standard", "deep"] as const;
-export type ResearchDepth = (typeof RESEARCH_DEPTHS)[number];
-
-export const RESEARCH_DEPTH_PRESETS = {
-  fast: {
-    maxSources: 8,
-    maxToolCalls: 10,
-    gatherMaxTokens: 2048,
-    searchMode: "fallback",
-    defaultSearchLimit: 5,
-    gatherModel: undefined,
-    writerEffort: "medium",
-    writerMaxTokens: 8192,
-    writerMaxSourceChars: 40_000,
-    writerTotalSourceChars: 120_000,
-  },
-  standard: {
-    maxSources: RESEARCH_DEFAULTS.maxSources,
-    maxToolCalls: RESEARCH_DEFAULTS.maxSubagentToolCalls,
-    gatherMaxTokens: 3072,
-    searchMode: "aggregate",
-    defaultSearchLimit: 8,
-    gatherModel: undefined,
-    writerEffort: "high",
-    writerMaxTokens: 16_384,
-    writerMaxSourceChars: 80_000,
-    writerTotalSourceChars: 420_000,
-  },
-  deep: {
-    maxSources: 72,
-    maxToolCalls: 160,
-    gatherMaxTokens: 4096,
-    searchMode: "aggregate",
-    defaultSearchLimit: 12,
-    gatherModel: WRITER_MODEL,
-    writerEffort: "max",
-    writerMaxTokens: 24_576,
-    writerMaxSourceChars: 100_000,
-    writerTotalSourceChars: 900_000,
-  },
-} satisfies Record<
-  ResearchDepth,
-  {
-    maxSources: number;
-    maxToolCalls: number;
-    gatherMaxTokens: number;
-    searchMode: "fallback" | "aggregate";
-    defaultSearchLimit: number;
-    gatherModel: string | undefined;
-    writerEffort: WriterEffort;
-    writerMaxTokens: number;
-    writerMaxSourceChars: number;
-    writerTotalSourceChars: number;
-  }
->;
+  gatherMaxTokens: 3072,
+  searchMode: "aggregate",
+  defaultSearchLimit: 8,
+  gatherModel: undefined,
+  writerModel: WRITER_MODEL,
+  writerEffort: "high",
+  writerMaxTokens: 16_384,
+  writerMaxSourceChars: 80_000,
+  writerTotalSourceChars: 420_000,
+} satisfies {
+  sourceHardCap: number;
+  maxToolCalls: number;
+  coverageMaxToolCalls: number;
+  maxConcurrentTools: number;
+  maxConcurrentSteelCalls: number;
+  gatherMaxTokens: number;
+  searchMode: "fallback" | "aggregate";
+  defaultSearchLimit: number;
+  gatherModel: string | undefined;
+  writerModel: string;
+  writerEffort: WriterEffort;
+  writerMaxTokens: number;
+  writerMaxSourceChars: number;
+  writerTotalSourceChars: number;
+};
 
 export type { CitedSource } from "./pipeline.js";
-export type { Engine } from "./search.js";
 
 export interface UsageSummary {
   input_tokens: number;
@@ -92,6 +59,7 @@ export interface AgentRun {
   source_ns: number[];
   tool_calls: number;
   finish_reason: string;
+  phase: "initial" | "coverage";
 }
 
 export interface ResearchResult {
@@ -103,7 +71,7 @@ export interface ResearchResult {
 }
 
 export type ResearchEvent =
-  | { type: "agent_started" }
+  | { type: "agent_started"; phase?: "initial" | "coverage" }
   | { type: "searching"; index: number; query: string }
   | {
       type: "search_results";
@@ -131,29 +99,21 @@ export type ResearchEvent =
       title: string;
     }
   | { type: "source_error"; url: string; error: string }
-  | { type: "agent_finished"; sources_added: number }
+  | {
+      type: "agent_finished";
+      sources_added: number;
+      phase?: "initial" | "coverage";
+    }
   | { type: "writing"; sources_count: number }
   | { type: "written"; markdown_chars: number }
   | { type: "completed"; result: ResearchResult };
 
 export interface ResearchOptions {
   query: string;
-  anthropicApiKey: string;
-  steelApiKey: string;
+  anthropicApiKey?: string;
+  steelApiKey?: string;
   steelBaseUrl?: string;
-  /** Cap on cited sources. Default 16. */
-  maxSources?: number;
-  /** Cap on gather-agent tool calls (search / inspect / fetch / done). Default 20. */
-  maxToolCalls?: number;
-  /** One-knob budget/effort preset. Explicit maxSources/maxToolCalls override it. */
-  depth?: ResearchDepth;
-  /** Web SERP engine. */
-  engine?: Engine;
-  useProxy?: boolean;
-  /** Override the gather model. */
-  fastModel?: string;
-  /** Override the writer model (Sonnet by default). */
-  writerModel?: string;
+  timeoutMs?: number;
   onEvent?: (event: ResearchEvent) => void;
   signal?: AbortSignal;
 }
@@ -161,16 +121,10 @@ export interface ResearchOptions {
 export async function research(opts: ResearchOptions): Promise<ResearchResult> {
   const {
     query,
-    anthropicApiKey,
-    steelApiKey,
-    steelBaseUrl,
-    maxSources: maxSourcesOverride,
-    maxToolCalls: maxToolCallsOverride,
-    depth = "standard",
-    engine = "ddg",
-    useProxy = false,
-    fastModel,
-    writerModel,
+    anthropicApiKey: anthropicApiKeyOverride,
+    steelApiKey: steelApiKeyOverride,
+    steelBaseUrl: steelBaseUrlOverride,
+    timeoutMs,
     onEvent,
     signal,
   } = opts;
@@ -178,20 +132,36 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
   if (!query || !query.trim()) {
     throw new Error("research: query is required");
   }
+  const anthropicApiKey = anthropicApiKeyOverride ?? readEnv(
+    "ATLAS_ANTHROPIC_API_KEY",
+    "ANTHROPIC_API_KEY",
+  );
+  const steelApiKey = steelApiKeyOverride ?? readEnv(
+    "ATLAS_STEEL_API_KEY",
+    "STEEL_API_KEY",
+  );
+  const steelBaseUrl = steelBaseUrlOverride ?? readEnv(
+    "ATLAS_STEEL_BASE_URL",
+    "STEEL_BASE_URL",
+  );
   if (!anthropicApiKey) {
-    throw new Error("research: anthropicApiKey is required");
+    throw new Error(
+      "research: ANTHROPIC_API_KEY or ATLAS_ANTHROPIC_API_KEY is required",
+    );
   }
   if (!steelApiKey) {
-    throw new Error("research: steelApiKey is required");
-  }
-  if (!(depth in RESEARCH_DEPTH_PRESETS)) {
-    throw new Error(`research: depth must be one of ${RESEARCH_DEPTHS.join(", ")}`);
+    throw new Error("research: STEEL_API_KEY or ATLAS_STEEL_API_KEY is required");
   }
 
-  const depthPreset = RESEARCH_DEPTH_PRESETS[depth];
-  const maxSources = maxSourcesOverride ?? depthPreset.maxSources;
-  const maxToolCalls = maxToolCallsOverride ?? depthPreset.maxToolCalls;
-  const gatherModel = fastModel ?? depthPreset.gatherModel;
+  const plan = DEFAULT_RESEARCH_PLAN;
+  const sourceHardCap = plan.sourceHardCap;
+  const maxToolCalls = plan.maxToolCalls;
+  const coverageMaxToolCalls = splitCoverageToolBudget(
+    maxToolCalls,
+    plan.coverageMaxToolCalls,
+  );
+  const initialMaxToolCalls = maxToolCalls - coverageMaxToolCalls;
+  const runSignal = combineSignals(signal, timeoutMs);
 
   const emit = (e: ResearchEvent) => {
     try {
@@ -200,7 +170,7 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
       // user callbacks must never break the pipeline
     }
   };
-  const abort = () => signal?.throwIfAborted();
+  const abort = () => runSignal?.throwIfAborted();
 
   const anthropic = new Anthropic({ apiKey: anthropicApiKey, maxRetries: 5 });
   const usageSummary = instrumentAnthropic(anthropic);
@@ -218,16 +188,16 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
     sourceMarkdowns,
     emit,
     abort,
-    signal,
-    defaultEngine: engine,
-    useProxy,
-    fastModel: gatherModel,
-    globalSourceCap: maxSources,
-    gatherMaxTokens: depthPreset.gatherMaxTokens,
-    searchMode: depthPreset.searchMode,
-    defaultSearchLimit: depthPreset.defaultSearchLimit,
-    maxConcurrentTools: RESEARCH_DEFAULTS.maxConcurrentTools,
-    steelGate: createSteelGate(RESEARCH_DEFAULTS.maxConcurrentSteelCalls),
+    signal: runSignal,
+    defaultEngine: "ddg",
+    useProxy: false,
+    fastModel: plan.gatherModel,
+    globalSourceCap: sourceHardCap,
+    gatherMaxTokens: plan.gatherMaxTokens,
+    searchMode: plan.searchMode,
+    defaultSearchLimit: plan.defaultSearchLimit,
+    maxConcurrentTools: plan.maxConcurrentTools,
+    steelGate: createSteelGate(plan.maxConcurrentSteelCalls),
     sourceReservations: createSourceReservations(),
     caches: createResearchCaches(),
   };
@@ -235,8 +205,32 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
   const gather = await runGatherAgent({
     ctx,
     query,
-    max_tool_calls: maxToolCalls,
+    max_tool_calls: initialMaxToolCalls,
+    phase: "initial",
   });
+  const agentRuns: AgentRun[] = [
+    {
+      source_ns: gather.source_ns,
+      tool_calls: gather.tool_calls,
+      finish_reason: gather.finish_reason,
+      phase: gather.phase,
+    },
+  ];
+
+  if (coverageMaxToolCalls > 0 && sources.length < sourceHardCap) {
+    const coverage = await runGatherAgent({
+      ctx,
+      query,
+      max_tool_calls: coverageMaxToolCalls,
+      phase: "coverage",
+    });
+    agentRuns.push({
+      source_ns: coverage.source_ns,
+      tool_calls: coverage.tool_calls,
+      finish_reason: coverage.finish_reason,
+      phase: coverage.phase,
+    });
+  }
 
   abort();
   emit({ type: "writing", sources_count: sources.length });
@@ -245,24 +239,18 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
     query,
     sources,
     source_texts: sourceMarkdowns,
-    model: writerModel,
-    writerEffort: depthPreset.writerEffort,
-    writerMaxTokens: depthPreset.writerMaxTokens,
-    writerMaxSourceChars: depthPreset.writerMaxSourceChars,
-    writerTotalSourceChars: depthPreset.writerTotalSourceChars,
-    signal,
+    model: plan.writerModel,
+    writerEffort: plan.writerEffort,
+    writerMaxTokens: plan.writerMaxTokens,
+    writerMaxSourceChars: plan.writerMaxSourceChars,
+    writerTotalSourceChars: plan.writerTotalSourceChars,
+    signal: runSignal,
   });
   emit({ type: "written", markdown_chars: markdown.length });
 
   const result: ResearchResult = {
     query,
-    agent_runs: [
-      {
-        source_ns: gather.source_ns,
-        tool_calls: gather.tool_calls,
-        finish_reason: gather.finish_reason,
-      },
-    ],
+    agent_runs: agentRuns,
     sources,
     markdown,
     usage_summary: { ...usageSummary },
@@ -270,6 +258,39 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
 
   emit({ type: "completed", result });
   return result;
+}
+
+function splitCoverageToolBudget(
+  maxToolCalls: number,
+  presetCoverageMaxToolCalls: number,
+): number {
+  if (presetCoverageMaxToolCalls <= 0 || maxToolCalls <= 1) return 0;
+  return Math.min(
+    presetCoverageMaxToolCalls,
+    Math.floor(maxToolCalls * 0.25),
+    maxToolCalls - 1,
+  );
+}
+
+function readEnv(...keys: string[]): string | undefined {
+  for (const key of keys) {
+    const value = process.env[key];
+    if (value?.trim()) return value.trim();
+  }
+  return undefined;
+}
+
+function combineSignals(
+  signal: AbortSignal | undefined,
+  timeoutMs: number | undefined,
+): AbortSignal | undefined {
+  if (timeoutMs === undefined) return signal;
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+    throw new Error(`research: timeoutMs must be > 0 (got ${timeoutMs})`);
+  }
+
+  const timeoutSignal = AbortSignal.timeout(Math.floor(timeoutMs));
+  return signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
 }
 
 /**

@@ -212,6 +212,57 @@ describe("gather loop cache integration", () => {
     expect(ctx.sourceMarkdowns.get(1)).toContain("Detailed source body");
   });
 
+  it("starts coverage passes with the existing source pool", async () => {
+    const messagesCreate = vi
+      .fn()
+      .mockResolvedValueOnce(messageWith([toolUse("done_1", "done")]));
+    const ctx: AgentContext = {
+      anthropic: {
+        messages: { create: messagesCreate },
+      } as unknown as Anthropic,
+      steel: { scrape: vi.fn() } as unknown as Steel,
+      sources: [
+        {
+          n: 1,
+          url: "https://example.com/primary",
+          title: "Primary Source",
+        },
+      ],
+      sourceUrls: new Set(["https://example.com/primary"]),
+      sourceMarkdowns: new Map([[1, "# Primary Source\n\nUseful evidence."]]),
+      emit: vi.fn(),
+      abort: vi.fn(),
+      defaultEngine: "ddg",
+      useProxy: false,
+      globalSourceCap: 4,
+      maxConcurrentTools: 2,
+      steelGate: createSteelGate(2),
+      sourceReservations: createSourceReservations(),
+      caches: createResearchCaches(),
+    };
+
+    const result = await runGatherAgent({
+      ctx,
+      query: "What is Atlas?",
+      max_tool_calls: 3,
+      phase: "coverage",
+    });
+    const request = messagesCreate.mock.calls[0]?.[0] as {
+      messages: Array<{ content: string }>;
+    };
+
+    expect(result.phase).toBe("coverage");
+    expect(result.finish_reason).toBe("done");
+    expect(request.messages[0]?.content).toContain("Coverage pass");
+    expect(request.messages[0]?.content).toContain(
+      "[1] Primary Source — https://example.com/primary",
+    );
+    expect(ctx.emit).toHaveBeenCalledWith({
+      type: "agent_started",
+      phase: "coverage",
+    });
+  });
+
   it("falls back to Steel when plain fetch has too little readable text", async () => {
     const fetch = vi.fn(async () =>
       new Response("<html><body><div id=\"root\"></div></body></html>", {
