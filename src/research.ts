@@ -17,7 +17,6 @@ const DEFAULT_RUNTIME_LIMITS = {
   maxConcurrentDelegates: 4,
   maxDelegates: 16,
   delegateMaxToolCalls: 64,
-  searchMode: "fallback",
   defaultSearchLimit: 8,
   gatherModel: WRITER_MODEL,
   writerEffort: "high",
@@ -30,7 +29,6 @@ const DEFAULT_RUNTIME_LIMITS = {
   maxConcurrentDelegates: number;
   maxDelegates: number;
   delegateMaxToolCalls: number;
-  searchMode: "fallback" | "aggregate";
   defaultSearchLimit: number;
   gatherModel: string | undefined;
   writerEffort: WriterEffort;
@@ -182,7 +180,6 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
     fastModel: limits.gatherModel,
     globalSourceCap: safetySourceCap,
     gatherMaxTokens: limits.writerMaxTokens,
-    searchMode: limits.searchMode,
     defaultSearchLimit: limits.defaultSearchLimit,
     maxConcurrentTools: limits.maxConcurrentTools,
     delegateGate: createSteelGate(limits.maxConcurrentDelegates),

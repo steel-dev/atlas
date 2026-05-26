@@ -23,7 +23,6 @@ const DEFAULT_DELEGATE_MAX_TOOL_CALLS = 64;
 const DEFAULT_MAX_DELEGATES = 8;
 const STEEL_RATE_LIMIT_MAX_ATTEMPTS = 6;
 const DEFAULT_RATE_LIMIT_RETRY_SECONDS = 15;
-type SearchMode = "fallback" | "aggregate";
 const TRACKING_QUERY_PARAMS = new Set([
   "fbclid",
   "gclid",
@@ -142,7 +141,6 @@ export interface AgentContext {
   fastModel?: string;
   globalSourceCap: number;
   gatherMaxTokens?: number;
-  searchMode?: SearchMode;
   defaultSearchLimit?: number;
   maxConcurrentTools?: number;
   fetchSnippetChars?: number;
@@ -546,86 +544,6 @@ async function searchWithCache(
   }
 }
 
-async function execAggregateSearch(
-  ctx: AgentContext,
-  opts: { query: string; limit: number; searchIndex: number },
-): Promise<string> {
-  const outcomes = await Promise.all(
-    searchEnginesInFallbackOrder(ctx.defaultEngine).map(async (engine) => {
-      try {
-        return {
-          engine,
-          outcome: await searchWithCache(ctx, {
-            query: opts.query,
-            limit: opts.limit,
-            engine,
-          }),
-        };
-      } catch (err) {
-        return {
-          engine,
-          error: errorMessage(err),
-        };
-      }
-    }),
-  );
-
-  const failures: string[] = [];
-  const seenUrls = new Set<string>();
-  const merged: Array<SearchResult & { engine: Engine }> = [];
-
-  for (const item of outcomes) {
-    if ("error" in item) {
-      failures.push(`${item.engine}: ${item.error}`);
-      continue;
-    }
-    if (!item.outcome.ok) {
-      failures.push(`${item.engine}: ${item.outcome.error.message}`);
-      continue;
-    }
-    for (const result of item.outcome.results) {
-      const normalized = normalizeFetchUrl(result.url);
-      if (seenUrls.has(normalized)) continue;
-      seenUrls.add(normalized);
-      merged.push({ ...result, engine: item.engine });
-    }
-  }
-
-  if (merged.length === 0) {
-    const error = failures.join("; ") || "all engines returned no results";
-    if (failures.length > 0) {
-      ctx.emit({
-        type: "search_failed",
-        index: opts.searchIndex,
-        error,
-      });
-    } else {
-      ctx.emit({
-        type: "search_results",
-        index: opts.searchIndex,
-        count: 0,
-      });
-    }
-    return failures.length > 0
-      ? `Search failed: ${error}`
-      : "No results for this query from any engine.";
-  }
-
-  const results = merged.slice(0, opts.limit * ENGINES.length);
-  ctx.emit({
-    type: "search_results",
-    index: opts.searchIndex,
-    count: results.length,
-  });
-
-  const lines = results.map((result, index) =>
-    formatSearchResult(result, index, result.engine),
-  );
-  const failureNote =
-    failures.length > 0 ? `\n\nSome engines failed: ${failures.join("; ")}` : "";
-  return `${results.length} deduped results from ${ENGINES.length} engines:\n\n${lines.join("\n\n")}${failureNote}`;
-}
-
 interface FetchReservation {
   url: string;
 }
@@ -679,10 +597,6 @@ async function execSearch(
 
   const failures: string[] = [];
   const emptyEngines: Engine[] = [];
-
-  if (ctx.searchMode === "aggregate") {
-    return execAggregateSearch(ctx, { query, limit, searchIndex });
-  }
 
   for (const engine of searchEnginesInFallbackOrder(ctx.defaultEngine)) {
     let outcome: WebSearchOutcome;
