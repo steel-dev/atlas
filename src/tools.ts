@@ -14,6 +14,11 @@ const STORED_MARKDOWN_CAP = 120_000;
 const FETCH_SNIPPET_CHARS = 8000;
 const DEFAULT_READ_SOURCE_CHARS = 12_000;
 const MAX_READ_SOURCE_CHARS = 30_000;
+const DEFAULT_READ_FILE_LINES = 120;
+const MAX_READ_FILE_LINES = 400;
+const DEFAULT_SEARCH_FILE_RESULTS = 8;
+const MAX_SEARCH_FILE_RESULTS = 20;
+const SEARCH_FILE_CONTEXT_LINES = 2;
 const SEARCH_SNIPPET_CHARS = 500;
 const DEFAULT_MAX_TOOL_CALLS = 12;
 const DEFAULT_MAX_CONCURRENT_TOOLS = 4;
@@ -40,6 +45,14 @@ export interface OpenReservations {
 interface ScrapeCacheEntry {
   markdown: string;
   title: string | null;
+}
+
+export interface OpenedSourceFile {
+  path: string;
+  url: string;
+  title: string;
+  markdown: string;
+  lines: string[];
 }
 
 export interface ResearchCaches {
@@ -121,6 +134,7 @@ export interface AgentContext {
   openedPages: CitedSource[];
   openedPageUrls: Set<string>;
   openedPageMarkdowns: Map<string, string>;
+  openedSourceFiles?: Map<string, OpenedSourceFile>;
   emit: (e: AgenticEvent) => void;
   abort: () => void;
   /** Forwarded to every Anthropic / Steel / HTTP call so cancellation
@@ -189,6 +203,16 @@ interface SearchToolInput {
 interface UrlToolInput {
   url?: string;
 }
+interface ReadFileToolInput {
+  path?: string;
+  start_line?: number;
+  max_lines?: number;
+}
+interface SearchFilesToolInput {
+  query?: string;
+  path?: string;
+  max_results?: number;
+}
 interface ReadSourceToolInput {
   url?: string;
   offset?: number;
@@ -218,7 +242,8 @@ const AGENT_TOOLS: Anthropic.Tool[] = [
   },
   {
     name: "open_url",
-    description: "Open a URL and save its page text in this run's memory.",
+    description:
+      "Open a URL and save its page text as a virtual Markdown file under /sources.",
     input_schema: {
       type: "object",
       properties: {
@@ -231,8 +256,71 @@ const AGENT_TOOLS: Anthropic.Tool[] = [
     } as Anthropic.Tool["input_schema"],
   },
   {
+    name: "list_sources",
+    description: "List the virtual Markdown source files opened in this run.",
+    input_schema: {
+      type: "object",
+      properties: {},
+    } as Anthropic.Tool["input_schema"],
+  },
+  {
+    name: "read_file",
+    description: "Read line ranges from a virtual Markdown source file.",
+    input_schema: {
+      type: "object",
+      properties: {
+        path: {
+          type: "string",
+          description:
+            "Virtual source path, for example /sources/001-example.md.",
+        },
+        start_line: {
+          type: "integer",
+          minimum: 1,
+          description: "1-based starting line. Default 1.",
+        },
+        max_lines: {
+          type: "integer",
+          minimum: 1,
+          maximum: MAX_READ_FILE_LINES,
+          description:
+            "Maximum lines to return. Default 120, hard cap 400.",
+        },
+      },
+      required: ["path"],
+    } as Anthropic.Tool["input_schema"],
+  },
+  {
+    name: "search_files",
+    description:
+      "Search text within opened virtual source files and return line snippets.",
+    input_schema: {
+      type: "object",
+      properties: {
+        query: {
+          type: "string",
+          description: "Term or phrase to search for in opened source files.",
+        },
+        path: {
+          type: "string",
+          description:
+            "Optional virtual source path or /sources prefix to narrow the search.",
+        },
+        max_results: {
+          type: "integer",
+          minimum: 1,
+          maximum: MAX_SEARCH_FILE_RESULTS,
+          description:
+            "Maximum matches to return. Default 8, hard cap 20.",
+        },
+      },
+      required: ["query"],
+    } as Anthropic.Tool["input_schema"],
+  },
+  {
     name: "read_source",
-    description: "Read a range from a previously opened URL.",
+    description:
+      "Legacy escape hatch: read a character range from a previously opened URL.",
     input_schema: {
       type: "object",
       properties: {
@@ -330,11 +418,110 @@ function markdownHeadingOutline(markdown: string): string {
   return headings.length > 0 ? `Heading outline:\n${headings.join("\n")}` : "";
 }
 
+function sourceFiles(ctx: AgentContext): Map<string, OpenedSourceFile> {
+  if (ctx.openedSourceFiles) return ctx.openedSourceFiles;
+
+  const files = new Map<string, OpenedSourceFile>();
+  ctx.openedPages.forEach((page, index) => {
+    const markdown = ctx.openedPageMarkdowns.get(page.url);
+    if (!markdown) return;
+    const file = createSourceFile(index + 1, page.url, page.title, markdown);
+    files.set(file.path, file);
+  });
+  ctx.openedSourceFiles = files;
+  return files;
+}
+
+function createSourceFile(
+  index: number,
+  url: string,
+  title: string,
+  markdown: string,
+): OpenedSourceFile {
+  const path = sourceFilePath(index, title, url);
+  return {
+    path,
+    url,
+    title,
+    markdown,
+    lines: markdown.split("\n"),
+  };
+}
+
+function sourceFilePath(index: number, title: string, url: string): string {
+  const slug = slugifySourceTitle(title) || slugifySourceTitle(safeHostname(url)) || "source";
+  return `/sources/${String(index).padStart(3, "0")}-${slug}.md`;
+}
+
+function slugifySourceTitle(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/https?:\/\//g, "")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 60);
+}
+
+function safeHostname(url: string): string {
+  try {
+    return new URL(url).hostname.replace(/^www\./, "");
+  } catch {
+    return "";
+  }
+}
+
+function sourceHeadingOutline(file: OpenedSourceFile): string {
+  const headings = file.lines
+    .map((line, index) => ({ line: line.trim(), lineNumber: index + 1 }))
+    .filter(({ line }) => /^#{1,4}\s+\S/.test(line))
+    .slice(0, 80)
+    .map(({ line, lineNumber }) => `${lineNumber}: ${line}`);
+
+  return headings.length > 0 ? `Outline:\n${headings.join("\n")}` : "";
+}
+
+function findSourceFile(
+  ctx: AgentContext,
+  path: string,
+): OpenedSourceFile | undefined {
+  const normalizedPath = path.trim();
+  return sourceFiles(ctx).get(normalizedPath);
+}
+
+function formatFileLines(
+  file: OpenedSourceFile,
+  startLine: number,
+  maxLines: number,
+): string {
+  const endLine = Math.min(file.lines.length, startLine + maxLines - 1);
+  const width = String(endLine).length;
+  const body = file.lines
+    .slice(startLine - 1, endLine)
+    .map((line, index) => {
+      const lineNumber = String(startLine + index).padStart(width, " ");
+      return `${lineNumber}|${line}`;
+    })
+    .join("\n");
+  const next =
+    endLine < file.lines.length
+      ? `\nNext line: ${endLine + 1}`
+      : "\nEnd of file.";
+
+  return (
+    `File: ${file.path}\nTitle: ${file.title}\nURL: ${file.url}\n` +
+    `Lines ${startLine}-${endLine} of ${file.lines.length}:\n${body}${next}`
+  );
+}
+
 function openedPagesSummary(ctx: AgentContext): string {
   if (ctx.openedPages.length === 0) return "No pages opened yet.";
 
   return ctx.openedPages
-    .map((page) => `${page.title} — ${page.url}`)
+    .map((page) => {
+      const file = [...sourceFiles(ctx).values()].find((item) => item.url === page.url);
+      const path = file ? `${file.path} — ` : "";
+      return `${path}${page.title} — ${page.url}`;
+    })
     .join("\n");
 }
 
@@ -365,7 +552,7 @@ function gatherStartPrompt(opts: {
     dollarBudget +
     `Runtime safety limits: at most ${opts.maxToolCalls} tool calls and ${opts.openedPageCap} opened pages.\n\n` +
     openedPages +
-    `Gather enough evidence using the available tools. Use read_source(url, offset) on opened URLs when you need more than the initial excerpt. When you have enough evidence, stop emitting tool calls and write the Markdown answer directly. Cite the source URLs you actually rely on in the Markdown.`
+    `Gather enough evidence using the available tools. open_url saves pages as virtual Markdown files under /sources; use list_sources, search_files, and read_file to inspect opened sources. read_source(url, offset) is available as a low-level fallback. When you have enough evidence, stop emitting tool calls and write the Markdown answer directly. Cite the source URLs you actually rely on in the Markdown.`
   );
 }
 
@@ -492,7 +679,7 @@ function reserveOpen(ctx: AgentContext, url: string): OpenReservation | string {
   const normalizedUrl = normalizeFetchUrl(url);
   if (ctx.openedPageUrls.has(normalizedUrl)) {
     const existing = ctx.openedPages.find((s) => normalizeFetchUrl(s.url) === normalizedUrl);
-    return `Already opened: ${existing?.title ?? url}. Use read_source with the URL or pick a different result.`;
+    return `Already opened: ${existing?.title ?? url}. Use list_sources/read_file/search_files or pick a different result.`;
   }
   if (ctx.openReservations.urls.has(normalizedUrl)) {
     return `Already being opened: ${url}. Pick a different result.`;
@@ -597,6 +784,134 @@ async function execSearch(
     });
     return `Search failed: ${error}`;
   }
+}
+
+function execListSources(ctx: AgentContext): string {
+  const files = [...sourceFiles(ctx).values()];
+  if (files.length === 0) {
+    return "No source files opened yet. Use open_url to create files under /sources.";
+  }
+
+  return (
+    `Opened source files (${files.length}):\n\n` +
+    files
+      .map((file) =>
+        `${file.path}\n  Title: ${file.title}\n  URL: ${file.url}\n  Lines: 1-${file.lines.length}`,
+      )
+      .join("\n\n")
+  );
+}
+
+function execReadFile(args: ReadFileToolInput, ctx: AgentContext): string {
+  const path = String(args.path ?? "").trim();
+  if (!path) return "Error: read_file requires a `path`.";
+
+  const file = findSourceFile(ctx, path);
+  if (!file) {
+    return `Error: source file not found: ${path}. Use list_sources to see opened files.`;
+  }
+
+  const startLineRaw = args.start_line ?? 1;
+  const maxLinesRaw = args.max_lines ?? DEFAULT_READ_FILE_LINES;
+  const startLine = Math.floor(Number(startLineRaw));
+  const maxLines = Math.min(
+    MAX_READ_FILE_LINES,
+    Math.max(1, Math.floor(Number(maxLinesRaw))),
+  );
+  if (!Number.isFinite(startLine) || startLine < 1) {
+    return "Error: read_file start_line must be a positive integer.";
+  }
+  if (!Number.isFinite(maxLines)) {
+    return "Error: read_file max_lines must be a number.";
+  }
+  if (startLine > file.lines.length) {
+    return `File: ${file.path}\nTitle: ${file.title}\nURL: ${file.url}\n\nStart line ${startLine} is past the end of the file (${file.lines.length} lines).`;
+  }
+
+  return formatFileLines(file, startLine, maxLines);
+}
+
+function searchFileMatches(
+  file: OpenedSourceFile,
+  query: string,
+): Array<{ lineNumber: number; line: string }> {
+  const needle = query.toLowerCase();
+  const terms = needle.split(/\s+/).filter((term) => term.length > 1);
+
+  return file.lines.flatMap((line, index) => {
+    const haystack = line.toLowerCase();
+    const matched =
+      haystack.includes(needle) ||
+      (terms.length > 1 && terms.every((term) => haystack.includes(term)));
+    return matched ? [{ lineNumber: index + 1, line }] : [];
+  });
+}
+
+function sourceFilesForSearch(
+  ctx: AgentContext,
+  path: string | undefined,
+): OpenedSourceFile[] {
+  const files = [...sourceFiles(ctx).values()];
+  const normalizedPath = path?.trim();
+  if (!normalizedPath || normalizedPath === "/sources" || normalizedPath === "/sources/") {
+    return files;
+  }
+  return files.filter((file) => file.path === normalizedPath);
+}
+
+function formatSearchFileSnippet(
+  file: OpenedSourceFile,
+  lineNumber: number,
+): string {
+  const startLine = Math.max(1, lineNumber - SEARCH_FILE_CONTEXT_LINES);
+  const endLine = Math.min(file.lines.length, lineNumber + SEARCH_FILE_CONTEXT_LINES);
+  const width = String(endLine).length;
+  const body = file.lines
+    .slice(startLine - 1, endLine)
+    .map((line, index) => {
+      const currentLine = startLine + index;
+      const marker = currentLine === lineNumber ? ">" : " ";
+      return `${marker}${String(currentLine).padStart(width, " ")}|${line}`;
+    })
+    .join("\n");
+
+  return `${file.path}:${lineNumber}\nTitle: ${file.title}\nURL: ${file.url}\n${body}`;
+}
+
+function execSearchFiles(args: SearchFilesToolInput, ctx: AgentContext): string {
+  const query = String(args.query ?? "").trim();
+  if (!query) return "Error: search_files requires a non-empty `query`.";
+
+  const maxResultsRaw = args.max_results ?? DEFAULT_SEARCH_FILE_RESULTS;
+  const maxResults = Math.min(
+    MAX_SEARCH_FILE_RESULTS,
+    Math.max(1, Math.floor(Number(maxResultsRaw))),
+  );
+  if (!Number.isFinite(maxResults)) {
+    return "Error: search_files max_results must be a number.";
+  }
+
+  const files = sourceFilesForSearch(ctx, args.path);
+  if (files.length === 0) {
+    return args.path
+      ? `No opened source files match path: ${args.path}`
+      : "No source files opened yet. Use open_url before search_files.";
+  }
+
+  const snippets: string[] = [];
+  for (const file of files) {
+    for (const match of searchFileMatches(file, query)) {
+      snippets.push(formatSearchFileSnippet(file, match.lineNumber));
+      if (snippets.length >= maxResults) break;
+    }
+    if (snippets.length >= maxResults) break;
+  }
+
+  if (snippets.length === 0) {
+    return `No matches for "${query}" in ${files.length} opened source file${files.length === 1 ? "" : "s"}.`;
+  }
+
+  return `${snippets.length} match${snippets.length === 1 ? "" : "es"} for "${query}":\n\n${snippets.join("\n\n")}`;
 }
 
 async function execReadSource(
@@ -737,6 +1052,75 @@ async function executeToolUse(
     }
   }
 
+  if (tu.name === "list_sources") {
+    try {
+      const text = execListSources(ctx);
+      return {
+        toolResult: {
+          type: "tool_result",
+          tool_use_id: tu.id,
+          content: text,
+        },
+      };
+    } catch (err) {
+      ctx.abort();
+      return {
+        toolResult: {
+          type: "tool_result",
+          tool_use_id: tu.id,
+          content: `Tool error: ${err instanceof Error ? err.message : String(err)}`,
+          is_error: true,
+        },
+      };
+    }
+  }
+
+  if (tu.name === "read_file") {
+    try {
+      const text = execReadFile((tu.input as ReadFileToolInput) ?? {}, ctx);
+      return {
+        toolResult: {
+          type: "tool_result",
+          tool_use_id: tu.id,
+          content: text,
+        },
+      };
+    } catch (err) {
+      ctx.abort();
+      return {
+        toolResult: {
+          type: "tool_result",
+          tool_use_id: tu.id,
+          content: `Tool error: ${err instanceof Error ? err.message : String(err)}`,
+          is_error: true,
+        },
+      };
+    }
+  }
+
+  if (tu.name === "search_files") {
+    try {
+      const text = execSearchFiles((tu.input as SearchFilesToolInput) ?? {}, ctx);
+      return {
+        toolResult: {
+          type: "tool_result",
+          tool_use_id: tu.id,
+          content: text,
+        },
+      };
+    } catch (err) {
+      ctx.abort();
+      return {
+        toolResult: {
+          type: "tool_result",
+          tool_use_id: tu.id,
+          content: `Tool error: ${err instanceof Error ? err.message : String(err)}`,
+          is_error: true,
+        },
+      };
+    }
+  }
+
   if (tu.name === "read_source") {
     try {
       const text = await execReadSource(
@@ -852,25 +1236,41 @@ async function execFetch(
     // Add while the reservation is still held so cache entries and caps stay
     // consistent across parallel tool calls.
     const resolvedTitle = title ?? url;
+    const storedMarkdown = markdown.slice(0, STORED_MARKDOWN_CAP);
+    const file = createSourceFile(
+      ctx.openedPages.length + 1,
+      url,
+      resolvedTitle,
+      storedMarkdown,
+    );
     ctx.openedPages.push({
       url,
       title: resolvedTitle,
     });
     ctx.openedPageUrls.add(url);
-    ctx.openedPageMarkdowns.set(url, markdown.slice(0, STORED_MARKDOWN_CAP));
+    ctx.openedPageMarkdowns.set(url, storedMarkdown);
+    sourceFiles(ctx).set(file.path, file);
 
     ctx.emit({
-        type: "page_opened",
+      type: "page_opened",
       url,
       title: resolvedTitle,
     });
 
     const snippetChars = ctx.fetchSnippetChars ?? FETCH_SNIPPET_CHARS;
-    const snippet = markdown.slice(0, snippetChars).trim();
-    const nextOffset = Math.min(snippetChars, markdown.length);
+    const previewLines = Math.max(
+      1,
+      storedMarkdown.slice(0, snippetChars).split("\n").length,
+    );
+    const preview = formatFileLines(file, 1, Math.min(DEFAULT_READ_FILE_LINES, previewLines));
+    const outline = sourceHeadingOutline(file);
     return {
       opened_url: url,
-      text: `Opened: ${resolvedTitle}\nURL: ${url}\nSaved in memory for this run. Use read_source with this URL and offset ${nextOffset} for deeper reading.\nFirst ${snippetChars.toLocaleString()} chars:\n${snippet}`,
+      text:
+        `Opened source file: ${file.path}\nTitle: ${resolvedTitle}\nURL: ${url}\n` +
+        `Lines: 1-${file.lines.length}\n` +
+        (outline ? `${outline}\n\n` : "\n") +
+        `${preview}\n\nUse read_file with ${file.path} and a start_line for deeper reading, or search_files to search opened sources.`,
     };
   } catch (err) {
     ctx.caches.scrape.delete(url);

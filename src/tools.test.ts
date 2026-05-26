@@ -42,7 +42,7 @@ function finalReport(): Anthropic.Message {
 
 function toolUse(
   id: string,
-  name: "search" | "open_url" | "read_source",
+  name: "search" | "open_url" | "list_sources" | "read_file" | "search_files" | "read_source",
   input: Record<string, unknown> = {},
 ): Anthropic.ToolUseBlock {
   return { type: "tool_use", id, name, input } as unknown as Anthropic.ToolUseBlock;
@@ -216,6 +216,152 @@ describe("gather loop cache integration", () => {
       },
     ]);
     expect(ctx.openedPageMarkdowns.get("https://example.com/source")).toContain("Detailed source body");
+  });
+
+  it("opens pages as virtual source files readable by line", async () => {
+    const fetch = vi.fn(async () => {
+      const body = `
+        <html>
+          <head><title>Primary Source</title></head>
+          <body>
+            <main>
+              <h1>Primary Source</h1>
+              <h2>Methods</h2>
+              ${"<p>Line-readable evidence about methods and controls.</p>".repeat(20)}
+            </main>
+          </body>
+        </html>
+      `;
+      return new Response(body, {
+        headers: { "content-type": "text/html; charset=utf-8" },
+      });
+    });
+    vi.stubGlobal("fetch", fetch);
+    const messagesCreate = vi
+      .fn()
+      .mockResolvedValueOnce(
+        messageWith([
+          toolUse("open_1", "open_url", { url: "https://example.com/source" }),
+        ]),
+      )
+      .mockResolvedValueOnce(
+        messageWith([
+          toolUse("read_1", "read_file", {
+            path: "/sources/001-primary-source.md",
+            start_line: 1,
+            max_lines: 20,
+          }),
+        ]),
+      )
+      .mockResolvedValueOnce(finalReport());
+    const ctx: AgentContext = {
+      anthropic: {
+        messages: { create: messagesCreate },
+      } as unknown as Anthropic,
+      steel: { scrape: vi.fn() } as unknown as Steel,
+      openedPages: [],
+      openedPageUrls: new Set(),
+      openedPageMarkdowns: new Map(),
+      emit: vi.fn(),
+      abort: vi.fn(),
+      defaultEngine: "ddg",
+      useProxy: false,
+      openedPageCap: 4,
+      maxConcurrentTools: 2,
+      steelGate: createSteelGate(2),
+      openReservations: createOpenReservations(),
+      caches: createResearchCaches(),
+    };
+
+    const result = await runGatherAgent({
+      ctx,
+      query: "What is Atlas?",
+      max_tool_calls: 3,
+    });
+    const readRequest = messagesCreate.mock.calls[2]?.[0] as {
+      messages: Array<{ content: unknown }>;
+    };
+
+    expect(result.finish_reason).toBe("final report");
+    expect(JSON.stringify(readRequest.messages)).toContain(
+      "Opened source file: /sources/001-primary-source.md",
+    );
+    expect(JSON.stringify(readRequest.messages)).toContain(
+      "File: /sources/001-primary-source.md",
+    );
+    expect(JSON.stringify(readRequest.messages)).toContain("Line-readable evidence");
+  });
+
+  it("searches opened virtual source files", async () => {
+    const fetch = vi.fn(async () => {
+      const body = `
+        <html>
+          <head><title>Flavor Study</title></head>
+          <body>
+            <main>
+              <h1>Flavor Study</h1>
+              ${"<p>Methods text about sampling and controls.</p>".repeat(10)}
+              ${"<p>Isoamyl acetate and ester compounds increased during ripening.</p>".repeat(10)}
+            </main>
+          </body>
+        </html>
+      `;
+      return new Response(body, {
+        headers: { "content-type": "text/html; charset=utf-8" },
+      });
+    });
+    vi.stubGlobal("fetch", fetch);
+    const messagesCreate = vi
+      .fn()
+      .mockResolvedValueOnce(
+        messageWith([
+          toolUse("open_1", "open_url", { url: "https://example.com/flavor" }),
+        ]),
+      )
+      .mockResolvedValueOnce(
+        messageWith([
+          toolUse("search_files_1", "search_files", {
+            query: "Isoamyl acetate",
+            path: "/sources",
+          }),
+        ]),
+      )
+      .mockResolvedValueOnce(finalReport());
+    const ctx: AgentContext = {
+      anthropic: {
+        messages: { create: messagesCreate },
+      } as unknown as Anthropic,
+      steel: { scrape: vi.fn() } as unknown as Steel,
+      openedPages: [],
+      openedPageUrls: new Set(),
+      openedPageMarkdowns: new Map(),
+      emit: vi.fn(),
+      abort: vi.fn(),
+      defaultEngine: "ddg",
+      useProxy: false,
+      openedPageCap: 4,
+      maxConcurrentTools: 2,
+      steelGate: createSteelGate(2),
+      openReservations: createOpenReservations(),
+      caches: createResearchCaches(),
+    };
+
+    const result = await runGatherAgent({
+      ctx,
+      query: "What is Atlas?",
+      max_tool_calls: 3,
+    });
+    const searchRequest = messagesCreate.mock.calls[2]?.[0] as {
+      messages: Array<{ content: unknown }>;
+    };
+
+    expect(result.finish_reason).toBe("final report");
+    expect(JSON.stringify(searchRequest.messages)).toContain(
+      "matches for \\\"Isoamyl acetate\\\"",
+    );
+    expect(JSON.stringify(searchRequest.messages)).toContain(
+      "/sources/001-flavor-study.md",
+    );
   });
 
   it("reads contiguous ranges from opened page markdown", async () => {

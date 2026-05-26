@@ -11,6 +11,7 @@ import {
   createSteelGate,
   runGatherAgent,
   type AgentContext,
+  type OpenedSourceFile,
 } from "./tools.js";
 
 const DEFAULT_RUNTIME_LIMITS = {
@@ -161,6 +162,7 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
   const openedPages: CitedSource[] = [];
   const openedPageUrls = new Set<string>();
   const openedPageMarkdowns = new Map<string, string>();
+  const openedSourceFiles = new Map<string, OpenedSourceFile>();
 
   const ctx: AgentContext = {
     anthropic,
@@ -168,6 +170,7 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
     openedPages,
     openedPageUrls,
     openedPageMarkdowns,
+    openedSourceFiles,
     emit,
     abort,
     signal: runSignal,
