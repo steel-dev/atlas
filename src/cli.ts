@@ -122,6 +122,14 @@ function prettyEvent(e: ResearchEvent): string {
   }
 }
 
+function writeCompletionSummary(result: Awaited<ReturnType<typeof research>>, json: boolean): void {
+  if (json) {
+    process.stderr.write(JSON.stringify({ type: "completed", result }) + "\n");
+    return;
+  }
+  process.stderr.write(prettyEvent({ type: "completed", result }) + "\n");
+}
+
 async function main(): Promise<void> {
   const parsed = (() => {
     try {
@@ -211,18 +219,14 @@ async function main(): Promise<void> {
     if (values.out) {
       writeFileSync(values.out, result.markdown);
       if (!quiet) {
-        process.stderr.write(
-          prettyEvent({ type: "completed", result }) + "\n",
-        );
+        writeCompletionSummary(result, json);
         process.stderr.write(`  ↳ wrote ${values.out}\n`);
       }
     } else {
       process.stdout.write(result.markdown);
       if (!result.markdown.endsWith("\n")) process.stdout.write("\n");
       if (!quiet) {
-        process.stderr.write(
-          prettyEvent({ type: "completed", result }) + "\n",
-        );
+        writeCompletionSummary(result, json);
       }
     }
   } catch (err) {
