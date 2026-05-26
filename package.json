@@ -1,5 +1,5 @@
 {
-  "name": "atlas",
+  "name": "@steel-dev/atlas",
   "version": "0.1.0",
   "description": "Deep research from your terminal or your code. Backed by Steel Browser and Anthropic Claude.",
   "type": "module",
@@ -12,7 +12,7 @@
     }
   },
   "bin": {
-    "atlas": "./dist/cli.js"
+    "@steel-dev/atlas": "./dist/cli.js"
   },
   "files": [
     "dist",
