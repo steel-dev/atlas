@@ -528,6 +528,54 @@ describe("gather loop cache integration", () => {
     expect(toolResultText(readRequest)).toContain("Line-readable evidence");
   });
 
+  it("shares an in-flight scrape for duplicate parallel fetches", async () => {
+    const scrape = vi.fn(
+      async () =>
+        new Promise((resolve) => {
+          setTimeout(
+            () =>
+              resolve({
+                content: {
+                  markdown: "# Shared Source\n\nEvidence from one browser fetch.",
+                },
+                metadata: { title: "Shared Source" },
+              }),
+            1,
+          );
+        }),
+    );
+    const messagesCreate = vi
+      .fn()
+      .mockResolvedValueOnce(
+        messageWith([
+          toolUse("fetch_1", "fetch", { url: "https://example.com/shared" }),
+          toolUse("fetch_2", "fetch", { url: "https://example.com/shared" }),
+        ]),
+      )
+      .mockResolvedValueOnce(finalReport());
+    const ctx = createContext({ messagesCreate, scrape });
+
+    const result = await runGatherAgent({
+      ctx,
+      query: "What is Atlas?",
+      max_tool_calls: 2,
+    });
+    const followupRequest = messagesCreate.mock.calls[1]?.[0] as {
+      messages: Array<{ content: unknown }>;
+    };
+
+    expect(result.finish_reason).toBe("final report after tool call budget exhausted");
+    expect(scrape).toHaveBeenCalledTimes(1);
+    expect(ctx.openedPages).toEqual([
+      {
+        url: "https://example.com/shared",
+        title: "Shared Source",
+      },
+    ]);
+    expect(toolResultText(followupRequest)).not.toContain("Already being fetched");
+    expect(toolResultText(followupRequest)).toContain("Evidence from one browser fetch");
+  });
+
   it("starts gather runs with a minimal research-question prompt", async () => {
     const messagesCreate = vi.fn().mockResolvedValueOnce(finalReport());
     const ctx = createContext({

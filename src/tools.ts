@@ -29,6 +29,7 @@ export interface SteelGate {
 export interface OpenReservations {
   urls: Set<string>;
   pageSlots: number;
+  files: Map<string, Promise<OpenedSourceFile | null>>;
 }
 
 interface ScrapeCacheEntry {
@@ -109,6 +110,7 @@ export function createOpenReservations(): OpenReservations {
   return {
     urls: new Set<string>(),
     pageSlots: 0,
+    files: new Map<string, Promise<OpenedSourceFile | null>>(),
   };
 }
 
@@ -803,6 +805,47 @@ function formatFetchResult(
   return JSON.stringify(result, null, 2);
 }
 
+async function openSourceFile(
+  ctx: AgentContext,
+  url: string,
+): Promise<OpenedSourceFile | null> {
+  ctx.emit({ type: "fetching", url });
+
+  const { markdown, title, metadata } = await scrapeWithCache(ctx, url);
+  if (!markdown) {
+    ctx.caches.scrape.delete(url);
+    ctx.emit({
+      type: "source_error",
+      url,
+      error: "Empty markdown",
+    });
+    return null;
+  }
+
+  const resolvedTitle = title ?? url;
+  const stored = storeMarkdown(markdown);
+  const file = createSourceFile(
+    url,
+    resolvedTitle,
+    stored.markdown,
+    metadata,
+    stored.originalChars,
+  );
+  ctx.openedPages.push({
+    url,
+    title: resolvedTitle,
+  });
+  ctx.openedSourceFiles.set(normalizeFetchUrl(url), file);
+
+  ctx.emit({
+    type: "page_opened",
+    url,
+    title: resolvedTitle,
+  });
+
+  return file;
+}
+
 async function execFetch(
   args: FetchToolInput,
   ctx: AgentContext,
@@ -823,60 +866,39 @@ async function execFetch(
 
   ctx.abort();
 
-  const reservation = reserveOpen(ctx, requestedUrl);
-  if (typeof reservation === "string") return { text: reservation };
-  const url = reservation.url;
-
-  ctx.emit({ type: "fetching", url });
+  let openedThisCall = false;
+  let openPromise = ctx.openReservations.files.get(normalizedUrl);
+  if (!openPromise) {
+    const reservation = reserveOpen(ctx, requestedUrl);
+    if (typeof reservation === "string") return { text: reservation };
+    const url = reservation.url;
+    openedThisCall = true;
+    openPromise = openSourceFile(ctx, url).finally(() => {
+      ctx.openReservations.files.delete(normalizedUrl);
+      releaseOpenReservation(ctx, reservation);
+    });
+    ctx.openReservations.files.set(normalizedUrl, openPromise);
+  }
 
   try {
-    const { markdown, title, metadata } = await scrapeWithCache(ctx, url);
-    if (!markdown) {
-      ctx.caches.scrape.delete(url);
-      ctx.emit({
-        type: "source_error",
-        url,
-        error: "Empty markdown",
-      });
+    const file = await openPromise;
+    if (!file) {
       return { text: "Empty page (no content fetched)." };
     }
 
-    const resolvedTitle = title ?? url;
-    const stored = storeMarkdown(markdown);
-    const file = createSourceFile(
-      url,
-      resolvedTitle,
-      stored.markdown,
-      metadata,
-      stored.originalChars,
-    );
-    ctx.openedPages.push({
-      url,
-      title: resolvedTitle,
-    });
-    ctx.openedSourceFiles.set(normalizedUrl, file);
-
-    ctx.emit({
-      type: "page_opened",
-      url,
-      title: resolvedTitle,
-    });
-
     return {
-      opened_url: url,
+      opened_url: openedThisCall ? file.url : undefined,
       text: formatFetchResult(file, offset, maxChars),
     };
   } catch (err) {
-    ctx.caches.scrape.delete(url);
+    ctx.caches.scrape.delete(normalizedUrl);
     const message = errorMessage(err);
     ctx.emit({
       type: "source_error",
-      url,
+      url: normalizedUrl,
       error: message,
     });
     return { text: `Fetch error: ${message}` };
-  } finally {
-    releaseOpenReservation(ctx, reservation);
   }
 }
 
