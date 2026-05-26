@@ -75,7 +75,7 @@ function prettyEvent(e: ResearchEvent): string {
     case "agent_finished":
       return (
         paint(DIM, "  ✓") +
-        ` agent done — ${e.sources_added} source${e.sources_added === 1 ? "" : "s"}`
+        ` agent done — ${e.pages_opened} page${e.pages_opened === 1 ? "" : "s"} opened`
       );
     case "searching":
       return paint(DIM, `    search:`) + ` ${e.query}`;
@@ -92,7 +92,7 @@ function prettyEvent(e: ResearchEvent): string {
         paint(YELLOW, "    ! rate limited:") +
         ` waiting ${e.retry_after_seconds}s (retry ${e.attempt}/${e.max_attempts - 1})`
       );
-    case "document_fetched":
+    case "page_opened":
       return paint(GREEN, `    ✓`) + ` ${e.url}`;
     case "source_error":
       return paint(YELLOW, `    ! ${e.url} — ${e.error}`);

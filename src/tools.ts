@@ -32,9 +32,9 @@ export interface SteelGate {
   run<T>(fn: () => Promise<T>): Promise<T>;
 }
 
-export interface SourceReservations {
+export interface OpenReservations {
   urls: Set<string>;
-  sourceSlots: number;
+  pageSlots: number;
 }
 
 interface ScrapeCacheEntry {
@@ -93,10 +93,10 @@ export function createResearchCaches(): ResearchCaches {
   };
 }
 
-export function createSourceReservations(): SourceReservations {
+export function createOpenReservations(): OpenReservations {
   return {
     urls: new Set<string>(),
-    sourceSlots: 0,
+    pageSlots: 0,
   };
 }
 
@@ -105,37 +105,37 @@ export function createSourceReservations(): SourceReservations {
 //
 // A single gather loop gets these tools:
 //   - search(query, limit?)
-//   - fetch(url) — scrape + atomic commit to global pool
+//   - open_url(url) — fetch a page into the in-memory working set
 //
 // The agent terminates by emitting a final message with no tool calls, or by
-// hitting a runtime safety limit. The agent can read deeper ranges from fetched
+// hitting a runtime safety limit. The agent can read deeper ranges from opened
 // pages when the initial excerpt is not enough.
 //
-// Global invariants (URL dedup, source cap) are enforced
+// Runtime invariants (URL dedup, opened-page cap) are enforced
 // INSIDE the tools, so the agent can't break them no matter what it picks.
 // ----------------------------------------------------------------------------
 
 export interface AgentContext {
   anthropic: Anthropic;
   steel: Steel;
-  sources: CitedSource[];
-  sourceUrls: Set<string>;
-  sourceMarkdowns: Map<string, string>;
+  openedPages: CitedSource[];
+  openedPageUrls: Set<string>;
+  openedPageMarkdowns: Map<string, string>;
   emit: (e: AgenticEvent) => void;
   abort: () => void;
-  /** Forwarded to every Anthropic / Steel / fetch call so cancellation
+  /** Forwarded to every Anthropic / Steel / HTTP call so cancellation
    *  interrupts in-flight requests, not just step boundaries. */
   signal?: AbortSignal;
   defaultEngine: Engine;
   useProxy: boolean;
   fastModel?: string;
-  globalSourceCap: number;
+  openedPageCap: number;
   gatherMaxTokens?: number;
   defaultSearchLimit?: number;
   maxConcurrentTools?: number;
   fetchSnippetChars?: number;
   steelGate: SteelGate;
-  sourceReservations: SourceReservations;
+  openReservations: OpenReservations;
   caches: ResearchCaches;
 }
 
@@ -167,15 +167,15 @@ export type AgenticEvent =
       max_attempts: number;
     }
   | {
-      type: "document_fetched";
+      type: "page_opened";
       url: string;
       title: string;
     }
   | { type: "source_error"; url: string; error: string }
-  | { type: "agent_finished"; sources_added: number };
+  | { type: "agent_finished"; pages_opened: number };
 
 export interface AgenticRunResult {
-  fetched_urls: string[];
+  opened_urls: string[];
   tool_calls: number;
   finish_reason: string;
   messages: Anthropic.MessageParam[];
@@ -217,14 +217,14 @@ const AGENT_TOOLS: Anthropic.Tool[] = [
     } as Anthropic.Tool["input_schema"],
   },
   {
-    name: "fetch",
-    description: "Fetch a URL into this agent's source list.",
+    name: "open_url",
+    description: "Open a URL and save its page text in this run's memory.",
     input_schema: {
       type: "object",
       properties: {
         url: {
           type: "string",
-          description: "Absolute http(s) URL of the page to commit as a source.",
+          description: "Absolute http(s) URL of the page to open.",
         },
       },
       required: ["url"],
@@ -232,13 +232,13 @@ const AGENT_TOOLS: Anthropic.Tool[] = [
   },
   {
     name: "read_source",
-    description: "Read a range from a fetched URL.",
+    description: "Read a range from a previously opened URL.",
     input_schema: {
       type: "object",
       properties: {
         url: {
           type: "string",
-          description: "Absolute http(s) URL previously fetched in this agent.",
+          description: "Absolute http(s) URL previously opened in this run.",
         },
         offset: {
           type: "integer",
@@ -261,8 +261,8 @@ const AGENT_TOOLS: Anthropic.Tool[] = [
 
 const AGENT_SYSTEM = `You're a deep research agent. Use the available tools as needed to answer the user's question. Work within the user's dollar/time budget. When you have enough evidence, stop using tools and write a cited Markdown report. Do not cite internal source numbers.`;
 
-function totalSourceSlots(ctx: AgentContext): number {
-  return ctx.sources.length + ctx.sourceReservations.sourceSlots;
+function totalOpenSlots(ctx: AgentContext): number {
+  return ctx.openedPages.length + ctx.openReservations.pageSlots;
 }
 
 function normalizeFetchUrl(url: string): string {
@@ -330,11 +330,11 @@ function markdownHeadingOutline(markdown: string): string {
   return headings.length > 0 ? `Heading outline:\n${headings.join("\n")}` : "";
 }
 
-function sourcePoolSummary(ctx: AgentContext): string {
-  if (ctx.sources.length === 0) return "No sources committed yet.";
+function openedPagesSummary(ctx: AgentContext): string {
+  if (ctx.openedPages.length === 0) return "No pages opened yet.";
 
-  return ctx.sources
-    .map((source) => `${source.title} — ${source.url}`)
+  return ctx.openedPages
+    .map((page) => `${page.title} — ${page.url}`)
     .join("\n");
 }
 
@@ -348,7 +348,7 @@ function textFromContent(content: Anthropic.Message["content"]): string {
 function gatherStartPrompt(opts: {
   query: string;
   maxToolCalls: number;
-  sourceCap: number;
+  openedPageCap: number;
   ctx: AgentContext;
   budgetUsd?: number;
 }): string {
@@ -356,16 +356,16 @@ function gatherStartPrompt(opts: {
     opts.budgetUsd !== undefined
       ? `User budget hint: up to $${opts.budgetUsd.toFixed(2)} for this run. Use it when more evidence will materially improve the answer.\n`
       : "";
-  const sourcePool =
-    opts.ctx.sources.length > 0
-      ? `Existing document cache:\n${sourcePoolSummary(opts.ctx)}\n\n`
+  const openedPages =
+    opts.ctx.openedPages.length > 0
+      ? `Opened pages in memory:\n${openedPagesSummary(opts.ctx)}\n\n`
       : "";
   return (
     `Research question: ${opts.query}\n\n` +
     dollarBudget +
-    `Runtime safety limits: at most ${opts.maxToolCalls} tool calls and ${opts.sourceCap} fetched documents.\n\n` +
-    sourcePool +
-    `Gather enough evidence using the available tools. Use read_source(url, offset) on fetched URLs when you need more than the initial fetch excerpt. When you have enough evidence, stop emitting tool calls and write the Markdown answer directly.`
+    `Runtime safety limits: at most ${opts.maxToolCalls} tool calls and ${opts.openedPageCap} opened pages.\n\n` +
+    openedPages +
+    `Gather enough evidence using the available tools. Use read_source(url, offset) on opened URLs when you need more than the initial excerpt. When you have enough evidence, stop emitting tool calls and write the Markdown answer directly. Cite the source URLs you actually rely on in the Markdown.`
   );
 }
 
@@ -484,37 +484,37 @@ async function searchWithCache(
   }
 }
 
-interface FetchReservation {
+interface OpenReservation {
   url: string;
 }
 
-function reserveFetch(ctx: AgentContext, url: string): FetchReservation | string {
+function reserveOpen(ctx: AgentContext, url: string): OpenReservation | string {
   const normalizedUrl = normalizeFetchUrl(url);
-  if (ctx.sourceUrls.has(normalizedUrl)) {
-    const existing = ctx.sources.find((s) => normalizeFetchUrl(s.url) === normalizedUrl);
-    return `Already fetched: ${existing?.title ?? url}. Pick a different result or use read_source with the URL.`;
+  if (ctx.openedPageUrls.has(normalizedUrl)) {
+    const existing = ctx.openedPages.find((s) => normalizeFetchUrl(s.url) === normalizedUrl);
+    return `Already opened: ${existing?.title ?? url}. Use read_source with the URL or pick a different result.`;
   }
-  if (ctx.sourceReservations.urls.has(normalizedUrl)) {
-    return `Already being fetched: ${url}. Pick a different result.`;
-  }
-
-  if (totalSourceSlots(ctx) >= ctx.globalSourceCap) {
-    return `Global source cap reached (${ctx.globalSourceCap}). Stop fetching.`;
+  if (ctx.openReservations.urls.has(normalizedUrl)) {
+    return `Already being opened: ${url}. Pick a different result.`;
   }
 
-  ctx.sourceReservations.urls.add(normalizedUrl);
-  ctx.sourceReservations.sourceSlots++;
+  if (totalOpenSlots(ctx) >= ctx.openedPageCap) {
+    return `Opened page cap reached (${ctx.openedPageCap}). Stop opening new pages.`;
+  }
+
+  ctx.openReservations.urls.add(normalizedUrl);
+  ctx.openReservations.pageSlots++;
   return { url: normalizedUrl };
 }
 
-function releaseFetchReservation(
+function releaseOpenReservation(
   ctx: AgentContext,
-  reservation: FetchReservation,
+  reservation: OpenReservation,
 ): void {
-  ctx.sourceReservations.urls.delete(reservation.url);
-  ctx.sourceReservations.sourceSlots = Math.max(
+  ctx.openReservations.urls.delete(reservation.url);
+  ctx.openReservations.pageSlots = Math.max(
     0,
-    ctx.sourceReservations.sourceSlots - 1,
+    ctx.openReservations.pageSlots - 1,
   );
 }
 
@@ -608,14 +608,14 @@ async function execReadSource(
   if (validationError) return validationError;
 
   const url = normalizeFetchUrl(requestedUrl);
-  const source = ctx.sources.find((item) => normalizeFetchUrl(item.url) === url);
-  if (!source) {
-    return `Error: URL has not been fetched in this agent: ${url}`;
+  const page = ctx.openedPages.find((item) => normalizeFetchUrl(item.url) === url);
+  if (!page) {
+    return `Error: URL has not been opened in this run: ${url}`;
   }
 
-  const markdown = ctx.sourceMarkdowns.get(source.url);
+  const markdown = ctx.openedPageMarkdowns.get(page.url);
   if (!markdown?.trim()) {
-    return `Fetched URL has no stored markdown text: ${url}`;
+    return `Opened URL has no stored markdown text: ${url}`;
   }
 
   const outline = markdownHeadingOutline(markdown);
@@ -633,7 +633,7 @@ async function execReadSource(
     return `Error: read_source max_chars must be a number.`;
   }
   if (offset >= markdown.length) {
-    return `Fetched document: ${source.title}\nURL: ${source.url}\n\nOffset ${offset} is past the end of the stored source (${markdown.length} chars).`;
+    return `Opened page: ${page.title}\nURL: ${page.url}\n\nOffset ${offset} is past the end of the stored page (${markdown.length} chars).`;
   }
 
   const end = Math.min(markdown.length, offset + maxChars);
@@ -644,20 +644,20 @@ async function execReadSource(
       : "\nEnd of stored source.";
 
   return (
-    `Fetched document: ${source.title}\nURL: ${source.url}\n\n` +
+    `Opened page: ${page.title}\nURL: ${page.url}\n\n` +
     (outline ? `${outline}\n\n` : "") +
     `Source text (${offset}-${end} of ${markdown.length} chars):\n${sourceText}${nextOffset}`
   );
 }
 
-interface FetchOutcome {
+interface OpenOutcome {
   text: string;
-  fetched_url?: string;
+  opened_url?: string;
 }
 
 interface ToolExecution {
   toolResult: Anthropic.ToolResultBlockParam;
-  fetched_url?: string;
+  opened_url?: string;
 }
 
 async function mapWithConcurrency<T, R>(
@@ -713,11 +713,11 @@ async function executeToolUse(
     }
   }
 
-  if (tu.name === "fetch") {
+  if (tu.name === "open_url") {
     try {
       const out = await execFetch((tu.input as UrlToolInput) ?? {}, ctx);
       return {
-        fetched_url: out.fetched_url,
+        opened_url: out.opened_url,
         toolResult: {
           type: "tool_result",
           tool_use_id: tu.id,
@@ -824,12 +824,12 @@ async function scrapeWithCache(
 async function execFetch(
   args: UrlToolInput,
   ctx: AgentContext,
-): Promise<FetchOutcome> {
+): Promise<OpenOutcome> {
   const requestedUrl = String(args.url ?? "").trim();
-  const validationError = validateHttpUrl(requestedUrl, "fetch");
+  const validationError = validateHttpUrl(requestedUrl, "open_url");
   if (validationError) return { text: validationError };
 
-  const reservation = reserveFetch(ctx, requestedUrl);
+  const reservation = reserveOpen(ctx, requestedUrl);
   if (typeof reservation === "string") return { text: reservation };
   const url = reservation.url;
 
@@ -844,7 +844,7 @@ async function execFetch(
         url,
         error: "Empty markdown",
       });
-      return { text: `Empty page (no content fetched).` };
+      return { text: `Empty page (no content opened).` };
     }
 
     ctx.abort();
@@ -852,15 +852,15 @@ async function execFetch(
     // Add while the reservation is still held so cache entries and caps stay
     // consistent across parallel tool calls.
     const resolvedTitle = title ?? url;
-    ctx.sources.push({
+    ctx.openedPages.push({
       url,
       title: resolvedTitle,
     });
-    ctx.sourceUrls.add(url);
-    ctx.sourceMarkdowns.set(url, markdown.slice(0, STORED_MARKDOWN_CAP));
+    ctx.openedPageUrls.add(url);
+    ctx.openedPageMarkdowns.set(url, markdown.slice(0, STORED_MARKDOWN_CAP));
 
     ctx.emit({
-      type: "document_fetched",
+        type: "page_opened",
       url,
       title: resolvedTitle,
     });
@@ -869,8 +869,8 @@ async function execFetch(
     const snippet = markdown.slice(0, snippetChars).trim();
     const nextOffset = Math.min(snippetChars, markdown.length);
     return {
-      fetched_url: url,
-      text: `Fetched: ${resolvedTitle}\nURL: ${url}\nSaved in document cache. Use read_source with this URL and offset ${nextOffset} for deeper reading.\nFirst ${snippetChars.toLocaleString()} chars:\n${snippet}`,
+      opened_url: url,
+      text: `Opened: ${resolvedTitle}\nURL: ${url}\nSaved in memory for this run. Use read_source with this URL and offset ${nextOffset} for deeper reading.\nFirst ${snippetChars.toLocaleString()} chars:\n${snippet}`,
     };
   } catch (err) {
     ctx.caches.scrape.delete(url);
@@ -882,7 +882,7 @@ async function execFetch(
     });
     return { text: `Fetch error: ${message}` };
   } finally {
-    releaseFetchReservation(ctx, reservation);
+    releaseOpenReservation(ctx, reservation);
   }
 }
 
@@ -898,7 +898,7 @@ export async function runGatherAgent(opts: {
 
   ctx.emit({ type: "agent_started" });
 
-  const myFetchedUrls: string[] = [];
+  const openedUrls: string[] = [];
   let toolCalls = 0;
   let finishReason = "tool call budget exhausted";
   let markdown = "";
@@ -916,14 +916,14 @@ export async function runGatherAgent(opts: {
       content: gatherStartPrompt({
         query,
         maxToolCalls,
-        sourceCap: ctx.globalSourceCap,
+        openedPageCap: ctx.openedPageCap,
         ctx,
         budgetUsd: opts.budgetUsd,
       }),
     },
   ];
 
-  while (toolCalls < maxToolCalls && ctx.sources.length < ctx.globalSourceCap) {
+  while (toolCalls < maxToolCalls && ctx.openedPages.length < ctx.openedPageCap) {
     ctx.abort();
 
     let resp: Anthropic.Message;
@@ -989,15 +989,15 @@ export async function runGatherAgent(opts: {
       })),
     ];
     for (const execution of executions) {
-      if (execution.fetched_url !== undefined) {
-        myFetchedUrls.push(execution.fetched_url);
+      if (execution.opened_url !== undefined) {
+        openedUrls.push(execution.opened_url);
       }
     }
 
     messages.push({ role: "user", content: toolResults });
 
-    if (ctx.sources.length >= ctx.globalSourceCap) {
-      finishReason = "source cap reached";
+    if (ctx.openedPages.length >= ctx.openedPageCap) {
+      finishReason = "opened page cap reached";
       break;
     }
     if (toolCalls >= maxToolCalls) {
@@ -1009,7 +1009,7 @@ export async function runGatherAgent(opts: {
   if (
     !markdown &&
     (finishReason === "tool call budget exhausted" ||
-      finishReason === "source cap reached")
+      finishReason === "opened page cap reached")
   ) {
     ctx.abort();
     messages.push({
@@ -1044,11 +1044,11 @@ export async function runGatherAgent(opts: {
 
   ctx.emit({
     type: "agent_finished",
-    sources_added: myFetchedUrls.length,
+    pages_opened: openedUrls.length,
   });
 
   return {
-    fetched_urls: [...myFetchedUrls],
+    opened_urls: [...openedUrls],
     tool_calls: toolCalls,
     finish_reason: finishReason,
     messages: [...messages],

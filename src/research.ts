@@ -6,8 +6,8 @@ import {
 } from "./pipeline.js";
 import { createSteel } from "./steel.js";
 import {
+  createOpenReservations,
   createResearchCaches,
-  createSourceReservations,
   createSteelGate,
   runGatherAgent,
   type AgentContext,
@@ -43,7 +43,7 @@ export interface UsageSummary {
 }
 
 export interface AgentRun {
-  fetched_urls: string[];
+  opened_urls: string[];
   tool_calls: number;
   finish_reason: string;
 }
@@ -78,12 +78,12 @@ export type ResearchEvent =
       max_attempts: number;
     }
   | {
-      type: "document_fetched";
+      type: "page_opened";
       url: string;
       title: string;
     }
   | { type: "source_error"; url: string; error: string }
-  | { type: "agent_finished"; sources_added: number }
+  | { type: "agent_finished"; pages_opened: number }
   | { type: "written"; markdown_chars: number }
   | { type: "completed"; result: ResearchResult };
 
@@ -158,28 +158,28 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
   const usageSummary = instrumentAnthropic(anthropic);
   const steel = createSteel({ apiKey: steelApiKey, baseUrl: steelBaseUrl });
 
-  const sources: CitedSource[] = [];
-  const sourceUrls = new Set<string>();
-  const sourceMarkdowns = new Map<string, string>();
+  const openedPages: CitedSource[] = [];
+  const openedPageUrls = new Set<string>();
+  const openedPageMarkdowns = new Map<string, string>();
 
   const ctx: AgentContext = {
     anthropic,
     steel,
-    sources,
-    sourceUrls,
-    sourceMarkdowns,
+    openedPages,
+    openedPageUrls,
+    openedPageMarkdowns,
     emit,
     abort,
     signal: runSignal,
     defaultEngine: "ddg",
     useProxy: false,
     fastModel: limits.gatherModel,
-    globalSourceCap: safetySourceCap,
+    openedPageCap: safetySourceCap,
     gatherMaxTokens: limits.agentMaxTokens,
     defaultSearchLimit: limits.defaultSearchLimit,
     maxConcurrentTools: limits.maxConcurrentTools,
     steelGate: createSteelGate(limits.maxConcurrentSteelCalls),
-    sourceReservations: createSourceReservations(),
+    openReservations: createOpenReservations(),
     caches: createResearchCaches(),
   };
 
@@ -192,7 +192,7 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
   });
   const agentRuns: AgentRun[] = [
     {
-      fetched_urls: gather.fetched_urls,
+      opened_urls: gather.opened_urls,
       tool_calls: gather.tool_calls,
       finish_reason: gather.finish_reason,
     },
@@ -203,12 +203,13 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
   if (!markdown) {
     throw new Error(`research: agent did not produce a final report (${gather.finish_reason})`);
   }
+  const citedSources = sourcesCitedInMarkdown(markdown, openedPages);
   emit({ type: "written", markdown_chars: markdown.length });
 
   const result: ResearchResult = {
     query,
     agent_runs: agentRuns,
-    sources,
+    sources: citedSources,
     markdown,
     usage_summary: { ...usageSummary },
   };
@@ -223,6 +224,54 @@ function readEnv(...keys: string[]): string | undefined {
     if (value?.trim()) return value.trim();
   }
   return undefined;
+}
+
+function sourcesCitedInMarkdown(
+  markdown: string,
+  openedSources: CitedSource[],
+): CitedSource[] {
+  const citedUrls = extractMarkdownUrls(markdown);
+  const byNormalizedUrl = new Map(
+    openedSources.map((source) => [normalizeUrlForCitation(source.url), source]),
+  );
+
+  const citedSources: CitedSource[] = [];
+  const seen = new Set<string>();
+  for (const url of citedUrls) {
+    const normalized = normalizeUrlForCitation(url);
+    if (seen.has(normalized)) continue;
+    seen.add(normalized);
+    citedSources.push(byNormalizedUrl.get(normalized) ?? { url, title: url });
+  }
+  return citedSources;
+}
+
+function extractMarkdownUrls(markdown: string): string[] {
+  const urls: string[] = [];
+  const markdownLinkPattern = /\[[^\]]+\]\((https?:\/\/[^)\s]+)\)/gi;
+  for (const match of markdown.matchAll(markdownLinkPattern)) {
+    urls.push(stripTrailingUrlPunctuation(match[1]));
+  }
+
+  const bareUrlPattern = /https?:\/\/[^\s<>"')]+/gi;
+  for (const match of markdown.matchAll(bareUrlPattern)) {
+    urls.push(stripTrailingUrlPunctuation(match[0]));
+  }
+  return urls;
+}
+
+function stripTrailingUrlPunctuation(url: string): string {
+  return url.replace(/[.,;:!?]+$/g, "");
+}
+
+function normalizeUrlForCitation(url: string): string {
+  try {
+    const u = new URL(url);
+    u.hash = "";
+    return u.toString();
+  } catch {
+    return url;
+  }
 }
 
 function combineSignals(

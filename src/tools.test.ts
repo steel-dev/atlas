@@ -3,8 +3,8 @@ import type Steel from "steel-sdk";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   __testing,
+  createOpenReservations,
   createResearchCaches,
-  createSourceReservations,
   createSteelGate,
   runGatherAgent,
   type AgentContext,
@@ -42,7 +42,7 @@ function finalReport(): Anthropic.Message {
 
 function toolUse(
   id: string,
-  name: "search" | "fetch" | "read_source",
+  name: "search" | "open_url" | "read_source",
   input: Record<string, unknown> = {},
 ): Anthropic.ToolUseBlock {
   return { type: "tool_use", id, name, input } as unknown as Anthropic.ToolUseBlock;
@@ -122,17 +122,17 @@ describe("gather loop cache integration", () => {
         messages: { create: messagesCreate },
       } as unknown as Anthropic,
       steel: { scrape } as unknown as Steel,
-      sources: [],
-      sourceUrls: new Set(),
-      sourceMarkdowns: new Map(),
+      openedPages: [],
+      openedPageUrls: new Set(),
+      openedPageMarkdowns: new Map(),
       emit: vi.fn(),
       abort: vi.fn(),
       defaultEngine: "ddg",
       useProxy: false,
-      globalSourceCap: 4,
+      openedPageCap: 4,
       maxConcurrentTools: 2,
       steelGate: createSteelGate(2),
-      sourceReservations: createSourceReservations(),
+      openReservations: createOpenReservations(),
       caches: createResearchCaches(),
     };
 
@@ -149,7 +149,7 @@ describe("gather loop cache integration", () => {
     expect(ctx.caches.serp.size).toBe(1);
   });
 
-  it("commits fetched page content to the source cache", async () => {
+  it("opens page content into run memory", async () => {
     const fetch = vi.fn(async () => {
       const body = `
         <html>
@@ -175,7 +175,7 @@ describe("gather loop cache integration", () => {
       .fn()
       .mockResolvedValueOnce(
         messageWith([
-          toolUse("fetch_1", "fetch", { url: "https://example.com/source" }),
+          toolUse("open_1", "open_url", { url: "https://example.com/source" }),
         ]),
       )
       .mockResolvedValueOnce(finalReport());
@@ -185,17 +185,17 @@ describe("gather loop cache integration", () => {
         messages: { create: messagesCreate },
       } as unknown as Anthropic,
       steel: { scrape } as unknown as Steel,
-      sources: [],
-      sourceUrls: new Set(),
-      sourceMarkdowns: new Map(),
+      openedPages: [],
+      openedPageUrls: new Set(),
+      openedPageMarkdowns: new Map(),
       emit: vi.fn(),
       abort: vi.fn(),
       defaultEngine: "ddg",
       useProxy: false,
-      globalSourceCap: 4,
+      openedPageCap: 4,
       maxConcurrentTools: 2,
       steelGate: createSteelGate(2),
-      sourceReservations: createSourceReservations(),
+      openReservations: createOpenReservations(),
       caches: createResearchCaches(),
     };
 
@@ -209,16 +209,16 @@ describe("gather loop cache integration", () => {
     expect(result.markdown).toContain("# Test Report");
     expect(fetch).toHaveBeenCalledTimes(1);
     expect(scrape).not.toHaveBeenCalled();
-    expect(ctx.sources).toEqual([
+    expect(ctx.openedPages).toEqual([
       {
         url: "https://example.com/source",
         title: "Primary Source",
       },
     ]);
-    expect(ctx.sourceMarkdowns.get("https://example.com/source")).toContain("Detailed source body");
+    expect(ctx.openedPageMarkdowns.get("https://example.com/source")).toContain("Detailed source body");
   });
 
-  it("reads contiguous ranges from committed source markdown", async () => {
+  it("reads contiguous ranges from opened page markdown", async () => {
     const fetch = vi.fn(async () => {
       const body = `
         <html>
@@ -245,7 +245,7 @@ describe("gather loop cache integration", () => {
       .fn()
       .mockResolvedValueOnce(
         messageWith([
-          toolUse("fetch_1", "fetch", { url: "https://example.com/flavor" }),
+          toolUse("open_1", "open_url", { url: "https://example.com/flavor" }),
         ]),
       )
       .mockResolvedValueOnce(
@@ -261,17 +261,17 @@ describe("gather loop cache integration", () => {
         messages: { create: messagesCreate },
       } as unknown as Anthropic,
       steel: { scrape: vi.fn() } as unknown as Steel,
-      sources: [],
-      sourceUrls: new Set(),
-      sourceMarkdowns: new Map(),
+      openedPages: [],
+      openedPageUrls: new Set(),
+      openedPageMarkdowns: new Map(),
       emit: vi.fn(),
       abort: vi.fn(),
       defaultEngine: "ddg",
       useProxy: false,
-      globalSourceCap: 4,
+      openedPageCap: 4,
       maxConcurrentTools: 2,
       steelGate: createSteelGate(2),
-      sourceReservations: createSourceReservations(),
+      openReservations: createOpenReservations(),
       caches: createResearchCaches(),
     };
 
@@ -285,7 +285,7 @@ describe("gather loop cache integration", () => {
     };
 
     expect(result.finish_reason).toBe("final report");
-    expect(JSON.stringify(finalRequest.messages)).toContain("Fetched document: Flavor Study");
+    expect(JSON.stringify(finalRequest.messages)).toContain("Opened page: Flavor Study");
     expect(JSON.stringify(finalRequest.messages)).toContain("Isoamyl acetate");
     expect(JSON.stringify(finalRequest.messages)).toContain("Heading outline");
     expect(JSON.stringify(finalRequest.messages)).toContain("Source text (0-");
@@ -300,22 +300,22 @@ describe("gather loop cache integration", () => {
         messages: { create: messagesCreate },
       } as unknown as Anthropic,
       steel: { scrape: vi.fn() } as unknown as Steel,
-      sources: [
+      openedPages: [
         {
           url: "https://example.com/primary",
           title: "Primary Source",
         },
       ],
-      sourceUrls: new Set(["https://example.com/primary"]),
-      sourceMarkdowns: new Map([["https://example.com/primary", "# Primary Source\n\nUseful evidence."]]),
+      openedPageUrls: new Set(["https://example.com/primary"]),
+      openedPageMarkdowns: new Map([["https://example.com/primary", "# Primary Source\n\nUseful evidence."]]),
       emit: vi.fn(),
       abort: vi.fn(),
       defaultEngine: "ddg",
       useProxy: false,
-      globalSourceCap: 4,
+      openedPageCap: 4,
       maxConcurrentTools: 2,
       steelGate: createSteelGate(2),
-      sourceReservations: createSourceReservations(),
+      openReservations: createOpenReservations(),
       caches: createResearchCaches(),
     };
 
@@ -331,11 +331,9 @@ describe("gather loop cache integration", () => {
 
     expect(result.finish_reason).toBe("final report");
     expect(result.markdown).toContain("# Test Report");
-    expect(request.messages[0]?.content).toContain("Existing document cache");
+    expect(request.messages[0]?.content).toContain("Opened pages in memory");
     expect(request.messages[0]?.content).toContain("User budget hint: up to $2.00");
-    expect(request.messages[0]?.content).toContain(
-      "Primary Source — https://example.com/primary",
-    );
+    expect(request.messages[0]?.content).toContain("Primary Source — https://example.com/primary");
     expect(ctx.emit).toHaveBeenCalledWith({
       type: "agent_started",
     });
@@ -350,20 +348,20 @@ describe("gather loop cache integration", () => {
         messages: { create: messagesCreate },
       } as unknown as Anthropic,
       steel: { scrape: vi.fn() } as unknown as Steel,
-      sources: [
+      openedPages: [
         { url: "https://example.com/one", title: "One" },
         { url: "https://example.com/two", title: "Two" },
       ],
-      sourceUrls: new Set(["https://example.com/one", "https://example.com/two"]),
-      sourceMarkdowns: new Map(),
+      openedPageUrls: new Set(["https://example.com/one", "https://example.com/two"]),
+      openedPageMarkdowns: new Map(),
       emit: vi.fn(),
       abort: vi.fn(),
       defaultEngine: "ddg",
       useProxy: false,
-      globalSourceCap: 4,
+      openedPageCap: 4,
       maxConcurrentTools: 2,
       steelGate: createSteelGate(2),
-      sourceReservations: createSourceReservations(),
+      openReservations: createOpenReservations(),
       caches: createResearchCaches(),
     };
 
@@ -394,17 +392,17 @@ describe("gather loop cache integration", () => {
         messages: { create: messagesCreate },
       } as unknown as Anthropic,
       steel: { scrape: vi.fn() } as unknown as Steel,
-      sources: [],
-      sourceUrls: new Set(),
-      sourceMarkdowns: new Map(),
+      openedPages: [],
+      openedPageUrls: new Set(),
+      openedPageMarkdowns: new Map(),
       emit: vi.fn(),
       abort: vi.fn(),
       defaultEngine: "ddg",
       useProxy: false,
-      globalSourceCap: 4,
+      openedPageCap: 4,
       maxConcurrentTools: 2,
       steelGate: createSteelGate(2),
-      sourceReservations: createSourceReservations(),
+      openReservations: createOpenReservations(),
       caches: createResearchCaches(),
     };
 
@@ -443,8 +441,8 @@ describe("gather loop cache integration", () => {
       .fn()
       .mockResolvedValueOnce(
         messageWith([
-          toolUse("fetch_1", "fetch", { url: "https://example.com/budget" }),
-          toolUse("fetch_2", "fetch", {
+          toolUse("open_1", "open_url", { url: "https://example.com/budget" }),
+          toolUse("fetch_2", "open_url", {
             url: "https://example.com/skipped-budget",
           }),
         ]),
@@ -455,17 +453,17 @@ describe("gather loop cache integration", () => {
         messages: { create: messagesCreate },
       } as unknown as Anthropic,
       steel: { scrape: vi.fn() } as unknown as Steel,
-      sources: [],
-      sourceUrls: new Set(),
-      sourceMarkdowns: new Map(),
+      openedPages: [],
+      openedPageUrls: new Set(),
+      openedPageMarkdowns: new Map(),
       emit: vi.fn(),
       abort: vi.fn(),
       defaultEngine: "ddg",
       useProxy: false,
-      globalSourceCap: 4,
+      openedPageCap: 4,
       maxConcurrentTools: 2,
       steelGate: createSteelGate(2),
-      sourceReservations: createSourceReservations(),
+      openReservations: createOpenReservations(),
       caches: createResearchCaches(),
     };
 
@@ -510,7 +508,7 @@ describe("gather loop cache integration", () => {
       .fn()
       .mockResolvedValueOnce(
         messageWith([
-          toolUse("fetch_1", "fetch", { url: "https://example.com/js-app" }),
+          toolUse("open_1", "open_url", { url: "https://example.com/js-app" }),
         ]),
       )
       .mockResolvedValueOnce(finalReport());
@@ -520,17 +518,17 @@ describe("gather loop cache integration", () => {
         messages: { create: messagesCreate },
       } as unknown as Anthropic,
       steel: { scrape } as unknown as Steel,
-      sources: [],
-      sourceUrls: new Set(),
-      sourceMarkdowns: new Map(),
+      openedPages: [],
+      openedPageUrls: new Set(),
+      openedPageMarkdowns: new Map(),
       emit: vi.fn(),
       abort: vi.fn(),
       defaultEngine: "ddg",
       useProxy: false,
-      globalSourceCap: 4,
+      openedPageCap: 4,
       maxConcurrentTools: 2,
       steelGate: createSteelGate(2),
-      sourceReservations: createSourceReservations(),
+      openReservations: createOpenReservations(),
       caches: createResearchCaches(),
     };
 
@@ -544,10 +542,53 @@ describe("gather loop cache integration", () => {
     expect(result.markdown).toContain("# Test Report");
     expect(fetch).toHaveBeenCalledTimes(1);
     expect(scrape).toHaveBeenCalledTimes(1);
-    expect(ctx.sources[0]).toMatchObject({
+    expect(ctx.openedPages[0]).toMatchObject({
       url: "https://example.com/js-app",
       title: "Steel Fallback",
     });
+  });
+
+  it("ignores legacy fetch tool calls from older prompts", async () => {
+    const messagesCreate = vi
+      .fn()
+      .mockResolvedValueOnce(
+        messageWith([
+          {
+            type: "tool_use",
+            id: "fetch_legacy",
+            name: "fetch",
+            input: { url: "https://example.com/legacy" },
+          } as unknown as Anthropic.ToolUseBlock,
+        ]),
+      )
+      .mockResolvedValueOnce(finalReport());
+    const ctx: AgentContext = {
+      anthropic: {
+        messages: { create: messagesCreate },
+      } as unknown as Anthropic,
+      steel: { scrape: vi.fn() } as unknown as Steel,
+      openedPages: [],
+      openedPageUrls: new Set(),
+      openedPageMarkdowns: new Map(),
+      emit: vi.fn(),
+      abort: vi.fn(),
+      defaultEngine: "ddg",
+      useProxy: false,
+      openedPageCap: 4,
+      maxConcurrentTools: 2,
+      steelGate: createSteelGate(2),
+      openReservations: createOpenReservations(),
+      caches: createResearchCaches(),
+    };
+
+    const result = await runGatherAgent({
+      ctx,
+      query: "What is Atlas?",
+      max_tool_calls: 2,
+    });
+
+    expect(result.finish_reason).toBe("final report");
+    expect(ctx.openedPages).toEqual([]);
   });
 
 });
