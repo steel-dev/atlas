@@ -8,8 +8,7 @@ const USAGE = `atlas — deep research from your terminal
 Usage:
   atlas "<question>" [options]
 
-A gather agent searches and fetches sources, then a single writer composes the
-cited report from all sources.
+An agent searches, fetches sources, and writes a cited Markdown report.
 
 Options:
   -o, --out <file>            Write the markdown report to <file> (default: stdout)
@@ -60,7 +59,6 @@ const DIM = "\x1b[2m";
 const RESET = "\x1b[0m";
 const GREEN = "\x1b[32m";
 const YELLOW = "\x1b[33m";
-const BLUE = "\x1b[34m";
 
 function colored(): boolean {
   return !process.env.NO_COLOR && process.stderr.isTTY === true;
@@ -100,11 +98,6 @@ function prettyEvent(e: ResearchEvent): string {
       return paint(GREEN, `    ✓`) + ` ${e.url}`;
     case "source_error":
       return paint(YELLOW, `    ! ${e.url} — ${e.error}`);
-    case "writing":
-      return (
-        paint(BLUE, "→") +
-        ` writing report (${e.sources_count} source${e.sources_count === 1 ? "" : "s"})`
-      );
     case "written":
       return (
         paint(GREEN, "✓") + ` written (${e.markdown_chars.toLocaleString()} chars)`

@@ -87,7 +87,6 @@ export type ResearchEvent =
     }
   | { type: "source_error"; url: string; error: string }
   | { type: "agent_finished"; sources_added: number }
-  | { type: "writing"; sources_count: number }
   | { type: "written"; markdown_chars: number }
   | { type: "completed"; result: ResearchResult };
 
