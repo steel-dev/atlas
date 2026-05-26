@@ -7,9 +7,19 @@ const USER_AGENT =
 const MIN_PLAIN_MARKDOWN_CHARS = 500;
 const MAX_PLAIN_INPUT_CHARS = 1_000_000;
 
+export interface PlainPageMetadata {
+  fetch_method: "plain";
+  content_type: string;
+  raw_chars: number;
+  raw_truncated: boolean;
+  markdown_chars: number;
+  extraction_notes: string[];
+}
+
 export interface PlainPage {
   markdown: string;
   title: string | null;
+  metadata: PlainPageMetadata;
 }
 
 export type PlainPageOutcome =
@@ -43,13 +53,33 @@ export async function fetchPlainPage(opts: {
     return { ok: false, reason: `Unsupported content-type: ${contentType || "unknown"}` };
   }
 
-  const raw = (await response.text()).slice(0, MAX_PLAIN_INPUT_CHARS);
+  const rawBody = await response.text();
+  const rawTruncated = rawBody.length > MAX_PLAIN_INPUT_CHARS;
+  const raw = rawBody.slice(0, MAX_PLAIN_INPUT_CHARS);
   if (!raw.trim()) return { ok: false, reason: "Empty body" };
   if (looksBlocked(raw)) return { ok: false, reason: "Blocked or challenge page" };
 
   const page = contentType.includes("html")
     ? htmlToMarkdown(raw, opts.url)
     : textToMarkdown(raw);
+  const extractionNotes = contentType.includes("html")
+    ? [
+        "Extracted with Atlas' lightweight static HTML parser; browser-rendered or script-loaded content may be missing.",
+      ]
+    : ["Fetched as readable text without browser rendering."];
+  if (rawTruncated) {
+    extractionNotes.push(
+      `Plain fetch input was truncated at ${MAX_PLAIN_INPUT_CHARS.toLocaleString()} chars before extraction.`,
+    );
+  }
+  page.metadata = {
+    fetch_method: "plain",
+    content_type: contentType || "unknown",
+    raw_chars: rawBody.length,
+    raw_truncated: rawTruncated,
+    markdown_chars: page.markdown.length,
+    extraction_notes: extractionNotes,
+  };
 
   if (page.markdown.length < MIN_PLAIN_MARKDOWN_CHARS) {
     return {
@@ -82,7 +112,7 @@ function textToMarkdown(raw: string): PlainPage {
       .find((line) => line.length > 0)
       ?.replace(/^#+\s*/, "")
       .slice(0, 160) ?? null;
-  return { markdown, title };
+  return { markdown, title, metadata: emptyPlainMetadata() };
 }
 
 function htmlToMarkdown(html: string, baseUrl: string): PlainPage {
@@ -97,7 +127,18 @@ function htmlToMarkdown(html: string, baseUrl: string): PlainPage {
 
   const root = bestContentRoot($);
   const markdown = normalizeMarkdown(renderChildren($, root, baseUrl));
-  return { markdown, title: title || null };
+  return { markdown, title: title || null, metadata: emptyPlainMetadata() };
+}
+
+function emptyPlainMetadata(): PlainPageMetadata {
+  return {
+    fetch_method: "plain",
+    content_type: "unknown",
+    raw_chars: 0,
+    raw_truncated: false,
+    markdown_chars: 0,
+    extraction_notes: [],
+  };
 }
 
 function bestContentRoot($: cheerio.CheerioAPI): cheerio.Cheerio<AnyNode> {

@@ -141,12 +141,17 @@ describe("gather loop cache integration", () => {
       query: "What is Atlas?",
       max_tool_calls: 3,
     });
+    const secondRequest = messagesCreate.mock.calls[1]?.[0] as {
+      messages: Array<{ content: unknown }>;
+    };
 
     expect(result.finish_reason).toBe("final report");
     expect(result.markdown).toContain("# Test Report");
     expect(messagesCreate).toHaveBeenCalledTimes(3);
-    expect(scrape).toHaveBeenCalledTimes(1);
-    expect(ctx.caches.serp.size).toBe(1);
+    expect(JSON.stringify(secondRequest.messages)).toContain("Search metadata");
+    expect(JSON.stringify(secondRequest.messages)).toContain("Engines tried");
+    expect(scrape).toHaveBeenCalledTimes(3);
+    expect(ctx.caches.serp.size).toBe(3);
   });
 
   it("opens page content into run memory", async () => {
@@ -204,6 +209,9 @@ describe("gather loop cache integration", () => {
       query: "What is Atlas?",
       max_tool_calls: 2,
     });
+    const followupRequest = messagesCreate.mock.calls[1]?.[0] as {
+      messages: Array<{ content: unknown }>;
+    };
 
     expect(result.finish_reason).toBe("final report");
     expect(result.markdown).toContain("# Test Report");
@@ -216,6 +224,9 @@ describe("gather loop cache integration", () => {
       },
     ]);
     expect(ctx.openedPageMarkdowns.get("https://example.com/source")).toContain("Detailed source body");
+    expect(JSON.stringify(followupRequest.messages)).toContain("Extraction metadata");
+    expect(JSON.stringify(followupRequest.messages)).toContain("Method: plain");
+    expect(JSON.stringify(followupRequest.messages)).toContain("Stored markdown");
   });
 
   it("opens pages as virtual source files readable by line", async () => {
@@ -610,6 +621,9 @@ describe("gather loop cache integration", () => {
       query: "What is Atlas?",
       max_tool_calls: 2,
     });
+    const followupRequest = messagesCreate.mock.calls[1]?.[0] as {
+      messages: Array<{ content: unknown }>;
+    };
 
     expect(result.finish_reason).toBe("final report");
     expect(result.markdown).toContain("# Test Report");
@@ -619,6 +633,10 @@ describe("gather loop cache integration", () => {
       url: "https://example.com/js-app",
       title: "Steel Fallback",
     });
+    expect(JSON.stringify(followupRequest.messages)).toContain("Method: steel");
+    expect(JSON.stringify(followupRequest.messages)).toContain(
+      "Plain fetch fallback reason",
+    );
   });
 
   it("ignores legacy fetch tool calls from older prompts", async () => {

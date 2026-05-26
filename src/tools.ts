@@ -8,9 +8,9 @@ import {
   type SearchResult,
   type WebSearchOutcome,
 } from "./search.js";
-import { fetchPlainPage } from "./plain-fetch.js";
+import { fetchPlainPage, type PlainPageMetadata } from "./plain-fetch.js";
 
-const STORED_MARKDOWN_CAP = 120_000;
+const STORED_MARKDOWN_CAP = 2_000_000;
 const FETCH_SNIPPET_CHARS = 8000;
 const DEFAULT_READ_FILE_LINES = 120;
 const MAX_READ_FILE_LINES = 400;
@@ -43,6 +43,17 @@ export interface OpenReservations {
 interface ScrapeCacheEntry {
   markdown: string;
   title: string | null;
+  metadata: ExtractionMetadata;
+}
+
+interface ExtractionMetadata {
+  fetch_method: "plain" | "steel";
+  content_type?: string;
+  raw_chars?: number;
+  raw_truncated?: boolean;
+  markdown_chars: number;
+  plain_failure_reason?: string;
+  extraction_notes: string[];
 }
 
 export interface OpenedSourceFile {
@@ -51,6 +62,10 @@ export interface OpenedSourceFile {
   title: string;
   markdown: string;
   lines: string[];
+  original_chars: number;
+  stored_chars: number;
+  truncated: boolean;
+  metadata: ExtractionMetadata;
 }
 
 export interface ResearchCaches {
@@ -380,11 +395,25 @@ function sourceFiles(ctx: AgentContext): Map<string, OpenedSourceFile> {
   ctx.openedPages.forEach((page, index) => {
     const markdown = ctx.openedPageMarkdowns.get(page.url);
     if (!markdown) return;
-    const file = createSourceFile(index + 1, page.url, page.title, markdown);
+    const file = createSourceFile(
+      index + 1,
+      page.url,
+      page.title,
+      markdown,
+      unknownExtractionMetadata(markdown.length),
+    );
     files.set(file.path, file);
   });
   ctx.openedSourceFiles = files;
   return files;
+}
+
+function unknownExtractionMetadata(markdownChars: number): ExtractionMetadata {
+  return {
+    fetch_method: "steel",
+    markdown_chars: markdownChars,
+    extraction_notes: ["Extraction metadata is unavailable for this preloaded source."],
+  };
 }
 
 function createSourceFile(
@@ -392,6 +421,8 @@ function createSourceFile(
   url: string,
   title: string,
   markdown: string,
+  metadata: ExtractionMetadata,
+  originalChars = markdown.length,
 ): OpenedSourceFile {
   const path = sourceFilePath(index, title, url);
   return {
@@ -400,6 +431,10 @@ function createSourceFile(
     title,
     markdown,
     lines: markdown.split("\n"),
+    original_chars: originalChars,
+    stored_chars: markdown.length,
+    truncated: originalChars > markdown.length,
+    metadata,
   };
 }
 
@@ -464,8 +499,19 @@ function formatFileLines(
 
   return (
     `File: ${file.path}\nTitle: ${file.title}\nURL: ${file.url}\n` +
+    `${formatSourceEvidenceSummary(file)}\n` +
     `Lines ${startLine}-${endLine} of ${file.lines.length}:\n${body}${next}`
   );
+}
+
+function formatSourceEvidenceSummary(file: OpenedSourceFile): string {
+  const storage = file.truncated
+    ? `Stored markdown: ${file.stored_chars.toLocaleString()} of ${file.original_chars.toLocaleString()} chars (TRUNCATED; later content is unavailable).`
+    : `Stored markdown: ${file.stored_chars.toLocaleString()} chars (complete for this extraction).`;
+  return [
+    `Extraction method: ${file.metadata.fetch_method}`,
+    storage,
+  ].join("\n");
 }
 
 function openedPagesSummary(ctx: AgentContext): string {
@@ -679,6 +725,8 @@ async function execSearch(
 
   const failures: string[] = [];
   const emptyEngines: Engine[] = [];
+  const engineCounts: string[] = [];
+  const rawResults: Array<SearchResult & { engine: Engine; engine_rank: number }> = [];
 
   for (const engine of searchEnginesInFallbackOrder(ctx.defaultEngine)) {
     let outcome: WebSearchOutcome;
@@ -696,14 +744,34 @@ async function execSearch(
 
     if (outcome.results.length === 0) {
       emptyEngines.push(engine);
+      engineCounts.push(`${engine}: 0`);
       continue;
     }
 
-    const results = outcome.results.map((result, index) => ({
-      ...result,
-      position: index + 1,
-    }));
+    engineCounts.push(`${engine}: ${outcome.results.length}`);
+    rawResults.push(
+      ...outcome.results.map((result, index) => ({
+        ...result,
+        engine,
+        engine_rank: index + 1,
+      })),
+    );
+  }
 
+  const seen = new Set<string>();
+  const results: Array<SearchResult & { engine: Engine; engine_rank: number }> = [];
+  for (const result of rawResults) {
+    const key = normalizeFetchUrl(result.url);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    results.push({
+      ...result,
+      position: results.length + 1,
+    });
+    if (results.length >= limit) break;
+  }
+
+  if (results.length > 0) {
     ctx.emit({
       type: "search_results",
       index: searchIndex,
@@ -711,11 +779,21 @@ async function execSearch(
     });
 
     const lines = results.map((result, index) =>
-      formatSearchResult(result, index),
+      formatSearchResult(
+        result,
+        index,
+        `${result.engine} rank ${result.engine_rank}`,
+      ),
     );
-    const fallbackNote =
-      engine === ctx.defaultEngine ? "" : ` after fallback from ${ctx.defaultEngine}`;
-    return `${results.length} result${results.length === 1 ? "" : "s"} from ${engine}${fallbackNote}:\n\n${lines.join("\n\n")}`;
+    return (
+      `Search metadata:\n` +
+      `Query: ${query}\n` +
+      `Engines tried: ${searchEnginesInFallbackOrder(ctx.defaultEngine).join(", ")}\n` +
+      `Raw results by engine: ${engineCounts.join(", ")}\n` +
+      `Failures: ${failures.length > 0 ? failures.join("; ") : "none"}\n` +
+      `Deduplicated results returned: ${results.length} of ${rawResults.length} raw result${rawResults.length === 1 ? "" : "s"}.\n\n` +
+      `${results.length} result${results.length === 1 ? "" : "s"}:\n\n${lines.join("\n\n")}`
+    );
   }
 
   if (emptyEngines.length > 0) {
@@ -751,7 +829,7 @@ function execListSources(ctx: AgentContext): string {
     `Opened source files (${files.length}):\n\n` +
     files
       .map((file) =>
-        `${file.path}\n  Title: ${file.title}\n  URL: ${file.url}\n  Lines: 1-${file.lines.length}`,
+        `${file.path}\n  Title: ${file.title}\n  URL: ${file.url}\n  Lines: 1-${file.lines.length}\n  Method: ${file.metadata.fetch_method}\n  Markdown: ${file.stored_chars.toLocaleString()}${file.truncated ? ` of ${file.original_chars.toLocaleString()} chars (TRUNCATED)` : " chars"}`,
       )
       .join("\n\n")
   );
@@ -830,7 +908,7 @@ function formatSearchFileSnippet(
     })
     .join("\n");
 
-  return `${file.path}:${lineNumber}\nTitle: ${file.title}\nURL: ${file.url}\n${body}`;
+  return `${file.path}:${lineNumber}\nTitle: ${file.title}\nURL: ${file.url}\n${formatSourceEvidenceSummary(file)}\n${body}`;
 }
 
 function execSearchFiles(args: SearchFilesToolInput, ctx: AgentContext): string {
@@ -1043,6 +1121,74 @@ function validateHttpUrl(url: string, toolName: string): string | null {
   return null;
 }
 
+function extractionMetadataFromPlain(metadata: PlainPageMetadata): ExtractionMetadata {
+  return {
+    fetch_method: "plain",
+    content_type: metadata.content_type,
+    raw_chars: metadata.raw_chars,
+    raw_truncated: metadata.raw_truncated,
+    markdown_chars: metadata.markdown_chars,
+    extraction_notes: metadata.extraction_notes,
+  };
+}
+
+function extractionMetadataFromSteel(
+  markdownChars: number,
+  plainFailureReason: string,
+): ExtractionMetadata {
+  return {
+    fetch_method: "steel",
+    markdown_chars: markdownChars,
+    plain_failure_reason: plainFailureReason,
+    extraction_notes: [
+      "Fetched with Steel browser-rendered markdown after plain fetch was insufficient.",
+    ],
+  };
+}
+
+function formatExtractionMetadata(metadata: ExtractionMetadata): string {
+  const lines = [
+    "Extraction metadata:",
+    `- Method: ${metadata.fetch_method}`,
+    `- Markdown chars from extractor: ${metadata.markdown_chars.toLocaleString()}`,
+  ];
+  if (metadata.content_type) {
+    lines.push(`- Content-Type: ${metadata.content_type}`);
+  }
+  if (metadata.raw_chars !== undefined) {
+    lines.push(`- Raw response chars: ${metadata.raw_chars.toLocaleString()}`);
+  }
+  if (metadata.raw_truncated) {
+    lines.push("- Raw response was truncated before extraction.");
+  }
+  if (metadata.plain_failure_reason) {
+    lines.push(`- Plain fetch fallback reason: ${metadata.plain_failure_reason}`);
+  }
+  for (const note of metadata.extraction_notes) {
+    lines.push(`- Note: ${note}`);
+  }
+  return lines.join("\n");
+}
+
+function storeMarkdown(markdown: string): {
+  markdown: string;
+  originalChars: number;
+  truncated: boolean;
+} {
+  if (markdown.length <= STORED_MARKDOWN_CAP) {
+    return {
+      markdown,
+      originalChars: markdown.length,
+      truncated: false,
+    };
+  }
+  return {
+    markdown: markdown.slice(0, STORED_MARKDOWN_CAP),
+    originalChars: markdown.length,
+    truncated: true,
+  };
+}
+
 async function scrapeWithCache(
   ctx: AgentContext,
   url: string,
@@ -1050,7 +1196,13 @@ async function scrapeWithCache(
   let scrapePromise = ctx.caches.scrape.get(url);
   if (!scrapePromise) {
     scrapePromise = fetchPlainPage({ url, signal: ctx.signal }).then(async (plain) => {
-      if (plain.ok) return plain.page;
+      if (plain.ok) {
+        return {
+          markdown: plain.page.markdown,
+          title: plain.page.title,
+          metadata: extractionMetadataFromPlain(plain.page.metadata),
+        };
+      }
 
       ctx.emit({
         type: "steel_fallback",
@@ -1067,9 +1219,11 @@ async function scrapeWithCache(
           { signal: ctx.signal },
         ),
       );
+      const markdown = scrape.content?.markdown ?? "";
       return {
-        markdown: scrape.content?.markdown ?? "",
+        markdown,
         title: scrape.metadata?.title ?? null,
+        metadata: extractionMetadataFromSteel(markdown.length, plain.reason),
       };
     });
     ctx.caches.scrape.set(url, scrapePromise);
@@ -1098,7 +1252,7 @@ async function execFetch(
   ctx.emit({ type: "fetching", url });
 
   try {
-    const { markdown, title } = await scrapeWithCache(ctx, url);
+    const { markdown, title, metadata } = await scrapeWithCache(ctx, url);
     if (!markdown) {
       ctx.caches.scrape.delete(url);
       ctx.emit({
@@ -1114,19 +1268,21 @@ async function execFetch(
     // Add while the reservation is still held so cache entries and caps stay
     // consistent across parallel tool calls.
     const resolvedTitle = title ?? url;
-    const storedMarkdown = markdown.slice(0, STORED_MARKDOWN_CAP);
+    const stored = storeMarkdown(markdown);
     const file = createSourceFile(
       ctx.openedPages.length + 1,
       url,
       resolvedTitle,
-      storedMarkdown,
+      stored.markdown,
+      metadata,
+      stored.originalChars,
     );
     ctx.openedPages.push({
       url,
       title: resolvedTitle,
     });
     ctx.openedPageUrls.add(url);
-    ctx.openedPageMarkdowns.set(url, storedMarkdown);
+    ctx.openedPageMarkdowns.set(url, stored.markdown);
     sourceFiles(ctx).set(file.path, file);
 
     ctx.emit({
@@ -1138,15 +1294,20 @@ async function execFetch(
     const snippetChars = ctx.fetchSnippetChars ?? FETCH_SNIPPET_CHARS;
     const previewLines = Math.max(
       1,
-      storedMarkdown.slice(0, snippetChars).split("\n").length,
+      stored.markdown.slice(0, snippetChars).split("\n").length,
     );
     const preview = formatFileLines(file, 1, Math.min(DEFAULT_READ_FILE_LINES, previewLines));
     const outline = sourceHeadingOutline(file);
+    const storageLine = file.truncated
+      ? `Storage: stored ${file.stored_chars.toLocaleString()} of ${file.original_chars.toLocaleString()} markdown chars (TRUNCATED; unavailable tail may contain evidence).\n`
+      : `Storage: stored complete extracted markdown (${file.stored_chars.toLocaleString()} chars).\n`;
     return {
       opened_url: url,
       text:
         `Opened source file: ${file.path}\nTitle: ${resolvedTitle}\nURL: ${url}\n` +
         `Lines: 1-${file.lines.length}\n` +
+        storageLine +
+        `${formatExtractionMetadata(metadata)}\n` +
         (outline ? `${outline}\n\n` : "\n") +
         `${preview}\n\nUse read_file with ${file.path} and a start_line for deeper reading, or search_files to search opened sources.`,
     };
