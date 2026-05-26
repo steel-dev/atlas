@@ -57,7 +57,6 @@ interface ExtractionMetadata {
 }
 
 export interface OpenedSourceFile {
-  source_id: string;
   url: string;
   title: string;
   markdown: string;
@@ -130,9 +129,8 @@ export function createOpenReservations(): OpenReservations {
 // ----------------------------------------------------------------------------
 // Agentic gather loop
 //
-// The harness exposes only web search and page fetch. Fetch can also page
-// through a previously opened source by source_id, so the model controls depth
-// without learning a virtual filesystem or bespoke grep workflow.
+// The harness exposes only web search and page fetch. Re-fetching the same URL
+// with offset/max_chars reads more of cached content without a virtual file layer.
 // ----------------------------------------------------------------------------
 
 export interface AgentContext {
@@ -208,7 +206,6 @@ interface SearchToolInput {
 
 interface FetchToolInput {
   url?: string;
-  source_id?: string;
   offset?: number;
   max_chars?: number;
 }
@@ -237,17 +234,13 @@ const AGENT_TOOLS: Anthropic.Tool[] = [
   {
     name: "fetch",
     description:
-      "Fetch a URL as Markdown, or continue reading a previously fetched source by source_id. Use offset/max_chars for pagination.",
+      "Fetch a URL as Markdown. Use offset/max_chars to continue reading long pages.",
     input_schema: {
       type: "object",
       properties: {
         url: {
           type: "string",
           description: "Absolute http(s) URL to fetch.",
-        },
-        source_id: {
-          type: "string",
-          description: "Previously returned source_id to continue reading.",
         },
         offset: {
           type: "integer",
@@ -326,9 +319,8 @@ function sourceFiles(ctx: AgentContext): Map<string, OpenedSourceFile> {
       page.title,
       markdown,
       unknownExtractionMetadata(markdown.length),
-      files,
     );
-    files.set(file.source_id, file);
+    files.set(normalizeFetchUrl(file.url), file);
   });
   ctx.openedSourceFiles = files;
   return files;
@@ -349,12 +341,9 @@ function createSourceFile(
   title: string,
   markdown: string,
   metadata: ExtractionMetadata,
-  existing: { has(sourceId: string): boolean; size: number },
   originalChars = markdown.length,
 ): OpenedSourceFile {
-  const sourceId = nextSourceId(existing);
   return {
-    source_id: sourceId,
     url,
     title,
     markdown,
@@ -365,22 +354,11 @@ function createSourceFile(
   };
 }
 
-function nextSourceId(existing: {
-  has(sourceId: string): boolean;
-  size: number;
-}): string {
-  let n = existing.size + 1;
-  while (existing.has(`src_${n}`)) n++;
-  return `src_${n}`;
-}
-
 function findSourceByUrl(
   ctx: AgentContext,
   normalizedUrl: string,
 ): OpenedSourceFile | undefined {
-  return [...sourceFiles(ctx).values()].find(
-    (file) => normalizeFetchUrl(file.url) === normalizedUrl,
-  );
+  return sourceFiles(ctx).get(normalizedUrl);
 }
 
 function textFromContent(content: Anthropic.Message["content"]): string {
@@ -529,7 +507,7 @@ function reserveOpen(ctx: AgentContext, url: string): OpenReservation | string {
     return `Already being fetched: ${url}. Try another source or continue after this fetch completes.`;
   }
   if (totalOpenSlots(ctx) >= ctx.openedPageCap) {
-    return `Opened page cap reached (${ctx.openedPageCap}). Continue reading fetched sources by source_id or write the report.`;
+    return `Opened page cap reached (${ctx.openedPageCap}). Continue reading fetched URLs with offset/max_chars or write the report.`;
   }
 
   ctx.openReservations.urls.add(normalizedUrl);
@@ -846,7 +824,7 @@ async function executeToolUse(
 }
 
 function validateHttpUrl(url: string): string | null {
-  if (!url) return "Error: fetch requires either `url` or `source_id`.";
+  if (!url) return "Error: fetch requires `url`.";
   if (!/^https?:\/\//i.test(url)) {
     return `Error: not an http(s) URL: ${url}`;
   }
@@ -983,7 +961,6 @@ function formatFetchResult(
   const content = file.markdown.slice(start, end);
   const hasMore = end < file.markdown.length;
   const result = {
-    source_id: file.source_id,
     title: file.title,
     url: file.url,
     offset: start,
@@ -1006,17 +983,6 @@ async function execFetch(
   if (typeof offset === "string") return { text: offset };
   const maxChars = readMaxChars(args, ctx);
   if (typeof maxChars === "string") return { text: maxChars };
-
-  const sourceId = String(args.source_id ?? "").trim();
-  if (sourceId) {
-    const file = sourceFiles(ctx).get(sourceId);
-    if (!file) {
-      return {
-        text: `Error: source not found: ${sourceId}. Fetch a URL first.`,
-      };
-    }
-    return { text: formatFetchResult(file, offset, maxChars) };
-  }
 
   const requestedUrl = String(args.url ?? "").trim();
   const validationError = validateHttpUrl(requestedUrl);
@@ -1055,7 +1021,6 @@ async function execFetch(
       resolvedTitle,
       stored.markdown,
       metadata,
-      files,
       stored.originalChars,
     );
     ctx.openedPages.push({
@@ -1064,7 +1029,7 @@ async function execFetch(
     });
     ctx.openedPageUrls.add(url);
     ctx.openedPageMarkdowns.set(url, stored.markdown);
-    files.set(file.source_id, file);
+    files.set(normalizedUrl, file);
 
     ctx.emit({
       type: "page_opened",

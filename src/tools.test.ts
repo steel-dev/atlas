@@ -286,7 +286,7 @@ describe("gather loop cache integration", () => {
     expect(request.tools.map((tool) => tool.name)).toEqual(["search", "fetch"]);
   });
 
-  it("fetches page content into run memory with a source_id", async () => {
+  it("fetches page content into run memory keyed by URL", async () => {
     const fetch = vi.fn(async () => {
       const body = `
         <html>
@@ -338,12 +338,12 @@ describe("gather loop cache integration", () => {
       },
     ]);
     expect(ctx.openedPageMarkdowns.get("https://example.com/source")).toContain("Detailed source body");
-    expect(toolResultText(followupRequest)).toContain('"source_id": "src_1"');
+    expect(toolResultText(followupRequest)).toContain('"url": "https://example.com/source"');
     expect(toolResultText(followupRequest)).toContain('"extraction_method": "plain"');
     expect(toolResultText(followupRequest)).toContain('"content"');
   });
 
-  it("continues reading a fetched source by source_id and offset", async () => {
+  it("continues reading a fetched source by URL and offset", async () => {
     const fetch = vi.fn(async () => {
       const body = `
         <html>
@@ -374,7 +374,7 @@ describe("gather loop cache integration", () => {
       .mockResolvedValueOnce(
         messageWith([
           toolUse("fetch_2", "fetch", {
-            source_id: "src_1",
+            url: "https://example.com/source",
             offset: 80,
             max_chars: 400,
           }),
@@ -394,7 +394,7 @@ describe("gather loop cache integration", () => {
 
     expect(result.finish_reason).toBe("final report");
     expect(fetch).toHaveBeenCalledTimes(1);
-    expect(toolResultText(readRequest)).toContain('"source_id": "src_1"');
+    expect(toolResultText(readRequest)).toContain('"url": "https://example.com/source"');
     expect(toolResultText(readRequest)).toContain('"offset": 80');
     expect(toolResultText(readRequest)).toContain("Line-readable evidence");
   });
@@ -460,7 +460,7 @@ describe("gather loop cache integration", () => {
       .mockResolvedValueOnce(
         messageWith([
           toolUse("fetch_1", "fetch", {
-            source_id: "src_1",
+            url: "https://example.com/capped",
             offset: 0,
             max_chars: 200,
           }),
