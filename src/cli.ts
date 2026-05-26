@@ -14,6 +14,7 @@ Options:
   -o, --out <file>            Write the markdown report to <file> (default: stdout)
       --timeout N             Overall wall-clock budget in seconds (default: none)
       --effort LEVEL          Agent effort: low, medium, high, max (default: high)
+      --proxy                 Route Steel search and fetch requests through proxy
       --json                  Emit one JSON event per line on stderr
   -q, --quiet                 Suppress progress events on stderr
   -h, --help                  Show this help
@@ -28,6 +29,7 @@ Examples:
   atlas "What changed when Cloudflare DO added SQLite?"
   atlas "..." --out report.md
   atlas "..." --effort max
+  atlas "..." --proxy
   atlas "..." --timeout 300
   atlas "..." --json 2> events.jsonl > report.md
 `;
@@ -84,8 +86,6 @@ function prettyEvent(e: ResearchEvent): string {
       return paint(YELLOW, `    ! search failed:`) + ` ${e.error}`;
     case "fetching":
       return paint(DIM, `    fetch: ${e.url}`);
-    case "steel_fallback":
-      return paint(DIM, `      browser fallback: ${e.url} — ${e.reason}`);
     case "rate_limited":
       return (
         paint(YELLOW, "    ! rate limited:") +
@@ -132,6 +132,7 @@ async function main(): Promise<void> {
           out: { type: "string", short: "o" },
           timeout: { type: "string" },
           effort: { type: "string" },
+          proxy: { type: "boolean" },
           json: { type: "boolean" },
           quiet: { type: "boolean", short: "q" },
           help: { type: "boolean", short: "h" },
@@ -182,6 +183,7 @@ async function main(): Promise<void> {
 
   const json = values.json === true;
   const quiet = values.quiet === true;
+  const useProxy = values.proxy === true;
 
   const onEvent = quiet
     ? undefined
@@ -201,6 +203,7 @@ async function main(): Promise<void> {
     const result = await research({
       query,
       effort,
+      useProxy,
       onEvent,
       signal,
     });

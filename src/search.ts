@@ -16,7 +16,7 @@ export interface SearchResult {
 }
 
 export interface WebSearchError {
-  code: "E_STEEL_TIMEOUT" | "E_STEEL_UNAVAILABLE" | "E_BACKEND_UNAVAILABLE";
+  code: "E_STEEL_TIMEOUT" | "E_STEEL_UNAVAILABLE";
   message: string;
 }
 

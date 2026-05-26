@@ -1,7 +1,7 @@
 import type Anthropic from "@anthropic-ai/sdk";
 import type Steel from "steel-sdk";
 import {
-  FAST_MODEL,
+  RESEARCH_MODEL,
   type CitedSource,
   type ResearchEffort,
 } from "./pipeline.js";
@@ -12,7 +12,6 @@ import {
   type SearchResult,
   type WebSearchOutcome,
 } from "./search.js";
-import { fetchPlainPage, type PlainPageMetadata } from "./plain-fetch.js";
 
 const STORED_MARKDOWN_CAP = 10_000_000;
 const DEFAULT_FETCH_CHARS = 12_000;
@@ -47,9 +46,6 @@ interface ScrapeCacheEntry {
 }
 
 interface ExtractionMetadata {
-  content_type?: string;
-  raw_chars?: number;
-  raw_truncated?: boolean;
   markdown_chars: number;
   extraction_notes: string[];
 }
@@ -135,9 +131,7 @@ export interface AgentContext {
   anthropic: Anthropic;
   steel: Steel;
   openedPages: CitedSource[];
-  openedPageUrls: Set<string>;
-  openedPageMarkdowns: Map<string, string>;
-  openedSourceFiles?: Map<string, OpenedSourceFile>;
+  openedSourceFiles: Map<string, OpenedSourceFile>;
   emit: (e: AgenticEvent) => void;
   abort: () => void;
   /** Forwarded to every Anthropic / Steel / HTTP call so cancellation
@@ -145,7 +139,6 @@ export interface AgentContext {
   signal?: AbortSignal;
   defaultEngine: Engine;
   useProxy: boolean;
-  fastModel?: string;
   openedPageCap: number;
   gatherMaxTokens?: number;
   defaultSearchLimit?: number;
@@ -174,7 +167,6 @@ export type AgenticEvent =
       error: string;
     }
   | { type: "fetching"; url: string }
-  | { type: "steel_fallback"; url: string; reason: string }
   | {
       type: "rate_limited";
       retry_after_seconds: number;
@@ -305,34 +297,6 @@ function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-function sourceFiles(ctx: AgentContext): Map<string, OpenedSourceFile> {
-  if (ctx.openedSourceFiles) return ctx.openedSourceFiles;
-
-  const files = new Map<string, OpenedSourceFile>();
-  ctx.openedPages.forEach((page) => {
-    const markdown = ctx.openedPageMarkdowns.get(page.url);
-    if (!markdown) return;
-    const file = createSourceFile(
-      page.url,
-      page.title,
-      markdown,
-      unknownExtractionMetadata(markdown.length),
-    );
-    files.set(normalizeFetchUrl(file.url), file);
-  });
-  ctx.openedSourceFiles = files;
-  return files;
-}
-
-function unknownExtractionMetadata(markdownChars: number): ExtractionMetadata {
-  return {
-    markdown_chars: markdownChars,
-    extraction_notes: [
-      "Extraction metadata is unavailable for this preloaded source.",
-    ],
-  };
-}
-
 function createSourceFile(
   url: string,
   title: string,
@@ -355,7 +319,7 @@ function findSourceByUrl(
   ctx: AgentContext,
   normalizedUrl: string,
 ): OpenedSourceFile | undefined {
-  return sourceFiles(ctx).get(normalizedUrl);
+  return ctx.openedSourceFiles.get(normalizedUrl);
 }
 
 function textFromContent(content: Anthropic.Message["content"]): string {
@@ -754,18 +718,6 @@ function validateHttpUrl(url: string): string | null {
   return null;
 }
 
-function extractionMetadataFromPlain(
-  metadata: PlainPageMetadata,
-): ExtractionMetadata {
-  return {
-    content_type: metadata.content_type,
-    raw_chars: metadata.raw_chars,
-    raw_truncated: metadata.raw_truncated,
-    markdown_chars: metadata.markdown_chars,
-    extraction_notes: metadata.extraction_notes,
-  };
-}
-
 function extractionMetadataFromSteel(
   markdownChars: number,
 ): ExtractionMetadata {
@@ -802,39 +754,23 @@ async function scrapeWithCache(
 ): Promise<ScrapeCacheEntry> {
   let scrapePromise = ctx.caches.scrape.get(url);
   if (!scrapePromise) {
-    scrapePromise = fetchPlainPage({ url, signal: ctx.signal }).then(
-      async (plain) => {
-        if (plain.ok) {
-          return {
-            markdown: plain.page.markdown,
-            title: plain.page.title,
-            metadata: extractionMetadataFromPlain(plain.page.metadata),
-          };
-        }
-
-        ctx.emit({
-          type: "steel_fallback",
+    scrapePromise = runSteelRequest(ctx, () =>
+      ctx.steel.scrape(
+        {
           url,
-          reason: plain.reason,
-        });
-        const scrape = await runSteelRequest(ctx, () =>
-          ctx.steel.scrape(
-            {
-              url,
-              format: ["markdown"],
-              useProxy: ctx.useProxy,
-            },
-            { signal: ctx.signal },
-          ),
-        );
-        const markdown = scrape.content?.markdown ?? "";
-        return {
-          markdown,
-          title: scrape.metadata?.title ?? null,
-          metadata: extractionMetadataFromSteel(markdown.length),
-        };
-      },
-    );
+          format: ["markdown"],
+          useProxy: ctx.useProxy,
+        },
+        { signal: ctx.signal },
+      ),
+    ).then((scrape) => {
+      const markdown = scrape.content?.markdown ?? "";
+      return {
+        markdown,
+        title: scrape.metadata?.title ?? null,
+        metadata: extractionMetadataFromSteel(markdown.length),
+      };
+    });
     ctx.caches.scrape.set(url, scrapePromise);
   }
 
@@ -930,7 +866,6 @@ async function execFetch(
 
     const resolvedTitle = title ?? url;
     const stored = storeMarkdown(markdown);
-    const files = sourceFiles(ctx);
     const file = createSourceFile(
       url,
       resolvedTitle,
@@ -942,9 +877,7 @@ async function execFetch(
       url,
       title: resolvedTitle,
     });
-    ctx.openedPageUrls.add(url);
-    ctx.openedPageMarkdowns.set(url, stored.markdown);
-    files.set(normalizedUrl, file);
+    ctx.openedSourceFiles.set(normalizedUrl, file);
 
     ctx.emit({
       type: "page_opened",
@@ -1007,7 +940,7 @@ export async function runGatherAgent(opts: {
     try {
       resp = await ctx.anthropic.messages.create(
         {
-          model: ctx.fastModel ?? FAST_MODEL,
+          model: RESEARCH_MODEL,
           max_tokens: ctx.gatherMaxTokens ?? 2048,
           system: AGENT_SYSTEM,
           tools: AGENT_TOOLS,
@@ -1084,7 +1017,7 @@ export async function runGatherAgent(opts: {
     try {
       const resp = await ctx.anthropic.messages.create(
         {
-          model: ctx.fastModel ?? FAST_MODEL,
+          model: RESEARCH_MODEL,
           max_tokens: ctx.gatherMaxTokens ?? 2048,
           system: AGENT_SYSTEM,
           messages,

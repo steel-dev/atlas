@@ -8,6 +8,7 @@ import {
   createSteelGate,
   runGatherAgent,
   type AgentContext,
+  type OpenedSourceFile,
 } from "./tools.js";
 
 function messageWith(content: unknown[]): Anthropic.Message {
@@ -48,13 +49,32 @@ function toolUse(
   return { type: "tool_use", id, name, input } as unknown as Anthropic.ToolUseBlock;
 }
 
+function sourceFile(
+  url: string,
+  title: string,
+  markdown: string,
+): OpenedSourceFile {
+  return {
+    url,
+    title,
+    markdown,
+    original_chars: markdown.length,
+    stored_chars: markdown.length,
+    truncated: false,
+    metadata: {
+      markdown_chars: markdown.length,
+      extraction_notes: ["Test source."],
+    },
+  };
+}
+
 function createContext(opts: {
   messagesCreate: Anthropic["messages"]["create"];
   scrape?: unknown;
   openedPages?: AgentContext["openedPages"];
-  openedPageUrls?: AgentContext["openedPageUrls"];
-  openedPageMarkdowns?: AgentContext["openedPageMarkdowns"];
+  openedSourceFiles?: AgentContext["openedSourceFiles"];
   openedPageCap?: number;
+  useProxy?: boolean;
 }): AgentContext {
   return {
     anthropic: {
@@ -62,12 +82,11 @@ function createContext(opts: {
     } as unknown as Anthropic,
     steel: { scrape: opts.scrape ?? vi.fn() } as unknown as Steel,
     openedPages: opts.openedPages ?? [],
-    openedPageUrls: opts.openedPageUrls ?? new Set(),
-    openedPageMarkdowns: opts.openedPageMarkdowns ?? new Map(),
+    openedSourceFiles: opts.openedSourceFiles ?? new Map(),
     emit: vi.fn(),
     abort: vi.fn(),
     defaultEngine: "ddg",
-    useProxy: false,
+    useProxy: opts.useProxy ?? false,
     openedPageCap: opts.openedPageCap ?? 4,
     maxConcurrentTools: 2,
     steelGate: createSteelGate(2),
@@ -421,23 +440,6 @@ describe("gather loop cache integration", () => {
   });
 
   it("fetches browser-rendered page content into run memory keyed by URL", async () => {
-    const fetch = vi.fn(async () => {
-      const body = `
-        <html>
-          <head><title>Primary Source</title></head>
-          <body>
-            <main>
-              <h1>Primary Source</h1>
-              ${"<p>Detailed source body with enough useful research text for plain extraction.</p>".repeat(20)}
-            </main>
-          </body>
-        </html>
-      `;
-      return new Response(body, {
-        headers: { "content-type": "text/html; charset=utf-8" },
-      });
-    });
-    vi.stubGlobal("fetch", fetch);
     const scrape = vi.fn(async () => ({
       content: { markdown: "# Primary Source\n\nDetailed source body." },
       metadata: { title: "Primary Source" },
@@ -463,7 +465,6 @@ describe("gather loop cache integration", () => {
 
     expect(result.finish_reason).toBe("final report");
     expect(result.markdown).toContain("# Test Report");
-    expect(fetch).toHaveBeenCalledTimes(1);
     expect(scrape).toHaveBeenCalledTimes(1);
     expect(ctx.openedPages).toEqual([
       {
@@ -471,30 +472,13 @@ describe("gather loop cache integration", () => {
         title: "Primary Source",
       },
     ]);
-    expect(ctx.openedPageMarkdowns.get("https://example.com/source")).toContain("Detailed source body");
+    expect(ctx.openedSourceFiles.get("https://example.com/source")?.markdown).toContain("Detailed source body");
     expect(toolResultText(followupRequest)).toContain('"url": "https://example.com/source"');
     expect(toolResultText(followupRequest)).not.toContain('"extraction_method"');
     expect(toolResultText(followupRequest)).toContain('"content"');
   });
 
   it("continues reading a fetched source by URL and offset", async () => {
-    const fetch = vi.fn(async () => {
-      const body = `
-        <html>
-          <head><title>Primary Source</title></head>
-          <body>
-            <main>
-              <h1>Primary Source</h1>
-              ${"<p>Line-readable evidence about methods and controls.</p>".repeat(30)}
-            </main>
-          </body>
-        </html>
-      `;
-      return new Response(body, {
-        headers: { "content-type": "text/html; charset=utf-8" },
-      });
-    });
-    vi.stubGlobal("fetch", fetch);
     const scrape = vi.fn(async () => ({
       content: {
         markdown: `# Primary Source\n\n${"Line-readable evidence about methods and controls. ".repeat(30)}`,
@@ -533,7 +517,6 @@ describe("gather loop cache integration", () => {
     };
 
     expect(result.finish_reason).toBe("final report");
-    expect(fetch).toHaveBeenCalledTimes(1);
     expect(scrape).toHaveBeenCalledTimes(1);
     expect(toolResultText(readRequest)).toContain('"url": "https://example.com/source"');
     expect(toolResultText(readRequest)).toContain('"offset": 80');
@@ -550,9 +533,15 @@ describe("gather loop cache integration", () => {
           title: "Primary Source",
         },
       ],
-      openedPageUrls: new Set(["https://example.com/primary"]),
-      openedPageMarkdowns: new Map([
-        ["https://example.com/primary", "# Primary Source\n\nUseful evidence."],
+      openedSourceFiles: new Map([
+        [
+          "https://example.com/primary",
+          sourceFile(
+            "https://example.com/primary",
+            "Primary Source",
+            "# Primary Source\n\nUseful evidence.",
+          ),
+        ],
       ]),
     });
 
@@ -581,7 +570,6 @@ describe("gather loop cache integration", () => {
         { url: "https://example.com/one", title: "One" },
         { url: "https://example.com/two", title: "Two" },
       ],
-      openedPageUrls: new Set(["https://example.com/one", "https://example.com/two"]),
     });
 
     const result = await runGatherAgent({
@@ -613,11 +601,14 @@ describe("gather loop cache integration", () => {
       openedPages: [
         { url: "https://example.com/capped", title: "Capped Source" },
       ],
-      openedPageUrls: new Set(["https://example.com/capped"]),
-      openedPageMarkdowns: new Map([
+      openedSourceFiles: new Map([
         [
           "https://example.com/capped",
-          "# Capped Source\n\nEvidence remains readable after the open cap.",
+          sourceFile(
+            "https://example.com/capped",
+            "Capped Source",
+            "# Capped Source\n\nEvidence remains readable after the open cap.",
+          ),
         ],
       ]),
       openedPageCap: 1,
@@ -666,23 +657,6 @@ describe("gather loop cache integration", () => {
   });
 
   it("asks for final synthesis without tools when tool budget is exhausted", async () => {
-    const fetch = vi.fn(async () => {
-      const body = `
-        <html>
-          <head><title>Budget Source</title></head>
-          <body>
-            <main>
-              <h1>Budget Source</h1>
-              ${"<p>Useful evidence gathered before the tool budget was exhausted.</p>".repeat(20)}
-            </main>
-          </body>
-        </html>
-      `;
-      return new Response(body, {
-        headers: { "content-type": "text/html; charset=utf-8" },
-      });
-    });
-    vi.stubGlobal("fetch", fetch);
     const scrape = vi.fn(async () => ({
       content: {
         markdown: "# Budget Source\n\nUseful evidence gathered before the tool budget was exhausted.",
@@ -718,7 +692,6 @@ describe("gather loop cache integration", () => {
     expect(result.markdown).toContain("# Test Report");
     expect(result.tool_calls).toBe(1);
     expect(messagesCreate).toHaveBeenCalledTimes(2);
-    expect(fetch).toHaveBeenCalledTimes(1);
     expect(scrape).toHaveBeenCalledTimes(1);
     expect(synthesisRequest.tools).toBeUndefined();
     expect(JSON.stringify(synthesisRequest.messages)).toContain(
@@ -729,16 +702,12 @@ describe("gather loop cache integration", () => {
     );
   });
 
-  it("uses Steel for HTML pages", async () => {
-    const fetch = vi.fn(async () =>
-      new Response("<html><body><div id=\"root\"></div></body></html>", {
-        headers: { "content-type": "text/html" },
-      }),
-    );
+  it("uses Steel for fetched pages", async () => {
+    const fetch = vi.fn();
     vi.stubGlobal("fetch", fetch);
     const scrape = vi.fn(async () => ({
-      content: { markdown: "# Steel Fallback\n\nRendered browser content." },
-      metadata: { title: "Steel Fallback" },
+      content: { markdown: "# Steel Fetch\n\nRendered browser content." },
+      metadata: { title: "Steel Fetch" },
     }));
     const messagesCreate = vi
       .fn()
@@ -761,18 +730,45 @@ describe("gather loop cache integration", () => {
 
     expect(result.finish_reason).toBe("final report");
     expect(result.markdown).toContain("# Test Report");
-    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(fetch).not.toHaveBeenCalled();
     expect(scrape).toHaveBeenCalledTimes(1);
     expect(ctx.openedPages[0]).toMatchObject({
       url: "https://example.com/js-app",
-      title: "Steel Fallback",
-    });
-    expect(ctx.emit).toHaveBeenCalledWith({
-      type: "steel_fallback",
-      url: "https://example.com/js-app",
-      reason: "Browser-rendered fetch required for content-type: text/html",
+      title: "Steel Fetch",
     });
     expect(toolResultText(followupRequest)).not.toContain('"extraction_method"');
+  });
+
+  it("passes proxy preference to Steel fetches", async () => {
+    const scrape = vi.fn(async () => ({
+      content: { markdown: "# Proxied Fetch\n\nRendered browser content." },
+      metadata: { title: "Proxied Fetch" },
+    }));
+    const messagesCreate = vi
+      .fn()
+      .mockResolvedValueOnce(
+        messageWith([
+          toolUse("fetch_1", "fetch", { url: "https://example.com/proxy" }),
+        ]),
+      )
+      .mockResolvedValueOnce(finalReport());
+    const ctx = createContext({ messagesCreate, scrape, useProxy: true });
+
+    const result = await runGatherAgent({
+      ctx,
+      query: "What is Atlas?",
+      max_tool_calls: 2,
+    });
+
+    expect(result.finish_reason).toBe("final report");
+    expect(scrape).toHaveBeenCalledWith(
+      {
+        url: "https://example.com/proxy",
+        format: ["markdown"],
+        useProxy: true,
+      },
+      expect.any(Object),
+    );
   });
 
   it("rejects removed virtual file tools", async () => {

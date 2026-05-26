@@ -1,9 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
-import {
-  RESEARCH_MODEL,
-  type CitedSource,
-  type ResearchEffort,
-} from "./pipeline.js";
+import { type CitedSource, type ResearchEffort } from "./pipeline.js";
 import { createSteel } from "./steel.js";
 import {
   createOpenReservations,
@@ -20,7 +16,6 @@ const DEFAULT_RUNTIME_LIMITS = {
   maxConcurrentTools: 8,
   maxConcurrentSteelCalls: 4,
   defaultSearchLimit: 8,
-  gatherModel: RESEARCH_MODEL,
   agentEffort: "high",
   agentMaxTokens: 16_384,
 } satisfies {
@@ -29,7 +24,6 @@ const DEFAULT_RUNTIME_LIMITS = {
   maxConcurrentTools: number;
   maxConcurrentSteelCalls: number;
   defaultSearchLimit: number;
-  gatherModel: string | undefined;
   agentEffort: ResearchEffort;
   agentMaxTokens: number;
 };
@@ -71,7 +65,6 @@ export type ResearchEvent =
       error: string;
     }
   | { type: "fetching"; url: string }
-  | { type: "steel_fallback"; url: string; reason: string }
   | {
       type: "rate_limited";
       retry_after_seconds: number;
@@ -93,6 +86,7 @@ export interface ResearchOptions {
   anthropicApiKey?: string;
   steelApiKey?: string;
   steelBaseUrl?: string;
+  useProxy?: boolean;
   timeoutMs?: number;
   effort?: ResearchEffort;
   onEvent?: (event: ResearchEvent) => void;
@@ -105,6 +99,7 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
     anthropicApiKey: anthropicApiKeyOverride,
     steelApiKey: steelApiKeyOverride,
     steelBaseUrl: steelBaseUrlOverride,
+    useProxy = false,
     timeoutMs,
     effort,
     onEvent,
@@ -114,25 +109,22 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
   if (!query || !query.trim()) {
     throw new Error("research: query is required");
   }
-  const anthropicApiKey = anthropicApiKeyOverride ?? readEnv(
-    "ATLAS_ANTHROPIC_API_KEY",
-    "ANTHROPIC_API_KEY",
-  );
-  const steelApiKey = steelApiKeyOverride ?? readEnv(
-    "ATLAS_STEEL_API_KEY",
-    "STEEL_API_KEY",
-  );
-  const steelBaseUrl = steelBaseUrlOverride ?? readEnv(
-    "ATLAS_STEEL_BASE_URL",
-    "STEEL_BASE_URL",
-  );
+  const anthropicApiKey =
+    anthropicApiKeyOverride ??
+    readEnv("ATLAS_ANTHROPIC_API_KEY", "ANTHROPIC_API_KEY");
+  const steelApiKey =
+    steelApiKeyOverride ?? readEnv("ATLAS_STEEL_API_KEY", "STEEL_API_KEY");
+  const steelBaseUrl =
+    steelBaseUrlOverride ?? readEnv("ATLAS_STEEL_BASE_URL", "STEEL_BASE_URL");
   if (!anthropicApiKey) {
     throw new Error(
       "research: ANTHROPIC_API_KEY or ATLAS_ANTHROPIC_API_KEY is required",
     );
   }
   if (!steelApiKey) {
-    throw new Error("research: STEEL_API_KEY or ATLAS_STEEL_API_KEY is required");
+    throw new Error(
+      "research: STEEL_API_KEY or ATLAS_STEEL_API_KEY is required",
+    );
   }
 
   const limits = DEFAULT_RUNTIME_LIMITS;
@@ -154,23 +146,18 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
   const steel = createSteel({ apiKey: steelApiKey, baseUrl: steelBaseUrl });
 
   const openedPages: CitedSource[] = [];
-  const openedPageUrls = new Set<string>();
-  const openedPageMarkdowns = new Map<string, string>();
   const openedSourceFiles = new Map<string, OpenedSourceFile>();
 
   const ctx: AgentContext = {
     anthropic,
     steel,
     openedPages,
-    openedPageUrls,
-    openedPageMarkdowns,
     openedSourceFiles,
     emit,
     abort,
     signal: runSignal,
     defaultEngine: "ddg",
-    useProxy: false,
-    fastModel: limits.gatherModel,
+    useProxy,
     openedPageCap: safetySourceCap,
     gatherMaxTokens: limits.agentMaxTokens,
     defaultSearchLimit: limits.defaultSearchLimit,
@@ -197,7 +184,9 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
   abort();
   const markdown = gather.markdown.trim();
   if (!markdown) {
-    throw new Error(`research: agent did not produce a final report (${gather.finish_reason})`);
+    throw new Error(
+      `research: agent did not produce a final report (${gather.finish_reason})`,
+    );
   }
   const citedSources = sourcesCitedInMarkdown(markdown, openedPages);
   emit({ type: "written", markdown_chars: markdown.length });
@@ -228,7 +217,10 @@ function sourcesCitedInMarkdown(
 ): CitedSource[] {
   const citedUrls = extractMarkdownUrls(markdown);
   const byNormalizedUrl = new Map(
-    openedSources.map((source) => [normalizeUrlForCitation(source.url), source]),
+    openedSources.map((source) => [
+      normalizeUrlForCitation(source.url),
+      source,
+    ]),
   );
 
   const citedSources: CitedSource[] = [];
@@ -311,4 +303,3 @@ function instrumentAnthropic(client: Anthropic): UsageSummary {
   client.messages.create = wrapped as typeof client.messages.create;
   return usage;
 }
-
