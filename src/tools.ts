@@ -844,6 +844,8 @@ async function execFetch(
     return { text: formatFetchResult(existing, offset, maxChars) };
   }
 
+  ctx.abort();
+
   const reservation = reserveOpen(ctx, requestedUrl);
   if (typeof reservation === "string") return { text: reservation };
   const url = reservation.url;
@@ -861,8 +863,6 @@ async function execFetch(
       });
       return { text: "Empty page (no content fetched)." };
     }
-
-    ctx.abort();
 
     const resolvedTitle = title ?? url;
     const stored = storeMarkdown(markdown);
