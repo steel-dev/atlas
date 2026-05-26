@@ -174,7 +174,7 @@ describe("gather loop cache integration", () => {
     expect(result.markdown).toContain("# Test Report");
     expect(messagesCreate).toHaveBeenCalledTimes(3);
     expect(toolResultText(secondRequest)).toContain('"results"');
-    expect(toolResultText(secondRequest)).toContain('"engines"');
+    expect(toolResultText(secondRequest)).not.toContain('"engines"');
     expect(scrape).toHaveBeenCalledTimes(3);
     expect(ctx.caches.serp.size).toBe(3);
   });
@@ -248,24 +248,17 @@ describe("gather loop cache integration", () => {
     };
     const toolText = toolResultText(followupRequest);
     const payload = JSON.parse(toolText) as {
-      engines: string[];
-      results: Array<{ url: string; engines: string[]; best_position: number }>;
+      results: Array<{ url: string; title: string; snippet?: string }>;
     };
-    const shared = payload.results.find(
-      (r) => r.url === "https://example.com/shared",
-    );
 
     expect(result.finish_reason).toBe("final report");
-    expect(payload.engines).toEqual(["ddg", "bing", "google"]);
     expect(payload.results.map((r) => r.url)).toEqual([
       "https://example.com/shared",
       "https://example.com/bing-only",
       "https://example.com/google-only",
     ]);
-    expect(shared).toMatchObject({
-      engines: ["bing", "google"],
-      best_position: 1,
-    });
+    expect(toolText).not.toContain('"engines"');
+    expect(toolText).not.toContain('"best_position"');
     expect(fetch).toHaveBeenCalledTimes(3);
     expect(ctx.caches.serp.size).toBe(3);
   });
@@ -339,7 +332,7 @@ describe("gather loop cache integration", () => {
     ]);
     expect(ctx.openedPageMarkdowns.get("https://example.com/source")).toContain("Detailed source body");
     expect(toolResultText(followupRequest)).toContain('"url": "https://example.com/source"');
-    expect(toolResultText(followupRequest)).toContain('"extraction_method": "plain"');
+    expect(toolResultText(followupRequest)).not.toContain('"extraction_method"');
     expect(toolResultText(followupRequest)).toContain('"content"');
   });
 
@@ -624,7 +617,7 @@ describe("gather loop cache integration", () => {
       url: "https://example.com/js-app",
       reason: "Plain fetch returned too little readable text (0 chars)",
     });
-    expect(toolResultText(followupRequest)).toContain('"extraction_method": "steel"');
+    expect(toolResultText(followupRequest)).not.toContain('"extraction_method"');
   });
 
   it("rejects removed virtual file tools", async () => {

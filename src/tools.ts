@@ -537,8 +537,6 @@ function compactSearchResults(results: MergedSearchResult[]): Array<{
   title: string;
   url: string;
   snippet?: string;
-  engines: Engine[];
-  best_position: number;
 }> {
   return results.map((result) => ({
     title: result.title,
@@ -546,8 +544,6 @@ function compactSearchResults(results: MergedSearchResult[]): Array<{
     ...(result.snippet
       ? { snippet: result.snippet.slice(0, SEARCH_SNIPPET_CHARS) }
       : {}),
-    engines: result.engines,
-    best_position: result.best_position,
   }));
 }
 
@@ -685,9 +681,7 @@ async function execSearch(
     return JSON.stringify(
       {
         query,
-        engines,
         results: compactSearchResults(results),
-        ...(failures.length > 0 ? { warnings: failures } : {}),
       },
       null,
       2,
@@ -703,10 +697,8 @@ async function execSearch(
     return JSON.stringify(
       {
         query,
-        engines,
         results: [],
         note: "No results. Try a different query.",
-        ...(failures.length > 0 ? { warnings: failures } : {}),
       },
       null,
       2,
@@ -966,10 +958,6 @@ function formatFetchResult(
     offset: start,
     next_offset: hasMore ? end : null,
     has_more: hasMore,
-    chars_returned: content.length,
-    total_chars_available: file.stored_chars,
-    truncated: file.truncated,
-    extraction_method: file.metadata.fetch_method,
     content,
   };
   return JSON.stringify(result, null, 2);
