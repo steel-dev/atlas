@@ -47,12 +47,10 @@ interface ScrapeCacheEntry {
 }
 
 interface ExtractionMetadata {
-  fetch_method: "plain" | "steel";
   content_type?: string;
   raw_chars?: number;
   raw_truncated?: boolean;
   markdown_chars: number;
-  plain_failure_reason?: string;
   extraction_notes: string[];
 }
 
@@ -350,7 +348,6 @@ function sourceFiles(ctx: AgentContext): Map<string, OpenedSourceFile> {
 
 function unknownExtractionMetadata(markdownChars: number): ExtractionMetadata {
   return {
-    fetch_method: "steel",
     markdown_chars: markdownChars,
     extraction_notes: [
       "Extraction metadata is unavailable for this preloaded source.",
@@ -782,7 +779,6 @@ function extractionMetadataFromPlain(
   metadata: PlainPageMetadata,
 ): ExtractionMetadata {
   return {
-    fetch_method: "plain",
     content_type: metadata.content_type,
     raw_chars: metadata.raw_chars,
     raw_truncated: metadata.raw_truncated,
@@ -793,14 +789,11 @@ function extractionMetadataFromPlain(
 
 function extractionMetadataFromSteel(
   markdownChars: number,
-  plainFailureReason: string,
 ): ExtractionMetadata {
   return {
-    fetch_method: "steel",
     markdown_chars: markdownChars,
-    plain_failure_reason: plainFailureReason,
     extraction_notes: [
-      "Fetched with Steel browser-rendered markdown after plain fetch was insufficient.",
+      "Fetched with browser-rendered markdown.",
     ],
   };
 }
@@ -859,7 +852,7 @@ async function scrapeWithCache(
         return {
           markdown,
           title: scrape.metadata?.title ?? null,
-          metadata: extractionMetadataFromSteel(markdown.length, plain.reason),
+          metadata: extractionMetadataFromSteel(markdown.length),
         };
       },
     );

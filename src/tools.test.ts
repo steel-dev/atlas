@@ -382,7 +382,7 @@ describe("gather loop cache integration", () => {
     expect(request.tools.map((tool) => tool.name)).toEqual(["search", "fetch"]);
   });
 
-  it("fetches page content into run memory keyed by URL", async () => {
+  it("fetches browser-rendered page content into run memory keyed by URL", async () => {
     const fetch = vi.fn(async () => {
       const body = `
         <html>
@@ -426,7 +426,7 @@ describe("gather loop cache integration", () => {
     expect(result.finish_reason).toBe("final report");
     expect(result.markdown).toContain("# Test Report");
     expect(fetch).toHaveBeenCalledTimes(1);
-    expect(scrape).not.toHaveBeenCalled();
+    expect(scrape).toHaveBeenCalledTimes(1);
     expect(ctx.openedPages).toEqual([
       {
         url: "https://example.com/source",
@@ -457,6 +457,12 @@ describe("gather loop cache integration", () => {
       });
     });
     vi.stubGlobal("fetch", fetch);
+    const scrape = vi.fn(async () => ({
+      content: {
+        markdown: `# Primary Source\n\n${"Line-readable evidence about methods and controls. ".repeat(30)}`,
+      },
+      metadata: { title: "Primary Source" },
+    }));
     const messagesCreate = vi
       .fn()
       .mockResolvedValueOnce(
@@ -477,7 +483,7 @@ describe("gather loop cache integration", () => {
         ]),
       )
       .mockResolvedValueOnce(finalReport());
-    const ctx = createContext({ messagesCreate });
+    const ctx = createContext({ messagesCreate, scrape });
 
     const result = await runGatherAgent({
       ctx,
@@ -490,6 +496,7 @@ describe("gather loop cache integration", () => {
 
     expect(result.finish_reason).toBe("final report");
     expect(fetch).toHaveBeenCalledTimes(1);
+    expect(scrape).toHaveBeenCalledTimes(1);
     expect(toolResultText(readRequest)).toContain('"url": "https://example.com/source"');
     expect(toolResultText(readRequest)).toContain('"offset": 80');
     expect(toolResultText(readRequest)).toContain("Line-readable evidence");
@@ -638,6 +645,12 @@ describe("gather loop cache integration", () => {
       });
     });
     vi.stubGlobal("fetch", fetch);
+    const scrape = vi.fn(async () => ({
+      content: {
+        markdown: "# Budget Source\n\nUseful evidence gathered before the tool budget was exhausted.",
+      },
+      metadata: { title: "Budget Source" },
+    }));
     const messagesCreate = vi
       .fn()
       .mockResolvedValueOnce(
@@ -649,7 +662,7 @@ describe("gather loop cache integration", () => {
         ]),
       )
       .mockResolvedValueOnce(finalReport());
-    const ctx = createContext({ messagesCreate });
+    const ctx = createContext({ messagesCreate, scrape });
 
     const result = await runGatherAgent({
       ctx,
@@ -668,6 +681,7 @@ describe("gather loop cache integration", () => {
     expect(result.tool_calls).toBe(1);
     expect(messagesCreate).toHaveBeenCalledTimes(2);
     expect(fetch).toHaveBeenCalledTimes(1);
+    expect(scrape).toHaveBeenCalledTimes(1);
     expect(synthesisRequest.tools).toBeUndefined();
     expect(JSON.stringify(synthesisRequest.messages)).toContain(
       "Runtime limit reached: tool call budget exhausted",
@@ -677,7 +691,7 @@ describe("gather loop cache integration", () => {
     );
   });
 
-  it("falls back to Steel when plain fetch has too little readable text", async () => {
+  it("uses Steel for HTML pages", async () => {
     const fetch = vi.fn(async () =>
       new Response("<html><body><div id=\"root\"></div></body></html>", {
         headers: { "content-type": "text/html" },
@@ -718,7 +732,7 @@ describe("gather loop cache integration", () => {
     expect(ctx.emit).toHaveBeenCalledWith({
       type: "steel_fallback",
       url: "https://example.com/js-app",
-      reason: "Plain fetch returned too little readable text (0 chars)",
+      reason: "Browser-rendered fetch required for content-type: text/html",
     });
     expect(toolResultText(followupRequest)).not.toContain('"extraction_method"');
   });
