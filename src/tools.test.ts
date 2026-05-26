@@ -383,6 +383,49 @@ describe("gather loop cache integration", () => {
     expect(messagesCreate).toHaveBeenCalledTimes(1);
   });
 
+  it("accepts non-empty final text without enforcing a report skeleton", async () => {
+    const messagesCreate = vi
+      .fn()
+      .mockResolvedValueOnce(
+        messageWith([
+          {
+            type: "text",
+            text: "A concise supported answer without a forced heading scaffold.",
+          },
+        ]),
+      );
+    const ctx: AgentContext = {
+      anthropic: {
+        messages: { create: messagesCreate },
+      } as unknown as Anthropic,
+      steel: { scrape: vi.fn() } as unknown as Steel,
+      sources: [],
+      sourceUrls: new Set(),
+      sourceMarkdowns: new Map(),
+      emit: vi.fn(),
+      abort: vi.fn(),
+      defaultEngine: "ddg",
+      useProxy: false,
+      globalSourceCap: 4,
+      maxConcurrentTools: 2,
+      steelGate: createSteelGate(2),
+      sourceReservations: createSourceReservations(),
+      caches: createResearchCaches(),
+    };
+
+    const result = await runGatherAgent({
+      ctx,
+      query: "What is Atlas?",
+      max_tool_calls: 2,
+    });
+
+    expect(result.finish_reason).toBe("final report");
+    expect(result.markdown).toBe(
+      "A concise supported answer without a forced heading scaffold.",
+    );
+    expect(messagesCreate).toHaveBeenCalledTimes(1);
+  });
+
   it("falls back to Steel when plain fetch has too little readable text", async () => {
     const fetch = vi.fn(async () =>
       new Response("<html><body><div id=\"root\"></div></body></html>", {

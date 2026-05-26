@@ -418,10 +418,6 @@ function textFromContent(content: Anthropic.Message["content"]): string {
     .trim();
 }
 
-function looksLikeFinalReport(text: string): boolean {
-  return /^#\s+\S/m.test(text) && /^##\s+Sources\b/im.test(text);
-}
-
 function delegateState(ctx: AgentContext): DelegateState {
   if (!ctx.delegateState) {
     ctx.delegateState = {
@@ -1274,7 +1270,7 @@ export async function runGatherAgent(opts: {
           ? null
           : mode === "brief"
             ? finalBriefRequest()
-            : looksLikeFinalReport(text)
+            : text
               ? null
               : finalReportRequest(ctx);
       if (content === null) {
