@@ -42,7 +42,7 @@ function finalReport(): Anthropic.Message {
 
 function toolUse(
   id: string,
-  name: "search" | "fetch" | "read_source" | "delegate",
+  name: "search" | "fetch" | "read_source",
   input: Record<string, unknown> = {},
 ): Anthropic.ToolUseBlock {
   return { type: "tool_use", id, name, input } as unknown as Anthropic.ToolUseBlock;
@@ -548,96 +548,6 @@ describe("gather loop cache integration", () => {
       url: "https://example.com/js-app",
       title: "Steel Fallback",
     });
-  });
-
-  it("shares delegated sources with the parent source list", async () => {
-    const fetch = vi.fn(async () => {
-      const body = `
-        <html>
-          <head><title>Delegate Source</title></head>
-          <body>
-            <main>
-              <h1>Delegate Source</h1>
-              ${"<p>Detailed delegated research evidence with enough readable text.</p>".repeat(20)}
-            </main>
-          </body>
-        </html>
-      `;
-      return new Response(body, {
-        headers: { "content-type": "text/html; charset=utf-8" },
-      });
-    });
-    vi.stubGlobal("fetch", fetch);
-    const messagesCreate = vi
-      .fn()
-      .mockResolvedValueOnce(
-        messageWith([
-          toolUse("delegate_1", "delegate", {
-            task: "Investigate one focused angle.",
-          }),
-        ]),
-      )
-      .mockResolvedValueOnce(
-        messageWith([
-          toolUse("fetch_1", "fetch", { url: "https://example.com/delegate" }),
-        ]),
-      )
-      .mockResolvedValueOnce(
-        messageWith([
-          {
-            type: "text",
-            text: "## Answer\n\nThe delegated angle has evidence from https://example.com/delegate.",
-          },
-        ]),
-      )
-      .mockResolvedValueOnce(finalReport());
-    const ctx: AgentContext = {
-      anthropic: {
-        messages: { create: messagesCreate },
-      } as unknown as Anthropic,
-      steel: { scrape: vi.fn() } as unknown as Steel,
-      sources: [],
-      sourceUrls: new Set(),
-      sourceMarkdowns: new Map(),
-      emit: vi.fn(),
-      abort: vi.fn(),
-      defaultEngine: "ddg",
-      useProxy: false,
-      globalSourceCap: 8,
-      maxConcurrentTools: 2,
-      delegateGate: createSteelGate(1),
-      delegateState: { calls: 0, maxCalls: 2 },
-      delegateMaxToolCalls: 4,
-      steelGate: createSteelGate(2),
-      sourceReservations: createSourceReservations(),
-      caches: createResearchCaches(),
-    };
-
-    const result = await runGatherAgent({
-      ctx,
-      query: "What is Atlas?",
-      max_tool_calls: 4,
-    });
-    const parentFollowup = messagesCreate.mock.calls[3]?.[0] as {
-      messages: Array<{ content: unknown }>;
-    };
-
-    expect(result.finish_reason).toBe("final report");
-    expect(result.markdown).toContain("# Test Report");
-    expect(ctx.sources).toEqual([
-      {
-        url: "https://example.com/delegate",
-        title: "Delegate Source",
-      },
-    ]);
-    expect(JSON.stringify(parentFollowup.messages)).toContain("Delegate result");
-    expect(JSON.stringify(parentFollowup.messages)).toContain("Fetched URLs");
-    expect(JSON.stringify(parentFollowup.messages)).toContain(
-      "https://example.com/delegate",
-    );
-    expect(JSON.stringify(parentFollowup.messages)).toContain(
-      "The delegated angle has evidence from https://example.com/delegate",
-    );
   });
 
 });

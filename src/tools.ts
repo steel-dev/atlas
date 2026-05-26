@@ -12,14 +12,11 @@ import { fetchPlainPage } from "./plain-fetch.js";
 
 const STORED_MARKDOWN_CAP = 120_000;
 const FETCH_SNIPPET_CHARS = 8000;
-const DELEGATE_FETCH_SNIPPET_CHARS = 60_000;
 const DEFAULT_READ_SOURCE_CHARS = 12_000;
 const MAX_READ_SOURCE_CHARS = 30_000;
 const SEARCH_SNIPPET_CHARS = 500;
 const DEFAULT_MAX_TOOL_CALLS = 12;
 const DEFAULT_MAX_CONCURRENT_TOOLS = 4;
-const DEFAULT_DELEGATE_MAX_TOOL_CALLS = 64;
-const DEFAULT_MAX_DELEGATES = 8;
 const STEEL_RATE_LIMIT_MAX_ATTEMPTS = 6;
 const DEFAULT_RATE_LIMIT_RETRY_SECONDS = 15;
 const TRACKING_QUERY_PARAMS = new Set([
@@ -38,11 +35,6 @@ export interface SteelGate {
 export interface SourceReservations {
   urls: Set<string>;
   sourceSlots: number;
-}
-
-export interface DelegateState {
-  calls: number;
-  maxCalls: number;
 }
 
 interface ScrapeCacheEntry {
@@ -142,9 +134,6 @@ export interface AgentContext {
   defaultSearchLimit?: number;
   maxConcurrentTools?: number;
   fetchSnippetChars?: number;
-  delegateGate?: SteelGate;
-  delegateState?: DelegateState;
-  delegateMaxToolCalls?: number;
   steelGate: SteelGate;
   sourceReservations: SourceReservations;
   caches: ResearchCaches;
@@ -205,11 +194,8 @@ interface ReadSourceToolInput {
   offset?: number;
   max_chars?: number;
 }
-interface DelegateToolInput {
-  task?: string;
-}
 
-const BASE_AGENT_TOOLS: Anthropic.Tool[] = [
+const AGENT_TOOLS: Anthropic.Tool[] = [
   {
     name: "search",
     description: "Search the web.",
@@ -269,25 +255,6 @@ const BASE_AGENT_TOOLS: Anthropic.Tool[] = [
         },
       },
       required: ["url"],
-    } as Anthropic.Tool["input_schema"],
-  },
-];
-
-const AGENT_TOOLS: Anthropic.Tool[] = [
-  ...BASE_AGENT_TOOLS,
-  {
-    name: "delegate",
-    description: "Spawn a focused research subtask.",
-    input_schema: {
-      type: "object",
-      properties: {
-        task: {
-          type: "string",
-          description:
-            "A natural-language research task to run in parallel.",
-        },
-      },
-      required: ["task"],
     } as Anthropic.Tool["input_schema"],
   },
 ];
@@ -376,16 +343,6 @@ function textFromContent(content: Anthropic.Message["content"]): string {
     .map((block) => (block.type === "text" ? block.text : ""))
     .join("")
     .trim();
-}
-
-function delegateState(ctx: AgentContext): DelegateState {
-  if (!ctx.delegateState) {
-    ctx.delegateState = {
-      calls: 0,
-      maxCalls: DEFAULT_MAX_DELEGATES,
-    };
-  }
-  return ctx.delegateState;
 }
 
 function gatherStartPrompt(opts: {
@@ -724,50 +681,6 @@ async function mapWithConcurrency<T, R>(
   return results;
 }
 
-async function execDelegate(
-  args: DelegateToolInput,
-  ctx: AgentContext,
-): Promise<string> {
-  const task = String(args.task ?? "").trim();
-  if (!task) return "Error: delegate requires a non-empty `task`.";
-
-  const state = delegateState(ctx);
-  if (state.calls >= state.maxCalls) {
-    return `Delegate limit reached (${state.maxCalls}). Continue in the parent thread.`;
-  }
-  state.calls++;
-
-  const runChild = async () => {
-    const child = await runGatherAgent({
-      ctx: {
-        ...ctx,
-        fetchSnippetChars: DELEGATE_FETCH_SNIPPET_CHARS,
-      },
-      query: task,
-      max_tool_calls: ctx.delegateMaxToolCalls ?? DEFAULT_DELEGATE_MAX_TOOL_CALLS,
-      allowDelegate: false,
-    });
-    const answer = child.markdown.trim() || "(Delegate produced no answer.)";
-    const fetchedUrls =
-      child.fetched_urls.length > 0
-        ? child.fetched_urls
-            .map((url) => {
-              const source = ctx.sources.find((item) => item.url === url);
-              return `${source?.title ?? url} — ${url}`;
-            })
-            .join("\n")
-        : "None.";
-    return (
-      `Delegate result: ${task}\n` +
-      `Tool calls: ${child.tool_calls}; finish reason: ${child.finish_reason}.\n` +
-      `Fetched URLs:\n${fetchedUrls}\n\n` +
-      answer
-    );
-  };
-
-  return ctx.delegateGate ? ctx.delegateGate.run(runChild) : runChild();
-}
-
 async function executeToolUse(
   tu: Anthropic.ToolUseBlock,
   ctx: AgentContext,
@@ -830,29 +743,6 @@ async function executeToolUse(
         (tu.input as ReadSourceToolInput) ?? {},
         ctx,
       );
-      return {
-        toolResult: {
-          type: "tool_result",
-          tool_use_id: tu.id,
-          content: text,
-        },
-      };
-    } catch (err) {
-      ctx.abort();
-      return {
-        toolResult: {
-          type: "tool_result",
-          tool_use_id: tu.id,
-          content: `Tool error: ${err instanceof Error ? err.message : String(err)}`,
-          is_error: true,
-        },
-      };
-    }
-  }
-
-  if (tu.name === "delegate") {
-    try {
-      const text = await execDelegate((tu.input as DelegateToolInput) ?? {}, ctx);
       return {
         toolResult: {
           type: "tool_result",
@@ -1002,7 +892,6 @@ export async function runGatherAgent(opts: {
   max_tool_calls?: number;
   budgetUsd?: number;
   effort?: ResearchEffort;
-  allowDelegate?: boolean;
 }): Promise<AgenticRunResult> {
   const { ctx, query } = opts;
   const maxToolCalls = opts.max_tool_calls ?? DEFAULT_MAX_TOOL_CALLS;
@@ -1044,7 +933,7 @@ export async function runGatherAgent(opts: {
           model: ctx.fastModel ?? FAST_MODEL,
           max_tokens: ctx.gatherMaxTokens ?? 2048,
           system: AGENT_SYSTEM,
-          tools: opts.allowDelegate === false ? BASE_AGENT_TOOLS : AGENT_TOOLS,
+          tools: AGENT_TOOLS,
           messages,
           cache_control: { type: "ephemeral" },
           ...effortConfig,

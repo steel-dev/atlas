@@ -18,9 +18,6 @@ const DEFAULT_RUNTIME_LIMITS = {
   safetyMaxToolCalls: 200,
   maxConcurrentTools: 8,
   maxConcurrentSteelCalls: 4,
-  maxConcurrentDelegates: 4,
-  maxDelegates: 16,
-  delegateMaxToolCalls: 64,
   defaultSearchLimit: 8,
   gatherModel: RESEARCH_MODEL,
   agentEffort: "high",
@@ -30,9 +27,6 @@ const DEFAULT_RUNTIME_LIMITS = {
   safetyMaxToolCalls: number;
   maxConcurrentTools: number;
   maxConcurrentSteelCalls: number;
-  maxConcurrentDelegates: number;
-  maxDelegates: number;
-  delegateMaxToolCalls: number;
   defaultSearchLimit: number;
   gatherModel: string | undefined;
   agentEffort: ResearchEffort;
@@ -184,9 +178,6 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
     gatherMaxTokens: limits.agentMaxTokens,
     defaultSearchLimit: limits.defaultSearchLimit,
     maxConcurrentTools: limits.maxConcurrentTools,
-    delegateGate: createSteelGate(limits.maxConcurrentDelegates),
-    delegateState: { calls: 0, maxCalls: limits.maxDelegates },
-    delegateMaxToolCalls: limits.delegateMaxToolCalls,
     steelGate: createSteelGate(limits.maxConcurrentSteelCalls),
     sourceReservations: createSourceReservations(),
     caches: createResearchCaches(),
