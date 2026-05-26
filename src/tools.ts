@@ -14,8 +14,8 @@ const STORED_MARKDOWN_CAP = 120_000;
 const FETCH_SNIPPET_CHARS = 8000;
 const DELEGATE_FETCH_SNIPPET_CHARS = 60_000;
 const INSPECT_SNIPPET_CHARS = 6000;
-const READ_SOURCE_CHUNK_CHARS = 3500;
-const READ_SOURCE_MAX_CHUNKS = 4;
+const DEFAULT_READ_SOURCE_CHARS = 12_000;
+const MAX_READ_SOURCE_CHARS = 30_000;
 const SEARCH_SNIPPET_CHARS = 500;
 const DEFAULT_MAX_TOOL_CALLS = 12;
 const DEFAULT_MAX_CONCURRENT_TOOLS = 4;
@@ -208,7 +208,8 @@ interface UrlToolInput {
 }
 interface ReadSourceToolInput {
   url?: string;
-  query?: string;
+  offset?: number;
+  max_chars?: number;
 }
 interface DelegateToolInput {
   task?: string;
@@ -270,7 +271,7 @@ const BASE_AGENT_TOOLS: Anthropic.Tool[] = [
   {
     name: "read_source",
     description:
-      "Read deeper into a fetched URL from the document cache. Use this after fetch when you need details, methods, exact evidence, contradictions, or sections relevant to a specific claim.",
+      "Read a contiguous range from a fetched URL in the document cache. Use this after fetch when you need details, methods, exact evidence, or contradictions; pass offset to continue reading.",
     input_schema: {
       type: "object",
       properties: {
@@ -278,10 +279,18 @@ const BASE_AGENT_TOOLS: Anthropic.Tool[] = [
           type: "string",
           description: "Absolute http(s) URL previously fetched in this agent.",
         },
-        query: {
-          type: "string",
+        offset: {
+          type: "integer",
+          minimum: 0,
           description:
-            "Optional focused question or keywords. When provided, Atlas returns the most relevant chunks from the stored source text.",
+            "Character offset into the stored source text. Default 0.",
+        },
+        max_chars: {
+          type: "integer",
+          minimum: 1000,
+          maximum: MAX_READ_SOURCE_CHARS,
+          description:
+            "Maximum characters to return. Default 12000, hard cap 30000.",
         },
       },
       required: ["url"],
@@ -371,17 +380,6 @@ function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-function queryTerms(query: string): string[] {
-  return [
-    ...new Set(
-      query
-        .toLowerCase()
-        .split(/[^a-z0-9]+/i)
-        .filter((term) => term.length >= 3),
-    ),
-  ];
-}
-
 function markdownHeadingOutline(markdown: string): string {
   const headings = markdown
     .split("\n")
@@ -390,51 +388,6 @@ function markdownHeadingOutline(markdown: string): string {
     .slice(0, 80);
 
   return headings.length > 0 ? `Heading outline:\n${headings.join("\n")}` : "";
-}
-
-function chunkMarkdown(markdown: string, chunkChars: number): string[] {
-  const paragraphs = markdown.split(/\n{2,}/);
-  const chunks: string[] = [];
-  let current = "";
-
-  for (const paragraph of paragraphs) {
-    const next = current ? `${current}\n\n${paragraph}` : paragraph;
-    if (next.length <= chunkChars || !current) {
-      current = next;
-      continue;
-    }
-    chunks.push(current);
-    current = paragraph;
-  }
-  if (current) chunks.push(current);
-  return chunks;
-}
-
-function bestSourceChunks(markdown: string, query: string): string[] {
-  const chunks = chunkMarkdown(markdown, READ_SOURCE_CHUNK_CHARS);
-  if (!query.trim()) return chunks.slice(0, READ_SOURCE_MAX_CHUNKS);
-
-  const terms = queryTerms(query);
-  if (terms.length === 0) return chunks.slice(0, READ_SOURCE_MAX_CHUNKS);
-
-  return chunks
-    .map((chunk, index) => {
-      const lower = chunk.toLowerCase();
-      const score = terms.reduce((sum, term) => {
-        const matches = lower.match(new RegExp(`\\b${escapeRegExp(term)}\\b`, "g"));
-        return sum + (matches?.length ?? 0);
-      }, 0);
-      return { chunk, index, score };
-    })
-    .filter((item) => item.score > 0)
-    .sort((a, b) => b.score - a.score || a.index - b.index)
-    .slice(0, READ_SOURCE_MAX_CHUNKS)
-    .sort((a, b) => a.index - b.index)
-    .map((item) => item.chunk);
-}
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function sourcePoolSummary(ctx: AgentContext): string {
@@ -504,7 +457,7 @@ function gatherStartPrompt(opts: {
     dollarBudget +
     `Runtime safety limits: at most ${opts.maxToolCalls} tool calls and ${opts.sourceCap} fetched documents.\n\n` +
     sourcePool +
-    `Gather enough evidence. Avoid search-only loops: use search to discover candidates, then inspect or fetch the best sources. Use read_source(url, query) on fetched URLs when you need more than the initial fetch excerpt. ${terminalInstruction}`
+    `Gather enough evidence. Avoid search-only loops: use search to discover candidates, then inspect or fetch the best sources. Use read_source(url, offset) on fetched URLs when you need more than the initial fetch excerpt. ${terminalInstruction}`
   );
 }
 
@@ -834,21 +787,35 @@ async function execReadSource(
     return `Fetched URL has no stored markdown text: ${url}`;
   }
 
-  const query = String(args.query ?? "").trim();
   const outline = markdownHeadingOutline(markdown);
-  const chunks = bestSourceChunks(markdown, query);
-  const chunkText =
-    chunks.length > 0
-      ? chunks
-          .map((chunk, index) => `Chunk ${index + 1}:\n${chunk.trim()}`)
-          .join("\n\n---\n\n")
-      : markdown.slice(0, READ_SOURCE_CHUNK_CHARS).trim();
-  const queryLine = query ? `\nQuery: ${query}` : "";
+  const offsetRaw = args.offset ?? 0;
+  const maxCharsRaw = args.max_chars ?? DEFAULT_READ_SOURCE_CHARS;
+  const offset = Math.floor(Number(offsetRaw));
+  const maxChars = Math.min(
+    MAX_READ_SOURCE_CHARS,
+    Math.max(1000, Math.floor(Number(maxCharsRaw))),
+  );
+  if (!Number.isFinite(offset) || offset < 0) {
+    return `Error: read_source offset must be a non-negative integer.`;
+  }
+  if (!Number.isFinite(maxChars)) {
+    return `Error: read_source max_chars must be a number.`;
+  }
+  if (offset >= markdown.length) {
+    return `Fetched document: ${source.title}\nURL: ${source.url}\n\nOffset ${offset} is past the end of the stored source (${markdown.length} chars).`;
+  }
+
+  const end = Math.min(markdown.length, offset + maxChars);
+  const sourceText = markdown.slice(offset, end).trim();
+  const nextOffset =
+    end < markdown.length
+      ? `\nNext offset: ${end}`
+      : "\nEnd of stored source.";
 
   return (
-    `Fetched document: ${source.title}\nURL: ${source.url}${queryLine}\n\n` +
+    `Fetched document: ${source.title}\nURL: ${source.url}\n\n` +
     (outline ? `${outline}\n\n` : "") +
-    `Relevant source text:\n${chunkText}`
+    `Source text (${offset}-${end} of ${markdown.length} chars):\n${sourceText}${nextOffset}`
   );
 }
 
@@ -1207,12 +1174,12 @@ async function execFetch(
       title: resolvedTitle,
     });
 
-    const snippet = markdown
-      .slice(0, ctx.fetchSnippetChars ?? FETCH_SNIPPET_CHARS)
-      .trim();
+    const snippetChars = ctx.fetchSnippetChars ?? FETCH_SNIPPET_CHARS;
+    const snippet = markdown.slice(0, snippetChars).trim();
+    const nextOffset = Math.min(snippetChars, markdown.length);
     return {
       fetched_url: url,
-      text: `Fetched: ${resolvedTitle}\nURL: ${url}\nSaved in document cache. Use read_source with this URL for deeper reading.\nFirst ${(ctx.fetchSnippetChars ?? FETCH_SNIPPET_CHARS).toLocaleString()} chars:\n${snippet}`,
+      text: `Fetched: ${resolvedTitle}\nURL: ${url}\nSaved in document cache. Use read_source with this URL and offset ${nextOffset} for deeper reading.\nFirst ${snippetChars.toLocaleString()} chars:\n${snippet}`,
     };
   } catch (err) {
     ctx.caches.scrape.delete(url);

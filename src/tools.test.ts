@@ -223,7 +223,7 @@ describe("gather loop cache integration", () => {
     expect(ctx.sourceMarkdowns.get("https://example.com/source")).toContain("Detailed source body");
   });
 
-  it("reads relevant chunks from committed source markdown", async () => {
+  it("reads contiguous ranges from committed source markdown", async () => {
     const fetch = vi.fn(async () => {
       const body = `
         <html>
@@ -257,7 +257,6 @@ describe("gather loop cache integration", () => {
         messageWith([
           toolUse("read_1", "read_source", {
             url: "https://example.com/flavor",
-            query: "isoamyl acetate ester ripening",
           }),
         ]),
       )
@@ -294,6 +293,7 @@ describe("gather loop cache integration", () => {
     expect(JSON.stringify(finalRequest.messages)).toContain("Fetched document: Flavor Study");
     expect(JSON.stringify(finalRequest.messages)).toContain("Isoamyl acetate");
     expect(JSON.stringify(finalRequest.messages)).toContain("Heading outline");
+    expect(JSON.stringify(finalRequest.messages)).toContain("Source text (0-");
   });
 
   it("starts gather runs with existing sources and budget hints", async () => {
