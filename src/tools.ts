@@ -19,7 +19,6 @@ const READ_SOURCE_MAX_CHUNKS = 4;
 const SEARCH_SNIPPET_CHARS = 500;
 const DEFAULT_MAX_TOOL_CALLS = 12;
 const DEFAULT_MAX_CONCURRENT_TOOLS = 4;
-const DEFAULT_MIN_SOURCES_BEFORE_STOP = 6;
 const DEFAULT_DELEGATE_MAX_TOOL_CALLS = 64;
 const DEFAULT_MAX_DELEGATES = 8;
 const STEEL_RATE_LIMIT_MAX_ATTEMPTS = 6;
@@ -146,7 +145,6 @@ export interface AgentContext {
   searchMode?: SearchMode;
   defaultSearchLimit?: number;
   maxConcurrentTools?: number;
-  minSourcesBeforeStop?: number;
   fetchSnippetChars?: number;
   delegateGate?: SteelGate;
   delegateState?: DelegateState;
@@ -447,18 +445,6 @@ function sourcePoolSummary(ctx: AgentContext): string {
     .join("\n");
 }
 
-function minSourcesBeforeStop(ctx: AgentContext): number {
-  return ctx.minSourcesBeforeStop ?? DEFAULT_MIN_SOURCES_BEFORE_STOP;
-}
-
-function insufficientSourcesMessage(ctx: AgentContext): string {
-  return (
-    `Not enough documents yet: the document cache has only ${ctx.sources.length} fetched document${ctx.sources.length === 1 ? "" : "s"}. ` +
-    `For deep research, fetch more independent, topical sources before writing the final report. ` +
-    `Use strong candidates from searches already performed; avoid another broad search unless it fills a specific gap.`
-  );
-}
-
 function finalReportRequest(ctx: AgentContext): string {
   return (
     `The document cache has ${ctx.sources.length} fetched documents, so you may now finish. ` +
@@ -518,9 +504,6 @@ function gatherStartPrompt(opts: {
     dollarBudget +
     `Runtime safety limits: at most ${opts.maxToolCalls} tool calls and ${opts.sourceCap} fetched documents.\n\n` +
     sourcePool +
-    (opts.mode === "report"
-      ? `The runtime will ask you to continue until at least ${minSourcesBeforeStop(opts.ctx)} documents are fetched, because fewer documents is too thin for deep research.\n\n`
-      : "") +
     `Gather enough evidence. Avoid search-only loops: use search to discover candidates, then inspect or fetch the best sources. Use read_source(url, query) on fetched URLs when you need more than the initial fetch excerpt. ${terminalInstruction}`
   );
 }
@@ -925,7 +908,6 @@ async function execDelegate(
         sourceMarkdowns: childSourceMarkdowns,
         sourceReservations: createSourceReservations(),
         delegateDepth: (ctx.delegateDepth ?? 0) + 1,
-        minSourcesBeforeStop: 0,
         fetchSnippetChars: DELEGATE_FETCH_SNIPPET_CHARS,
       },
       query: task,
@@ -1325,11 +1307,9 @@ export async function runGatherAgent(opts: {
           ? null
           : mode === "brief"
             ? finalBriefRequest()
-            : ctx.sources.length < minSourcesBeforeStop(ctx)
-              ? insufficientSourcesMessage(ctx)
-              : looksLikeFinalReport(text)
-                ? null
-                : finalReportRequest(ctx);
+            : looksLikeFinalReport(text)
+              ? null
+              : finalReportRequest(ctx);
       if (content === null) {
         markdown = text;
         finishReason = mode === "brief" ? "brief" : "final report";

@@ -131,7 +131,6 @@ describe("gather loop cache integration", () => {
       useProxy: false,
       globalSourceCap: 4,
       maxConcurrentTools: 2,
-      minSourcesBeforeStop: 0,
       steelGate: createSteelGate(2),
       sourceReservations: createSourceReservations(),
       caches: createResearchCaches(),
@@ -200,7 +199,6 @@ describe("gather loop cache integration", () => {
       useProxy: false,
       globalSourceCap: 4,
       maxConcurrentTools: 2,
-      minSourcesBeforeStop: 0,
       steelGate: createSteelGate(2),
       sourceReservations: createSourceReservations(),
       caches: createResearchCaches(),
@@ -278,7 +276,6 @@ describe("gather loop cache integration", () => {
       useProxy: false,
       globalSourceCap: 4,
       maxConcurrentTools: 2,
-      minSourcesBeforeStop: 0,
       steelGate: createSteelGate(2),
       sourceReservations: createSourceReservations(),
       caches: createResearchCaches(),
@@ -322,7 +319,6 @@ describe("gather loop cache integration", () => {
       useProxy: false,
       globalSourceCap: 4,
       maxConcurrentTools: 2,
-      minSourcesBeforeStop: 0,
       steelGate: createSteelGate(2),
       sourceReservations: createSourceReservations(),
       caches: createResearchCaches(),
@@ -350,10 +346,9 @@ describe("gather loop cache integration", () => {
     });
   });
 
-  it("continues when the agent stops with too few sources", async () => {
+  it("accepts a final report even with only a few sources", async () => {
     const messagesCreate = vi
       .fn()
-      .mockResolvedValueOnce(finalReport())
       .mockResolvedValueOnce(finalReport());
     const ctx: AgentContext = {
       anthropic: {
@@ -372,7 +367,6 @@ describe("gather loop cache integration", () => {
       useProxy: false,
       globalSourceCap: 4,
       maxConcurrentTools: 2,
-      minSourcesBeforeStop: 3,
       steelGate: createSteelGate(2),
       sourceReservations: createSourceReservations(),
       caches: createResearchCaches(),
@@ -383,13 +377,10 @@ describe("gather loop cache integration", () => {
       query: "What is Atlas?",
       max_tool_calls: 2,
     });
-    const secondRequest = messagesCreate.mock.calls[1]?.[0] as {
-      messages: Array<{ content: unknown }>;
-    };
 
-    expect(result.finish_reason).toBe("tool call budget exhausted");
-    expect(JSON.stringify(secondRequest.messages)).toContain("Not enough documents yet");
-    expect(JSON.stringify(secondRequest.messages)).toContain("only 2 fetched documents");
+    expect(result.finish_reason).toBe("final report");
+    expect(result.markdown).toContain("# Test Report");
+    expect(messagesCreate).toHaveBeenCalledTimes(1);
   });
 
   it("falls back to Steel when plain fetch has too little readable text", async () => {
@@ -426,7 +417,6 @@ describe("gather loop cache integration", () => {
       useProxy: false,
       globalSourceCap: 4,
       maxConcurrentTools: 2,
-      minSourcesBeforeStop: 0,
       steelGate: createSteelGate(2),
       sourceReservations: createSourceReservations(),
       caches: createResearchCaches(),
@@ -503,7 +493,6 @@ describe("gather loop cache integration", () => {
       useProxy: false,
       globalSourceCap: 8,
       maxConcurrentTools: 2,
-      minSourcesBeforeStop: 0,
       delegateGate: createSteelGate(1),
       delegateState: { calls: 0, maxCalls: 2 },
       delegateMaxToolCalls: 4,
@@ -604,7 +593,6 @@ describe("gather loop cache integration", () => {
       useProxy: false,
       globalSourceCap: 4,
       maxConcurrentTools: 2,
-      minSourcesBeforeStop: 0,
       steelGate: createSteelGate(2),
       sourceReservations: createSourceReservations(),
       caches: createResearchCaches(),
