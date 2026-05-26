@@ -1,6 +1,10 @@
 import type Anthropic from "@anthropic-ai/sdk";
 import type Steel from "steel-sdk";
-import { FAST_MODEL, type CitedSource, type ResearchEffort } from "./pipeline.js";
+import {
+  FAST_MODEL,
+  type CitedSource,
+  type ResearchEffort,
+} from "./pipeline.js";
 import {
   ENGINES,
   webSearch,
@@ -103,7 +107,9 @@ class Semaphore implements SteelGate {
 }
 
 export function createSteelGate(limit: number): SteelGate {
-  const normalized = Number.isFinite(limit) ? Math.max(1, Math.floor(limit)) : 1;
+  const normalized = Number.isFinite(limit)
+    ? Math.max(1, Math.floor(limit))
+    : 1;
   return new Semaphore(normalized);
 }
 
@@ -252,8 +258,7 @@ const AGENT_TOOLS: Anthropic.Tool[] = [
           type: "integer",
           minimum: 1,
           maximum: MAX_FETCH_CHARS,
-          description:
-            `Maximum characters to return. Default ${DEFAULT_FETCH_CHARS}, hard cap ${MAX_FETCH_CHARS}.`,
+          description: `Maximum characters to return. Default ${DEFAULT_FETCH_CHARS}, hard cap ${MAX_FETCH_CHARS}.`,
         },
       },
     } as Anthropic.Tool["input_schema"],
@@ -333,7 +338,9 @@ function unknownExtractionMetadata(markdownChars: number): ExtractionMetadata {
   return {
     fetch_method: "steel",
     markdown_chars: markdownChars,
-    extraction_notes: ["Extraction metadata is unavailable for this preloaded source."],
+    extraction_notes: [
+      "Extraction metadata is unavailable for this preloaded source.",
+    ],
   };
 }
 
@@ -358,7 +365,10 @@ function createSourceFile(
   };
 }
 
-function nextSourceId(existing: { has(sourceId: string): boolean; size: number }): string {
+function nextSourceId(existing: {
+  has(sourceId: string): boolean;
+  size: number;
+}): string {
   let n = existing.size + 1;
   while (existing.has(`src_${n}`)) n++;
   return `src_${n}`;
@@ -394,7 +404,9 @@ function finalSynthesisPrompt(reason: string): string {
 function readHeader(headers: unknown, name: string): string | undefined {
   if (!headers) return undefined;
   if (typeof (headers as { get?: unknown }).get === "function") {
-    const value = (headers as { get: (key: string) => string | null }).get(name);
+    const value = (headers as { get: (key: string) => string | null }).get(
+      name,
+    );
     return value ?? undefined;
   }
   const record = headers as Record<string, unknown>;
@@ -405,11 +417,17 @@ function readHeader(headers: unknown, name: string): string | undefined {
 function parseRetryAfterSeconds(err: unknown): number | null {
   const status = (err as { status?: number })?.status;
   const message = errorMessage(err);
-  if (status !== 429 && !/(rate limit exceeded|too many requests)/i.test(message)) {
+  if (
+    status !== 429 &&
+    !/(rate limit exceeded|too many requests)/i.test(message)
+  ) {
     return null;
   }
 
-  const headerValue = readHeader((err as { headers?: unknown })?.headers, "retry-after");
+  const headerValue = readHeader(
+    (err as { headers?: unknown })?.headers,
+    "retry-after",
+  );
   if (headerValue) {
     const numeric = Number(headerValue);
     if (Number.isFinite(numeric) && numeric > 0) {
@@ -421,7 +439,9 @@ function parseRetryAfterSeconds(err: unknown): number | null {
     }
   }
 
-  const messageMatch = /try again in\s+(\d+(?:\.\d+)?)\s*seconds?/i.exec(message);
+  const messageMatch = /try again in\s+(\d+(?:\.\d+)?)\s*seconds?/i.exec(
+    message,
+  );
   if (messageMatch) return Math.ceil(Number(messageMatch[1]));
 
   return DEFAULT_RATE_LIMIT_RETRY_SECONDS;
@@ -528,10 +548,19 @@ function releaseOpenReservation(
   );
 }
 
-function compactSearchResults(results: SearchResult[]): Array<{
+interface MergedSearchResult extends SearchResult {
+  engines: Engine[];
+  best_position: number;
+  score: number;
+  first_engine_index: number;
+}
+
+function compactSearchResults(results: MergedSearchResult[]): Array<{
   title: string;
   url: string;
   snippet?: string;
+  engines: Engine[];
+  best_position: number;
 }> {
   return results.map((result) => ({
     title: result.title,
@@ -539,7 +568,82 @@ function compactSearchResults(results: SearchResult[]): Array<{
     ...(result.snippet
       ? { snippet: result.snippet.slice(0, SEARCH_SNIPPET_CHARS) }
       : {}),
+    engines: result.engines,
+    best_position: result.best_position,
   }));
+}
+
+function dedupeSearchResults(
+  results: SearchResult[],
+  limit: number,
+): SearchResult[] {
+  const seen = new Set<string>();
+  const deduped: SearchResult[] = [];
+  for (const result of results) {
+    const key = normalizeFetchUrl(result.url);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push({
+      ...result,
+      position: deduped.length + 1,
+    });
+    if (deduped.length >= limit) break;
+  }
+  return deduped;
+}
+
+function mergeSearchResults(
+  batches: Array<{ engine: Engine; results: SearchResult[] }>,
+  limit: number,
+): MergedSearchResult[] {
+  const byUrl = new Map<string, MergedSearchResult>();
+  batches.forEach((batch, engineIndex) => {
+    const deduped = dedupeSearchResults(batch.results, limit);
+    for (const result of deduped) {
+      const key = normalizeFetchUrl(result.url);
+      const position = Math.max(1, result.position);
+      const score = 1 / position;
+      const existing = byUrl.get(key);
+
+      if (!existing) {
+        byUrl.set(key, {
+          ...result,
+          engines: [batch.engine],
+          best_position: position,
+          score,
+          first_engine_index: engineIndex,
+        });
+        continue;
+      }
+
+      if (!existing.engines.includes(batch.engine)) {
+        existing.engines.push(batch.engine);
+      }
+      existing.score += score;
+      existing.best_position = Math.min(existing.best_position, position);
+
+      if (position < existing.position) {
+        existing.position = result.position;
+        existing.title = result.title;
+        existing.snippet = result.snippet;
+        existing.domain = result.domain;
+      }
+    }
+  });
+
+  return [...byUrl.values()]
+    .sort(
+      (a, b) =>
+        b.score - a.score ||
+        a.best_position - b.best_position ||
+        a.first_engine_index - b.first_engine_index ||
+        a.url.localeCompare(b.url),
+    )
+    .slice(0, limit)
+    .map((result, index) => ({
+      ...result,
+      position: index + 1,
+    }));
 }
 
 async function execSearch(
@@ -559,19 +663,29 @@ async function execSearch(
     query,
   });
 
+  const engines = searchEnginesInFallbackOrder(ctx.defaultEngine);
+  const outcomes = await Promise.all(
+    engines.map(async (engine) => {
+      try {
+        const outcome = await searchWithCache(ctx, { query, limit, engine });
+        return { engine, outcome };
+      } catch (err) {
+        return { engine, error: errorMessage(err) };
+      }
+    }),
+  );
+
+  const successes: Array<{ engine: Engine; results: SearchResult[] }> = [];
   const failures: string[] = [];
   const emptyEngines: Engine[] = [];
-  const rawResults: SearchResult[] = [];
 
-  for (const engine of searchEnginesInFallbackOrder(ctx.defaultEngine)) {
-    let outcome: WebSearchOutcome;
-    try {
-      outcome = await searchWithCache(ctx, { query, limit, engine });
-    } catch (err) {
-      failures.push(`${engine}: ${errorMessage(err)}`);
+  for (const result of outcomes) {
+    if ("error" in result) {
+      failures.push(`${result.engine}: ${result.error}`);
       continue;
     }
 
+    const { engine, outcome } = result;
     if (!outcome.ok) {
       failures.push(`${engine}: ${outcome.error.message}`);
       continue;
@@ -580,23 +694,11 @@ async function execSearch(
       emptyEngines.push(engine);
       continue;
     }
-    rawResults.push(...outcome.results);
+    successes.push({ engine, results: outcome.results });
   }
 
-  const seen = new Set<string>();
-  const results: SearchResult[] = [];
-  for (const result of rawResults) {
-    const key = normalizeFetchUrl(result.url);
-    if (seen.has(key)) continue;
-    seen.add(key);
-    results.push({
-      ...result,
-      position: results.length + 1,
-    });
-    if (results.length >= limit) break;
-  }
-
-  if (results.length > 0) {
+  if (successes.length > 0) {
+    const results = mergeSearchResults(successes, limit);
     ctx.emit({
       type: "search_results",
       index: searchIndex,
@@ -605,7 +707,9 @@ async function execSearch(
     return JSON.stringify(
       {
         query,
+        engines,
         results: compactSearchResults(results),
+        ...(failures.length > 0 ? { warnings: failures } : {}),
       },
       null,
       2,
@@ -621,8 +725,10 @@ async function execSearch(
     return JSON.stringify(
       {
         query,
+        engines,
         results: [],
         note: "No results. Try a different query.",
+        ...(failures.length > 0 ? { warnings: failures } : {}),
       },
       null,
       2,
@@ -656,7 +762,9 @@ async function mapWithConcurrency<T, R>(
   fn: (item: T, index: number) => Promise<R>,
 ): Promise<R[]> {
   const results = new Array<R>(items.length);
-  const normalizedLimit = Number.isFinite(limit) ? Math.max(1, Math.floor(limit)) : 1;
+  const normalizedLimit = Number.isFinite(limit)
+    ? Math.max(1, Math.floor(limit))
+    : 1;
   let next = 0;
   const workers = Array.from(
     { length: Math.min(normalizedLimit, items.length) },
@@ -745,7 +853,9 @@ function validateHttpUrl(url: string): string | null {
   return null;
 }
 
-function extractionMetadataFromPlain(metadata: PlainPageMetadata): ExtractionMetadata {
+function extractionMetadataFromPlain(
+  metadata: PlainPageMetadata,
+): ExtractionMetadata {
   return {
     fetch_method: "plain",
     content_type: metadata.content_type,
@@ -795,37 +905,39 @@ async function scrapeWithCache(
 ): Promise<ScrapeCacheEntry> {
   let scrapePromise = ctx.caches.scrape.get(url);
   if (!scrapePromise) {
-    scrapePromise = fetchPlainPage({ url, signal: ctx.signal }).then(async (plain) => {
-      if (plain.ok) {
-        return {
-          markdown: plain.page.markdown,
-          title: plain.page.title,
-          metadata: extractionMetadataFromPlain(plain.page.metadata),
-        };
-      }
+    scrapePromise = fetchPlainPage({ url, signal: ctx.signal }).then(
+      async (plain) => {
+        if (plain.ok) {
+          return {
+            markdown: plain.page.markdown,
+            title: plain.page.title,
+            metadata: extractionMetadataFromPlain(plain.page.metadata),
+          };
+        }
 
-      ctx.emit({
-        type: "steel_fallback",
-        url,
-        reason: plain.reason,
-      });
-      const scrape = await runSteelRequest(ctx, () =>
-        ctx.steel.scrape(
-          {
-            url,
-            format: ["markdown"],
-            useProxy: ctx.useProxy,
-          },
-          { signal: ctx.signal },
-        ),
-      );
-      const markdown = scrape.content?.markdown ?? "";
-      return {
-        markdown,
-        title: scrape.metadata?.title ?? null,
-        metadata: extractionMetadataFromSteel(markdown.length, plain.reason),
-      };
-    });
+        ctx.emit({
+          type: "steel_fallback",
+          url,
+          reason: plain.reason,
+        });
+        const scrape = await runSteelRequest(ctx, () =>
+          ctx.steel.scrape(
+            {
+              url,
+              format: ["markdown"],
+              useProxy: ctx.useProxy,
+            },
+            { signal: ctx.signal },
+          ),
+        );
+        const markdown = scrape.content?.markdown ?? "";
+        return {
+          markdown,
+          title: scrape.metadata?.title ?? null,
+          metadata: extractionMetadataFromSteel(markdown.length, plain.reason),
+        };
+      },
+    );
     ctx.caches.scrape.set(url, scrapePromise);
   }
 
@@ -846,7 +958,10 @@ function readOffset(args: FetchToolInput): number | string {
   return offset;
 }
 
-function readMaxChars(args: FetchToolInput, ctx: AgentContext): number | string {
+function readMaxChars(
+  args: FetchToolInput,
+  ctx: AgentContext,
+): number | string {
   const raw = args.max_chars ?? ctx.fetchSnippetChars ?? DEFAULT_FETCH_CHARS;
   const maxChars = Math.min(
     MAX_FETCH_CHARS,
@@ -896,7 +1011,9 @@ async function execFetch(
   if (sourceId) {
     const file = sourceFiles(ctx).get(sourceId);
     if (!file) {
-      return { text: `Error: source not found: ${sourceId}. Fetch a URL first.` };
+      return {
+        text: `Error: source not found: ${sourceId}. Fetch a URL first.`,
+      };
     }
     return { text: formatFetchResult(file, offset, maxChars) };
   }
@@ -1050,21 +1167,18 @@ export async function runGatherAgent(opts: {
     const executions = await mapWithConcurrency(
       activeToolUses,
       ctx.maxConcurrentTools ?? DEFAULT_MAX_CONCURRENT_TOOLS,
-      (tu, index) =>
-        executeToolUse(
-          tu,
-          ctx,
-          searchIndexes[index],
-        ),
+      (tu, index) => executeToolUse(tu, ctx, searchIndexes[index]),
     );
     const toolResults = [
       ...executions.map((e) => e.toolResult),
-      ...skippedToolUses.map((tu): Anthropic.ToolResultBlockParam => ({
-        type: "tool_result",
-        tool_use_id: tu.id,
-        content: "Tool not run: tool call budget exhausted.",
-        is_error: true,
-      })),
+      ...skippedToolUses.map(
+        (tu): Anthropic.ToolResultBlockParam => ({
+          type: "tool_result",
+          tool_use_id: tu.id,
+          content: "Tool not run: tool call budget exhausted.",
+          is_error: true,
+        }),
+      ),
     ];
     for (const execution of executions) {
       if (execution.opened_url !== undefined) {

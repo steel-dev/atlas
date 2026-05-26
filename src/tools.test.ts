@@ -174,8 +174,99 @@ describe("gather loop cache integration", () => {
     expect(result.markdown).toContain("# Test Report");
     expect(messagesCreate).toHaveBeenCalledTimes(3);
     expect(toolResultText(secondRequest)).toContain('"results"');
-    expect(toolResultText(secondRequest)).not.toContain("Engines tried");
+    expect(toolResultText(secondRequest)).toContain('"engines"');
     expect(scrape).toHaveBeenCalledTimes(3);
+    expect(ctx.caches.serp.size).toBe(3);
+  });
+
+  it("merges search results from every available engine", async () => {
+    const fetch = vi.fn(async (url: string | URL | Request) => {
+      const href = String(url);
+      if (href.includes("duckduckgo.com")) {
+        return new Response("<html><body>No results</body></html>", {
+          headers: { "content-type": "text/html" },
+        });
+      }
+      if (href.includes("bing.com")) {
+        return new Response(
+          `
+            <html>
+              <body>
+                <li class="b_algo">
+                  <h2><a href="https://example.com/shared">Shared Result</a></h2>
+                  <div class="b_caption"><p>Shared from Bing.</p></div>
+                </li>
+                <li class="b_algo">
+                  <h2><a href="https://example.com/bing-only">Bing Only</a></h2>
+                  <div class="b_caption"><p>Bing snippet.</p></div>
+                </li>
+              </body>
+            </html>
+          `,
+          { headers: { "content-type": "text/html" } },
+        );
+      }
+      if (href.includes("google.com")) {
+        return new Response(
+          `
+            <html>
+              <body>
+                <div class="g">
+                  <a href="/url?q=${encodeURIComponent("https://example.com/shared")}&sa=U"><h3>Shared Result</h3></a>
+                  <div class="VwiC3b">Shared from Google.</div>
+                </div>
+                <div class="g">
+                  <a href="/url?q=${encodeURIComponent("https://example.com/google-only")}&sa=U"><h3>Google Only</h3></a>
+                  <div class="VwiC3b">Google snippet.</div>
+                </div>
+              </body>
+            </html>
+          `,
+          { headers: { "content-type": "text/html" } },
+        );
+      }
+      return new Response("<html><body>Unexpected engine</body></html>", {
+        headers: { "content-type": "text/html" },
+      });
+    });
+    vi.stubGlobal("fetch", fetch);
+    const messagesCreate = vi
+      .fn()
+      .mockResolvedValueOnce(
+        messageWith([toolUse("search_1", "search", { query: "fallback query" })]),
+      )
+      .mockResolvedValueOnce(finalReport());
+    const ctx = createContext({ messagesCreate });
+
+    const result = await runGatherAgent({
+      ctx,
+      query: "What is Atlas?",
+      max_tool_calls: 2,
+    });
+    const followupRequest = messagesCreate.mock.calls[1]?.[0] as {
+      messages: Array<{ content: unknown }>;
+    };
+    const toolText = toolResultText(followupRequest);
+    const payload = JSON.parse(toolText) as {
+      engines: string[];
+      results: Array<{ url: string; engines: string[]; best_position: number }>;
+    };
+    const shared = payload.results.find(
+      (r) => r.url === "https://example.com/shared",
+    );
+
+    expect(result.finish_reason).toBe("final report");
+    expect(payload.engines).toEqual(["ddg", "bing", "google"]);
+    expect(payload.results.map((r) => r.url)).toEqual([
+      "https://example.com/shared",
+      "https://example.com/bing-only",
+      "https://example.com/google-only",
+    ]);
+    expect(shared).toMatchObject({
+      engines: ["bing", "google"],
+      best_position: 1,
+    });
+    expect(fetch).toHaveBeenCalledTimes(3);
     expect(ctx.caches.serp.size).toBe(3);
   });
 
