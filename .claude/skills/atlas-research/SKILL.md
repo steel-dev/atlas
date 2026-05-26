@@ -1,10 +1,10 @@
 ---
 name: atlas-research
 description:
-  Run the local atlas CLI to produce a cited, verified deep-research markdown report.
+  Run the local atlas CLI to produce a cited deep-research markdown report.
   Use when the user explicitly invokes atlas — e.g., `/atlas-research <question>`, "run atlas on
   X", "use atlas to research Y". Returns the markdown to the conversation along with the
-  verification summary. Do NOT use for casual questions Claude can answer from training/web —
+  run summary. Do NOT use for casual questions Claude can answer from training/web —
   this spends the user's Anthropic + Steel credits and takes 1–4 minutes.
 user-invocable: true
 allowed-tools: Bash, Read
@@ -14,9 +14,10 @@ allowed-tools: Bash, Read
 
 Run a deep-research query via this repo's atlas CLI and return the cited markdown report.
 
-The pipeline (handled by the CLI): plan brief + sub-questions → search → fetch + per-page
-summarize → assess coverage (loops if gaps remain) → write report (Sonnet) → verify every `[n]`
-citation (Haiku). If verification falls below the threshold, exactly one rewrite is attempted.
+Atlas runs a lightweight agent loop: Claude chooses when to search, open pages, read opened
+sources, and stop with a cited Markdown answer. The harness provides web/search/browser tools,
+runtime limits, caching, and progress events; it does not impose a fixed planning, coverage,
+verification, or rewrite pipeline.
 
 ## Step 1 — Get the question
 
@@ -81,16 +82,14 @@ Bash tool `timeout`: `600000` (10 min — the max). Typical runs land in 1–4 m
 **Quoting**: wrap `<QUESTION>` in single quotes. If the question itself contains a single quote,
 escape it with the `'\''` dance: `it'\''s great`.
 
-**Defaults are fine** (12 sources, 2 hops, threshold 0.7). Only add flags if the user's wording
-signals intent:
+**Defaults are fine.** Only add flags that the current CLI supports and the user clearly asked for:
 
-| Hint                                  | Append flag(s)                         |
-| ------------------------------------- | -------------------------------------- |
-| "use google" / "via bing"             | `--engine google` / `--engine bing`    |
-| "go deeper" / "be thorough"           | `--max-sources 20 --max-hops 3`        |
-| "be quick" / "fast"                   | `--max-sources 4 --max-hops 0`         |
-| "strict citations"                    | `--verify-threshold 0.85`              |
-| "use proxy" / "anti-bot site"         | `--use-proxy`                          |
+| Hint                         | Append flag(s)              |
+| ---------------------------- | --------------------------- |
+| "go deeper" / "be thorough"  | `--effort max`              |
+| "be quick" / "fast"          | `--effort low`              |
+| explicit dollar budget       | `--budget-usd <amount>`     |
+| explicit time limit          | `--timeout <seconds>`       |
 
 If atlas exits non-zero, the user-facing message is the last `atlas: ...` line in `$ATLAS_LOG`.
 Show that and stop — don't retry blindly.
@@ -98,12 +97,12 @@ Show that and stop — don't retry blindly.
 ## Step 5 — Return the report
 
 ```bash
-tail -1 "$ATLAS_LOG"   # the ✓ done — N sources, X/Y claims supported (Z%) summary
+tail -5 "$ATLAS_LOG"   # includes the ✓ done — N documents line, token usage, and wrote path
 ```
 
 Then Read `$REPORT` and present it to the user as:
 
-> **Atlas summary:** <the ✓ done line, stripped of ANSI color codes>
+> **Atlas summary:** <the ✓ done line, and token usage line if present, stripped of ANSI color codes>
 >
 > <the full markdown report verbatim>
 
@@ -121,5 +120,5 @@ rm -f "$REPORT" "$ATLAS_LOG"
 - Only runs from the atlas repo root (where `src/cli.ts` lives).
 - One atlas job at a time — they share Anthropic / Steel rate limits.
 - Never log or echo API keys back to chat.
-- Don't claim verification stats you didn't read from `$ATLAS_LOG` — the numbers come from atlas,
-  not from you.
+- Don't claim verification or citation-support stats; the current CLI reports opened/cited
+  documents and token usage, not claim-level verification.
