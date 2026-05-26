@@ -144,7 +144,6 @@ export interface AgentContext {
   fetchSnippetChars?: number;
   delegateGate?: SteelGate;
   delegateState?: DelegateState;
-  delegateDepth?: number;
   delegateMaxToolCalls?: number;
   steelGate: SteelGate;
   sourceReservations: SourceReservations;
@@ -285,7 +284,7 @@ const AGENT_TOOLS: Anthropic.Tool[] = [
         task: {
           type: "string",
           description:
-            "A focused natural-language research task for the child agent.",
+            "A natural-language research task to run in parallel.",
         },
       },
       required: ["task"],
@@ -294,7 +293,6 @@ const AGENT_TOOLS: Anthropic.Tool[] = [
 ];
 
 const AGENT_SYSTEM = `You're a deep research agent. Use the available tools as needed to answer the user's question. Work within the user's dollar/time budget. When you have enough evidence, stop using tools and write a cited Markdown report. Do not cite internal source numbers.`;
-const CHILD_AGENT_SYSTEM = `You're a focused research subagent. Use the available tools as needed to investigate the delegated task. When you have enough evidence, stop using tools and write a concise Markdown brief with useful URLs and open uncertainties. Do not write the parent report.`;
 
 function totalSourceSlots(ctx: AgentContext): number {
   return ctx.sources.length + ctx.sourceReservations.sourceSlots;
@@ -396,7 +394,6 @@ function gatherStartPrompt(opts: {
   sourceCap: number;
   ctx: AgentContext;
   budgetUsd?: number;
-  mode: "report" | "brief";
 }): string {
   const dollarBudget =
     opts.budgetUsd !== undefined
@@ -406,16 +403,12 @@ function gatherStartPrompt(opts: {
     opts.ctx.sources.length > 0
       ? `Existing document cache:\n${sourcePoolSummary(opts.ctx)}\n\n`
       : "";
-  const terminalInstruction =
-    opts.mode === "report"
-      ? `When the document cache is strong enough, stop emitting tool calls and write the final Markdown report directly.`
-      : `When you have investigated the delegated task enough, stop emitting tool calls and write a concise cited Markdown brief for the parent agent.`;
   return (
     `Research question: ${opts.query}\n\n` +
     dollarBudget +
     `Runtime safety limits: at most ${opts.maxToolCalls} tool calls and ${opts.sourceCap} fetched documents.\n\n` +
     sourcePool +
-    `Gather enough evidence using the available tools. Use read_source(url, offset) on fetched URLs when you need more than the initial fetch excerpt. ${terminalInstruction}`
+    `Gather enough evidence using the available tools. Use read_source(url, offset) on fetched URLs when you need more than the initial fetch excerpt. When you have enough evidence, stop emitting tool calls and write the Markdown answer directly.`
   );
 }
 
@@ -741,16 +734,14 @@ async function execDelegate(
     const child = await runGatherAgent({
       ctx: {
         ...ctx,
-        delegateDepth: (ctx.delegateDepth ?? 0) + 1,
         fetchSnippetChars: DELEGATE_FETCH_SNIPPET_CHARS,
       },
       query: task,
       max_tool_calls: ctx.delegateMaxToolCalls ?? DEFAULT_DELEGATE_MAX_TOOL_CALLS,
-      mode: "brief",
       allowDelegate: false,
     });
-    const brief = child.markdown.trim() || "(Child produced no brief.)";
-    const fetchedSources =
+    const answer = child.markdown.trim() || "(Delegate produced no answer.)";
+    const fetchedUrls =
       child.fetched_urls.length > 0
         ? child.fetched_urls
             .map((url) => {
@@ -758,12 +749,12 @@ async function execDelegate(
               return `${source?.title ?? url} — ${url}`;
             })
             .join("\n")
-        : "No sources fetched.";
+        : "None.";
     return (
-      `Delegate completed: ${task}\n` +
-      `Sources fetched: ${child.fetched_urls.length}; child tool calls: ${child.tool_calls}; finish reason: ${child.finish_reason}.\n\n` +
-      `Source list:\n${fetchedSources}\n\n` +
-      brief
+      `Delegate result: ${task}\n` +
+      `Tool calls: ${child.tool_calls}; finish reason: ${child.finish_reason}.\n` +
+      `Fetched URLs:\n${fetchedUrls}\n\n` +
+      answer
     );
   };
 
@@ -1004,12 +995,10 @@ export async function runGatherAgent(opts: {
   max_tool_calls?: number;
   budgetUsd?: number;
   effort?: ResearchEffort;
-  mode?: "report" | "brief";
   allowDelegate?: boolean;
 }): Promise<AgenticRunResult> {
   const { ctx, query } = opts;
   const maxToolCalls = opts.max_tool_calls ?? DEFAULT_MAX_TOOL_CALLS;
-  const mode = opts.mode ?? "report";
 
   ctx.emit({ type: "agent_started" });
 
@@ -1028,7 +1017,6 @@ export async function runGatherAgent(opts: {
         sourceCap: ctx.globalSourceCap,
         ctx,
         budgetUsd: opts.budgetUsd,
-        mode,
       }),
     },
   ];
@@ -1048,7 +1036,7 @@ export async function runGatherAgent(opts: {
         {
           model: ctx.fastModel ?? FAST_MODEL,
           max_tokens: ctx.gatherMaxTokens ?? 2048,
-          system: mode === "brief" ? CHILD_AGENT_SYSTEM : AGENT_SYSTEM,
+          system: AGENT_SYSTEM,
           tools: opts.allowDelegate === false ? BASE_AGENT_TOOLS : AGENT_TOOLS,
           messages,
           cache_control: { type: "ephemeral" },
@@ -1073,11 +1061,7 @@ export async function runGatherAgent(opts: {
     if (toolUses.length === 0) {
       const text = textFromContent(resp.content);
       markdown = text;
-      finishReason = text
-        ? mode === "brief"
-          ? "brief"
-          : "final report"
-        : "empty final response";
+      finishReason = text ? "final report" : "empty final response";
       break;
     }
 

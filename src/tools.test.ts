@@ -512,7 +512,7 @@ describe("gather loop cache integration", () => {
         messageWith([
           {
             type: "text",
-            text: "## Brief\n\nThe delegated angle has evidence from https://example.com/delegate.",
+            text: "## Answer\n\nThe delegated angle has evidence from https://example.com/delegate.",
           },
         ]),
       )
@@ -556,8 +556,8 @@ describe("gather loop cache integration", () => {
         title: "Delegate Source",
       },
     ]);
-    expect(JSON.stringify(parentFollowup.messages)).toContain("Delegate completed");
-    expect(JSON.stringify(parentFollowup.messages)).toContain("Source list");
+    expect(JSON.stringify(parentFollowup.messages)).toContain("Delegate result");
+    expect(JSON.stringify(parentFollowup.messages)).toContain("Fetched URLs");
     expect(JSON.stringify(parentFollowup.messages)).toContain(
       "https://example.com/delegate",
     );
