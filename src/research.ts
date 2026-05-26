@@ -47,7 +47,7 @@ export interface UsageSummary {
 }
 
 export interface AgentRun {
-  source_ns: number[];
+  fetched_urls: string[];
   tool_calls: number;
   finish_reason: string;
 }
@@ -83,9 +83,8 @@ export type ResearchEvent =
       max_attempts: number;
     }
   | {
-      type: "source_committed";
+      type: "document_fetched";
       url: string;
-      n: number;
       title: string;
     }
   | { type: "source_error"; url: string; error: string }
@@ -167,7 +166,7 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
 
   const sources: CitedSource[] = [];
   const sourceUrls = new Set<string>();
-  const sourceMarkdowns = new Map<number, string>();
+  const sourceMarkdowns = new Map<string, string>();
 
   const ctx: AgentContext = {
     anthropic,
@@ -203,7 +202,7 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
   });
   const agentRuns: AgentRun[] = [
     {
-      source_ns: gather.source_ns,
+      fetched_urls: gather.fetched_urls,
       tool_calls: gather.tool_calls,
       finish_reason: gather.finish_reason,
     },

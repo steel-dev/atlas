@@ -11,7 +11,6 @@ const MAX_HEADING_OUTLINE_CHARS = 4_000;
 export type WriterEffort = "low" | "medium" | "high" | "max";
 
 export interface CitedSource {
-  n: number;
   url: string;
   title: string;
 }
@@ -63,7 +62,7 @@ export async function writeReport(opts: {
   anthropic: Anthropic;
   query: string;
   sources: CitedSource[];
-  source_texts: Map<number, string>;
+  source_texts: Map<string, string>;
   model?: string;
   writerEffort?: WriterEffort;
   writerMaxTokens?: number;
@@ -86,10 +85,10 @@ export async function writeReport(opts: {
 
   const system =
     "You write a clear, comprehensive research report in Markdown answering the user's question. " +
-    "Cite every factual claim with bracketed source numbers, e.g., [1] or [1, 3]. " +
+    "Cite factual claims with Markdown links or source URLs. " +
     "Only include claims supported by the provided source pages. " +
     "Prefer concrete, specific claims grounded in the page content over vague generalities. " +
-    "Structure: a one-paragraph intro, body sections with H2 headings as the material demands, then a final '## Sources' section listing each source as '[n] Title — URL'.";
+    "Structure: a one-paragraph intro, body sections with H2 headings as the material demands, then a final '## Sources' section listing each source title and URL.";
 
   const sourceBudget = Math.max(
     WRITER_MIN_SOURCE_CHARS,
@@ -104,20 +103,20 @@ export async function writeReport(opts: {
 
   const sourceBlocks = sources
     .map((s) => {
-      const raw = source_texts.get(s.n) ?? "";
+      const raw = source_texts.get(s.url) ?? "";
       const packed = raw ? packSourceMarkdown(raw, sourceBudget) : "";
       const rawBlock = raw
         ? `\nPage content (packed to ${sourceBudget.toLocaleString()} chars):\n${packed}`
         : "\n(No page content available.)";
-      return `[${s.n}] ${s.title} — ${s.url}${rawBlock}`;
+      return `${s.title} — ${s.url}${rawBlock}`;
     })
     .join("\n\n---\n\n");
 
   const stableBlock =
     `Research question: ${query}\n\n` +
-    `Sources (numbered):\n${sourceBlocks}`;
+    `Sources:\n${sourceBlocks}`;
   const instructionBlock =
-    `\n\nWrite the report now. Aim for thorough coverage of the question, with every claim grounded in a numbered source.`;
+    `\n\nWrite the report now. Aim for thorough coverage of the question, with every claim grounded in the provided source pages.`;
 
   const stream = await anthropic.messages.create(
     {

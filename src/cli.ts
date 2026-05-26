@@ -96,8 +96,8 @@ function prettyEvent(e: ResearchEvent): string {
         paint(YELLOW, "    ! rate limited:") +
         ` waiting ${e.retry_after_seconds}s (retry ${e.attempt}/${e.max_attempts - 1})`
       );
-    case "source_committed":
-      return paint(GREEN, `    ✓`) + ` [${e.n}] ${e.url}`;
+    case "document_fetched":
+      return paint(GREEN, `    ✓`) + ` ${e.url}`;
     case "source_error":
       return paint(YELLOW, `    ! ${e.url} — ${e.error}`);
     case "writing":
@@ -125,7 +125,7 @@ function prettyEvent(e: ResearchEvent): string {
       );
       return (
         paint(GREEN, "✓") +
-        ` done — ${e.result.sources.length} sources\n` +
+        ` done — ${e.result.sources.length} documents\n` +
         tokenLine
       );
     }

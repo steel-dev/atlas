@@ -35,7 +35,7 @@ function finalReport(): Anthropic.Message {
     {
       type: "text",
       text:
-        "# Test Report\n\nA concise supported finding [1].\n\n## Sources\n\n[1] Source — https://example.com/source",
+        "# Test Report\n\nA concise supported finding from [Source](https://example.com/source).\n\n## Sources\n\nSource — https://example.com/source",
     },
   ]);
 }
@@ -218,12 +218,11 @@ describe("gather loop cache integration", () => {
     expect(scrape).not.toHaveBeenCalled();
     expect(ctx.sources).toEqual([
       {
-        n: 1,
         url: "https://example.com/source",
         title: "Primary Source",
       },
     ]);
-    expect(ctx.sourceMarkdowns.get(1)).toContain("Detailed source body");
+    expect(ctx.sourceMarkdowns.get("https://example.com/source")).toContain("Detailed source body");
   });
 
   it("reads relevant chunks from committed source markdown", async () => {
@@ -259,7 +258,7 @@ describe("gather loop cache integration", () => {
       .mockResolvedValueOnce(
         messageWith([
           toolUse("read_1", "read_source", {
-            n: 1,
+            url: "https://example.com/flavor",
             query: "isoamyl acetate ester ripening",
           }),
         ]),
@@ -295,7 +294,7 @@ describe("gather loop cache integration", () => {
     };
 
     expect(result.finish_reason).toBe("final report");
-    expect(JSON.stringify(finalRequest.messages)).toContain("Source [1]: Flavor Study");
+    expect(JSON.stringify(finalRequest.messages)).toContain("Fetched document: Flavor Study");
     expect(JSON.stringify(finalRequest.messages)).toContain("Isoamyl acetate");
     expect(JSON.stringify(finalRequest.messages)).toContain("Heading outline");
   });
@@ -311,13 +310,12 @@ describe("gather loop cache integration", () => {
       steel: { scrape: vi.fn() } as unknown as Steel,
       sources: [
         {
-          n: 1,
           url: "https://example.com/primary",
           title: "Primary Source",
         },
       ],
       sourceUrls: new Set(["https://example.com/primary"]),
-      sourceMarkdowns: new Map([[1, "# Primary Source\n\nUseful evidence."]]),
+      sourceMarkdowns: new Map([["https://example.com/primary", "# Primary Source\n\nUseful evidence."]]),
       emit: vi.fn(),
       abort: vi.fn(),
       defaultEngine: "ddg",
@@ -342,10 +340,10 @@ describe("gather loop cache integration", () => {
 
     expect(result.finish_reason).toBe("final report");
     expect(result.markdown).toContain("# Test Report");
-    expect(request.messages[0]?.content).toContain("Existing source pool");
+    expect(request.messages[0]?.content).toContain("Existing document cache");
     expect(request.messages[0]?.content).toContain("User budget hint: up to $2.00");
     expect(request.messages[0]?.content).toContain(
-      "[1] Primary Source — https://example.com/primary",
+      "Primary Source — https://example.com/primary",
     );
     expect(ctx.emit).toHaveBeenCalledWith({
       type: "agent_started",
@@ -363,8 +361,8 @@ describe("gather loop cache integration", () => {
       } as unknown as Anthropic,
       steel: { scrape: vi.fn() } as unknown as Steel,
       sources: [
-        { n: 1, url: "https://example.com/one", title: "One" },
-        { n: 2, url: "https://example.com/two", title: "Two" },
+        { url: "https://example.com/one", title: "One" },
+        { url: "https://example.com/two", title: "Two" },
       ],
       sourceUrls: new Set(["https://example.com/one", "https://example.com/two"]),
       sourceMarkdowns: new Map(),
@@ -390,8 +388,8 @@ describe("gather loop cache integration", () => {
     };
 
     expect(result.finish_reason).toBe("tool call budget exhausted");
-    expect(JSON.stringify(secondRequest.messages)).toContain("Not enough sources yet");
-    expect(JSON.stringify(secondRequest.messages)).toContain("only 2 committed sources");
+    expect(JSON.stringify(secondRequest.messages)).toContain("Not enough documents yet");
+    expect(JSON.stringify(secondRequest.messages)).toContain("only 2 fetched documents");
   });
 
   it("falls back to Steel when plain fetch has too little readable text", async () => {
@@ -445,7 +443,6 @@ describe("gather loop cache integration", () => {
     expect(fetch).toHaveBeenCalledTimes(1);
     expect(scrape).toHaveBeenCalledTimes(1);
     expect(ctx.sources[0]).toMatchObject({
-      n: 1,
       url: "https://example.com/js-app",
       title: "Steel Fallback",
     });
@@ -487,7 +484,7 @@ describe("gather loop cache integration", () => {
         messageWith([
           {
             type: "text",
-            text: "## Brief\n\nThe delegated angle has evidence [1].",
+            text: "## Brief\n\nThe delegated angle has evidence from https://example.com/delegate.",
           },
         ]),
       )
@@ -532,10 +529,8 @@ describe("gather loop cache integration", () => {
     expect(JSON.stringify(parentFollowup.messages)).toContain(
       "https://example.com/delegate",
     );
-    expect(JSON.stringify(parentFollowup.messages)).toContain(
-      "not parent citations",
-    );
-    expect(JSON.stringify(parentFollowup.messages)).toContain("The delegated angle has evidence [1]");
+    expect(JSON.stringify(parentFollowup.messages)).toContain("not parent citations");
+    expect(JSON.stringify(parentFollowup.messages)).toContain("The delegated angle has evidence from https://example.com/delegate");
   });
 
   it("aggregates search results across engines when configured", async () => {
