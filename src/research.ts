@@ -12,8 +12,8 @@ import {
 import { normalizeUrlForSource } from "./url.js";
 
 const DEFAULT_RUNTIME_LIMITS = {
-  safetySourceCap: 200,
-  safetyMaxToolCalls: 200,
+  safetySourceCap: 40,
+  safetyMaxToolCalls: 80,
   maxConcurrentTools: 8,
   maxConcurrentSteelCalls: 4,
   defaultSearchLimit: 8,

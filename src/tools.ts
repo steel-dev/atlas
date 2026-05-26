@@ -14,7 +14,7 @@ import {
 } from "./search.js";
 import { normalizeUrlForSource } from "./url.js";
 
-const STORED_MARKDOWN_CAP = 10_000_000;
+const STORED_MARKDOWN_CAP = 500_000;
 const DEFAULT_FETCH_CHARS = 12_000;
 const MAX_FETCH_CHARS = 50_000;
 const SEARCH_SNIPPET_CHARS = 500;
