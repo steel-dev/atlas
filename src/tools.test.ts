@@ -407,7 +407,6 @@ describe("gather loop cache integration", () => {
       ctx,
       query: "What is Atlas?",
       max_tool_calls: 3,
-      budgetUsd: 2,
     });
     const request = messagesCreate.mock.calls[0]?.[0] as {
       messages: Array<{ content: string }>;
@@ -456,6 +455,61 @@ describe("gather loop cache integration", () => {
     expect(result.finish_reason).toBe("final report");
     expect(result.markdown).toContain("# Test Report");
     expect(messagesCreate).toHaveBeenCalledTimes(1);
+  });
+
+  it("continues reading opened sources after the open page cap is reached", async () => {
+    const messagesCreate = vi
+      .fn()
+      .mockResolvedValueOnce(
+        messageWith([
+          toolUse("read_1", "read_file", {
+            path: "/sources/capped-source.md",
+            start_line: 1,
+            max_lines: 20,
+          }),
+        ]),
+      )
+      .mockResolvedValueOnce(finalReport());
+    const ctx: AgentContext = {
+      anthropic: {
+        messages: { create: messagesCreate },
+      } as unknown as Anthropic,
+      steel: { scrape: vi.fn() } as unknown as Steel,
+      openedPages: [
+        { url: "https://example.com/capped", title: "Capped Source" },
+      ],
+      openedPageUrls: new Set(["https://example.com/capped"]),
+      openedPageMarkdowns: new Map([
+        [
+          "https://example.com/capped",
+          "# Capped Source\n\nEvidence remains readable after the open cap.",
+        ],
+      ]),
+      emit: vi.fn(),
+      abort: vi.fn(),
+      defaultEngine: "ddg",
+      useProxy: false,
+      openedPageCap: 1,
+      maxConcurrentTools: 2,
+      steelGate: createSteelGate(2),
+      openReservations: createOpenReservations(),
+      caches: createResearchCaches(),
+    };
+
+    const result = await runGatherAgent({
+      ctx,
+      query: "What is Atlas?",
+      max_tool_calls: 2,
+    });
+    const followupRequest = messagesCreate.mock.calls[1]?.[0] as {
+      messages: Array<{ content: unknown }>;
+    };
+
+    expect(result.finish_reason).toBe("final report");
+    expect(messagesCreate).toHaveBeenCalledTimes(2);
+    expect(JSON.stringify(followupRequest.messages)).toContain(
+      "Evidence remains readable after the open cap.",
+    );
   });
 
   it("accepts non-empty final text without enforcing a report skeleton", async () => {

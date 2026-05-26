@@ -94,7 +94,6 @@ export interface ResearchOptions {
   steelApiKey?: string;
   steelBaseUrl?: string;
   timeoutMs?: number;
-  budgetUsd?: number;
   effort?: ResearchEffort;
   onEvent?: (event: ResearchEvent) => void;
   signal?: AbortSignal;
@@ -107,7 +106,6 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
     steelApiKey: steelApiKeyOverride,
     steelBaseUrl: steelBaseUrlOverride,
     timeoutMs,
-    budgetUsd,
     effort,
     onEvent,
     signal,
@@ -135,10 +133,6 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
   }
   if (!steelApiKey) {
     throw new Error("research: STEEL_API_KEY or ATLAS_STEEL_API_KEY is required");
-  }
-
-  if (budgetUsd !== undefined && (!Number.isFinite(budgetUsd) || budgetUsd <= 0)) {
-    throw new Error(`research: budgetUsd must be > 0 (got ${budgetUsd})`);
   }
 
   const limits = DEFAULT_RUNTIME_LIMITS;
@@ -190,7 +184,6 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
     ctx,
     query,
     max_tool_calls: safetyMaxToolCalls,
-    budgetUsd,
     effort: effort ?? limits.agentEffort,
   });
   const agentRuns: AgentRun[] = [

@@ -27,7 +27,7 @@ Get keys from [Anthropic](https://console.anthropic.com) and [Steel](https://app
 atlas "What's the state of the art in single-image novel view synthesis?"
 atlas "..." > report.md
 atlas "..." --out report.md
-atlas "..." --budget-usd 5 --effort max
+atlas "..." --effort max
 ```
 
 Progress goes to stderr. The report goes to stdout, so it pipes cleanly into files, scripts, or your next prompt.

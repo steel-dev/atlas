@@ -10,13 +10,13 @@ import {
 } from "./search.js";
 import { fetchPlainPage, type PlainPageMetadata } from "./plain-fetch.js";
 
-const STORED_MARKDOWN_CAP = 2_000_000;
+const STORED_MARKDOWN_CAP = 10_000_000;
 const FETCH_SNIPPET_CHARS = 8000;
-const DEFAULT_READ_FILE_LINES = 120;
-const MAX_READ_FILE_LINES = 400;
-const DEFAULT_SEARCH_FILE_RESULTS = 8;
-const MAX_SEARCH_FILE_RESULTS = 20;
-const SEARCH_FILE_CONTEXT_LINES = 2;
+const DEFAULT_READ_FILE_LINES = 240;
+const MAX_READ_FILE_LINES = 2000;
+const DEFAULT_SEARCH_FILE_RESULTS = 12;
+const MAX_SEARCH_FILE_RESULTS = 50;
+const SEARCH_FILE_CONTEXT_LINES = 3;
 const SEARCH_SNIPPET_CHARS = 500;
 const DEFAULT_MAX_TOOL_CALLS = 12;
 const DEFAULT_MAX_CONCURRENT_TOOLS = 4;
@@ -292,7 +292,7 @@ const AGENT_TOOLS: Anthropic.Tool[] = [
           minimum: 1,
           maximum: MAX_READ_FILE_LINES,
           description:
-            "Maximum lines to return. Default 120, hard cap 400.",
+            `Maximum lines to return. Default ${DEFAULT_READ_FILE_LINES}, hard cap ${MAX_READ_FILE_LINES}.`,
         },
       },
       required: ["path"],
@@ -319,7 +319,7 @@ const AGENT_TOOLS: Anthropic.Tool[] = [
           minimum: 1,
           maximum: MAX_SEARCH_FILE_RESULTS,
           description:
-            "Maximum matches to return. Default 8, hard cap 20.",
+            `Maximum matches to return. Default ${DEFAULT_SEARCH_FILE_RESULTS}, hard cap ${MAX_SEARCH_FILE_RESULTS}.`,
         },
       },
       required: ["query"],
@@ -1314,7 +1314,6 @@ export async function runGatherAgent(opts: {
   ctx: AgentContext;
   query: string;
   max_tool_calls?: number;
-  budgetUsd?: number;
   effort?: ResearchEffort;
 }): Promise<AgenticRunResult> {
   const { ctx, query } = opts;
@@ -1341,7 +1340,7 @@ export async function runGatherAgent(opts: {
     },
   ];
 
-  while (toolCalls < maxToolCalls && ctx.openedPages.length < ctx.openedPageCap) {
+  while (toolCalls < maxToolCalls) {
     ctx.abort();
 
     let resp: Anthropic.Message;
@@ -1414,10 +1413,6 @@ export async function runGatherAgent(opts: {
 
     messages.push({ role: "user", content: toolResults });
 
-    if (ctx.openedPages.length >= ctx.openedPageCap) {
-      finishReason = "opened page cap reached";
-      break;
-    }
     if (toolCalls >= maxToolCalls) {
       finishReason = "tool call budget exhausted";
       break;

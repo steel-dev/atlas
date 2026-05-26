@@ -88,7 +88,6 @@ escape it with the `'\''` dance: `it'\''s great`.
 | ---------------------------- | --------------------------- |
 | "go deeper" / "be thorough"  | `--effort max`              |
 | "be quick" / "fast"          | `--effort low`              |
-| explicit dollar budget       | `--budget-usd <amount>`     |
 | explicit time limit          | `--timeout <seconds>`       |
 
 If atlas exits non-zero, the user-facing message is the last `atlas: ...` line in `$ATLAS_LOG`.

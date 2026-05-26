@@ -12,7 +12,6 @@ An agent searches, fetches sources, and writes a cited Markdown report.
 
 Options:
   -o, --out <file>            Write the markdown report to <file> (default: stdout)
-      --budget-usd N          Per-run dollar budget hint (actual caps are provider-enforced)
       --timeout N             Overall wall-clock budget in seconds (default: none)
       --effort LEVEL          Agent effort: low, medium, high, max (default: high)
       --json                  Emit one JSON event per line on stderr
@@ -28,7 +27,7 @@ Environment:
 Examples:
   atlas "What changed when Cloudflare DO added SQLite?"
   atlas "..." --out report.md
-  atlas "..." --budget-usd 5 --effort max
+  atlas "..." --effort max
   atlas "..." --timeout 300
   atlas "..." --json 2> events.jsonl > report.md
 `;
@@ -131,7 +130,6 @@ async function main(): Promise<void> {
         allowPositionals: true,
         options: {
           out: { type: "string", short: "o" },
-          "budget-usd": { type: "string" },
           timeout: { type: "string" },
           effort: { type: "string" },
           json: { type: "boolean" },
@@ -173,10 +171,6 @@ async function main(): Promise<void> {
   if (timeoutSeconds !== undefined && timeoutSeconds <= 0) {
     fail(`--timeout must be > 0 (got ${timeoutSeconds})`);
   }
-  const budgetUsd = parseNumber(values["budget-usd"], "--budget-usd");
-  if (budgetUsd !== undefined && budgetUsd <= 0) {
-    fail(`--budget-usd must be > 0 (got ${budgetUsd})`);
-  }
   const effort = parseEffort(values.effort);
   const signal =
     timeoutSeconds !== undefined
@@ -206,7 +200,6 @@ async function main(): Promise<void> {
   try {
     const result = await research({
       query,
-      budgetUsd,
       effort,
       onEvent,
       signal,
