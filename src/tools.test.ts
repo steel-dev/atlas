@@ -481,7 +481,7 @@ describe("gather loop cache integration", () => {
     });
   });
 
-  it("runs delegated subtasks with isolated local sources", async () => {
+  it("shares delegated sources with the parent source list", async () => {
     const fetch = vi.fn(async () => {
       const body = `
         <html>
@@ -555,14 +555,20 @@ describe("gather loop cache integration", () => {
 
     expect(result.finish_reason).toBe("final report");
     expect(result.markdown).toContain("# Test Report");
-    expect(ctx.sources).toEqual([]);
+    expect(ctx.sources).toEqual([
+      {
+        url: "https://example.com/delegate",
+        title: "Delegate Source",
+      },
+    ]);
     expect(JSON.stringify(parentFollowup.messages)).toContain("Delegate completed");
-    expect(JSON.stringify(parentFollowup.messages)).toContain("Local source list");
+    expect(JSON.stringify(parentFollowup.messages)).toContain("Source list");
     expect(JSON.stringify(parentFollowup.messages)).toContain(
       "https://example.com/delegate",
     );
-    expect(JSON.stringify(parentFollowup.messages)).toContain("not parent citations");
-    expect(JSON.stringify(parentFollowup.messages)).toContain("The delegated angle has evidence from https://example.com/delegate");
+    expect(JSON.stringify(parentFollowup.messages)).toContain(
+      "The delegated angle has evidence from https://example.com/delegate",
+    );
   });
 
   it("aggregates search results across engines when configured", async () => {

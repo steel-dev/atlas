@@ -312,7 +312,7 @@ const AGENT_TOOLS: Anthropic.Tool[] = [
   },
 ];
 
-const AGENT_SYSTEM = `You're a deep research agent. Use the available tools as needed to answer the user's question. Work within the user's dollar/time budget. When you have enough evidence, stop using tools and write a cited Markdown report. Delegate briefs are not final citation sources; fetch any delegated URL in the parent before citing it. Do not cite internal source numbers.`;
+const AGENT_SYSTEM = `You're a deep research agent. Use the available tools as needed to answer the user's question. Work within the user's dollar/time budget. When you have enough evidence, stop using tools and write a cited Markdown report. Do not cite internal source numbers.`;
 const CHILD_AGENT_SYSTEM = `You're a focused research subagent. Use the available tools as needed to investigate the delegated task. When you have enough evidence, stop using tools and write a concise Markdown brief with useful URLs and open uncertainties. Do not write the parent report.`;
 
 function totalSourceSlots(ctx: AgentContext): number {
@@ -841,16 +841,9 @@ async function execDelegate(
   state.calls++;
 
   const runChild = async () => {
-    const childSources: CitedSource[] = [];
-    const childSourceUrls = new Set<string>();
-    const childSourceMarkdowns = new Map<string, string>();
     const child = await runGatherAgent({
       ctx: {
         ...ctx,
-        sources: childSources,
-        sourceUrls: childSourceUrls,
-        sourceMarkdowns: childSourceMarkdowns,
-        sourceReservations: createSourceReservations(),
         delegateDepth: (ctx.delegateDepth ?? 0) + 1,
         fetchSnippetChars: DELEGATE_FETCH_SNIPPET_CHARS,
       },
@@ -860,17 +853,19 @@ async function execDelegate(
       allowDelegate: false,
     });
     const brief = child.markdown.trim() || "(Child produced no brief.)";
-    const localSources =
-      childSources.length > 0
-        ? childSources
-            .map((source) => `${source.title} — ${source.url}`)
+    const fetchedSources =
+      child.fetched_urls.length > 0
+        ? child.fetched_urls
+            .map((url) => {
+              const source = ctx.sources.find((item) => item.url === url);
+              return `${source?.title ?? url} — ${url}`;
+            })
             .join("\n")
-        : "No local sources committed.";
+        : "No sources fetched.";
     return (
       `Delegate completed: ${task}\n` +
-      `Local sources: ${childSources.length}; child tool calls: ${child.tool_calls}; finish reason: ${child.finish_reason}.\n` +
-      `These local sources are not parent citations. The parent must fetch any URL it wants to cite.\n\n` +
-      `Local source list:\n${localSources}\n\n` +
+      `Sources fetched: ${child.fetched_urls.length}; child tool calls: ${child.tool_calls}; finish reason: ${child.finish_reason}.\n\n` +
+      `Source list:\n${fetchedSources}\n\n` +
       brief
     );
   };
