@@ -49,9 +49,12 @@ export async function webSearch(opts: {
     const plain = await fetchPlainSerpHtml(serpUrl, opts.signal);
     if (plain.ok) {
       html = plain.html;
-      return { ok: true, results: parseSerp(engine, html, limit) };
+      const results = parseSerp(engine, html, limit);
+      if (results.length > 0) return { ok: true, results };
+      plainFailure = "plain fetch parsed 0 results";
+    } else {
+      plainFailure = plain.reason;
     }
-    plainFailure = plain.reason;
   }
 
   try {

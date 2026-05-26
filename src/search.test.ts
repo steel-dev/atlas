@@ -148,4 +148,36 @@ describe("SERP parsing", () => {
     }
     expect(scrape).toHaveBeenCalledTimes(1);
   });
+
+  it("falls back to Steel when plain SERP parsing returns no results", async () => {
+    const fetch = vi.fn(async () =>
+      new Response("<html><body>No parsed rows.</body></html>", {
+        headers: { "content-type": "text/html" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetch);
+    const scrape = vi.fn(async () => ({
+      content: {
+        html: `
+          <div class="result">
+            <a class="result__a" href="https://example.com/browser">Browser Result</a>
+            <a class="result__snippet">Recovered with browser rendering.</a>
+          </div>
+        `,
+      },
+      metadata: {},
+    }));
+
+    const outcome = await webSearch({
+      steel: { scrape } as unknown as Steel,
+      query: "zero parse query",
+      engine: "ddg",
+    });
+
+    expect(outcome.ok).toBe(true);
+    if (outcome.ok) {
+      expect(outcome.results[0]?.url).toBe("https://example.com/browser");
+    }
+    expect(scrape).toHaveBeenCalledTimes(1);
+  });
 });
