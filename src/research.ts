@@ -1,5 +1,9 @@
 import Anthropic from "@anthropic-ai/sdk";
-import { WRITER_MODEL, type CitedSource, type WriterEffort } from "./pipeline.js";
+import {
+  RESEARCH_MODEL,
+  type CitedSource,
+  type ResearchEffort,
+} from "./pipeline.js";
 import { createSteel } from "./steel.js";
 import {
   createResearchCaches,
@@ -18,9 +22,9 @@ const DEFAULT_RUNTIME_LIMITS = {
   maxDelegates: 16,
   delegateMaxToolCalls: 64,
   defaultSearchLimit: 8,
-  gatherModel: WRITER_MODEL,
-  writerEffort: "high",
-  writerMaxTokens: 16_384,
+  gatherModel: RESEARCH_MODEL,
+  agentEffort: "high",
+  agentMaxTokens: 16_384,
 } satisfies {
   safetySourceCap: number;
   safetyMaxToolCalls: number;
@@ -31,11 +35,11 @@ const DEFAULT_RUNTIME_LIMITS = {
   delegateMaxToolCalls: number;
   defaultSearchLimit: number;
   gatherModel: string | undefined;
-  writerEffort: WriterEffort;
-  writerMaxTokens: number;
+  agentEffort: ResearchEffort;
+  agentMaxTokens: number;
 };
 
-export type { CitedSource, WriterEffort } from "./pipeline.js";
+export type { CitedSource, ResearchEffort } from "./pipeline.js";
 
 export interface UsageSummary {
   input_tokens: number;
@@ -97,7 +101,7 @@ export interface ResearchOptions {
   steelBaseUrl?: string;
   timeoutMs?: number;
   budgetUsd?: number;
-  effort?: WriterEffort;
+  effort?: ResearchEffort;
   onEvent?: (event: ResearchEvent) => void;
   signal?: AbortSignal;
 }
@@ -178,7 +182,7 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
     useProxy: false,
     fastModel: limits.gatherModel,
     globalSourceCap: safetySourceCap,
-    gatherMaxTokens: limits.writerMaxTokens,
+    gatherMaxTokens: limits.agentMaxTokens,
     defaultSearchLimit: limits.defaultSearchLimit,
     maxConcurrentTools: limits.maxConcurrentTools,
     delegateGate: createSteelGate(limits.maxConcurrentDelegates),
@@ -194,7 +198,7 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
     query,
     max_tool_calls: safetyMaxToolCalls,
     budgetUsd,
-    effort: effort ?? limits.writerEffort,
+    effort: effort ?? limits.agentEffort,
   });
   const agentRuns: AgentRun[] = [
     {

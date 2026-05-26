@@ -1,6 +1,6 @@
 import type Anthropic from "@anthropic-ai/sdk";
 import type Steel from "steel-sdk";
-import { FAST_MODEL, type CitedSource, type WriterEffort } from "./pipeline.js";
+import { FAST_MODEL, type CitedSource, type ResearchEffort } from "./pipeline.js";
 import {
   ENGINES,
   webSearch,
@@ -1086,7 +1086,7 @@ export async function runGatherAgent(opts: {
   query: string;
   max_tool_calls?: number;
   budgetUsd?: number;
-  effort?: WriterEffort;
+  effort?: ResearchEffort;
   mode?: "report" | "brief";
   allowDelegate?: boolean;
 }): Promise<AgenticRunResult> {

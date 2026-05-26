@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { writeFileSync } from "node:fs";
 import { parseArgs } from "node:util";
-import { research, type ResearchEvent, type WriterEffort } from "./research.js";
+import { research, type ResearchEffort, type ResearchEvent } from "./research.js";
 
 const USAGE = `atlas — deep research from your terminal
 
@@ -14,7 +14,7 @@ Options:
   -o, --out <file>            Write the markdown report to <file> (default: stdout)
       --budget-usd N          Per-run dollar budget hint (actual caps are provider-enforced)
       --timeout N             Overall wall-clock budget in seconds (default: none)
-      --effort LEVEL          Writer effort: low, medium, high, max (default: high)
+      --effort LEVEL          Agent effort: low, medium, high, max (default: high)
       --json                  Emit one JSON event per line on stderr
   -q, --quiet                 Suppress progress events on stderr
   -h, --help                  Show this help
@@ -47,11 +47,11 @@ function parseNumber(raw: string | undefined, name: string): number | undefined 
   return n;
 }
 
-const WRITER_EFFORTS = new Set<WriterEffort>(["low", "medium", "high", "max"]);
+const RESEARCH_EFFORTS = new Set<ResearchEffort>(["low", "medium", "high", "max"]);
 
-function parseEffort(raw: string | undefined): WriterEffort | undefined {
+function parseEffort(raw: string | undefined): ResearchEffort | undefined {
   if (raw === undefined) return undefined;
-  if (WRITER_EFFORTS.has(raw as WriterEffort)) return raw as WriterEffort;
+  if (RESEARCH_EFFORTS.has(raw as ResearchEffort)) return raw as ResearchEffort;
   fail(`--effort must be one of: low, medium, high, max (got "${raw}")`);
 }
 
