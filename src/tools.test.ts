@@ -421,6 +421,80 @@ describe("gather loop cache integration", () => {
     expect(messagesCreate).toHaveBeenCalledTimes(1);
   });
 
+  it("asks for final synthesis without tools when tool budget is exhausted", async () => {
+    const fetch = vi.fn(async () => {
+      const body = `
+        <html>
+          <head><title>Budget Source</title></head>
+          <body>
+            <main>
+              <h1>Budget Source</h1>
+              ${"<p>Useful evidence gathered before the tool budget was exhausted.</p>".repeat(20)}
+            </main>
+          </body>
+        </html>
+      `;
+      return new Response(body, {
+        headers: { "content-type": "text/html; charset=utf-8" },
+      });
+    });
+    vi.stubGlobal("fetch", fetch);
+    const messagesCreate = vi
+      .fn()
+      .mockResolvedValueOnce(
+        messageWith([
+          toolUse("fetch_1", "fetch", { url: "https://example.com/budget" }),
+          toolUse("fetch_2", "fetch", {
+            url: "https://example.com/skipped-budget",
+          }),
+        ]),
+      )
+      .mockResolvedValueOnce(finalReport());
+    const ctx: AgentContext = {
+      anthropic: {
+        messages: { create: messagesCreate },
+      } as unknown as Anthropic,
+      steel: { scrape: vi.fn() } as unknown as Steel,
+      sources: [],
+      sourceUrls: new Set(),
+      sourceMarkdowns: new Map(),
+      emit: vi.fn(),
+      abort: vi.fn(),
+      defaultEngine: "ddg",
+      useProxy: false,
+      globalSourceCap: 4,
+      maxConcurrentTools: 2,
+      steelGate: createSteelGate(2),
+      sourceReservations: createSourceReservations(),
+      caches: createResearchCaches(),
+    };
+
+    const result = await runGatherAgent({
+      ctx,
+      query: "What is Atlas?",
+      max_tool_calls: 1,
+    });
+    const synthesisRequest = messagesCreate.mock.calls[1]?.[0] as {
+      messages: Array<{ content: unknown }>;
+      tools?: unknown;
+    };
+
+    expect(result.finish_reason).toBe(
+      "final report after tool call budget exhausted",
+    );
+    expect(result.markdown).toContain("# Test Report");
+    expect(result.tool_calls).toBe(1);
+    expect(messagesCreate).toHaveBeenCalledTimes(2);
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(synthesisRequest.tools).toBeUndefined();
+    expect(JSON.stringify(synthesisRequest.messages)).toContain(
+      "Runtime limit reached: tool call budget exhausted",
+    );
+    expect(JSON.stringify(synthesisRequest.messages)).toContain(
+      "Tool not run: tool call budget exhausted.",
+    );
+  });
+
   it("falls back to Steel when plain fetch has too little readable text", async () => {
     const fetch = vi.fn(async () =>
       new Response("<html><body><div id=\"root\"></div></body></html>", {

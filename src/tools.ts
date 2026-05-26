@@ -412,6 +412,13 @@ function gatherStartPrompt(opts: {
   );
 }
 
+function finalSynthesisPrompt(reason: string): string {
+  return (
+    `Runtime limit reached: ${reason}.\n\n` +
+    "Do not call any more tools. Using only the evidence already gathered in this conversation, write the best possible cited Markdown report. If the evidence is incomplete, state the uncertainty and gaps clearly."
+  );
+}
+
 function readHeader(headers: unknown, name: string): string | undefined {
   if (!headers) return undefined;
   if (typeof (headers as { get?: unknown }).get === "function") {
@@ -1007,6 +1014,12 @@ export async function runGatherAgent(opts: {
   let finishReason = "tool call budget exhausted";
   let markdown = "";
   let searchIndex = 0;
+  const effortConfig = opts.effort
+    ? {
+        thinking: { type: "adaptive" as const },
+        output_config: { effort: opts.effort },
+      }
+    : {};
 
   const messages: Anthropic.MessageParam[] = [
     {
@@ -1025,12 +1038,6 @@ export async function runGatherAgent(opts: {
     ctx.abort();
 
     let resp: Anthropic.Message;
-    const effortConfig = opts.effort
-      ? {
-          thinking: { type: "adaptive" as const },
-          output_config: { effort: opts.effort },
-        }
-      : {};
     try {
       resp = await ctx.anthropic.messages.create(
         {
@@ -1067,6 +1074,7 @@ export async function runGatherAgent(opts: {
 
     const remainingToolCalls = maxToolCalls - toolCalls;
     const activeToolUses = toolUses.slice(0, remainingToolCalls);
+    const skippedToolUses = toolUses.slice(remainingToolCalls);
     const searchIndexes = activeToolUses.map((tu) =>
       tu.name === "search" ? ++searchIndex : undefined,
     );
@@ -1082,7 +1090,15 @@ export async function runGatherAgent(opts: {
           searchIndexes[index],
         ),
     );
-    const toolResults = executions.map((e) => e.toolResult);
+    const toolResults = [
+      ...executions.map((e) => e.toolResult),
+      ...skippedToolUses.map((tu): Anthropic.ToolResultBlockParam => ({
+        type: "tool_result",
+        tool_use_id: tu.id,
+        content: "Tool not run: tool call budget exhausted.",
+        is_error: true,
+      })),
+    ];
     for (const execution of executions) {
       if (execution.fetched_url !== undefined) {
         myFetchedUrls.push(execution.fetched_url);
@@ -1098,6 +1114,42 @@ export async function runGatherAgent(opts: {
     if (toolCalls >= maxToolCalls) {
       finishReason = "tool call budget exhausted";
       break;
+    }
+  }
+
+  if (
+    !markdown &&
+    (finishReason === "tool call budget exhausted" ||
+      finishReason === "source cap reached")
+  ) {
+    ctx.abort();
+    messages.push({
+      role: "user",
+      content: finalSynthesisPrompt(finishReason),
+    });
+
+    try {
+      const resp = await ctx.anthropic.messages.create(
+        {
+          model: ctx.fastModel ?? FAST_MODEL,
+          max_tokens: ctx.gatherMaxTokens ?? 2048,
+          system: AGENT_SYSTEM,
+          messages,
+          cache_control: { type: "ephemeral" },
+          ...effortConfig,
+        },
+        { signal: ctx.signal },
+      );
+      messages.push({ role: "assistant", content: resp.content });
+      const text = textFromContent(resp.content);
+      markdown = text;
+      finishReason = text
+        ? `final report after ${finishReason}`
+        : `empty final synthesis after ${finishReason}`;
+    } catch (err) {
+      if (ctx.signal?.aborted) throw err;
+      const message = errorMessage(err);
+      finishReason = `final synthesis api error after ${finishReason}: ${message}`;
     }
   }
 
