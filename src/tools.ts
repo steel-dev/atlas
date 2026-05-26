@@ -318,8 +318,8 @@ const AGENT_TOOLS: Anthropic.Tool[] = [
   },
 ];
 
-const AGENT_SYSTEM = `You're a deep research agent. Use search, inspect, fetch, read_source, and delegate to answer the user's question. Work within the user's dollar/time budget. Do not spend most of the run repeatedly searching; after useful search results appear, inspect or fetch the strongest candidates. Use read_source to read deeper into fetched URLs before relying on detailed claims, methods, numbers, or citations. Use delegate when an isolated sub-investigation would materially improve breadth or depth. Delegate briefs are not final citation sources; if a delegated finding matters, fetch the relevant URL in the parent before citing it. Commit enough primary, recent, and independent sources to answer deeply. Prefer chasing citations and original documents over stopping at summaries. When the document cache is strong enough, stop using tools and write the final Markdown report directly. Cite factual claims with Markdown links or source URLs, and end with a '## Sources' section listing the URLs you relied on. Do not cite internal source numbers.`;
-const CHILD_AGENT_SYSTEM = `You're a focused research subagent. Use search, inspect, fetch, and read_source to investigate the delegated task. Your fetched documents are local to this subtask and are not parent citations. Read deeply enough to produce a useful brief. When you have enough evidence, stop using tools and write a concise Markdown brief with: key findings, URLs the parent should fetch if this matters, and open uncertainties. Do not write the parent report.`;
+const AGENT_SYSTEM = `You're a deep research agent. Use the available tools as needed to answer the user's question. Work within the user's dollar/time budget. When you have enough evidence, stop using tools and write a cited Markdown report. Delegate briefs are not final citation sources; fetch any delegated URL in the parent before citing it. Do not cite internal source numbers.`;
+const CHILD_AGENT_SYSTEM = `You're a focused research subagent. Use the available tools as needed to investigate the delegated task. When you have enough evidence, stop using tools and write a concise Markdown brief with useful URLs and open uncertainties. Do not write the parent report.`;
 
 function totalSourceSlots(ctx: AgentContext): number {
   return ctx.sources.length + ctx.sourceReservations.sourceSlots;
@@ -401,7 +401,7 @@ function sourcePoolSummary(ctx: AgentContext): string {
 function finalReportRequest(ctx: AgentContext): string {
   return (
     `The document cache has ${ctx.sources.length} fetched documents, so you may now finish. ` +
-    `Write the final Markdown report directly. Answer the exact question, synthesize rather than merely summarize sources, cite claims with Markdown links or source URLs, and end with a '## Sources' section. Do not cite internal source numbers.`
+    `Write the final cited Markdown report directly. Answer the exact question and do not cite internal source numbers.`
   );
 }
 
@@ -453,7 +453,7 @@ function gatherStartPrompt(opts: {
     dollarBudget +
     `Runtime safety limits: at most ${opts.maxToolCalls} tool calls and ${opts.sourceCap} fetched documents.\n\n` +
     sourcePool +
-    `Gather enough evidence. Avoid search-only loops: use search to discover candidates, then inspect or fetch the best sources. Use read_source(url, offset) on fetched URLs when you need more than the initial fetch excerpt. ${terminalInstruction}`
+    `Gather enough evidence using the available tools. Use read_source(url, offset) on fetched URLs when you need more than the initial fetch excerpt. ${terminalInstruction}`
   );
 }
 
