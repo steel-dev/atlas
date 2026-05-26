@@ -327,7 +327,7 @@ const AGENT_TOOLS: Anthropic.Tool[] = [
   },
 ];
 
-const AGENT_SYSTEM = `You're a deep research agent. Use the available tools as needed to answer the user's question. Work within the user's dollar/time budget. When you have enough evidence, stop using tools and write a cited Markdown report.`;
+const AGENT_SYSTEM = `You're a deep research agent. Use the available tools as needed to answer the user's question. When you have enough evidence, stop using tools and write a cited Markdown report.`;
 
 function totalOpenSlots(ctx: AgentContext): number {
   return ctx.openedPages.length + ctx.openReservations.pageSlots;
@@ -531,18 +531,6 @@ function formatSourceEvidenceSummary(file: OpenedSourceFile): string {
   ].join("\n");
 }
 
-function openedPagesSummary(ctx: AgentContext): string {
-  if (ctx.openedPages.length === 0) return "No pages opened yet.";
-
-  return ctx.openedPages
-    .map((page) => {
-      const file = [...sourceFiles(ctx).values()].find((item) => item.url === page.url);
-      const path = file ? `${file.path} — ` : "";
-      return `${path}${page.title} — ${page.url}`;
-    })
-    .join("\n");
-}
-
 function textFromContent(content: Anthropic.Message["content"]): string {
   return content
     .map((block) => (block.type === "text" ? block.text : ""))
@@ -550,28 +538,8 @@ function textFromContent(content: Anthropic.Message["content"]): string {
     .trim();
 }
 
-function gatherStartPrompt(opts: {
-  query: string;
-  maxToolCalls: number;
-  openedPageCap: number;
-  ctx: AgentContext;
-  budgetUsd?: number;
-}): string {
-  const dollarBudget =
-    opts.budgetUsd !== undefined
-      ? `User budget hint: up to $${opts.budgetUsd.toFixed(2)} for this run. Use it when more evidence will materially improve the answer.\n`
-      : "";
-  const openedPages =
-    opts.ctx.openedPages.length > 0
-      ? `Opened pages in memory:\n${openedPagesSummary(opts.ctx)}\n\n`
-      : "";
-  return (
-    `Research question: ${opts.query}\n\n` +
-    dollarBudget +
-    `Runtime safety limits: at most ${opts.maxToolCalls} tool calls and ${opts.openedPageCap} opened pages.\n\n` +
-    openedPages +
-    `Gather enough evidence using the available tools. open_url saves pages as virtual Markdown files under /sources; use list_sources, search_files, and read_file to inspect opened sources. When you have enough evidence, stop emitting tool calls and write the Markdown answer directly. Cite the source URLs you actually rely on in the Markdown.`
-  );
+function gatherStartPrompt(opts: { query: string }): string {
+  return `Research question: ${opts.query}`;
 }
 
 function finalSynthesisPrompt(reason: string): string {
@@ -1369,13 +1337,7 @@ export async function runGatherAgent(opts: {
   const messages: Anthropic.MessageParam[] = [
     {
       role: "user",
-      content: gatherStartPrompt({
-        query,
-        maxToolCalls,
-        openedPageCap: ctx.openedPageCap,
-        ctx,
-        budgetUsd: opts.budgetUsd,
-      }),
+      content: gatherStartPrompt({ query }),
     },
   ];
 

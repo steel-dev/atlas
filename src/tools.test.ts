@@ -375,7 +375,7 @@ describe("gather loop cache integration", () => {
     );
   });
 
-  it("starts gather runs with existing sources and budget hints", async () => {
+  it("starts gather runs with a minimal research-question prompt", async () => {
     const messagesCreate = vi
       .fn()
       .mockResolvedValueOnce(finalReport());
@@ -415,9 +415,7 @@ describe("gather loop cache integration", () => {
 
     expect(result.finish_reason).toBe("final report");
     expect(result.markdown).toContain("# Test Report");
-    expect(request.messages[0]?.content).toContain("Opened pages in memory");
-    expect(request.messages[0]?.content).toContain("User budget hint: up to $2.00");
-    expect(request.messages[0]?.content).toContain("Primary Source — https://example.com/primary");
+    expect(request.messages[0]?.content).toBe("Research question: What is Atlas?");
     expect(ctx.emit).toHaveBeenCalledWith({
       type: "agent_started",
     });
