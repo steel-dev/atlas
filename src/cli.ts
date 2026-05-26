@@ -85,8 +85,6 @@ function prettyEvent(e: ResearchEvent): string {
       return paint(YELLOW, `    ! search failed:`) + ` ${e.error}`;
     case "fetching":
       return paint(DIM, `    fetch: ${e.url}`);
-    case "inspecting":
-      return paint(DIM, `    inspect: ${e.url}`);
     case "steel_fallback":
       return paint(DIM, `      browser fallback: ${e.url} — ${e.reason}`);
     case "rate_limited":
@@ -232,7 +230,7 @@ async function main(): Promise<void> {
       }
     }
   } catch (err) {
-    // SDK abort errors don't preserve the original DOMException, so inspect
+    // SDK abort errors don't preserve the original DOMException, so check
     // the signal directly to distinguish timeout vs SIGINT vs API error.
     if (signal.aborted) {
       const reason = signal.reason as { name?: string } | undefined;

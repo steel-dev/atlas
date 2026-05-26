@@ -76,7 +76,6 @@ export type ResearchEvent =
       error: string;
     }
   | { type: "fetching"; url: string }
-  | { type: "inspecting"; url: string }
   | { type: "steel_fallback"; url: string; reason: string }
   | {
       type: "rate_limited";

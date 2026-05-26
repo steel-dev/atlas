@@ -13,7 +13,6 @@ import { fetchPlainPage } from "./plain-fetch.js";
 const STORED_MARKDOWN_CAP = 120_000;
 const FETCH_SNIPPET_CHARS = 8000;
 const DELEGATE_FETCH_SNIPPET_CHARS = 60_000;
-const INSPECT_SNIPPET_CHARS = 6000;
 const DEFAULT_READ_SOURCE_CHARS = 12_000;
 const MAX_READ_SOURCE_CHARS = 30_000;
 const SEARCH_SNIPPET_CHARS = 500;
@@ -114,12 +113,11 @@ export function createSourceReservations(): SourceReservations {
 //
 // A single gather loop gets these tools:
 //   - search(query, limit?)
-//   - inspect(url) — scrape without committing
 //   - fetch(url) — scrape + atomic commit to global pool
 //
 // The agent terminates by emitting a final message with no tool calls, or by
-// hitting a runtime safety limit. The agent can inspect freely before committing
-// the strongest pages as cited sources.
+// hitting a runtime safety limit. The agent can read deeper ranges from fetched
+// pages when the initial excerpt is not enough.
 //
 // Global invariants (URL dedup, source cap) are enforced
 // INSIDE the tools, so the agent can't break them no matter what it picks.
@@ -173,7 +171,6 @@ export type AgenticEvent =
       error: string;
     }
   | { type: "fetching"; url: string }
-  | { type: "inspecting"; url: string }
   | { type: "steel_fallback"; url: string; reason: string }
   | {
       type: "rate_limited";
@@ -232,20 +229,6 @@ const BASE_AGENT_TOOLS: Anthropic.Tool[] = [
         },
       },
       required: ["query"],
-    } as Anthropic.Tool["input_schema"],
-  },
-  {
-    name: "inspect",
-    description: "Fetch a URL preview without adding it to the source list.",
-    input_schema: {
-      type: "object",
-      properties: {
-        url: {
-          type: "string",
-          description: "Absolute http(s) URL of the page to fetch.",
-        },
-      },
-      required: ["url"],
     } as Anthropic.Tool["input_schema"],
   },
   {
@@ -819,29 +802,6 @@ async function executeToolUse(
     }
   }
 
-  if (tu.name === "inspect") {
-    try {
-      const text = await execInspect((tu.input as UrlToolInput) ?? {}, ctx);
-      return {
-        toolResult: {
-          type: "tool_result",
-          tool_use_id: tu.id,
-          content: text,
-        },
-      };
-    } catch (err) {
-      ctx.abort();
-      return {
-        toolResult: {
-          type: "tool_result",
-          tool_use_id: tu.id,
-          content: `Tool error: ${err instanceof Error ? err.message : String(err)}`,
-          is_error: true,
-        },
-      };
-    }
-  }
-
   if (tu.name === "fetch") {
     try {
       const out = await execFetch((tu.input as UrlToolInput) ?? {}, ctx);
@@ -970,49 +930,6 @@ async function scrapeWithCache(
   } catch (err) {
     ctx.caches.scrape.delete(url);
     throw err;
-  }
-}
-
-async function execInspect(
-  args: UrlToolInput,
-  ctx: AgentContext,
-): Promise<string> {
-  const requestedUrl = String(args.url ?? "").trim();
-  const validationError = validateHttpUrl(requestedUrl, "inspect");
-  if (validationError) return validationError;
-
-  const url = normalizeFetchUrl(requestedUrl);
-  if (ctx.sourceUrls.has(url)) {
-    const existing = ctx.sources.find((s) => normalizeFetchUrl(s.url) === url);
-    return `Already fetched: ${existing?.title ?? requestedUrl}. Inspect a different result or use read_source with this URL.`;
-  }
-
-  ctx.emit({ type: "inspecting", url });
-
-  try {
-    const { markdown, title } = await scrapeWithCache(ctx, url);
-    if (!markdown) {
-      ctx.caches.scrape.delete(url);
-      ctx.emit({
-        type: "source_error",
-        url,
-        error: "Empty markdown",
-      });
-      return "Empty page (no content fetched).";
-    }
-
-    ctx.abort();
-
-    const snippet = markdown.slice(0, INSPECT_SNIPPET_CHARS).trim();
-    return `Inspected: ${title ?? url}\nURL: ${url}\nFirst ${INSPECT_SNIPPET_CHARS} chars:\n${snippet}`;
-  } catch (err) {
-    const message = errorMessage(err);
-    ctx.emit({
-      type: "source_error",
-      url,
-      error: message,
-    });
-    return `Inspect error: ${message}`;
   }
 }
 

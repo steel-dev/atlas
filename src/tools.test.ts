@@ -42,7 +42,7 @@ function finalReport(): Anthropic.Message {
 
 function toolUse(
   id: string,
-  name: "search" | "inspect" | "fetch" | "read_source" | "delegate",
+  name: "search" | "fetch" | "read_source" | "delegate",
   input: Record<string, unknown> = {},
 ): Anthropic.ToolUseBlock {
   return { type: "tool_use", id, name, input } as unknown as Anthropic.ToolUseBlock;
@@ -149,7 +149,7 @@ describe("gather loop cache integration", () => {
     expect(ctx.caches.serp.size).toBe(1);
   });
 
-  it("reuses inspected page content when committing the same URL", async () => {
+  it("commits fetched page content to the source cache", async () => {
     const fetch = vi.fn(async () => {
       const body = `
         <html>
@@ -173,11 +173,6 @@ describe("gather loop cache integration", () => {
     }));
     const messagesCreate = vi
       .fn()
-      .mockResolvedValueOnce(
-        messageWith([
-          toolUse("inspect_1", "inspect", { url: "https://example.com/source" }),
-        ]),
-      )
       .mockResolvedValueOnce(
         messageWith([
           toolUse("fetch_1", "fetch", { url: "https://example.com/source" }),
@@ -207,7 +202,7 @@ describe("gather loop cache integration", () => {
     const result = await runGatherAgent({
       ctx,
       query: "What is Atlas?",
-      max_tool_calls: 3,
+      max_tool_calls: 2,
     });
 
     expect(result.finish_reason).toBe("final report");
