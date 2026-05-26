@@ -12,6 +12,7 @@ import {
   type SearchResult,
   type WebSearchOutcome,
 } from "./search.js";
+import { normalizeUrlForSource } from "./url.js";
 
 const STORED_MARKDOWN_CAP = 10_000_000;
 const DEFAULT_FETCH_CHARS = 12_000;
@@ -21,15 +22,6 @@ const DEFAULT_MAX_TOOL_CALLS = 12;
 const DEFAULT_MAX_CONCURRENT_TOOLS = 4;
 const STEEL_RATE_LIMIT_MAX_ATTEMPTS = 6;
 const DEFAULT_RATE_LIMIT_RETRY_SECONDS = 15;
-const TRACKING_QUERY_PARAMS = new Set([
-  "fbclid",
-  "gclid",
-  "igshid",
-  "mc_cid",
-  "mc_eid",
-  "msclkid",
-]);
-
 export interface SteelGate {
   run<T>(fn: () => Promise<T>): Promise<T>;
 }
@@ -254,22 +246,7 @@ function totalOpenSlots(ctx: AgentContext): number {
   return ctx.openedPages.length + ctx.openReservations.pageSlots;
 }
 
-function normalizeFetchUrl(url: string): string {
-  try {
-    const u = new URL(url);
-    u.hash = "";
-    for (const key of [...u.searchParams.keys()]) {
-      const lower = key.toLowerCase();
-      if (lower.startsWith("utm_") || TRACKING_QUERY_PARAMS.has(lower)) {
-        u.searchParams.delete(key);
-      }
-    }
-    u.searchParams.sort();
-    return u.toString();
-  } catch {
-    return url;
-  }
-}
+const normalizeFetchUrl = normalizeUrlForSource;
 
 function searchCacheKey(opts: {
   query: string;

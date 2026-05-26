@@ -9,6 +9,7 @@ import {
   type AgentContext,
   type OpenedSourceFile,
 } from "./tools.js";
+import { normalizeUrlForSource } from "./url.js";
 
 const DEFAULT_RUNTIME_LIMITS = {
   safetySourceCap: 200,
@@ -253,13 +254,7 @@ function stripTrailingUrlPunctuation(url: string): string {
 }
 
 function normalizeUrlForCitation(url: string): string {
-  try {
-    const u = new URL(url);
-    u.hash = "";
-    return u.toString();
-  } catch {
-    return url;
-  }
+  return normalizeUrlForSource(url);
 }
 
 function combineSignals(
@@ -303,3 +298,7 @@ function instrumentAnthropic(client: Anthropic): UsageSummary {
   client.messages.create = wrapped as typeof client.messages.create;
   return usage;
 }
+
+export const __testing = {
+  sourcesCitedInMarkdown,
+};
