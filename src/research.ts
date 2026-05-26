@@ -17,7 +17,7 @@ const DEFAULT_RUNTIME_LIMITS = {
   maxConcurrentDelegates: 4,
   maxDelegates: 16,
   delegateMaxToolCalls: 64,
-  searchMode: "aggregate",
+  searchMode: "fallback",
   defaultSearchLimit: 8,
   gatherModel: WRITER_MODEL,
   writerEffort: "high",
