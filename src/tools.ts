@@ -327,7 +327,7 @@ const AGENT_TOOLS: Anthropic.Tool[] = [
   },
 ];
 
-const AGENT_SYSTEM = `You're a deep research agent. Use the available tools as needed to answer the user's question. Work within the user's dollar/time budget. When you have enough evidence, stop using tools and write a cited Markdown report. Do not cite internal source numbers.`;
+const AGENT_SYSTEM = `You're a deep research agent. Use the available tools as needed to answer the user's question. Work within the user's dollar/time budget. When you have enough evidence, stop using tools and write a cited Markdown report.`;
 
 function totalOpenSlots(ctx: AgentContext): number {
   return ctx.openedPages.length + ctx.openReservations.pageSlots;
@@ -392,15 +392,15 @@ function sourceFiles(ctx: AgentContext): Map<string, OpenedSourceFile> {
   if (ctx.openedSourceFiles) return ctx.openedSourceFiles;
 
   const files = new Map<string, OpenedSourceFile>();
-  ctx.openedPages.forEach((page, index) => {
+  ctx.openedPages.forEach((page) => {
     const markdown = ctx.openedPageMarkdowns.get(page.url);
     if (!markdown) return;
     const file = createSourceFile(
-      index + 1,
       page.url,
       page.title,
       markdown,
       unknownExtractionMetadata(markdown.length),
+      files,
     );
     files.set(file.path, file);
   });
@@ -417,14 +417,14 @@ function unknownExtractionMetadata(markdownChars: number): ExtractionMetadata {
 }
 
 function createSourceFile(
-  index: number,
   url: string,
   title: string,
   markdown: string,
   metadata: ExtractionMetadata,
+  takenPaths: { has(path: string): boolean },
   originalChars = markdown.length,
 ): OpenedSourceFile {
-  const path = sourceFilePath(index, title, url);
+  const path = sourceFilePath(title, url, takenPaths);
   return {
     path,
     url,
@@ -438,9 +438,26 @@ function createSourceFile(
   };
 }
 
-function sourceFilePath(index: number, title: string, url: string): string {
-  const slug = slugifySourceTitle(title) || slugifySourceTitle(safeHostname(url)) || "source";
-  return `/sources/${String(index).padStart(3, "0")}-${slug}.md`;
+function sourceFilePath(
+  title: string,
+  url: string,
+  takenPaths: { has(path: string): boolean },
+): string {
+  const titleSlug = slugifySourceTitle(title);
+  const hostSlug = slugifySourceTitle(safeHostname(url));
+  const baseSlug = titleSlug || hostSlug || "source";
+
+  const base = `/sources/${baseSlug}.md`;
+  if (!takenPaths.has(base)) return base;
+
+  if (titleSlug && hostSlug && hostSlug !== titleSlug) {
+    const withHost = `/sources/${titleSlug}-${hostSlug}.md`;
+    if (!takenPaths.has(withHost)) return withHost;
+  }
+
+  let n = 2;
+  while (takenPaths.has(`/sources/${baseSlug}-${n}.md`)) n++;
+  return `/sources/${baseSlug}-${n}.md`;
 }
 
 function slugifySourceTitle(value: string): string {
@@ -1270,11 +1287,11 @@ async function execFetch(
     const resolvedTitle = title ?? url;
     const stored = storeMarkdown(markdown);
     const file = createSourceFile(
-      ctx.openedPages.length + 1,
       url,
       resolvedTitle,
       stored.markdown,
       metadata,
+      sourceFiles(ctx),
       stored.originalChars,
     );
     ctx.openedPages.push({

@@ -258,7 +258,7 @@ describe("gather loop cache integration", () => {
       .mockResolvedValueOnce(
         messageWith([
           toolUse("read_1", "read_file", {
-            path: "/sources/001-primary-source.md",
+            path: "/sources/primary-source.md",
             start_line: 1,
             max_lines: 20,
           }),
@@ -295,10 +295,10 @@ describe("gather loop cache integration", () => {
 
     expect(result.finish_reason).toBe("final report");
     expect(JSON.stringify(readRequest.messages)).toContain(
-      "Opened source file: /sources/001-primary-source.md",
+      "Opened source file: /sources/primary-source.md",
     );
     expect(JSON.stringify(readRequest.messages)).toContain(
-      "File: /sources/001-primary-source.md",
+      "File: /sources/primary-source.md",
     );
     expect(JSON.stringify(readRequest.messages)).toContain("Line-readable evidence");
   });
@@ -371,7 +371,7 @@ describe("gather loop cache integration", () => {
       "matches for \\\"Isoamyl acetate\\\"",
     );
     expect(JSON.stringify(searchRequest.messages)).toContain(
-      "/sources/001-flavor-study.md",
+      "/sources/flavor-study.md",
     );
   });
 
