@@ -46,7 +46,8 @@ const result = await research({
 });
 
 console.log(result.markdown);
-console.log(result.sources);
+console.log(result.sources); // URLs Atlas fetched and the report cited
+console.log(result.unverified_citations); // cited URLs Atlas did not fetch
 ```
 
 ## Development

@@ -95,6 +95,11 @@ function prettyEvent(e: ResearchEvent): string {
       return paint(GREEN, `    ✓`) + ` ${e.url}`;
     case "source_error":
       return paint(YELLOW, `    ! ${e.url} — ${e.error}`);
+    case "unverified_citations":
+      return (
+        paint(YELLOW, "    ! unverified citations:") +
+        ` ${e.count} URL${e.count === 1 ? "" : "s"} not fetched by Atlas`
+      );
     case "written":
       return (
         paint(GREEN, "✓") + ` written (${e.markdown_chars.toLocaleString()} chars)`
