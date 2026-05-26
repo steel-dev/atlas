@@ -392,19 +392,6 @@ function sourcePoolSummary(ctx: AgentContext): string {
     .join("\n");
 }
 
-function finalReportRequest(ctx: AgentContext): string {
-  return (
-    `The document cache has ${ctx.sources.length} fetched documents, so you may now finish. ` +
-    `Write the final cited Markdown report directly. Answer the exact question and do not cite internal source numbers.`
-  );
-}
-
-function finalBriefRequest(): string {
-  return (
-    `Write a concise Markdown brief for the delegated task. Include key findings, URLs the parent should fetch if this matters, and any open uncertainties.`
-  );
-}
-
 function textFromContent(content: Anthropic.Message["content"]): string {
   return content
     .map((block) => (block.type === "text" ? block.text : ""))
@@ -1259,27 +1246,13 @@ export async function runGatherAgent(opts: {
     );
     if (toolUses.length === 0) {
       const text = textFromContent(resp.content);
-      const content =
-        mode === "brief" && text
-          ? null
-          : mode === "brief"
-            ? finalBriefRequest()
-            : text
-              ? null
-              : finalReportRequest(ctx);
-      if (content === null) {
-        markdown = text;
-        finishReason = mode === "brief" ? "brief" : "final report";
-        break;
-      }
-
-      messages.push({ role: "user", content });
-      toolCalls += 1;
-      if (toolCalls >= maxToolCalls) {
-        finishReason = "tool call budget exhausted";
-        break;
-      }
-      continue;
+      markdown = text;
+      finishReason = text
+        ? mode === "brief"
+          ? "brief"
+          : "final report"
+        : "empty final response";
+      break;
     }
 
     const remainingToolCalls = maxToolCalls - toolCalls;
