@@ -199,7 +199,6 @@ export interface AgenticRunResult {
 
 interface SearchToolInput {
   query?: string;
-  engine?: string;
   limit?: number;
 }
 
@@ -212,19 +211,13 @@ interface FetchToolInput {
 const AGENT_TOOLS: Anthropic.Tool[] = [
   {
     name: "search",
-    description: "Search the web with one selected engine.",
+    description: "Search the web.",
     input_schema: {
       type: "object",
       properties: {
         query: {
           type: "string",
           description: "Search query.",
-        },
-        engine: {
-          type: "string",
-          enum: [...ENGINES],
-          description:
-            "Search engine to use. Defaults to the configured default engine.",
         },
         limit: {
           type: "integer",
@@ -306,21 +299,6 @@ function searchEnginesInFallbackOrder(defaultEngine: Engine): Engine[] {
     defaultEngine,
     ...ENGINES.filter((engine) => engine !== defaultEngine),
   ];
-}
-
-function readSearchEngine(
-  raw: string | undefined,
-  defaultEngine: Engine,
-): { ok: true; engine: Engine } | { ok: false; error: string } {
-  if (raw === undefined) return { ok: true, engine: defaultEngine };
-  const engine = raw.trim().toLowerCase();
-  if (ENGINES.includes(engine as Engine)) {
-    return { ok: true, engine: engine as Engine };
-  }
-  return {
-    ok: false,
-    error: `Error: search engine must be one of: ${ENGINES.join(", ")} (got "${raw}").`,
-  };
 }
 
 function errorMessage(err: unknown): string {
@@ -595,8 +573,6 @@ async function execSearch(
 
   const rawLimit = args.limit ?? ctx.defaultSearchLimit ?? 5;
   const limit = Math.min(Math.max(1, Math.floor(Number(rawLimit))), 20);
-  const requestedEngine = readSearchEngine(args.engine, ctx.defaultEngine);
-  if (!requestedEngine.ok) return requestedEngine.error;
 
   ctx.emit({
     type: "searching",
@@ -605,7 +581,8 @@ async function execSearch(
   });
 
   const failures: string[] = [];
-  const engines = searchEnginesInFallbackOrder(requestedEngine.engine);
+  let sawEmptyResults = false;
+  const engines = searchEnginesInFallbackOrder(ctx.defaultEngine);
 
   for (const engine of engines) {
     let outcome: WebSearchOutcome;
@@ -622,23 +599,10 @@ async function execSearch(
     }
 
     const results = dedupeSearchResults(outcome.results, limit);
-    if (outcome.results.length === 0) {
-      ctx.emit({
-        type: "search_results",
-        index: searchIndex,
-        count: 0,
-      });
-      return JSON.stringify(
-        {
-          query,
-          requested_engine: requestedEngine.engine,
-          engine,
-          results: [],
-          warnings: failures.length > 0 ? failures : undefined,
-        },
-        null,
-        2,
-      );
+    if (results.length === 0) {
+      sawEmptyResults = true;
+      failures.push(`${engine}: no results`);
+      continue;
     }
 
     ctx.emit({
@@ -649,7 +613,6 @@ async function execSearch(
     return JSON.stringify(
       {
         query,
-        requested_engine: requestedEngine.engine,
         engine,
         results: compactSearchResults(results, engine),
         warnings: failures.length > 0 ? failures : undefined,
@@ -660,6 +623,22 @@ async function execSearch(
   }
 
   const error = failures.join("; ") || "all engines failed";
+  ctx.emit({
+    type: "search_results",
+    index: searchIndex,
+    count: 0,
+  });
+  if (sawEmptyResults) {
+    return JSON.stringify(
+      {
+        query,
+        results: [],
+        warnings: failures.length > 0 ? failures : undefined,
+      },
+      null,
+      2,
+    );
+  }
   ctx.emit({
     type: "search_failed",
     index: searchIndex,
