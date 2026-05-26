@@ -374,13 +374,17 @@ describe("gather loop cache integration", () => {
       });
     });
     vi.stubGlobal("fetch", fetch);
+    const scrape = vi.fn(async () => ({
+      content: { html: "<html><body>No browser results.</body></html>" },
+      metadata: {},
+    }));
     const messagesCreate = vi
       .fn()
       .mockResolvedValueOnce(
         messageWith([toolUse("search_1", "search", { query: "empty query" })]),
       )
       .mockResolvedValueOnce(finalReport());
-    const ctx = createContext({ messagesCreate });
+    const ctx = createContext({ messagesCreate, scrape });
 
     const result = await runGatherAgent({
       ctx,
@@ -415,6 +419,7 @@ describe("gather loop cache integration", () => {
     ]);
     expect(payload.warnings[0]).toBe("ddg: no results");
     expect(fetch).toHaveBeenCalledTimes(2);
+    expect(scrape).toHaveBeenCalledTimes(1);
   });
 
   it("advertises only search and fetch to the agent", async () => {
