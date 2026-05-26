@@ -42,10 +42,53 @@ function finalReport(): Anthropic.Message {
 
 function toolUse(
   id: string,
-  name: "search" | "open_url" | "list_sources" | "read_file" | "search_files",
+  name: string,
   input: Record<string, unknown> = {},
 ): Anthropic.ToolUseBlock {
   return { type: "tool_use", id, name, input } as unknown as Anthropic.ToolUseBlock;
+}
+
+function createContext(opts: {
+  messagesCreate: Anthropic["messages"]["create"];
+  scrape?: unknown;
+  openedPages?: AgentContext["openedPages"];
+  openedPageUrls?: AgentContext["openedPageUrls"];
+  openedPageMarkdowns?: AgentContext["openedPageMarkdowns"];
+  openedPageCap?: number;
+}): AgentContext {
+  return {
+    anthropic: {
+      messages: { create: opts.messagesCreate },
+    } as unknown as Anthropic,
+    steel: { scrape: opts.scrape ?? vi.fn() } as unknown as Steel,
+    openedPages: opts.openedPages ?? [],
+    openedPageUrls: opts.openedPageUrls ?? new Set(),
+    openedPageMarkdowns: opts.openedPageMarkdowns ?? new Map(),
+    emit: vi.fn(),
+    abort: vi.fn(),
+    defaultEngine: "ddg",
+    useProxy: false,
+    openedPageCap: opts.openedPageCap ?? 4,
+    maxConcurrentTools: 2,
+    steelGate: createSteelGate(2),
+    openReservations: createOpenReservations(),
+    caches: createResearchCaches(),
+  };
+}
+
+function toolResultText(request: {
+  messages: Array<{ content: unknown }>;
+}): string {
+  return request.messages
+    .flatMap((message) => Array.isArray(message.content) ? message.content : [])
+    .filter((block): block is { type: string; content?: unknown } =>
+      typeof block === "object" &&
+      block !== null &&
+      "type" in block &&
+      (block as { type?: unknown }).type === "tool_result",
+    )
+    .map((block) => String(block.content ?? ""))
+    .join("\n");
 }
 
 afterEach(() => {
@@ -116,25 +159,7 @@ describe("gather loop cache integration", () => {
         messageWith([toolUse("search_2", "search", { query: "same query" })]),
       )
       .mockResolvedValueOnce(finalReport());
-
-    const ctx: AgentContext = {
-      anthropic: {
-        messages: { create: messagesCreate },
-      } as unknown as Anthropic,
-      steel: { scrape } as unknown as Steel,
-      openedPages: [],
-      openedPageUrls: new Set(),
-      openedPageMarkdowns: new Map(),
-      emit: vi.fn(),
-      abort: vi.fn(),
-      defaultEngine: "ddg",
-      useProxy: false,
-      openedPageCap: 4,
-      maxConcurrentTools: 2,
-      steelGate: createSteelGate(2),
-      openReservations: createOpenReservations(),
-      caches: createResearchCaches(),
-    };
+    const ctx = createContext({ messagesCreate, scrape });
 
     const result = await runGatherAgent({
       ctx,
@@ -148,13 +173,29 @@ describe("gather loop cache integration", () => {
     expect(result.finish_reason).toBe("final report");
     expect(result.markdown).toContain("# Test Report");
     expect(messagesCreate).toHaveBeenCalledTimes(3);
-    expect(JSON.stringify(secondRequest.messages)).toContain("Search metadata");
-    expect(JSON.stringify(secondRequest.messages)).toContain("Engines tried");
+    expect(toolResultText(secondRequest)).toContain('"results"');
+    expect(toolResultText(secondRequest)).not.toContain("Engines tried");
     expect(scrape).toHaveBeenCalledTimes(3);
     expect(ctx.caches.serp.size).toBe(3);
   });
 
-  it("opens page content into run memory", async () => {
+  it("advertises only search and fetch to the agent", async () => {
+    const messagesCreate = vi.fn().mockResolvedValueOnce(finalReport());
+    const ctx = createContext({ messagesCreate });
+
+    await runGatherAgent({
+      ctx,
+      query: "What is Atlas?",
+      max_tool_calls: 2,
+    });
+    const request = messagesCreate.mock.calls[0]?.[0] as {
+      tools: Array<{ name: string }>;
+    };
+
+    expect(request.tools.map((tool) => tool.name)).toEqual(["search", "fetch"]);
+  });
+
+  it("fetches page content into run memory with a source_id", async () => {
     const fetch = vi.fn(async () => {
       const body = `
         <html>
@@ -180,29 +221,11 @@ describe("gather loop cache integration", () => {
       .fn()
       .mockResolvedValueOnce(
         messageWith([
-          toolUse("open_1", "open_url", { url: "https://example.com/source" }),
+          toolUse("fetch_1", "fetch", { url: "https://example.com/source" }),
         ]),
       )
       .mockResolvedValueOnce(finalReport());
-
-    const ctx: AgentContext = {
-      anthropic: {
-        messages: { create: messagesCreate },
-      } as unknown as Anthropic,
-      steel: { scrape } as unknown as Steel,
-      openedPages: [],
-      openedPageUrls: new Set(),
-      openedPageMarkdowns: new Map(),
-      emit: vi.fn(),
-      abort: vi.fn(),
-      defaultEngine: "ddg",
-      useProxy: false,
-      openedPageCap: 4,
-      maxConcurrentTools: 2,
-      steelGate: createSteelGate(2),
-      openReservations: createOpenReservations(),
-      caches: createResearchCaches(),
-    };
+    const ctx = createContext({ messagesCreate, scrape });
 
     const result = await runGatherAgent({
       ctx,
@@ -224,12 +247,12 @@ describe("gather loop cache integration", () => {
       },
     ]);
     expect(ctx.openedPageMarkdowns.get("https://example.com/source")).toContain("Detailed source body");
-    expect(JSON.stringify(followupRequest.messages)).toContain("Extraction metadata");
-    expect(JSON.stringify(followupRequest.messages)).toContain("Method: plain");
-    expect(JSON.stringify(followupRequest.messages)).toContain("Stored markdown");
+    expect(toolResultText(followupRequest)).toContain('"source_id": "src_1"');
+    expect(toolResultText(followupRequest)).toContain('"extraction_method": "plain"');
+    expect(toolResultText(followupRequest)).toContain('"content"');
   });
 
-  it("opens pages as virtual source files readable by line", async () => {
+  it("continues reading a fetched source by source_id and offset", async () => {
     const fetch = vi.fn(async () => {
       const body = `
         <html>
@@ -237,8 +260,7 @@ describe("gather loop cache integration", () => {
           <body>
             <main>
               <h1>Primary Source</h1>
-              <h2>Methods</h2>
-              ${"<p>Line-readable evidence about methods and controls.</p>".repeat(20)}
+              ${"<p>Line-readable evidence about methods and controls.</p>".repeat(30)}
             </main>
           </body>
         </html>
@@ -252,37 +274,23 @@ describe("gather loop cache integration", () => {
       .fn()
       .mockResolvedValueOnce(
         messageWith([
-          toolUse("open_1", "open_url", { url: "https://example.com/source" }),
+          toolUse("fetch_1", "fetch", {
+            url: "https://example.com/source",
+            max_chars: 80,
+          }),
         ]),
       )
       .mockResolvedValueOnce(
         messageWith([
-          toolUse("read_1", "read_file", {
-            path: "/sources/primary-source.md",
-            start_line: 1,
-            max_lines: 20,
+          toolUse("fetch_2", "fetch", {
+            source_id: "src_1",
+            offset: 80,
+            max_chars: 400,
           }),
         ]),
       )
       .mockResolvedValueOnce(finalReport());
-    const ctx: AgentContext = {
-      anthropic: {
-        messages: { create: messagesCreate },
-      } as unknown as Anthropic,
-      steel: { scrape: vi.fn() } as unknown as Steel,
-      openedPages: [],
-      openedPageUrls: new Set(),
-      openedPageMarkdowns: new Map(),
-      emit: vi.fn(),
-      abort: vi.fn(),
-      defaultEngine: "ddg",
-      useProxy: false,
-      openedPageCap: 4,
-      maxConcurrentTools: 2,
-      steelGate: createSteelGate(2),
-      openReservations: createOpenReservations(),
-      caches: createResearchCaches(),
-    };
+    const ctx = createContext({ messagesCreate });
 
     const result = await runGatherAgent({
       ctx,
@@ -294,96 +302,16 @@ describe("gather loop cache integration", () => {
     };
 
     expect(result.finish_reason).toBe("final report");
-    expect(JSON.stringify(readRequest.messages)).toContain(
-      "Opened source file: /sources/primary-source.md",
-    );
-    expect(JSON.stringify(readRequest.messages)).toContain(
-      "File: /sources/primary-source.md",
-    );
-    expect(JSON.stringify(readRequest.messages)).toContain("Line-readable evidence");
-  });
-
-  it("searches opened virtual source files", async () => {
-    const fetch = vi.fn(async () => {
-      const body = `
-        <html>
-          <head><title>Flavor Study</title></head>
-          <body>
-            <main>
-              <h1>Flavor Study</h1>
-              ${"<p>Methods text about sampling and controls.</p>".repeat(10)}
-              ${"<p>Isoamyl acetate and ester compounds increased during ripening.</p>".repeat(10)}
-            </main>
-          </body>
-        </html>
-      `;
-      return new Response(body, {
-        headers: { "content-type": "text/html; charset=utf-8" },
-      });
-    });
-    vi.stubGlobal("fetch", fetch);
-    const messagesCreate = vi
-      .fn()
-      .mockResolvedValueOnce(
-        messageWith([
-          toolUse("open_1", "open_url", { url: "https://example.com/flavor" }),
-        ]),
-      )
-      .mockResolvedValueOnce(
-        messageWith([
-          toolUse("search_files_1", "search_files", {
-            query: "Isoamyl acetate",
-            path: "/sources",
-          }),
-        ]),
-      )
-      .mockResolvedValueOnce(finalReport());
-    const ctx: AgentContext = {
-      anthropic: {
-        messages: { create: messagesCreate },
-      } as unknown as Anthropic,
-      steel: { scrape: vi.fn() } as unknown as Steel,
-      openedPages: [],
-      openedPageUrls: new Set(),
-      openedPageMarkdowns: new Map(),
-      emit: vi.fn(),
-      abort: vi.fn(),
-      defaultEngine: "ddg",
-      useProxy: false,
-      openedPageCap: 4,
-      maxConcurrentTools: 2,
-      steelGate: createSteelGate(2),
-      openReservations: createOpenReservations(),
-      caches: createResearchCaches(),
-    };
-
-    const result = await runGatherAgent({
-      ctx,
-      query: "What is Atlas?",
-      max_tool_calls: 3,
-    });
-    const searchRequest = messagesCreate.mock.calls[2]?.[0] as {
-      messages: Array<{ content: unknown }>;
-    };
-
-    expect(result.finish_reason).toBe("final report");
-    expect(JSON.stringify(searchRequest.messages)).toContain(
-      "matches for \\\"Isoamyl acetate\\\"",
-    );
-    expect(JSON.stringify(searchRequest.messages)).toContain(
-      "/sources/flavor-study.md",
-    );
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(toolResultText(readRequest)).toContain('"source_id": "src_1"');
+    expect(toolResultText(readRequest)).toContain('"offset": 80');
+    expect(toolResultText(readRequest)).toContain("Line-readable evidence");
   });
 
   it("starts gather runs with a minimal research-question prompt", async () => {
-    const messagesCreate = vi
-      .fn()
-      .mockResolvedValueOnce(finalReport());
-    const ctx: AgentContext = {
-      anthropic: {
-        messages: { create: messagesCreate },
-      } as unknown as Anthropic,
-      steel: { scrape: vi.fn() } as unknown as Steel,
+    const messagesCreate = vi.fn().mockResolvedValueOnce(finalReport());
+    const ctx = createContext({
+      messagesCreate,
       openedPages: [
         {
           url: "https://example.com/primary",
@@ -391,17 +319,10 @@ describe("gather loop cache integration", () => {
         },
       ],
       openedPageUrls: new Set(["https://example.com/primary"]),
-      openedPageMarkdowns: new Map([["https://example.com/primary", "# Primary Source\n\nUseful evidence."]]),
-      emit: vi.fn(),
-      abort: vi.fn(),
-      defaultEngine: "ddg",
-      useProxy: false,
-      openedPageCap: 4,
-      maxConcurrentTools: 2,
-      steelGate: createSteelGate(2),
-      openReservations: createOpenReservations(),
-      caches: createResearchCaches(),
-    };
+      openedPageMarkdowns: new Map([
+        ["https://example.com/primary", "# Primary Source\n\nUseful evidence."],
+      ]),
+    });
 
     const result = await runGatherAgent({
       ctx,
@@ -421,30 +342,15 @@ describe("gather loop cache integration", () => {
   });
 
   it("accepts a final report even with only a few sources", async () => {
-    const messagesCreate = vi
-      .fn()
-      .mockResolvedValueOnce(finalReport());
-    const ctx: AgentContext = {
-      anthropic: {
-        messages: { create: messagesCreate },
-      } as unknown as Anthropic,
-      steel: { scrape: vi.fn() } as unknown as Steel,
+    const messagesCreate = vi.fn().mockResolvedValueOnce(finalReport());
+    const ctx = createContext({
+      messagesCreate,
       openedPages: [
         { url: "https://example.com/one", title: "One" },
         { url: "https://example.com/two", title: "Two" },
       ],
       openedPageUrls: new Set(["https://example.com/one", "https://example.com/two"]),
-      openedPageMarkdowns: new Map(),
-      emit: vi.fn(),
-      abort: vi.fn(),
-      defaultEngine: "ddg",
-      useProxy: false,
-      openedPageCap: 4,
-      maxConcurrentTools: 2,
-      steelGate: createSteelGate(2),
-      openReservations: createOpenReservations(),
-      caches: createResearchCaches(),
-    };
+    });
 
     const result = await runGatherAgent({
       ctx,
@@ -457,24 +363,21 @@ describe("gather loop cache integration", () => {
     expect(messagesCreate).toHaveBeenCalledTimes(1);
   });
 
-  it("continues reading opened sources after the open page cap is reached", async () => {
+  it("continues reading fetched sources after the open page cap is reached", async () => {
     const messagesCreate = vi
       .fn()
       .mockResolvedValueOnce(
         messageWith([
-          toolUse("read_1", "read_file", {
-            path: "/sources/capped-source.md",
-            start_line: 1,
-            max_lines: 20,
+          toolUse("fetch_1", "fetch", {
+            source_id: "src_1",
+            offset: 0,
+            max_chars: 200,
           }),
         ]),
       )
       .mockResolvedValueOnce(finalReport());
-    const ctx: AgentContext = {
-      anthropic: {
-        messages: { create: messagesCreate },
-      } as unknown as Anthropic,
-      steel: { scrape: vi.fn() } as unknown as Steel,
+    const ctx = createContext({
+      messagesCreate,
       openedPages: [
         { url: "https://example.com/capped", title: "Capped Source" },
       ],
@@ -485,16 +388,8 @@ describe("gather loop cache integration", () => {
           "# Capped Source\n\nEvidence remains readable after the open cap.",
         ],
       ]),
-      emit: vi.fn(),
-      abort: vi.fn(),
-      defaultEngine: "ddg",
-      useProxy: false,
       openedPageCap: 1,
-      maxConcurrentTools: 2,
-      steelGate: createSteelGate(2),
-      openReservations: createOpenReservations(),
-      caches: createResearchCaches(),
-    };
+    });
 
     const result = await runGatherAgent({
       ctx,
@@ -523,24 +418,7 @@ describe("gather loop cache integration", () => {
           },
         ]),
       );
-    const ctx: AgentContext = {
-      anthropic: {
-        messages: { create: messagesCreate },
-      } as unknown as Anthropic,
-      steel: { scrape: vi.fn() } as unknown as Steel,
-      openedPages: [],
-      openedPageUrls: new Set(),
-      openedPageMarkdowns: new Map(),
-      emit: vi.fn(),
-      abort: vi.fn(),
-      defaultEngine: "ddg",
-      useProxy: false,
-      openedPageCap: 4,
-      maxConcurrentTools: 2,
-      steelGate: createSteelGate(2),
-      openReservations: createOpenReservations(),
-      caches: createResearchCaches(),
-    };
+    const ctx = createContext({ messagesCreate });
 
     const result = await runGatherAgent({
       ctx,
@@ -577,31 +455,14 @@ describe("gather loop cache integration", () => {
       .fn()
       .mockResolvedValueOnce(
         messageWith([
-          toolUse("open_1", "open_url", { url: "https://example.com/budget" }),
-          toolUse("fetch_2", "open_url", {
+          toolUse("fetch_1", "fetch", { url: "https://example.com/budget" }),
+          toolUse("fetch_2", "fetch", {
             url: "https://example.com/skipped-budget",
           }),
         ]),
       )
       .mockResolvedValueOnce(finalReport());
-    const ctx: AgentContext = {
-      anthropic: {
-        messages: { create: messagesCreate },
-      } as unknown as Anthropic,
-      steel: { scrape: vi.fn() } as unknown as Steel,
-      openedPages: [],
-      openedPageUrls: new Set(),
-      openedPageMarkdowns: new Map(),
-      emit: vi.fn(),
-      abort: vi.fn(),
-      defaultEngine: "ddg",
-      useProxy: false,
-      openedPageCap: 4,
-      maxConcurrentTools: 2,
-      steelGate: createSteelGate(2),
-      openReservations: createOpenReservations(),
-      caches: createResearchCaches(),
-    };
+    const ctx = createContext({ messagesCreate });
 
     const result = await runGatherAgent({
       ctx,
@@ -644,29 +505,11 @@ describe("gather loop cache integration", () => {
       .fn()
       .mockResolvedValueOnce(
         messageWith([
-          toolUse("open_1", "open_url", { url: "https://example.com/js-app" }),
+          toolUse("fetch_1", "fetch", { url: "https://example.com/js-app" }),
         ]),
       )
       .mockResolvedValueOnce(finalReport());
-
-    const ctx: AgentContext = {
-      anthropic: {
-        messages: { create: messagesCreate },
-      } as unknown as Anthropic,
-      steel: { scrape } as unknown as Steel,
-      openedPages: [],
-      openedPageUrls: new Set(),
-      openedPageMarkdowns: new Map(),
-      emit: vi.fn(),
-      abort: vi.fn(),
-      defaultEngine: "ddg",
-      useProxy: false,
-      openedPageCap: 4,
-      maxConcurrentTools: 2,
-      steelGate: createSteelGate(2),
-      openReservations: createOpenReservations(),
-      caches: createResearchCaches(),
-    };
+    const ctx = createContext({ messagesCreate, scrape });
 
     const result = await runGatherAgent({
       ctx,
@@ -685,44 +528,26 @@ describe("gather loop cache integration", () => {
       url: "https://example.com/js-app",
       title: "Steel Fallback",
     });
-    expect(JSON.stringify(followupRequest.messages)).toContain("Method: steel");
-    expect(JSON.stringify(followupRequest.messages)).toContain(
-      "Plain fetch fallback reason",
-    );
+    expect(ctx.emit).toHaveBeenCalledWith({
+      type: "steel_fallback",
+      url: "https://example.com/js-app",
+      reason: "Plain fetch returned too little readable text (0 chars)",
+    });
+    expect(toolResultText(followupRequest)).toContain('"extraction_method": "steel"');
   });
 
-  it("ignores legacy fetch tool calls from older prompts", async () => {
+  it("rejects removed virtual file tools", async () => {
     const messagesCreate = vi
       .fn()
       .mockResolvedValueOnce(
         messageWith([
-          {
-            type: "tool_use",
-            id: "fetch_legacy",
-            name: "fetch",
-            input: { url: "https://example.com/legacy" },
-          } as unknown as Anthropic.ToolUseBlock,
+          toolUse("open_legacy", "open_url", {
+            url: "https://example.com/legacy",
+          }),
         ]),
       )
       .mockResolvedValueOnce(finalReport());
-    const ctx: AgentContext = {
-      anthropic: {
-        messages: { create: messagesCreate },
-      } as unknown as Anthropic,
-      steel: { scrape: vi.fn() } as unknown as Steel,
-      openedPages: [],
-      openedPageUrls: new Set(),
-      openedPageMarkdowns: new Map(),
-      emit: vi.fn(),
-      abort: vi.fn(),
-      defaultEngine: "ddg",
-      useProxy: false,
-      openedPageCap: 4,
-      maxConcurrentTools: 2,
-      steelGate: createSteelGate(2),
-      openReservations: createOpenReservations(),
-      caches: createResearchCaches(),
-    };
+    const ctx = createContext({ messagesCreate });
 
     const result = await runGatherAgent({
       ctx,
@@ -733,5 +558,4 @@ describe("gather loop cache integration", () => {
     expect(result.finish_reason).toBe("final report");
     expect(ctx.openedPages).toEqual([]);
   });
-
 });

@@ -11,12 +11,8 @@ import {
 import { fetchPlainPage, type PlainPageMetadata } from "./plain-fetch.js";
 
 const STORED_MARKDOWN_CAP = 10_000_000;
-const FETCH_SNIPPET_CHARS = 8000;
-const DEFAULT_READ_FILE_LINES = 240;
-const MAX_READ_FILE_LINES = 2000;
-const DEFAULT_SEARCH_FILE_RESULTS = 12;
-const MAX_SEARCH_FILE_RESULTS = 50;
-const SEARCH_FILE_CONTEXT_LINES = 3;
+const DEFAULT_FETCH_CHARS = 12_000;
+const MAX_FETCH_CHARS = 50_000;
 const SEARCH_SNIPPET_CHARS = 500;
 const DEFAULT_MAX_TOOL_CALLS = 12;
 const DEFAULT_MAX_CONCURRENT_TOOLS = 4;
@@ -57,11 +53,10 @@ interface ExtractionMetadata {
 }
 
 export interface OpenedSourceFile {
-  path: string;
+  source_id: string;
   url: string;
   title: string;
   markdown: string;
-  lines: string[];
   original_chars: number;
   stored_chars: number;
   truncated: boolean;
@@ -129,16 +124,9 @@ export function createOpenReservations(): OpenReservations {
 // ----------------------------------------------------------------------------
 // Agentic gather loop
 //
-// A single gather loop gets these tools:
-//   - search(query, limit?)
-//   - open_url(url) — fetch a page into the in-memory working set
-//
-// The agent terminates by emitting a final message with no tool calls, or by
-// hitting a runtime safety limit. The agent can read deeper ranges from opened
-// pages when the initial excerpt is not enough.
-//
-// Runtime invariants (URL dedup, opened-page cap) are enforced
-// INSIDE the tools, so the agent can't break them no matter what it picks.
+// The harness exposes only web search and page fetch. Fetch can also page
+// through a previously opened source by source_id, so the model controls depth
+// without learning a virtual filesystem or bespoke grep workflow.
 // ----------------------------------------------------------------------------
 
 export interface AgentContext {
@@ -166,8 +154,6 @@ export interface AgentContext {
   caches: ResearchCaches;
 }
 
-// A loose superset of the research event types this module emits. Kept here
-// to avoid importing from research.ts (which would create a cycle).
 export type AgenticEvent =
   | { type: "agent_started" }
   | {
@@ -213,18 +199,12 @@ interface SearchToolInput {
   query?: string;
   limit?: number;
 }
-interface UrlToolInput {
+
+interface FetchToolInput {
   url?: string;
-}
-interface ReadFileToolInput {
-  path?: string;
-  start_line?: number;
-  max_lines?: number;
-}
-interface SearchFilesToolInput {
-  query?: string;
-  path?: string;
-  max_results?: number;
+  source_id?: string;
+  offset?: number;
+  max_chars?: number;
 }
 
 const AGENT_TOOLS: Anthropic.Tool[] = [
@@ -242,87 +222,40 @@ const AGENT_TOOLS: Anthropic.Tool[] = [
           type: "integer",
           minimum: 1,
           maximum: 20,
-          description: "Maximum results to request.",
+          description: "Maximum results to return.",
         },
       },
       required: ["query"],
     } as Anthropic.Tool["input_schema"],
   },
   {
-    name: "open_url",
+    name: "fetch",
     description:
-      "Open a URL and save its page text as a virtual Markdown file under /sources.",
+      "Fetch a URL as Markdown, or continue reading a previously fetched source by source_id. Use offset/max_chars for pagination.",
     input_schema: {
       type: "object",
       properties: {
         url: {
           type: "string",
-          description: "Absolute http(s) URL of the page to open.",
+          description: "Absolute http(s) URL to fetch.",
         },
-      },
-      required: ["url"],
-    } as Anthropic.Tool["input_schema"],
-  },
-  {
-    name: "list_sources",
-    description: "List the virtual Markdown source files opened in this run.",
-    input_schema: {
-      type: "object",
-      properties: {},
-    } as Anthropic.Tool["input_schema"],
-  },
-  {
-    name: "read_file",
-    description: "Read line ranges from a virtual Markdown source file.",
-    input_schema: {
-      type: "object",
-      properties: {
-        path: {
+        source_id: {
           type: "string",
-          description:
-            "Virtual source path, for example /sources/001-example.md.",
+          description: "Previously returned source_id to continue reading.",
         },
-        start_line: {
+        offset: {
+          type: "integer",
+          minimum: 0,
+          description: "Character offset to start reading from. Default 0.",
+        },
+        max_chars: {
           type: "integer",
           minimum: 1,
-          description: "1-based starting line. Default 1.",
-        },
-        max_lines: {
-          type: "integer",
-          minimum: 1,
-          maximum: MAX_READ_FILE_LINES,
+          maximum: MAX_FETCH_CHARS,
           description:
-            `Maximum lines to return. Default ${DEFAULT_READ_FILE_LINES}, hard cap ${MAX_READ_FILE_LINES}.`,
+            `Maximum characters to return. Default ${DEFAULT_FETCH_CHARS}, hard cap ${MAX_FETCH_CHARS}.`,
         },
       },
-      required: ["path"],
-    } as Anthropic.Tool["input_schema"],
-  },
-  {
-    name: "search_files",
-    description:
-      "Search text within opened virtual source files and return line snippets.",
-    input_schema: {
-      type: "object",
-      properties: {
-        query: {
-          type: "string",
-          description: "Term or phrase to search for in opened source files.",
-        },
-        path: {
-          type: "string",
-          description:
-            "Optional virtual source path or /sources prefix to narrow the search.",
-        },
-        max_results: {
-          type: "integer",
-          minimum: 1,
-          maximum: MAX_SEARCH_FILE_RESULTS,
-          description:
-            `Maximum matches to return. Default ${DEFAULT_SEARCH_FILE_RESULTS}, hard cap ${MAX_SEARCH_FILE_RESULTS}.`,
-        },
-      },
-      required: ["query"],
     } as Anthropic.Tool["input_schema"],
   },
 ];
@@ -372,18 +305,6 @@ function searchEnginesInFallbackOrder(defaultEngine: Engine): Engine[] {
   ];
 }
 
-function formatSearchResult(
-  result: SearchResult,
-  index: number,
-  sourceLabel?: string,
-): string {
-  const label = sourceLabel ? ` (${sourceLabel})` : "";
-  const snippet = result.snippet
-    ? `\n   ${result.snippet.slice(0, SEARCH_SNIPPET_CHARS)}`
-    : "";
-  return `${index + 1}. ${result.title}${label}\n   ${result.url}${snippet}`;
-}
-
 function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
@@ -402,7 +323,7 @@ function sourceFiles(ctx: AgentContext): Map<string, OpenedSourceFile> {
       unknownExtractionMetadata(markdown.length),
       files,
     );
-    files.set(file.path, file);
+    files.set(file.source_id, file);
   });
   ctx.openedSourceFiles = files;
   return files;
@@ -421,16 +342,15 @@ function createSourceFile(
   title: string,
   markdown: string,
   metadata: ExtractionMetadata,
-  takenPaths: { has(path: string): boolean },
+  existing: { has(sourceId: string): boolean; size: number },
   originalChars = markdown.length,
 ): OpenedSourceFile {
-  const path = sourceFilePath(title, url, takenPaths);
+  const sourceId = nextSourceId(existing);
   return {
-    path,
+    source_id: sourceId,
     url,
     title,
     markdown,
-    lines: markdown.split("\n"),
     original_chars: originalChars,
     stored_chars: markdown.length,
     truncated: originalChars > markdown.length,
@@ -438,97 +358,19 @@ function createSourceFile(
   };
 }
 
-function sourceFilePath(
-  title: string,
-  url: string,
-  takenPaths: { has(path: string): boolean },
-): string {
-  const titleSlug = slugifySourceTitle(title);
-  const hostSlug = slugifySourceTitle(safeHostname(url));
-  const baseSlug = titleSlug || hostSlug || "source";
-
-  const base = `/sources/${baseSlug}.md`;
-  if (!takenPaths.has(base)) return base;
-
-  if (titleSlug && hostSlug && hostSlug !== titleSlug) {
-    const withHost = `/sources/${titleSlug}-${hostSlug}.md`;
-    if (!takenPaths.has(withHost)) return withHost;
-  }
-
-  let n = 2;
-  while (takenPaths.has(`/sources/${baseSlug}-${n}.md`)) n++;
-  return `/sources/${baseSlug}-${n}.md`;
+function nextSourceId(existing: { has(sourceId: string): boolean; size: number }): string {
+  let n = existing.size + 1;
+  while (existing.has(`src_${n}`)) n++;
+  return `src_${n}`;
 }
 
-function slugifySourceTitle(value: string): string {
-  return value
-    .toLowerCase()
-    .replace(/https?:\/\//g, "")
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 60);
-}
-
-function safeHostname(url: string): string {
-  try {
-    return new URL(url).hostname.replace(/^www\./, "");
-  } catch {
-    return "";
-  }
-}
-
-function sourceHeadingOutline(file: OpenedSourceFile): string {
-  const headings = file.lines
-    .map((line, index) => ({ line: line.trim(), lineNumber: index + 1 }))
-    .filter(({ line }) => /^#{1,4}\s+\S/.test(line))
-    .slice(0, 80)
-    .map(({ line, lineNumber }) => `${lineNumber}: ${line}`);
-
-  return headings.length > 0 ? `Outline:\n${headings.join("\n")}` : "";
-}
-
-function findSourceFile(
+function findSourceByUrl(
   ctx: AgentContext,
-  path: string,
+  normalizedUrl: string,
 ): OpenedSourceFile | undefined {
-  const normalizedPath = path.trim();
-  return sourceFiles(ctx).get(normalizedPath);
-}
-
-function formatFileLines(
-  file: OpenedSourceFile,
-  startLine: number,
-  maxLines: number,
-): string {
-  const endLine = Math.min(file.lines.length, startLine + maxLines - 1);
-  const width = String(endLine).length;
-  const body = file.lines
-    .slice(startLine - 1, endLine)
-    .map((line, index) => {
-      const lineNumber = String(startLine + index).padStart(width, " ");
-      return `${lineNumber}|${line}`;
-    })
-    .join("\n");
-  const next =
-    endLine < file.lines.length
-      ? `\nNext line: ${endLine + 1}`
-      : "\nEnd of file.";
-
-  return (
-    `File: ${file.path}\nTitle: ${file.title}\nURL: ${file.url}\n` +
-    `${formatSourceEvidenceSummary(file)}\n` +
-    `Lines ${startLine}-${endLine} of ${file.lines.length}:\n${body}${next}`
+  return [...sourceFiles(ctx).values()].find(
+    (file) => normalizeFetchUrl(file.url) === normalizedUrl,
   );
-}
-
-function formatSourceEvidenceSummary(file: OpenedSourceFile): string {
-  const storage = file.truncated
-    ? `Stored markdown: ${file.stored_chars.toLocaleString()} of ${file.original_chars.toLocaleString()} chars (TRUNCATED; later content is unavailable).`
-    : `Stored markdown: ${file.stored_chars.toLocaleString()} chars (complete for this extraction).`;
-  return [
-    `Extraction method: ${file.metadata.fetch_method}`,
-    storage,
-  ].join("\n");
 }
 
 function textFromContent(content: Anthropic.Message["content"]): string {
@@ -663,16 +505,11 @@ interface OpenReservation {
 
 function reserveOpen(ctx: AgentContext, url: string): OpenReservation | string {
   const normalizedUrl = normalizeFetchUrl(url);
-  if (ctx.openedPageUrls.has(normalizedUrl)) {
-    const existing = ctx.openedPages.find((s) => normalizeFetchUrl(s.url) === normalizedUrl);
-    return `Already opened: ${existing?.title ?? url}. Use list_sources/read_file/search_files or pick a different result.`;
-  }
   if (ctx.openReservations.urls.has(normalizedUrl)) {
-    return `Already being opened: ${url}. Pick a different result.`;
+    return `Already being fetched: ${url}. Try another source or continue after this fetch completes.`;
   }
-
   if (totalOpenSlots(ctx) >= ctx.openedPageCap) {
-    return `Opened page cap reached (${ctx.openedPageCap}). Stop opening new pages.`;
+    return `Opened page cap reached (${ctx.openedPageCap}). Continue reading fetched sources by source_id or write the report.`;
   }
 
   ctx.openReservations.urls.add(normalizedUrl);
@@ -689,6 +526,20 @@ function releaseOpenReservation(
     0,
     ctx.openReservations.pageSlots - 1,
   );
+}
+
+function compactSearchResults(results: SearchResult[]): Array<{
+  title: string;
+  url: string;
+  snippet?: string;
+}> {
+  return results.map((result) => ({
+    title: result.title,
+    url: result.url,
+    ...(result.snippet
+      ? { snippet: result.snippet.slice(0, SEARCH_SNIPPET_CHARS) }
+      : {}),
+  }));
 }
 
 async function execSearch(
@@ -710,8 +561,7 @@ async function execSearch(
 
   const failures: string[] = [];
   const emptyEngines: Engine[] = [];
-  const engineCounts: string[] = [];
-  const rawResults: Array<SearchResult & { engine: Engine; engine_rank: number }> = [];
+  const rawResults: SearchResult[] = [];
 
   for (const engine of searchEnginesInFallbackOrder(ctx.defaultEngine)) {
     let outcome: WebSearchOutcome;
@@ -726,25 +576,15 @@ async function execSearch(
       failures.push(`${engine}: ${outcome.error.message}`);
       continue;
     }
-
     if (outcome.results.length === 0) {
       emptyEngines.push(engine);
-      engineCounts.push(`${engine}: 0`);
       continue;
     }
-
-    engineCounts.push(`${engine}: ${outcome.results.length}`);
-    rawResults.push(
-      ...outcome.results.map((result, index) => ({
-        ...result,
-        engine,
-        engine_rank: index + 1,
-      })),
-    );
+    rawResults.push(...outcome.results);
   }
 
   const seen = new Set<string>();
-  const results: Array<SearchResult & { engine: Engine; engine_rank: number }> = [];
+  const results: SearchResult[] = [];
   for (const result of rawResults) {
     const key = normalizeFetchUrl(result.url);
     if (seen.has(key)) continue;
@@ -762,22 +602,13 @@ async function execSearch(
       index: searchIndex,
       count: results.length,
     });
-
-    const lines = results.map((result, index) =>
-      formatSearchResult(
-        result,
-        index,
-        `${result.engine} rank ${result.engine_rank}`,
-      ),
-    );
-    return (
-      `Search metadata:\n` +
-      `Query: ${query}\n` +
-      `Engines tried: ${searchEnginesInFallbackOrder(ctx.defaultEngine).join(", ")}\n` +
-      `Raw results by engine: ${engineCounts.join(", ")}\n` +
-      `Failures: ${failures.length > 0 ? failures.join("; ") : "none"}\n` +
-      `Deduplicated results returned: ${results.length} of ${rawResults.length} raw result${rawResults.length === 1 ? "" : "s"}.\n\n` +
-      `${results.length} result${results.length === 1 ? "" : "s"}:\n\n${lines.join("\n\n")}`
+    return JSON.stringify(
+      {
+        query,
+        results: compactSearchResults(results),
+      },
+      null,
+      2,
     );
   }
 
@@ -787,10 +618,15 @@ async function execSearch(
       index: searchIndex,
       count: 0,
     });
-    const tried = emptyEngines.join(", ");
-    return failures.length > 0
-      ? `No results for this query from ${tried}. Other engines failed: ${failures.join("; ")}`
-      : `No results for this query from ${tried}.`;
+    return JSON.stringify(
+      {
+        query,
+        results: [],
+        note: "No results. Try a different query.",
+      },
+      null,
+      2,
+    );
   }
 
   {
@@ -802,134 +638,6 @@ async function execSearch(
     });
     return `Search failed: ${error}`;
   }
-}
-
-function execListSources(ctx: AgentContext): string {
-  const files = [...sourceFiles(ctx).values()];
-  if (files.length === 0) {
-    return "No source files opened yet. Use open_url to create files under /sources.";
-  }
-
-  return (
-    `Opened source files (${files.length}):\n\n` +
-    files
-      .map((file) =>
-        `${file.path}\n  Title: ${file.title}\n  URL: ${file.url}\n  Lines: 1-${file.lines.length}\n  Method: ${file.metadata.fetch_method}\n  Markdown: ${file.stored_chars.toLocaleString()}${file.truncated ? ` of ${file.original_chars.toLocaleString()} chars (TRUNCATED)` : " chars"}`,
-      )
-      .join("\n\n")
-  );
-}
-
-function execReadFile(args: ReadFileToolInput, ctx: AgentContext): string {
-  const path = String(args.path ?? "").trim();
-  if (!path) return "Error: read_file requires a `path`.";
-
-  const file = findSourceFile(ctx, path);
-  if (!file) {
-    return `Error: source file not found: ${path}. Use list_sources to see opened files.`;
-  }
-
-  const startLineRaw = args.start_line ?? 1;
-  const maxLinesRaw = args.max_lines ?? DEFAULT_READ_FILE_LINES;
-  const startLine = Math.floor(Number(startLineRaw));
-  const maxLines = Math.min(
-    MAX_READ_FILE_LINES,
-    Math.max(1, Math.floor(Number(maxLinesRaw))),
-  );
-  if (!Number.isFinite(startLine) || startLine < 1) {
-    return "Error: read_file start_line must be a positive integer.";
-  }
-  if (!Number.isFinite(maxLines)) {
-    return "Error: read_file max_lines must be a number.";
-  }
-  if (startLine > file.lines.length) {
-    return `File: ${file.path}\nTitle: ${file.title}\nURL: ${file.url}\n\nStart line ${startLine} is past the end of the file (${file.lines.length} lines).`;
-  }
-
-  return formatFileLines(file, startLine, maxLines);
-}
-
-function searchFileMatches(
-  file: OpenedSourceFile,
-  query: string,
-): Array<{ lineNumber: number; line: string }> {
-  const needle = query.toLowerCase();
-  const terms = needle.split(/\s+/).filter((term) => term.length > 1);
-
-  return file.lines.flatMap((line, index) => {
-    const haystack = line.toLowerCase();
-    const matched =
-      haystack.includes(needle) ||
-      (terms.length > 1 && terms.every((term) => haystack.includes(term)));
-    return matched ? [{ lineNumber: index + 1, line }] : [];
-  });
-}
-
-function sourceFilesForSearch(
-  ctx: AgentContext,
-  path: string | undefined,
-): OpenedSourceFile[] {
-  const files = [...sourceFiles(ctx).values()];
-  const normalizedPath = path?.trim();
-  if (!normalizedPath || normalizedPath === "/sources" || normalizedPath === "/sources/") {
-    return files;
-  }
-  return files.filter((file) => file.path === normalizedPath);
-}
-
-function formatSearchFileSnippet(
-  file: OpenedSourceFile,
-  lineNumber: number,
-): string {
-  const startLine = Math.max(1, lineNumber - SEARCH_FILE_CONTEXT_LINES);
-  const endLine = Math.min(file.lines.length, lineNumber + SEARCH_FILE_CONTEXT_LINES);
-  const width = String(endLine).length;
-  const body = file.lines
-    .slice(startLine - 1, endLine)
-    .map((line, index) => {
-      const currentLine = startLine + index;
-      const marker = currentLine === lineNumber ? ">" : " ";
-      return `${marker}${String(currentLine).padStart(width, " ")}|${line}`;
-    })
-    .join("\n");
-
-  return `${file.path}:${lineNumber}\nTitle: ${file.title}\nURL: ${file.url}\n${formatSourceEvidenceSummary(file)}\n${body}`;
-}
-
-function execSearchFiles(args: SearchFilesToolInput, ctx: AgentContext): string {
-  const query = String(args.query ?? "").trim();
-  if (!query) return "Error: search_files requires a non-empty `query`.";
-
-  const maxResultsRaw = args.max_results ?? DEFAULT_SEARCH_FILE_RESULTS;
-  const maxResults = Math.min(
-    MAX_SEARCH_FILE_RESULTS,
-    Math.max(1, Math.floor(Number(maxResultsRaw))),
-  );
-  if (!Number.isFinite(maxResults)) {
-    return "Error: search_files max_results must be a number.";
-  }
-
-  const files = sourceFilesForSearch(ctx, args.path);
-  if (files.length === 0) {
-    return args.path
-      ? `No opened source files match path: ${args.path}`
-      : "No source files opened yet. Use open_url before search_files.";
-  }
-
-  const snippets: string[] = [];
-  for (const file of files) {
-    for (const match of searchFileMatches(file, query)) {
-      snippets.push(formatSearchFileSnippet(file, match.lineNumber));
-      if (snippets.length >= maxResults) break;
-    }
-    if (snippets.length >= maxResults) break;
-  }
-
-  if (snippets.length === 0) {
-    return `No matches for "${query}" in ${files.length} opened source file${files.length === 1 ? "" : "s"}.`;
-  }
-
-  return `${snippets.length} match${snippets.length === 1 ? "" : "es"} for "${query}":\n\n${snippets.join("\n\n")}`;
 }
 
 interface OpenOutcome {
@@ -995,9 +703,9 @@ async function executeToolUse(
     }
   }
 
-  if (tu.name === "open_url") {
+  if (tu.name === "fetch") {
     try {
-      const out = await execFetch((tu.input as UrlToolInput) ?? {}, ctx);
+      const out = await execFetch((tu.input as FetchToolInput) ?? {}, ctx);
       return {
         opened_url: out.opened_url,
         toolResult: {
@@ -1019,87 +727,18 @@ async function executeToolUse(
     }
   }
 
-  if (tu.name === "list_sources") {
-    try {
-      const text = execListSources(ctx);
-      return {
-        toolResult: {
-          type: "tool_result",
-          tool_use_id: tu.id,
-          content: text,
-        },
-      };
-    } catch (err) {
-      ctx.abort();
-      return {
-        toolResult: {
-          type: "tool_result",
-          tool_use_id: tu.id,
-          content: `Tool error: ${err instanceof Error ? err.message : String(err)}`,
-          is_error: true,
-        },
-      };
-    }
-  }
-
-  if (tu.name === "read_file") {
-    try {
-      const text = execReadFile((tu.input as ReadFileToolInput) ?? {}, ctx);
-      return {
-        toolResult: {
-          type: "tool_result",
-          tool_use_id: tu.id,
-          content: text,
-        },
-      };
-    } catch (err) {
-      ctx.abort();
-      return {
-        toolResult: {
-          type: "tool_result",
-          tool_use_id: tu.id,
-          content: `Tool error: ${err instanceof Error ? err.message : String(err)}`,
-          is_error: true,
-        },
-      };
-    }
-  }
-
-  if (tu.name === "search_files") {
-    try {
-      const text = execSearchFiles((tu.input as SearchFilesToolInput) ?? {}, ctx);
-      return {
-        toolResult: {
-          type: "tool_result",
-          tool_use_id: tu.id,
-          content: text,
-        },
-      };
-    } catch (err) {
-      ctx.abort();
-      return {
-        toolResult: {
-          type: "tool_result",
-          tool_use_id: tu.id,
-          content: `Tool error: ${err instanceof Error ? err.message : String(err)}`,
-          is_error: true,
-        },
-      };
-    }
-  }
-
   return {
     toolResult: {
       type: "tool_result",
       tool_use_id: tu.id,
-      content: `Unknown tool: ${tu.name}`,
+      content: `Unknown tool: ${tu.name}. Available tools: search, fetch.`,
       is_error: true,
     },
   };
 }
 
-function validateHttpUrl(url: string, toolName: string): string | null {
-  if (!url) return `Error: ${toolName} requires a \`url\`.`;
+function validateHttpUrl(url: string): string | null {
+  if (!url) return "Error: fetch requires either `url` or `source_id`.";
   if (!/^https?:\/\//i.test(url)) {
     return `Error: not an http(s) URL: ${url}`;
   }
@@ -1129,30 +768,6 @@ function extractionMetadataFromSteel(
       "Fetched with Steel browser-rendered markdown after plain fetch was insufficient.",
     ],
   };
-}
-
-function formatExtractionMetadata(metadata: ExtractionMetadata): string {
-  const lines = [
-    "Extraction metadata:",
-    `- Method: ${metadata.fetch_method}`,
-    `- Markdown chars from extractor: ${metadata.markdown_chars.toLocaleString()}`,
-  ];
-  if (metadata.content_type) {
-    lines.push(`- Content-Type: ${metadata.content_type}`);
-  }
-  if (metadata.raw_chars !== undefined) {
-    lines.push(`- Raw response chars: ${metadata.raw_chars.toLocaleString()}`);
-  }
-  if (metadata.raw_truncated) {
-    lines.push("- Raw response was truncated before extraction.");
-  }
-  if (metadata.plain_failure_reason) {
-    lines.push(`- Plain fetch fallback reason: ${metadata.plain_failure_reason}`);
-  }
-  for (const note of metadata.extraction_notes) {
-    lines.push(`- Note: ${note}`);
-  }
-  return lines.join("\n");
 }
 
 function storeMarkdown(markdown: string): {
@@ -1222,13 +837,78 @@ async function scrapeWithCache(
   }
 }
 
+function readOffset(args: FetchToolInput): number | string {
+  const raw = args.offset ?? 0;
+  const offset = Math.floor(Number(raw));
+  if (!Number.isFinite(offset) || offset < 0) {
+    return "Error: fetch offset must be a non-negative integer.";
+  }
+  return offset;
+}
+
+function readMaxChars(args: FetchToolInput, ctx: AgentContext): number | string {
+  const raw = args.max_chars ?? ctx.fetchSnippetChars ?? DEFAULT_FETCH_CHARS;
+  const maxChars = Math.min(
+    MAX_FETCH_CHARS,
+    Math.max(1, Math.floor(Number(raw))),
+  );
+  if (!Number.isFinite(maxChars)) {
+    return "Error: fetch max_chars must be a number.";
+  }
+  return maxChars;
+}
+
+function formatFetchResult(
+  file: OpenedSourceFile,
+  offset: number,
+  maxChars: number,
+): string {
+  const start = Math.min(offset, file.markdown.length);
+  const end = Math.min(file.markdown.length, start + maxChars);
+  const content = file.markdown.slice(start, end);
+  const hasMore = end < file.markdown.length;
+  const result = {
+    source_id: file.source_id,
+    title: file.title,
+    url: file.url,
+    offset: start,
+    next_offset: hasMore ? end : null,
+    has_more: hasMore,
+    chars_returned: content.length,
+    total_chars_available: file.stored_chars,
+    truncated: file.truncated,
+    extraction_method: file.metadata.fetch_method,
+    content,
+  };
+  return JSON.stringify(result, null, 2);
+}
+
 async function execFetch(
-  args: UrlToolInput,
+  args: FetchToolInput,
   ctx: AgentContext,
 ): Promise<OpenOutcome> {
+  const offset = readOffset(args);
+  if (typeof offset === "string") return { text: offset };
+  const maxChars = readMaxChars(args, ctx);
+  if (typeof maxChars === "string") return { text: maxChars };
+
+  const sourceId = String(args.source_id ?? "").trim();
+  if (sourceId) {
+    const file = sourceFiles(ctx).get(sourceId);
+    if (!file) {
+      return { text: `Error: source not found: ${sourceId}. Fetch a URL first.` };
+    }
+    return { text: formatFetchResult(file, offset, maxChars) };
+  }
+
   const requestedUrl = String(args.url ?? "").trim();
-  const validationError = validateHttpUrl(requestedUrl, "open_url");
+  const validationError = validateHttpUrl(requestedUrl);
   if (validationError) return { text: validationError };
+  const normalizedUrl = normalizeFetchUrl(requestedUrl);
+  const existing = findSourceByUrl(ctx, normalizedUrl);
+  if (existing) {
+    return { text: formatFetchResult(existing, offset, maxChars) };
+  }
 
   const reservation = reserveOpen(ctx, requestedUrl);
   if (typeof reservation === "string") return { text: reservation };
@@ -1245,21 +925,20 @@ async function execFetch(
         url,
         error: "Empty markdown",
       });
-      return { text: `Empty page (no content opened).` };
+      return { text: "Empty page (no content fetched)." };
     }
 
     ctx.abort();
 
-    // Add while the reservation is still held so cache entries and caps stay
-    // consistent across parallel tool calls.
     const resolvedTitle = title ?? url;
     const stored = storeMarkdown(markdown);
+    const files = sourceFiles(ctx);
     const file = createSourceFile(
       url,
       resolvedTitle,
       stored.markdown,
       metadata,
-      sourceFiles(ctx),
+      files,
       stored.originalChars,
     );
     ctx.openedPages.push({
@@ -1268,7 +947,7 @@ async function execFetch(
     });
     ctx.openedPageUrls.add(url);
     ctx.openedPageMarkdowns.set(url, stored.markdown);
-    sourceFiles(ctx).set(file.path, file);
+    files.set(file.source_id, file);
 
     ctx.emit({
       type: "page_opened",
@@ -1276,25 +955,9 @@ async function execFetch(
       title: resolvedTitle,
     });
 
-    const snippetChars = ctx.fetchSnippetChars ?? FETCH_SNIPPET_CHARS;
-    const previewLines = Math.max(
-      1,
-      stored.markdown.slice(0, snippetChars).split("\n").length,
-    );
-    const preview = formatFileLines(file, 1, Math.min(DEFAULT_READ_FILE_LINES, previewLines));
-    const outline = sourceHeadingOutline(file);
-    const storageLine = file.truncated
-      ? `Storage: stored ${file.stored_chars.toLocaleString()} of ${file.original_chars.toLocaleString()} markdown chars (TRUNCATED; unavailable tail may contain evidence).\n`
-      : `Storage: stored complete extracted markdown (${file.stored_chars.toLocaleString()} chars).\n`;
     return {
       opened_url: url,
-      text:
-        `Opened source file: ${file.path}\nTitle: ${resolvedTitle}\nURL: ${url}\n` +
-        `Lines: 1-${file.lines.length}\n` +
-        storageLine +
-        `${formatExtractionMetadata(metadata)}\n` +
-        (outline ? `${outline}\n\n` : "\n") +
-        `${preview}\n\nUse read_file with ${file.path} and a start_line for deeper reading, or search_files to search opened sources.`,
+      text: formatFetchResult(file, offset, maxChars),
     };
   } catch (err) {
     ctx.caches.scrape.delete(url);
@@ -1358,8 +1021,6 @@ export async function runGatherAgent(opts: {
         { signal: ctx.signal },
       );
     } catch (err) {
-      // SDK abort errors wrap the AbortSignal as APIUserAbortError (name
-      // defaults to "Error"), so check the signal directly.
       if (ctx.signal?.aborted) throw err;
       const message = errorMessage(err);
       finishReason = `api error: ${message}`;
@@ -1419,11 +1080,7 @@ export async function runGatherAgent(opts: {
     }
   }
 
-  if (
-    !markdown &&
-    (finishReason === "tool call budget exhausted" ||
-      finishReason === "opened page cap reached")
-  ) {
+  if (!markdown && finishReason === "tool call budget exhausted") {
     ctx.abort();
     messages.push({
       role: "user",
