@@ -42,7 +42,7 @@ function finalReport(): Anthropic.Message {
 
 function toolUse(
   id: string,
-  name: "search" | "open_url" | "list_sources" | "read_file" | "search_files" | "read_source",
+  name: "search" | "open_url" | "list_sources" | "read_file" | "search_files",
   input: Record<string, unknown> = {},
 ): Anthropic.ToolUseBlock {
   return { type: "tool_use", id, name, input } as unknown as Anthropic.ToolUseBlock;
@@ -362,79 +362,6 @@ describe("gather loop cache integration", () => {
     expect(JSON.stringify(searchRequest.messages)).toContain(
       "/sources/001-flavor-study.md",
     );
-  });
-
-  it("reads contiguous ranges from opened page markdown", async () => {
-    const fetch = vi.fn(async () => {
-      const body = `
-        <html>
-          <head><title>Flavor Study</title></head>
-          <body>
-            <main>
-              <h1>Flavor Study</h1>
-              <h2>Methods</h2>
-              ${"<p>Methods text about sampling and controls.</p>".repeat(20)}
-              <h2>Volatile Compounds</h2>
-              ${"<p>Isoamyl acetate and ester compounds increased during ripening.</p>".repeat(20)}
-              <h2>Storage</h2>
-              ${"<p>Storage conditions changed firmness and color.</p>".repeat(20)}
-            </main>
-          </body>
-        </html>
-      `;
-      return new Response(body, {
-        headers: { "content-type": "text/html; charset=utf-8" },
-      });
-    });
-    vi.stubGlobal("fetch", fetch);
-    const messagesCreate = vi
-      .fn()
-      .mockResolvedValueOnce(
-        messageWith([
-          toolUse("open_1", "open_url", { url: "https://example.com/flavor" }),
-        ]),
-      )
-      .mockResolvedValueOnce(
-        messageWith([
-          toolUse("read_1", "read_source", {
-            url: "https://example.com/flavor",
-          }),
-        ]),
-      )
-      .mockResolvedValueOnce(finalReport());
-    const ctx: AgentContext = {
-      anthropic: {
-        messages: { create: messagesCreate },
-      } as unknown as Anthropic,
-      steel: { scrape: vi.fn() } as unknown as Steel,
-      openedPages: [],
-      openedPageUrls: new Set(),
-      openedPageMarkdowns: new Map(),
-      emit: vi.fn(),
-      abort: vi.fn(),
-      defaultEngine: "ddg",
-      useProxy: false,
-      openedPageCap: 4,
-      maxConcurrentTools: 2,
-      steelGate: createSteelGate(2),
-      openReservations: createOpenReservations(),
-      caches: createResearchCaches(),
-    };
-
-    const result = await runGatherAgent({
-      ctx,
-      query: "What is Atlas?",
-      max_tool_calls: 3,
-    });
-    const finalRequest = messagesCreate.mock.calls[2]?.[0] as {
-      messages: Array<{ content: unknown }>;
-    };
-
-    expect(result.finish_reason).toBe("final report");
-    expect(JSON.stringify(finalRequest.messages)).toContain("Opened page: Flavor Study");
-    expect(JSON.stringify(finalRequest.messages)).toContain("Isoamyl acetate");
-    expect(JSON.stringify(finalRequest.messages)).toContain("Heading outline");
-    expect(JSON.stringify(finalRequest.messages)).toContain("Source text (0-");
   });
 
   it("starts gather runs with existing sources and budget hints", async () => {

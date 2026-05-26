@@ -12,8 +12,6 @@ import { fetchPlainPage } from "./plain-fetch.js";
 
 const STORED_MARKDOWN_CAP = 120_000;
 const FETCH_SNIPPET_CHARS = 8000;
-const DEFAULT_READ_SOURCE_CHARS = 12_000;
-const MAX_READ_SOURCE_CHARS = 30_000;
 const DEFAULT_READ_FILE_LINES = 120;
 const MAX_READ_FILE_LINES = 400;
 const DEFAULT_SEARCH_FILE_RESULTS = 8;
@@ -213,11 +211,6 @@ interface SearchFilesToolInput {
   path?: string;
   max_results?: number;
 }
-interface ReadSourceToolInput {
-  url?: string;
-  offset?: number;
-  max_chars?: number;
-}
 
 const AGENT_TOOLS: Anthropic.Tool[] = [
   {
@@ -317,34 +310,6 @@ const AGENT_TOOLS: Anthropic.Tool[] = [
       required: ["query"],
     } as Anthropic.Tool["input_schema"],
   },
-  {
-    name: "read_source",
-    description:
-      "Legacy escape hatch: read a character range from a previously opened URL.",
-    input_schema: {
-      type: "object",
-      properties: {
-        url: {
-          type: "string",
-          description: "Absolute http(s) URL previously opened in this run.",
-        },
-        offset: {
-          type: "integer",
-          minimum: 0,
-          description:
-            "Character offset into the stored source text. Default 0.",
-        },
-        max_chars: {
-          type: "integer",
-          minimum: 1000,
-          maximum: MAX_READ_SOURCE_CHARS,
-          description:
-            "Maximum characters to return. Default 12000, hard cap 30000.",
-        },
-      },
-      required: ["url"],
-    } as Anthropic.Tool["input_schema"],
-  },
 ];
 
 const AGENT_SYSTEM = `You're a deep research agent. Use the available tools as needed to answer the user's question. Work within the user's dollar/time budget. When you have enough evidence, stop using tools and write a cited Markdown report. Do not cite internal source numbers.`;
@@ -406,16 +371,6 @@ function formatSearchResult(
 
 function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
-}
-
-function markdownHeadingOutline(markdown: string): string {
-  const headings = markdown
-    .split("\n")
-    .map((line) => line.trim())
-    .filter((line) => /^#{1,4}\s+\S/.test(line))
-    .slice(0, 80);
-
-  return headings.length > 0 ? `Heading outline:\n${headings.join("\n")}` : "";
 }
 
 function sourceFiles(ctx: AgentContext): Map<string, OpenedSourceFile> {
@@ -552,7 +507,7 @@ function gatherStartPrompt(opts: {
     dollarBudget +
     `Runtime safety limits: at most ${opts.maxToolCalls} tool calls and ${opts.openedPageCap} opened pages.\n\n` +
     openedPages +
-    `Gather enough evidence using the available tools. open_url saves pages as virtual Markdown files under /sources; use list_sources, search_files, and read_file to inspect opened sources. read_source(url, offset) is available as a low-level fallback. When you have enough evidence, stop emitting tool calls and write the Markdown answer directly. Cite the source URLs you actually rely on in the Markdown.`
+    `Gather enough evidence using the available tools. open_url saves pages as virtual Markdown files under /sources; use list_sources, search_files, and read_file to inspect opened sources. When you have enough evidence, stop emitting tool calls and write the Markdown answer directly. Cite the source URLs you actually rely on in the Markdown.`
   );
 }
 
@@ -914,57 +869,6 @@ function execSearchFiles(args: SearchFilesToolInput, ctx: AgentContext): string 
   return `${snippets.length} match${snippets.length === 1 ? "" : "es"} for "${query}":\n\n${snippets.join("\n\n")}`;
 }
 
-async function execReadSource(
-  args: ReadSourceToolInput,
-  ctx: AgentContext,
-): Promise<string> {
-  const requestedUrl = String(args.url ?? "").trim();
-  const validationError = validateHttpUrl(requestedUrl, "read_source");
-  if (validationError) return validationError;
-
-  const url = normalizeFetchUrl(requestedUrl);
-  const page = ctx.openedPages.find((item) => normalizeFetchUrl(item.url) === url);
-  if (!page) {
-    return `Error: URL has not been opened in this run: ${url}`;
-  }
-
-  const markdown = ctx.openedPageMarkdowns.get(page.url);
-  if (!markdown?.trim()) {
-    return `Opened URL has no stored markdown text: ${url}`;
-  }
-
-  const outline = markdownHeadingOutline(markdown);
-  const offsetRaw = args.offset ?? 0;
-  const maxCharsRaw = args.max_chars ?? DEFAULT_READ_SOURCE_CHARS;
-  const offset = Math.floor(Number(offsetRaw));
-  const maxChars = Math.min(
-    MAX_READ_SOURCE_CHARS,
-    Math.max(1000, Math.floor(Number(maxCharsRaw))),
-  );
-  if (!Number.isFinite(offset) || offset < 0) {
-    return `Error: read_source offset must be a non-negative integer.`;
-  }
-  if (!Number.isFinite(maxChars)) {
-    return `Error: read_source max_chars must be a number.`;
-  }
-  if (offset >= markdown.length) {
-    return `Opened page: ${page.title}\nURL: ${page.url}\n\nOffset ${offset} is past the end of the stored page (${markdown.length} chars).`;
-  }
-
-  const end = Math.min(markdown.length, offset + maxChars);
-  const sourceText = markdown.slice(offset, end).trim();
-  const nextOffset =
-    end < markdown.length
-      ? `\nNext offset: ${end}`
-      : "\nEnd of stored source.";
-
-  return (
-    `Opened page: ${page.title}\nURL: ${page.url}\n\n` +
-    (outline ? `${outline}\n\n` : "") +
-    `Source text (${offset}-${end} of ${markdown.length} chars):\n${sourceText}${nextOffset}`
-  );
-}
-
 interface OpenOutcome {
   text: string;
   opened_url?: string;
@@ -1101,32 +1005,6 @@ async function executeToolUse(
   if (tu.name === "search_files") {
     try {
       const text = execSearchFiles((tu.input as SearchFilesToolInput) ?? {}, ctx);
-      return {
-        toolResult: {
-          type: "tool_result",
-          tool_use_id: tu.id,
-          content: text,
-        },
-      };
-    } catch (err) {
-      ctx.abort();
-      return {
-        toolResult: {
-          type: "tool_result",
-          tool_use_id: tu.id,
-          content: `Tool error: ${err instanceof Error ? err.message : String(err)}`,
-          is_error: true,
-        },
-      };
-    }
-  }
-
-  if (tu.name === "read_source") {
-    try {
-      const text = await execReadSource(
-        (tu.input as ReadSourceToolInput) ?? {},
-        ctx,
-      );
       return {
         toolResult: {
           type: "tool_result",
