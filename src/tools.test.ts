@@ -174,16 +174,16 @@ describe("gather loop cache integration", () => {
     expect(result.markdown).toContain("# Test Report");
     expect(messagesCreate).toHaveBeenCalledTimes(3);
     expect(toolResultText(secondRequest)).toContain('"results"');
-    expect(toolResultText(secondRequest)).not.toContain('"engines"');
-    expect(scrape).toHaveBeenCalledTimes(3);
-    expect(ctx.caches.serp.size).toBe(3);
+    expect(toolResultText(secondRequest)).toContain('"engine": "ddg"');
+    expect(scrape).toHaveBeenCalledTimes(1);
+    expect(ctx.caches.serp.size).toBe(1);
   });
 
-  it("merges search results from every available engine", async () => {
+  it("searches only the selected engine and returns rank provenance", async () => {
     const fetch = vi.fn(async (url: string | URL | Request) => {
       const href = String(url);
       if (href.includes("duckduckgo.com")) {
-        return new Response("<html><body>No results</body></html>", {
+        return new Response("<html><body>Unexpected DuckDuckGo search</body></html>", {
           headers: { "content-type": "text/html" },
         });
       }
@@ -193,12 +193,12 @@ describe("gather loop cache integration", () => {
             <html>
               <body>
                 <li class="b_algo">
-                  <h2><a href="https://example.com/shared">Shared Result</a></h2>
-                  <div class="b_caption"><p>Shared from Bing.</p></div>
+                  <h2><a href="https://example.com/bing-one">Bing One</a></h2>
+                  <div class="b_caption"><p>First Bing snippet.</p></div>
                 </li>
                 <li class="b_algo">
-                  <h2><a href="https://example.com/bing-only">Bing Only</a></h2>
-                  <div class="b_caption"><p>Bing snippet.</p></div>
+                  <h2><a href="https://example.com/bing-two">Bing Two</a></h2>
+                  <div class="b_caption"><p>Second Bing snippet.</p></div>
                 </li>
               </body>
             </html>
@@ -233,7 +233,12 @@ describe("gather loop cache integration", () => {
     const messagesCreate = vi
       .fn()
       .mockResolvedValueOnce(
-        messageWith([toolUse("search_1", "search", { query: "fallback query" })]),
+        messageWith([
+          toolUse("search_1", "search", {
+            query: "selected query",
+            engine: "bing",
+          }),
+        ]),
       )
       .mockResolvedValueOnce(finalReport());
     const ctx = createContext({ messagesCreate });
@@ -248,19 +253,117 @@ describe("gather loop cache integration", () => {
     };
     const toolText = toolResultText(followupRequest);
     const payload = JSON.parse(toolText) as {
-      results: Array<{ url: string; title: string; snippet?: string }>;
+      requested_engine: string;
+      engine: string;
+      results: Array<{
+        rank: number;
+        url: string;
+        title: string;
+        snippet?: string;
+        engine: string;
+      }>;
     };
 
     expect(result.finish_reason).toBe("final report");
-    expect(payload.results.map((r) => r.url)).toEqual([
-      "https://example.com/shared",
-      "https://example.com/bing-only",
-      "https://example.com/google-only",
+    expect(payload.requested_engine).toBe("bing");
+    expect(payload.engine).toBe("bing");
+    expect(payload.results).toEqual([
+      {
+        rank: 1,
+        title: "Bing One",
+        url: "https://example.com/bing-one",
+        snippet: "First Bing snippet.",
+        engine: "bing",
+      },
+      {
+        rank: 2,
+        title: "Bing Two",
+        url: "https://example.com/bing-two",
+        snippet: "Second Bing snippet.",
+        engine: "bing",
+      },
     ]);
-    expect(toolText).not.toContain('"engines"');
-    expect(toolText).not.toContain('"best_position"');
-    expect(fetch).toHaveBeenCalledTimes(3);
-    expect(ctx.caches.serp.size).toBe(3);
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(String(fetch.mock.calls[0]?.[0])).toContain("bing.com");
+    expect(ctx.caches.serp.size).toBe(1);
+  });
+
+  it("falls back to another engine only after the requested engine fails", async () => {
+    const fetch = vi.fn(async (url: string | URL | Request) => {
+      const href = String(url);
+      if (href.includes("duckduckgo.com")) {
+        return new Response("enable javascript and cookies", {
+          headers: { "content-type": "text/html" },
+        });
+      }
+      if (href.includes("bing.com")) {
+        return new Response(
+          `
+            <html>
+              <body>
+                <li class="b_algo">
+                  <h2><a href="https://example.com/fallback">Fallback Result</a></h2>
+                  <div class="b_caption"><p>Fallback snippet.</p></div>
+                </li>
+              </body>
+            </html>
+          `,
+          { headers: { "content-type": "text/html" } },
+        );
+      }
+      return new Response("<html><body>Unexpected engine</body></html>", {
+        headers: { "content-type": "text/html" },
+      });
+    });
+    vi.stubGlobal("fetch", fetch);
+    const scrape = vi.fn(async () => {
+      throw new Error("blocked");
+    });
+    const messagesCreate = vi
+      .fn()
+      .mockResolvedValueOnce(
+        messageWith([toolUse("search_1", "search", { query: "fallback query" })]),
+      )
+      .mockResolvedValueOnce(finalReport());
+    const ctx = createContext({ messagesCreate, scrape });
+
+    const result = await runGatherAgent({
+      ctx,
+      query: "What is Atlas?",
+      max_tool_calls: 2,
+    });
+    const followupRequest = messagesCreate.mock.calls[1]?.[0] as {
+      messages: Array<{ content: unknown }>;
+    };
+    const payload = JSON.parse(toolResultText(followupRequest)) as {
+      requested_engine: string;
+      engine: string;
+      warnings: string[];
+      results: Array<{
+        rank: number;
+        title: string;
+        url: string;
+        snippet?: string;
+        engine: string;
+      }>;
+    };
+
+    expect(result.finish_reason).toBe("final report");
+    expect(payload.requested_engine).toBe("ddg");
+    expect(payload.engine).toBe("bing");
+    expect(payload.results).toEqual([
+      {
+        rank: 1,
+        title: "Fallback Result",
+        url: "https://example.com/fallback",
+        snippet: "Fallback snippet.",
+        engine: "bing",
+      },
+    ]);
+    expect(payload.warnings[0]).toContain("ddg:");
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(scrape).toHaveBeenCalledTimes(1);
+    expect(ctx.caches.serp.size).toBe(2);
   });
 
   it("advertises only search and fetch to the agent", async () => {

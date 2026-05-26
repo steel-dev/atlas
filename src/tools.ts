@@ -201,6 +201,7 @@ export interface AgenticRunResult {
 
 interface SearchToolInput {
   query?: string;
+  engine?: string;
   limit?: number;
 }
 
@@ -213,13 +214,19 @@ interface FetchToolInput {
 const AGENT_TOOLS: Anthropic.Tool[] = [
   {
     name: "search",
-    description: "Search the web.",
+    description: "Search the web with one selected engine.",
     input_schema: {
       type: "object",
       properties: {
         query: {
           type: "string",
           description: "Search query.",
+        },
+        engine: {
+          type: "string",
+          enum: [...ENGINES],
+          description:
+            "Search engine to use. Defaults to the configured default engine.",
         },
         limit: {
           type: "integer",
@@ -301,6 +308,21 @@ function searchEnginesInFallbackOrder(defaultEngine: Engine): Engine[] {
     defaultEngine,
     ...ENGINES.filter((engine) => engine !== defaultEngine),
   ];
+}
+
+function readSearchEngine(
+  raw: string | undefined,
+  defaultEngine: Engine,
+): { ok: true; engine: Engine } | { ok: false; error: string } {
+  if (raw === undefined) return { ok: true, engine: defaultEngine };
+  const engine = raw.trim().toLowerCase();
+  if (ENGINES.includes(engine as Engine)) {
+    return { ok: true, engine: engine as Engine };
+  }
+  return {
+    ok: false,
+    error: `Error: search engine must be one of: ${ENGINES.join(", ")} (got "${raw}").`,
+  };
 }
 
 function errorMessage(err: unknown): string {
@@ -526,24 +548,24 @@ function releaseOpenReservation(
   );
 }
 
-interface MergedSearchResult extends SearchResult {
-  engines: Engine[];
-  best_position: number;
-  score: number;
-  first_engine_index: number;
-}
-
-function compactSearchResults(results: MergedSearchResult[]): Array<{
+function compactSearchResults(
+  results: SearchResult[],
+  engine: Engine,
+): Array<{
+  rank: number;
   title: string;
   url: string;
   snippet?: string;
+  engine: Engine;
 }> {
   return results.map((result) => ({
+    rank: result.position,
     title: result.title,
     url: result.url,
     ...(result.snippet
       ? { snippet: result.snippet.slice(0, SEARCH_SNIPPET_CHARS) }
       : {}),
+    engine,
   }));
 }
 
@@ -566,60 +588,6 @@ function dedupeSearchResults(
   return deduped;
 }
 
-function mergeSearchResults(
-  batches: Array<{ engine: Engine; results: SearchResult[] }>,
-  limit: number,
-): MergedSearchResult[] {
-  const byUrl = new Map<string, MergedSearchResult>();
-  batches.forEach((batch, engineIndex) => {
-    const deduped = dedupeSearchResults(batch.results, limit);
-    for (const result of deduped) {
-      const key = normalizeFetchUrl(result.url);
-      const position = Math.max(1, result.position);
-      const score = 1 / position;
-      const existing = byUrl.get(key);
-
-      if (!existing) {
-        byUrl.set(key, {
-          ...result,
-          engines: [batch.engine],
-          best_position: position,
-          score,
-          first_engine_index: engineIndex,
-        });
-        continue;
-      }
-
-      if (!existing.engines.includes(batch.engine)) {
-        existing.engines.push(batch.engine);
-      }
-      existing.score += score;
-      existing.best_position = Math.min(existing.best_position, position);
-
-      if (position < existing.position) {
-        existing.position = result.position;
-        existing.title = result.title;
-        existing.snippet = result.snippet;
-        existing.domain = result.domain;
-      }
-    }
-  });
-
-  return [...byUrl.values()]
-    .sort(
-      (a, b) =>
-        b.score - a.score ||
-        a.best_position - b.best_position ||
-        a.first_engine_index - b.first_engine_index ||
-        a.url.localeCompare(b.url),
-    )
-    .slice(0, limit)
-    .map((result, index) => ({
-      ...result,
-      position: index + 1,
-    }));
-}
-
 async function execSearch(
   args: SearchToolInput,
   ctx: AgentContext,
@@ -630,6 +598,8 @@ async function execSearch(
 
   const rawLimit = args.limit ?? ctx.defaultSearchLimit ?? 5;
   const limit = Math.min(Math.max(1, Math.floor(Number(rawLimit))), 20);
+  const requestedEngine = readSearchEngine(args.engine, ctx.defaultEngine);
+  if (!requestedEngine.ok) return requestedEngine.error;
 
   ctx.emit({
     type: "searching",
@@ -637,42 +607,43 @@ async function execSearch(
     query,
   });
 
-  const engines = searchEnginesInFallbackOrder(ctx.defaultEngine);
-  const outcomes = await Promise.all(
-    engines.map(async (engine) => {
-      try {
-        const outcome = await searchWithCache(ctx, { query, limit, engine });
-        return { engine, outcome };
-      } catch (err) {
-        return { engine, error: errorMessage(err) };
-      }
-    }),
-  );
-
-  const successes: Array<{ engine: Engine; results: SearchResult[] }> = [];
   const failures: string[] = [];
-  const emptyEngines: Engine[] = [];
+  const engines = searchEnginesInFallbackOrder(requestedEngine.engine);
 
-  for (const result of outcomes) {
-    if ("error" in result) {
-      failures.push(`${result.engine}: ${result.error}`);
+  for (const engine of engines) {
+    let outcome: WebSearchOutcome;
+    try {
+      outcome = await searchWithCache(ctx, { query, limit, engine });
+    } catch (err) {
+      failures.push(`${engine}: ${errorMessage(err)}`);
       continue;
     }
 
-    const { engine, outcome } = result;
     if (!outcome.ok) {
       failures.push(`${engine}: ${outcome.error.message}`);
       continue;
     }
-    if (outcome.results.length === 0) {
-      emptyEngines.push(engine);
-      continue;
-    }
-    successes.push({ engine, results: outcome.results });
-  }
 
-  if (successes.length > 0) {
-    const results = mergeSearchResults(successes, limit);
+    const results = dedupeSearchResults(outcome.results, limit);
+    if (outcome.results.length === 0) {
+      ctx.emit({
+        type: "search_results",
+        index: searchIndex,
+        count: 0,
+      });
+      return JSON.stringify(
+        {
+          query,
+          requested_engine: requestedEngine.engine,
+          engine,
+          results: [],
+          warnings: failures.length > 0 ? failures : undefined,
+        },
+        null,
+        2,
+      );
+    }
+
     ctx.emit({
       type: "search_results",
       index: searchIndex,
@@ -681,39 +652,23 @@ async function execSearch(
     return JSON.stringify(
       {
         query,
-        results: compactSearchResults(results),
+        requested_engine: requestedEngine.engine,
+        engine,
+        results: compactSearchResults(results, engine),
+        warnings: failures.length > 0 ? failures : undefined,
       },
       null,
       2,
     );
   }
 
-  if (emptyEngines.length > 0) {
-    ctx.emit({
-      type: "search_results",
-      index: searchIndex,
-      count: 0,
-    });
-    return JSON.stringify(
-      {
-        query,
-        results: [],
-        note: "No results. Try a different query.",
-      },
-      null,
-      2,
-    );
-  }
-
-  {
-    const error = failures.join("; ") || "all engines failed";
-    ctx.emit({
-      type: "search_failed",
-      index: searchIndex,
-      error,
-    });
-    return `Search failed: ${error}`;
-  }
+  const error = failures.join("; ") || "all engines failed";
+  ctx.emit({
+    type: "search_failed",
+    index: searchIndex,
+    error,
+  });
+  return `Search failed: ${error}`;
 }
 
 interface OpenOutcome {
