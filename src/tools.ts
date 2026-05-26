@@ -218,21 +218,19 @@ interface DelegateToolInput {
 const BASE_AGENT_TOOLS: Anthropic.Tool[] = [
   {
     name: "search",
-    description:
-      "Search the web for sources addressing the question. Prefer short, specific queries. Use site: filters directly in the query when useful.",
+    description: "Search the web.",
     input_schema: {
       type: "object",
       properties: {
         query: {
           type: "string",
-          description: "Short, search-engine-friendly query (≤10 words ideal).",
+          description: "Search query.",
         },
         limit: {
           type: "integer",
           minimum: 1,
           maximum: 20,
-          description:
-            "How many results to request from each search provider. Default depends on the runtime limits.",
+          description: "Maximum results to request.",
         },
       },
       required: ["query"],
@@ -240,8 +238,7 @@ const BASE_AGENT_TOOLS: Anthropic.Tool[] = [
   },
   {
     name: "inspect",
-    description:
-      "Fetch a URL without committing it as a cited source. Use this liberally to evaluate promising search results, follow references, and decide whether the page deserves source budget.",
+    description: "Fetch a URL preview without adding it to the source list.",
     input_schema: {
       type: "object",
       properties: {
@@ -255,8 +252,7 @@ const BASE_AGENT_TOOLS: Anthropic.Tool[] = [
   },
   {
     name: "fetch",
-    description:
-      "Fetch a URL into this agent's document cache and return the first chars of the page. Use after inspect, or directly when the URL is clearly a high-value source.",
+    description: "Fetch a URL into this agent's source list.",
     input_schema: {
       type: "object",
       properties: {
@@ -270,8 +266,7 @@ const BASE_AGENT_TOOLS: Anthropic.Tool[] = [
   },
   {
     name: "read_source",
-    description:
-      "Read a contiguous range from a fetched URL in the document cache. Use this after fetch when you need details, methods, exact evidence, or contradictions; pass offset to continue reading.",
+    description: "Read a range from a fetched URL.",
     input_schema: {
       type: "object",
       properties: {
@@ -302,8 +297,7 @@ const AGENT_TOOLS: Anthropic.Tool[] = [
   ...BASE_AGENT_TOOLS,
   {
     name: "delegate",
-    description:
-      "Spawn a focused research subtask when parallel or isolated investigation would materially improve the answer. The child uses its own local sources and returns a concise brief plus URLs worth fetching in the parent.",
+    description: "Spawn a focused research subtask.",
     input_schema: {
       type: "object",
       properties: {
