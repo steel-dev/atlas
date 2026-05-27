@@ -191,8 +191,8 @@ describe("research loop cache integration", () => {
     expect(messagesCreate).toHaveBeenCalledTimes(3);
     expect(toolResultText(secondRequest)).toContain('"results"');
     expect(toolResultText(secondRequest)).toContain('"engine": "ddg"');
-    expect(scrape).toHaveBeenCalledTimes(1);
-    expect(ctx.caches.serp.size).toBe(1);
+    expect(scrape).toHaveBeenCalledTimes(3);
+    expect(ctx.caches.serp.size).toBe(3);
   });
 
   it("ignores model-supplied engine and returns rank provenance", async () => {
@@ -241,18 +241,22 @@ describe("research loop cache integration", () => {
     };
     const toolText = toolResultText(followupRequest);
     const payload = JSON.parse(toolText) as {
-      engine: string;
+      engines: string[];
+      searched_engines: string[];
       results: Array<{
         rank: number;
         url: string;
         title: string;
         snippet?: string;
         engine: string;
+        engine_rank: number;
+        engines: string[];
       }>;
     };
 
     expect(result.finishReason).toBe("final report");
-    expect(payload.engine).toBe("ddg");
+    expect(payload.engines).toEqual(["ddg"]);
+    expect(payload.searched_engines).toEqual(["ddg", "bing", "google"]);
     expect(payload.results).toEqual([
       {
         rank: 1,
@@ -260,14 +264,126 @@ describe("research loop cache integration", () => {
         url: "https://example.com/ddg-one",
         snippet: "First DDG snippet.",
         engine: "ddg",
+        engine_rank: 1,
+        engines: ["ddg"],
       },
     ]);
-    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(fetch).toHaveBeenCalledTimes(3);
     expect(String(fetch.mock.calls[0]?.[0])).toContain("duckduckgo.com");
-    expect(ctx.caches.serp.size).toBe(1);
+    expect(ctx.caches.serp.size).toBe(3);
   });
 
-  it("falls back to another engine only after the default engine fails", async () => {
+  it("merges results across engines and boosts duplicate URLs", async () => {
+    const fetch = vi.fn(async (url: string | URL | Request) => {
+      const href = String(url);
+      if (href.includes("duckduckgo.com")) {
+        return new Response(
+          `
+            <html>
+              <body>
+                <div class="result">
+                  <a class="result__a" href="https://example.com/ddg-only">DDG Only</a>
+                  <a class="result__snippet">Unique DDG result.</a>
+                </div>
+                <div class="result">
+                  <a class="result__a" href="https://example.com/shared?utm_source=ddg">Shared Result</a>
+                  <a class="result__snippet">Shared from DDG.</a>
+                </div>
+              </body>
+            </html>
+          `,
+          { headers: { "content-type": "text/html" } },
+        );
+      }
+      if (href.includes("bing.com")) {
+        return new Response(
+          `
+            <html>
+              <body>
+                <li class="b_algo">
+                  <h2><a href="https://example.com/shared">Shared Result</a></h2>
+                  <div class="b_caption"><p>Shared from Bing.</p></div>
+                </li>
+                <li class="b_algo">
+                  <h2><a href="https://example.com/bing-only">Bing Only</a></h2>
+                  <div class="b_caption"><p>Unique Bing result.</p></div>
+                </li>
+              </body>
+            </html>
+          `,
+          { headers: { "content-type": "text/html" } },
+        );
+      }
+      if (href.includes("google.com")) {
+        return new Response(
+          `
+            <html>
+              <body>
+                <div class="g">
+                  <a href="https://example.com/google-only"><h3>Google Only</h3></a>
+                  <div class="VwiC3b">Unique Google result.</div>
+                </div>
+              </body>
+            </html>
+          `,
+          { headers: { "content-type": "text/html" } },
+        );
+      }
+      return new Response("<html><body>Unexpected engine</body></html>", {
+        headers: { "content-type": "text/html" },
+      });
+    });
+    vi.stubGlobal("fetch", fetch);
+    const messagesCreate = vi
+      .fn()
+      .mockResolvedValueOnce(
+        messageWith([toolUse("search_1", "search", { query: "merge query" })]),
+      )
+      .mockResolvedValueOnce(finalReport());
+    const ctx = createContext({ messagesCreate });
+
+    const result = await runResearchLoop({
+      ctx,
+      query: "What is Atlas?",
+      maxToolCalls: 2,
+    });
+    const followupRequest = messagesCreate.mock.calls[1]?.[0] as {
+      messages: Array<{ content: unknown }>;
+    };
+    const payload = JSON.parse(toolResultText(followupRequest)) as {
+      engines: string[];
+      results: Array<{
+        rank: number;
+        title: string;
+        url: string;
+        snippet?: string;
+        engine: string;
+        engine_rank: number;
+        engines: string[];
+      }>;
+    };
+
+    expect(result.finishReason).toBe("final report");
+    expect(payload.engines).toEqual(["ddg", "bing", "google"]);
+    expect(payload.results[0]).toEqual({
+      rank: 1,
+      title: "Shared Result",
+      url: "https://example.com/shared",
+      snippet: "Shared from Bing.",
+      engine: "bing",
+      engine_rank: 1,
+      engines: ["ddg", "bing"],
+    });
+    expect(payload.results.map((searchResult) => searchResult.url)).toEqual([
+      "https://example.com/shared",
+      "https://example.com/ddg-only",
+      "https://example.com/google-only",
+      "https://example.com/bing-only",
+    ]);
+    expect(fetch).toHaveBeenCalledTimes(3);
+  });
+
+  it("merges another engine when the default engine fails", async () => {
     const fetch = vi.fn(async (url: string | URL | Request) => {
       const href = String(url);
       if (href.includes("duckduckgo.com")) {
@@ -315,7 +431,7 @@ describe("research loop cache integration", () => {
       messages: Array<{ content: unknown }>;
     };
     const payload = JSON.parse(toolResultText(followupRequest)) as {
-      engine: string;
+      engines: string[];
       warnings: string[];
       results: Array<{
         rank: number;
@@ -323,11 +439,13 @@ describe("research loop cache integration", () => {
         url: string;
         snippet?: string;
         engine: string;
+        engine_rank: number;
+        engines: string[];
       }>;
     };
 
     expect(result.finishReason).toBe("final report");
-    expect(payload.engine).toBe("bing");
+    expect(payload.engines).toEqual(["bing"]);
     expect(payload.results).toEqual([
       {
         rank: 1,
@@ -335,15 +453,17 @@ describe("research loop cache integration", () => {
         url: "https://example.com/fallback",
         snippet: "Fallback snippet.",
         engine: "bing",
+        engine_rank: 1,
+        engines: ["bing"],
       },
     ]);
     expect(payload.warnings[0]).toContain("ddg:");
-    expect(fetch).toHaveBeenCalledTimes(2);
-    expect(scrape).toHaveBeenCalledTimes(1);
-    expect(ctx.caches.serp.size).toBe(2);
+    expect(fetch).toHaveBeenCalledTimes(3);
+    expect(scrape).toHaveBeenCalledTimes(2);
+    expect(ctx.caches.serp.size).toBe(3);
   });
 
-  it("falls back when the default engine returns no results", async () => {
+  it("merges another engine when the default engine returns no results", async () => {
     const fetch = vi.fn(async (url: string | URL | Request) => {
       const href = String(url);
       if (href.includes("duckduckgo.com")) {
@@ -392,7 +512,7 @@ describe("research loop cache integration", () => {
       messages: Array<{ content: unknown }>;
     };
     const payload = JSON.parse(toolResultText(followupRequest)) as {
-      engine: string;
+      engines: string[];
       warnings: string[];
       results: Array<{
         rank: number;
@@ -400,11 +520,13 @@ describe("research loop cache integration", () => {
         url: string;
         snippet?: string;
         engine: string;
+        engine_rank: number;
+        engines: string[];
       }>;
     };
 
     expect(result.finishReason).toBe("final report");
-    expect(payload.engine).toBe("bing");
+    expect(payload.engines).toEqual(["bing"]);
     expect(payload.results).toEqual([
       {
         rank: 1,
@@ -412,11 +534,13 @@ describe("research loop cache integration", () => {
         url: "https://example.com/empty-fallback",
         snippet: "Found after empty default search.",
         engine: "bing",
+        engine_rank: 1,
+        engines: ["bing"],
       },
     ]);
     expect(payload.warnings[0]).toBe("ddg: no results");
-    expect(fetch).toHaveBeenCalledTimes(2);
-    expect(scrape).toHaveBeenCalledTimes(1);
+    expect(fetch).toHaveBeenCalledTimes(3);
+    expect(scrape).toHaveBeenCalledTimes(2);
   });
 
   it("advertises only search and fetch to the agent", async () => {

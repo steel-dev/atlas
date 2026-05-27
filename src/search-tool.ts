@@ -11,6 +11,7 @@ import { runSteelRequest } from "./steel-runtime.js";
 import { normalizeUrlForSource } from "./url.js";
 
 const SEARCH_SNIPPET_CHARS = 500;
+const RRF_K = 60;
 
 export interface SearchToolInput {
   query?: string;
@@ -75,23 +76,26 @@ async function searchWithCache(
 }
 
 function compactSearchResults(
-  results: SearchResult[],
-  engine: Engine,
+  results: MergedSearchResult[],
 ): Array<{
   rank: number;
   title: string;
   url: string;
   snippet?: string;
   engine: Engine;
+  engine_rank: number;
+  engines: Engine[];
 }> {
-  return results.map((result) => ({
-    rank: result.position,
+  return results.map((result, index) => ({
+    rank: index + 1,
     title: result.title,
     url: result.url,
     ...(result.snippet
       ? { snippet: result.snippet.slice(0, SEARCH_SNIPPET_CHARS) }
       : {}),
-    engine,
+    engine: result.engine,
+    engine_rank: result.engineRank,
+    engines: result.engines,
   }));
 }
 
@@ -114,6 +118,77 @@ function dedupeSearchResults(
   return deduped;
 }
 
+interface EngineSearchResults {
+  engine: Engine;
+  results: SearchResult[];
+  engineOrder: number;
+}
+
+interface MergedSearchResult {
+  title: string;
+  url: string;
+  snippet: string;
+  engine: Engine;
+  engineRank: number;
+  engines: Engine[];
+  score: number;
+  engineOrder: number;
+}
+
+function mergeSearchResults(
+  successfulSearches: EngineSearchResults[],
+  limit: number,
+): MergedSearchResult[] {
+  const byUrl = new Map<string, MergedSearchResult>();
+
+  for (const search of successfulSearches) {
+    const results = dedupeSearchResults(search.results, limit);
+    for (const result of results) {
+      const key = normalizeFetchUrl(result.url);
+      const score = 1 / (RRF_K + result.position);
+      const existing = byUrl.get(key);
+      if (!existing) {
+        byUrl.set(key, {
+          title: result.title,
+          url: result.url,
+          snippet: result.snippet,
+          engine: search.engine,
+          engineRank: result.position,
+          engines: [search.engine],
+          score,
+          engineOrder: search.engineOrder,
+        });
+        continue;
+      }
+
+      existing.score += score;
+      if (!existing.engines.includes(search.engine)) {
+        existing.engines.push(search.engine);
+      }
+      const isBetterDisplayResult =
+        result.position < existing.engineRank ||
+        (result.position === existing.engineRank &&
+          search.engineOrder < existing.engineOrder);
+      if (isBetterDisplayResult) {
+        existing.title = result.title;
+        existing.url = result.url;
+        existing.snippet = result.snippet;
+        existing.engine = search.engine;
+        existing.engineRank = result.position;
+        existing.engineOrder = search.engineOrder;
+      }
+    }
+  }
+
+  return [...byUrl.values()]
+    .sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score;
+      if (a.engineRank !== b.engineRank) return a.engineRank - b.engineRank;
+      return a.engineOrder - b.engineOrder;
+    })
+    .slice(0, limit);
+}
+
 export async function execSearch(
   args: SearchToolInput,
   ctx: ResearchLoopContext,
@@ -134,15 +209,34 @@ export async function execSearch(
   const failures: string[] = [];
   let sawEmptyResults = false;
   const engines = searchEnginesInFallbackOrder(ctx.defaultEngine);
+  const successfulSearches: EngineSearchResults[] = [];
 
-  for (const engine of engines) {
+  const engineOutcomes = await Promise.all(
+    engines.map(async (engine, engineOrder) => {
+      try {
+        return {
+          engine,
+          engineOrder,
+          outcome: await searchWithCache(ctx, { query, limit, engine }),
+        };
+      } catch (err) {
+        return {
+          engine,
+          engineOrder,
+          error: errorMessage(err),
+        };
+      }
+    }),
+  );
+
+  for (const engineOutcome of engineOutcomes) {
+    const { engine } = engineOutcome;
     let outcome: WebSearchOutcome;
-    try {
-      outcome = await searchWithCache(ctx, { query, limit, engine });
-    } catch (err) {
-      failures.push(`${engine}: ${errorMessage(err)}`);
+    if ("error" in engineOutcome) {
+      failures.push(`${engine}: ${engineOutcome.error}`);
       continue;
     }
+    outcome = engineOutcome.outcome;
 
     if (!outcome.ok) {
       failures.push(`${engine}: ${outcome.error.message}`);
@@ -156,6 +250,16 @@ export async function execSearch(
       continue;
     }
 
+    successfulSearches.push({
+      engine,
+      engineOrder: engineOutcome.engineOrder,
+      results,
+    });
+  }
+
+  const results = mergeSearchResults(successfulSearches, limit);
+  if (results.length > 0) {
+    const successfulEngines = successfulSearches.map((search) => search.engine);
     ctx.emit({
       type: "search_results",
       index: searchIndex,
@@ -164,8 +268,9 @@ export async function execSearch(
     return JSON.stringify(
       {
         query,
-        engine,
-        results: compactSearchResults(results, engine),
+        engines: successfulEngines,
+        searched_engines: engines,
+        results: compactSearchResults(results),
         warnings: failures.length > 0 ? failures : undefined,
       },
       null,
