@@ -5,7 +5,7 @@ description:
   Use when the user explicitly invokes atlas — e.g., `/atlas-research <question>`, "run atlas on
   X", "use atlas to research Y". Returns the markdown to the conversation along with the
   run summary. Do NOT use for casual questions Claude can answer from training/web —
-  this spends the user's Anthropic + Steel credits and takes 1–4 minutes.
+  this spends the user's model-provider + Steel credits and takes 1–4 minutes.
 user-invocable: true
 allowed-tools: Bash, Read
 ---
@@ -14,7 +14,7 @@ allowed-tools: Bash, Read
 
 Run a deep-research query via this repo's atlas CLI and return the cited markdown report.
 
-Atlas runs a lightweight agent loop: Claude chooses when to search, open pages, read opened
+Atlas runs a lightweight agent loop: the selected model chooses when to search, open pages, read opened
 sources, and stop with a cited Markdown answer. The harness provides web/search/browser tools,
 runtime limits, caching, and progress events; it does not impose a fixed planning, coverage,
 verification, or rewrite pipeline.
@@ -33,7 +33,8 @@ If the invocation is empty, output this usage line and stop:
 ## Step 2 — Verify keys are in the shell env
 
 ```bash
-if { [ -n "$ANTHROPIC_API_KEY" ] || [ -n "$ATLAS_ANTHROPIC_API_KEY" ]; } && \
+if { [ -n "$ANTHROPIC_API_KEY" ] || [ -n "$ATLAS_ANTHROPIC_API_KEY" ] || \
+     [ -n "$OPENAI_API_KEY" ] || [ -n "$ATLAS_OPENAI_API_KEY" ]; } && \
    { [ -n "$STEEL_API_KEY" ] || [ -n "$ATLAS_STEEL_API_KEY" ]; }; then
   echo ok
 else
@@ -43,10 +44,13 @@ fi
 
 If `missing`, stop and tell the user:
 
-> Atlas needs two env vars set in your shell:
+> Atlas needs Steel plus one model-provider API key set in your shell:
 >
 > ```
 > export ANTHROPIC_API_KEY=sk-ant-...   # https://console.anthropic.com
+> # or:
+> export ATLAS_PROVIDER=openai
+> export OPENAI_API_KEY=sk-...          # https://platform.openai.com
 > export STEEL_API_KEY=sk_...           # https://app.steel.dev
 > ```
 >
@@ -117,7 +121,7 @@ rm -f "$REPORT" "$ATLAS_LOG"
 ## Boundaries
 
 - Only runs from the atlas repo root (where `src/cli.ts` lives).
-- One atlas job at a time — they share Anthropic / Steel rate limits.
+- One atlas job at a time — they share model-provider / Steel rate limits.
 - Never log or echo API keys back to chat.
 - Don't claim verification or citation-support stats; the current CLI reports opened/cited
   documents and token usage, not claim-level verification.

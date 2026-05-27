@@ -1,7 +1,12 @@
 #!/usr/bin/env node
 import { writeFileSync } from "node:fs";
 import { parseArgs } from "node:util";
-import { research, type ResearchEffort, type ResearchEvent } from "./research.js";
+import {
+  research,
+  type ModelProvider,
+  type ResearchEffort,
+  type ResearchEvent,
+} from "./research.js";
 
 const USAGE = `atlas — deep research from your terminal
 
@@ -14,6 +19,9 @@ Options:
   -o, --out <file>            Write the markdown report to <file> (default: stdout)
       --timeout N             Overall wall-clock budget in seconds (default: none)
       --effort LEVEL          Agent effort: low, medium, high, max (default: high)
+      --provider PROVIDER     Model provider: anthropic, openai (default: auto)
+      --model MODEL           Model name (default: provider-specific)
+      --base-url URL          OpenAI-compatible base URL (provider=openai)
       --proxy                 Route Steel search and fetch requests through proxy
       --json                  Emit one JSON event per line on stderr
   -q, --quiet                 Suppress progress events on stderr
@@ -21,7 +29,11 @@ Options:
   -v, --version               Show version
 
 Environment:
-  ATLAS_ANTHROPIC_API_KEY or ANTHROPIC_API_KEY   required
+  ATLAS_PROVIDER                                optional (anthropic, openai)
+  ATLAS_MODEL                                   optional
+  ATLAS_ANTHROPIC_API_KEY or ANTHROPIC_API_KEY  required for provider=anthropic
+  ATLAS_OPENAI_API_KEY    or OPENAI_API_KEY     required for provider=openai
+  ATLAS_OPENAI_BASE_URL   or OPENAI_BASE_URL    optional (OpenAI-compatible)
   ATLAS_STEEL_API_KEY      or STEEL_API_KEY       required
   ATLAS_STEEL_BASE_URL     or STEEL_BASE_URL      optional (self-hosted Steel)
 
@@ -29,6 +41,7 @@ Examples:
   atlas "What changed when Cloudflare DO added SQLite?"
   atlas "..." --out report.md
   atlas "..." --effort max
+  atlas "..." --provider openai --model gpt-4.1
   atlas "..." --proxy
   atlas "..." --timeout 300
   atlas "..." --json 2> events.jsonl > report.md
@@ -49,11 +62,18 @@ function parseNumber(raw: string | undefined, name: string): number | undefined 
 }
 
 const RESEARCH_EFFORTS = new Set<ResearchEffort>(["low", "medium", "high", "max"]);
+const MODEL_PROVIDERS = new Set<ModelProvider>(["anthropic", "openai"]);
 
 function parseEffort(raw: string | undefined): ResearchEffort | undefined {
   if (raw === undefined) return undefined;
   if (RESEARCH_EFFORTS.has(raw as ResearchEffort)) return raw as ResearchEffort;
   fail(`--effort must be one of: low, medium, high, max (got "${raw}")`);
+}
+
+function parseProvider(raw: string | undefined): ModelProvider | undefined {
+  if (raw === undefined) return undefined;
+  if (MODEL_PROVIDERS.has(raw as ModelProvider)) return raw as ModelProvider;
+  fail(`--provider must be one of: anthropic, openai (got "${raw}")`);
 }
 
 const DIM = "\x1b[2m";
@@ -145,6 +165,9 @@ async function main(): Promise<void> {
           out: { type: "string", short: "o" },
           timeout: { type: "string" },
           effort: { type: "string" },
+          provider: { type: "string" },
+          model: { type: "string" },
+          "base-url": { type: "string" },
           proxy: { type: "boolean" },
           json: { type: "boolean" },
           quiet: { type: "boolean", short: "q" },
@@ -186,6 +209,7 @@ async function main(): Promise<void> {
     fail(`--timeout must be > 0 (got ${timeoutSeconds})`);
   }
   const effort = parseEffort(values.effort);
+  const provider = parseProvider(values.provider);
   const signal =
     timeoutSeconds !== undefined
       ? AbortSignal.any([
@@ -215,6 +239,9 @@ async function main(): Promise<void> {
   try {
     const result = await research({
       query,
+      provider,
+      model: values.model,
+      openaiBaseUrl: values["base-url"],
       effort,
       useProxy,
       onEvent,

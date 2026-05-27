@@ -1,6 +1,11 @@
-import type Anthropic from "@anthropic-ai/sdk";
 import type Steel from "steel-sdk";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type {
+  ModelAdapter,
+  ModelAssistantBlock,
+  ModelStepInput,
+  ModelToolCall,
+} from "./model.js";
 import {
   __testing,
   createOpenReservations,
@@ -11,27 +16,11 @@ import {
   type OpenedSourceFile,
 } from "./tools.js";
 
-function messageWith(content: unknown[]): Anthropic.Message {
-  return {
-    id: "msg_test",
-    type: "message",
-    role: "assistant",
-    model: "test-model",
-    content,
-    stop_reason: "tool_use",
-    stop_sequence: null,
-    usage: {
-      input_tokens: 1,
-      output_tokens: 1,
-      cache_creation_input_tokens: 0,
-      cache_read_input_tokens: 0,
-      server_tool_use: null,
-      service_tier: "standard",
-    },
-  } as unknown as Anthropic.Message;
+function messageWith(content: ModelAssistantBlock[]): { content: ModelAssistantBlock[] } {
+  return { content };
 }
 
-function finalReport(): Anthropic.Message {
+function finalReport(): { content: ModelAssistantBlock[] } {
   return messageWith([
     {
       type: "text",
@@ -45,8 +34,8 @@ function toolUse(
   id: string,
   name: string,
   input: Record<string, unknown> = {},
-): Anthropic.ToolUseBlock {
-  return { type: "tool_use", id, name, input } as unknown as Anthropic.ToolUseBlock;
+): ModelToolCall {
+  return { type: "tool_call", id, name, input };
 }
 
 function sourceFile(
@@ -69,7 +58,7 @@ function sourceFile(
 }
 
 function createContext(opts: {
-  messagesCreate: Anthropic["messages"]["create"];
+  messagesCreate: ReturnType<typeof vi.fn>;
   scrape?: unknown;
   openedPages?: AgentContext["openedPages"];
   openedSourceFiles?: AgentContext["openedSourceFiles"];
@@ -77,9 +66,17 @@ function createContext(opts: {
   useProxy?: boolean;
 }): AgentContext {
   return {
-    anthropic: {
-      messages: { create: opts.messagesCreate },
-    } as unknown as Anthropic,
+    model: {
+      provider: "anthropic",
+      model: "test-model",
+      usage: {
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: 0,
+      },
+      step: opts.messagesCreate as (input: ModelStepInput) => Promise<{ content: ModelAssistantBlock[] }>,
+    } satisfies ModelAdapter,
     steel: { scrape: opts.scrape ?? vi.fn() } as unknown as Steel,
     openedPages: opts.openedPages ?? [],
     openedSourceFiles: opts.openedSourceFiles ?? new Map(),

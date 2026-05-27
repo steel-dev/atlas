@@ -1,7 +1,7 @@
 {
   "name": "@steel-dev/atlas",
   "version": "0.1.0",
-  "description": "Deep research from your terminal or your code. Backed by Steel Browser and Anthropic Claude.",
+  "description": "Deep research from your terminal or your code. Backed by Steel Browser and model providers.",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -33,6 +33,7 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.92.0",
     "cheerio": "^1.0.0",
+    "openai": "^6.39.0",
     "steel-sdk": "^0.18.0"
   },
   "devDependencies": {
@@ -47,6 +48,7 @@
     "cli",
     "anthropic",
     "claude",
+    "openai",
     "steel",
     "web-search",
     "agent",

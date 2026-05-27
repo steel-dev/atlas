@@ -1,10 +1,13 @@
-import type Anthropic from "@anthropic-ai/sdk";
 import type Steel from "steel-sdk";
-import {
-  RESEARCH_MODEL,
-  type CitedSource,
-  type ResearchEffort,
-} from "./pipeline.js";
+import type {
+  ModelAdapter,
+  ModelAssistantBlock,
+  ModelMessage,
+  ModelToolCall,
+  ModelToolDefinition,
+  ModelToolResult,
+} from "./model.js";
+import { type CitedSource, type ResearchEffort } from "./pipeline.js";
 import {
   ENGINES,
   webSearch,
@@ -114,21 +117,14 @@ export function createOpenReservations(): OpenReservations {
   };
 }
 
-// ----------------------------------------------------------------------------
-// Agentic gather loop
-//
-// The harness exposes only web search and page fetch. Re-fetching the same URL
-// with offset/max_chars reads more of cached content without a virtual file layer.
-// ----------------------------------------------------------------------------
-
 export interface AgentContext {
-  anthropic: Anthropic;
+  model: ModelAdapter;
   steel: Steel;
   openedPages: CitedSource[];
   openedSourceFiles: Map<string, OpenedSourceFile>;
   emit: (e: AgenticEvent) => void;
   abort: () => void;
-  /** Forwarded to every Anthropic / Steel / HTTP call so cancellation
+  /** Forwarded to every model / Steel / HTTP call so cancellation
    *  interrupts in-flight requests, not just step boundaries. */
   signal?: AbortSignal;
   defaultEngine: Engine;
@@ -179,7 +175,7 @@ export interface AgenticRunResult {
   opened_urls: string[];
   tool_calls: number;
   finish_reason: string;
-  messages: Anthropic.MessageParam[];
+  messages: ModelMessage[];
   markdown: string;
 }
 
@@ -194,7 +190,7 @@ interface FetchToolInput {
   max_chars?: number;
 }
 
-const AGENT_TOOLS: Anthropic.Tool[] = [
+const AGENT_TOOLS: ModelToolDefinition[] = [
   {
     name: "search",
     description: "Search the web.",
@@ -213,7 +209,7 @@ const AGENT_TOOLS: Anthropic.Tool[] = [
         },
       },
       required: ["query"],
-    } as Anthropic.Tool["input_schema"],
+    },
   },
   {
     name: "fetch",
@@ -238,7 +234,7 @@ const AGENT_TOOLS: Anthropic.Tool[] = [
           description: `Maximum characters to return. Default ${DEFAULT_FETCH_CHARS}, hard cap ${MAX_FETCH_CHARS}.`,
         },
       },
-    } as Anthropic.Tool["input_schema"],
+    },
   },
 ];
 
@@ -301,7 +297,7 @@ function findSourceByUrl(
   return ctx.openedSourceFiles.get(normalizedUrl);
 }
 
-function textFromContent(content: Anthropic.Message["content"]): string {
+function textFromContent(content: ModelAssistantBlock[]): string {
   return content
     .map((block) => (block.type === "text" ? block.text : ""))
     .join("")
@@ -596,7 +592,7 @@ interface OpenOutcome {
 }
 
 interface ToolExecution {
-  toolResult: Anthropic.ToolResultBlockParam;
+  toolResult: ModelToolResult;
   opened_url?: string;
 }
 
@@ -624,7 +620,7 @@ async function mapWithConcurrency<T, R>(
 }
 
 async function executeToolUse(
-  tu: Anthropic.ToolUseBlock,
+  tu: ModelToolCall,
   ctx: AgentContext,
   searchIndex?: number,
 ): Promise<ToolExecution> {
@@ -638,7 +634,7 @@ async function executeToolUse(
       return {
         toolResult: {
           type: "tool_result",
-          tool_use_id: tu.id,
+          tool_call_id: tu.id,
           content: text,
         },
       };
@@ -647,7 +643,7 @@ async function executeToolUse(
       return {
         toolResult: {
           type: "tool_result",
-          tool_use_id: tu.id,
+          tool_call_id: tu.id,
           content: `Tool error: ${err instanceof Error ? err.message : String(err)}`,
           is_error: true,
         },
@@ -662,7 +658,7 @@ async function executeToolUse(
         opened_url: out.opened_url,
         toolResult: {
           type: "tool_result",
-          tool_use_id: tu.id,
+          tool_call_id: tu.id,
           content: out.text,
         },
       };
@@ -671,7 +667,7 @@ async function executeToolUse(
       return {
         toolResult: {
           type: "tool_result",
-          tool_use_id: tu.id,
+          tool_call_id: tu.id,
           content: `Tool error: ${err instanceof Error ? err.message : String(err)}`,
           is_error: true,
         },
@@ -682,7 +678,7 @@ async function executeToolUse(
   return {
     toolResult: {
       type: "tool_result",
-      tool_use_id: tu.id,
+      tool_call_id: tu.id,
       content: `Unknown tool: ${tu.name}. Available tools: search, fetch.`,
       is_error: true,
     },
@@ -702,9 +698,7 @@ function extractionMetadataFromSteel(
 ): ExtractionMetadata {
   return {
     markdown_chars: markdownChars,
-    extraction_notes: [
-      "Fetched with browser-rendered markdown.",
-    ],
+    extraction_notes: ["Fetched with browser-rendered markdown."],
   };
 }
 
@@ -918,14 +912,8 @@ export async function runGatherAgent(opts: {
   let finishReason = "tool call budget exhausted";
   let markdown = "";
   let searchIndex = 0;
-  const effortConfig = opts.effort
-    ? {
-        thinking: { type: "adaptive" as const },
-        output_config: { effort: opts.effort },
-      }
-    : {};
 
-  const messages: Anthropic.MessageParam[] = [
+  const messages: ModelMessage[] = [
     {
       role: "user",
       content: gatherStartPrompt({ query }),
@@ -935,20 +923,16 @@ export async function runGatherAgent(opts: {
   while (toolCalls < maxToolCalls) {
     ctx.abort();
 
-    let resp: Anthropic.Message;
+    let resp: { content: ModelAssistantBlock[] };
     try {
-      resp = await ctx.anthropic.messages.create(
-        {
-          model: RESEARCH_MODEL,
-          max_tokens: ctx.gatherMaxTokens ?? 2048,
-          system: AGENT_SYSTEM,
-          tools: AGENT_TOOLS,
-          messages,
-          cache_control: { type: "ephemeral" },
-          ...effortConfig,
-        },
-        { signal: ctx.signal },
-      );
+      resp = await ctx.model.step({
+        system: AGENT_SYSTEM,
+        tools: AGENT_TOOLS,
+        messages,
+        maxTokens: ctx.gatherMaxTokens ?? 2048,
+        effort: opts.effort,
+        signal: ctx.signal,
+      });
     } catch (err) {
       if (ctx.signal?.aborted) throw err;
       const message = errorMessage(err);
@@ -959,7 +943,7 @@ export async function runGatherAgent(opts: {
     messages.push({ role: "assistant", content: resp.content });
 
     const toolUses = resp.content.filter(
-      (c): c is Anthropic.ToolUseBlock => c.type === "tool_use",
+      (c): c is ModelToolCall => c.type === "tool_call",
     );
     if (toolUses.length === 0) {
       const text = textFromContent(resp.content);
@@ -984,9 +968,9 @@ export async function runGatherAgent(opts: {
     const toolResults = [
       ...executions.map((e) => e.toolResult),
       ...skippedToolUses.map(
-        (tu): Anthropic.ToolResultBlockParam => ({
+        (tu): ModelToolResult => ({
           type: "tool_result",
-          tool_use_id: tu.id,
+          tool_call_id: tu.id,
           content: "Tool not run: tool call budget exhausted.",
           is_error: true,
         }),
@@ -1014,17 +998,13 @@ export async function runGatherAgent(opts: {
     });
 
     try {
-      const resp = await ctx.anthropic.messages.create(
-        {
-          model: RESEARCH_MODEL,
-          max_tokens: ctx.gatherMaxTokens ?? 2048,
-          system: AGENT_SYSTEM,
-          messages,
-          cache_control: { type: "ephemeral" },
-          ...effortConfig,
-        },
-        { signal: ctx.signal },
-      );
+      const resp = await ctx.model.step({
+        system: AGENT_SYSTEM,
+        messages,
+        maxTokens: ctx.gatherMaxTokens ?? 2048,
+        effort: opts.effort,
+        signal: ctx.signal,
+      });
       messages.push({ role: "assistant", content: resp.content });
       const text = textFromContent(resp.content);
       markdown = text;

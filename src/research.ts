@@ -1,5 +1,16 @@
-import Anthropic from "@anthropic-ai/sdk";
-import { type CitedSource, type ResearchEffort } from "./pipeline.js";
+import {
+  createAnthropicModelAdapter,
+  createOpenAIModelAdapter,
+  type ModelAdapter,
+  type ModelProvider,
+  type UsageSummary,
+} from "./model.js";
+import {
+  DEFAULT_ANTHROPIC_MODEL,
+  DEFAULT_OPENAI_MODEL,
+  type CitedSource,
+  type ResearchEffort,
+} from "./pipeline.js";
 import { createSteel } from "./steel.js";
 import {
   createOpenReservations,
@@ -29,14 +40,8 @@ const DEFAULT_RUNTIME_LIMITS = {
   agentMaxTokens: number;
 };
 
+export type { ModelProvider, UsageSummary } from "./model.js";
 export type { CitedSource, ResearchEffort } from "./pipeline.js";
-
-export interface UsageSummary {
-  input_tokens: number;
-  output_tokens: number;
-  cache_creation_input_tokens: number;
-  cache_read_input_tokens: number;
-}
 
 export interface AgentRun {
   opened_urls: string[];
@@ -46,6 +51,8 @@ export interface AgentRun {
 
 export interface ResearchResult {
   query: string;
+  provider: ModelProvider;
+  model: string;
   agent_runs: AgentRun[];
   sources: CitedSource[];
   unverified_citations: string[];
@@ -86,7 +93,11 @@ export type ResearchEvent =
 
 export interface ResearchOptions {
   query: string;
+  provider?: ModelProvider;
+  model?: string;
   anthropicApiKey?: string;
+  openaiApiKey?: string;
+  openaiBaseUrl?: string;
   steelApiKey?: string;
   steelBaseUrl?: string;
   useProxy?: boolean;
@@ -99,7 +110,11 @@ export interface ResearchOptions {
 export async function research(opts: ResearchOptions): Promise<ResearchResult> {
   const {
     query,
+    provider: providerOverride,
+    model: modelOverride,
     anthropicApiKey: anthropicApiKeyOverride,
+    openaiApiKey: openaiApiKeyOverride,
+    openaiBaseUrl: openaiBaseUrlOverride,
     steelApiKey: steelApiKeyOverride,
     steelBaseUrl: steelBaseUrlOverride,
     useProxy = false,
@@ -112,18 +127,12 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
   if (!query || !query.trim()) {
     throw new Error("research: query is required");
   }
-  const anthropicApiKey =
-    anthropicApiKeyOverride ??
-    readEnv("ATLAS_ANTHROPIC_API_KEY", "ANTHROPIC_API_KEY");
+  const provider = resolveProvider(providerOverride);
+  const model = resolveModel(provider, modelOverride);
   const steelApiKey =
     steelApiKeyOverride ?? readEnv("ATLAS_STEEL_API_KEY", "STEEL_API_KEY");
   const steelBaseUrl =
     steelBaseUrlOverride ?? readEnv("ATLAS_STEEL_BASE_URL", "STEEL_BASE_URL");
-  if (!anthropicApiKey) {
-    throw new Error(
-      "research: ANTHROPIC_API_KEY or ATLAS_ANTHROPIC_API_KEY is required",
-    );
-  }
   if (!steelApiKey) {
     throw new Error(
       "research: STEEL_API_KEY or ATLAS_STEEL_API_KEY is required",
@@ -144,15 +153,20 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
   };
   const abort = () => runSignal?.throwIfAborted();
 
-  const anthropic = new Anthropic({ apiKey: anthropicApiKey, maxRetries: 5 });
-  const usageSummary = instrumentAnthropic(anthropic);
+  const modelAdapter = createModelAdapter({
+    provider,
+    model,
+    anthropicApiKey: anthropicApiKeyOverride,
+    openaiApiKey: openaiApiKeyOverride,
+    openaiBaseUrl: openaiBaseUrlOverride,
+  });
   const steel = createSteel({ apiKey: steelApiKey, baseUrl: steelBaseUrl });
 
   const openedPages: CitedSource[] = [];
   const openedSourceFiles = new Map<string, OpenedSourceFile>();
 
   const ctx: AgentContext = {
-    anthropic,
+    model: modelAdapter,
     steel,
     openedPages,
     openedSourceFiles,
@@ -203,11 +217,13 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
 
   const result: ResearchResult = {
     query,
+    provider,
+    model,
     agent_runs: agentRuns,
     sources: citationAudit.sources,
     unverified_citations: citationAudit.unverified_citations,
     markdown,
-    usage_summary: { ...usageSummary },
+    usage_summary: { ...modelAdapter.usage },
   };
 
   emit({ type: "completed", result });
@@ -220,6 +236,69 @@ function readEnv(...keys: string[]): string | undefined {
     if (value?.trim()) return value.trim();
   }
   return undefined;
+}
+
+function resolveProvider(provider: ModelProvider | undefined): ModelProvider {
+  const raw = provider ?? readEnv("ATLAS_PROVIDER");
+  if (raw === "anthropic" || raw === "openai") return raw;
+  if (raw) {
+    throw new Error(
+      `research: provider must be one of: anthropic, openai (got "${raw}")`,
+    );
+  }
+  const hasOpenAI = Boolean(readEnv("ATLAS_OPENAI_API_KEY", "OPENAI_API_KEY"));
+  const hasAnthropic = Boolean(
+    readEnv("ATLAS_ANTHROPIC_API_KEY", "ANTHROPIC_API_KEY"),
+  );
+  return hasOpenAI && !hasAnthropic ? "openai" : "anthropic";
+}
+
+function resolveModel(
+  provider: ModelProvider,
+  model: string | undefined,
+): string {
+  const raw =
+    model ??
+    readEnv(
+      "ATLAS_MODEL",
+      provider === "anthropic" ? "ATLAS_ANTHROPIC_MODEL" : "ATLAS_OPENAI_MODEL",
+    );
+  if (raw?.trim()) return raw.trim();
+  return provider === "anthropic"
+    ? DEFAULT_ANTHROPIC_MODEL
+    : DEFAULT_OPENAI_MODEL;
+}
+
+function createModelAdapter(opts: {
+  provider: ModelProvider;
+  model: string;
+  anthropicApiKey?: string;
+  openaiApiKey?: string;
+  openaiBaseUrl?: string;
+}): ModelAdapter {
+  if (opts.provider === "anthropic") {
+    const apiKey =
+      opts.anthropicApiKey ??
+      readEnv("ATLAS_ANTHROPIC_API_KEY", "ANTHROPIC_API_KEY");
+    if (!apiKey) {
+      throw new Error(
+        "research: ANTHROPIC_API_KEY or ATLAS_ANTHROPIC_API_KEY is required for provider=anthropic",
+      );
+    }
+    return createAnthropicModelAdapter({ apiKey, model: opts.model });
+  }
+
+  const apiKey =
+    opts.openaiApiKey ?? readEnv("ATLAS_OPENAI_API_KEY", "OPENAI_API_KEY");
+  const baseUrl =
+    opts.openaiBaseUrl ??
+    readEnv("ATLAS_OPENAI_BASE_URL", "OPENAI_BASE_URL");
+  if (!apiKey) {
+    throw new Error(
+      "research: OPENAI_API_KEY or ATLAS_OPENAI_API_KEY is required for provider=openai",
+    );
+  }
+  return createOpenAIModelAdapter({ apiKey, baseUrl, model: opts.model });
 }
 
 interface CitationAudit {
@@ -292,35 +371,6 @@ function combineSignals(
 
   const timeoutSignal = AbortSignal.timeout(Math.floor(timeoutMs));
   return signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
-}
-
-/**
- * Wrap `client.messages.create` so every call's `usage` is accumulated into
- * the returned summary object.
- */
-function instrumentAnthropic(client: Anthropic): UsageSummary {
-  const usage: UsageSummary = {
-    input_tokens: 0,
-    output_tokens: 0,
-    cache_creation_input_tokens: 0,
-    cache_read_input_tokens: 0,
-  };
-  const origCreate = client.messages.create.bind(client.messages);
-  const wrapped = async (
-    ...args: Parameters<typeof origCreate>
-  ): Promise<Awaited<ReturnType<typeof origCreate>>> => {
-    const res = await origCreate(...args);
-    if (res && typeof res === "object" && "usage" in res && res.usage) {
-      const u = res.usage;
-      usage.input_tokens += u.input_tokens ?? 0;
-      usage.output_tokens += u.output_tokens ?? 0;
-      usage.cache_creation_input_tokens += u.cache_creation_input_tokens ?? 0;
-      usage.cache_read_input_tokens += u.cache_read_input_tokens ?? 0;
-    }
-    return res;
-  };
-  client.messages.create = wrapped as typeof client.messages.create;
-  return usage;
 }
 
 export const __testing = {

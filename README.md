@@ -14,12 +14,15 @@ Ask a messy question. Atlas searches the web, fetches pages through Steel Browse
 
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-...
+# or:
+# export ATLAS_PROVIDER=openai
+# export OPENAI_API_KEY=sk-...
 export STEEL_API_KEY=sk_...
 
 npx @steel-dev/atlas "What are the strongest deep research framework?"
 ```
 
-Get keys from [Anthropic](https://console.anthropic.com) and [Steel](https://app.steel.dev).
+Get keys from [Anthropic](https://console.anthropic.com) or [OpenAI](https://platform.openai.com), plus [Steel](https://app.steel.dev).
 
 ## CLI
 
@@ -28,6 +31,8 @@ atlas "What's the state of the art in single-image novel view synthesis?"
 atlas "..." > report.md
 atlas "..." --out report.md
 atlas "..." --effort max
+atlas "..." --provider openai --model gpt-5.5
+atlas "..." --provider openai --base-url https://your-openai-compatible-endpoint/v1
 atlas "..." --proxy
 ```
 
@@ -42,6 +47,8 @@ import { research } from "@steel-dev/atlas";
 
 const result = await research({
   query: "What's changing in browser automation for AI agents?",
+  provider: "openai",
+  model: "gpt-5.5",
   useProxy: true,
 });
 
@@ -49,6 +56,8 @@ console.log(result.markdown);
 console.log(result.sources); // URLs Atlas fetched and the report cited
 console.log(result.unverified_citations); // cited URLs Atlas did not fetch
 ```
+
+Atlas supports Anthropic and OpenAI-compatible chat completions through a thin internal model adapter. The research loop stays the same: models can call `search` and `fetch`, then Atlas applies runtime limits, source tracking, and citation auditing.
 
 ## Development
 
