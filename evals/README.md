@@ -17,6 +17,16 @@ Use the shortcut when running the official set:
 npm run eval:browsecomp:official -- --sample 25 --seed pr-smoke-v1
 ```
 
+Add `--judge` to grade final reports with an LLM judge, following the official
+BrowseComp style of semantic answer equivalence:
+
+```bash
+npm run eval:browsecomp:official -- --sample 25 --seed pr-smoke-v1 --judge
+```
+
+The judge defaults to the run provider/model. Override it with
+`--judge-provider`, `--judge-model`, `--judge-base-url`, and `--judge-timeout`.
+
 ## Run
 
 ```bash
@@ -67,4 +77,6 @@ is provided. The file contains:
 - `summary`: exact-answer accuracy and operational metrics
 
 Primary score is exact-answer accuracy. Secondary metrics include latency,
-tool calls, verified source count, and unverified citation count.
+tool calls, verified source count, and unverified citation count. When `--judge`
+is enabled, `accuracy` uses judge correctness while `exactAccuracy` remains in
+the summary for comparison.

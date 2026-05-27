@@ -2,6 +2,15 @@ import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import {
+  DEFAULT_ANTHROPIC_MODEL,
+  DEFAULT_OPENAI_MODEL,
+} from "../src/defaults.js";
+import {
+  createAnthropicModelAdapter,
+  createOpenAIModelAdapter,
+  type ModelAdapter,
+} from "../src/model.js";
+import {
   research,
   type ModelProvider,
   type ResearchEffort,
@@ -27,9 +36,23 @@ interface EvalOptions {
   provider?: ModelProvider;
   model?: string;
   openaiBaseUrl?: string;
+  judge: boolean;
+  judgeProvider?: ModelProvider;
+  judgeModel?: string;
+  judgeBaseUrl?: string;
+  judgeTimeoutMs: number;
   concurrency: number;
   useProxy: boolean;
   dryRun: boolean;
+}
+
+interface JudgeResult {
+  provider: ModelProvider;
+  model: string;
+  correct: boolean;
+  extractedFinalAnswer: string | null;
+  reasoning: string;
+  raw: string;
 }
 
 interface EvalResult {
@@ -38,7 +61,10 @@ interface EvalResult {
   query: string;
   expectedAnswers: string[];
   predictedAnswer: string | null;
+  exactCorrect: boolean;
   correct: boolean;
+  judge?: JudgeResult;
+  judgeError?: string;
   error?: string;
   latencyMs: number;
   trace: EvalTraceEvent[];
@@ -77,6 +103,7 @@ type EvalTraceEvent = {
 
 const DEFAULT_CASES_PATH = "evals/cases/browsecomp.jsonl";
 const DEFAULT_TIMEOUT_MS = 300_000;
+const DEFAULT_JUDGE_TIMEOUT_MS = 60_000;
 
 function usage(): string {
   return `Usage:
@@ -93,6 +120,11 @@ Options:
       --provider NAME      Model provider: anthropic, openai
       --model NAME         Model name
       --base-url URL       OpenAI-compatible base URL
+      --judge              Grade responses with an LLM judge
+      --judge-provider P   Judge provider: anthropic, openai (default: run provider/env)
+      --judge-model MODEL  Judge model (default: provider-specific/env)
+      --judge-base-url URL OpenAI-compatible base URL for judge
+      --judge-timeout N    Per-judge timeout in seconds (default: 60)
       --concurrency N      Parallel cases (default: 1)
       --proxy              Route Steel calls through proxy
       --dry-run            Print selected case IDs without calling APIs
@@ -152,6 +184,8 @@ function parseArgs(argv: string[]): EvalOptions {
     seed: "atlas-browsecomp-v1",
     caseIds,
     timeoutMs: DEFAULT_TIMEOUT_MS,
+    judge: false,
+    judgeTimeoutMs: DEFAULT_JUDGE_TIMEOUT_MS,
     concurrency: 1,
     useProxy: false,
     dryRun: false,
@@ -216,6 +250,32 @@ function parseArgs(argv: string[]): EvalOptions {
       i++;
       continue;
     }
+    if (arg === "--judge") {
+      opts.judge = true;
+      continue;
+    }
+    if (arg === "--judge-provider") {
+      opts.judgeProvider = readProvider(readValue(argv, i, arg));
+      i++;
+      continue;
+    }
+    if (arg === "--judge-model") {
+      opts.judgeModel = readValue(argv, i, arg);
+      i++;
+      continue;
+    }
+    if (arg === "--judge-base-url") {
+      opts.judgeBaseUrl = readValue(argv, i, arg);
+      i++;
+      continue;
+    }
+    if (arg === "--judge-timeout") {
+      opts.judgeTimeoutMs = Math.floor(
+        readPositiveNumber(readValue(argv, i, arg), arg) * 1000,
+      );
+      i++;
+      continue;
+    }
     if (arg === "--concurrency") {
       opts.concurrency = readPositiveInt(readValue(argv, i, arg), arg);
       i++;
@@ -241,6 +301,67 @@ function parseArgs(argv: string[]): EvalOptions {
 
 function stableHash(value: string): string {
   return createHash("sha256").update(value).digest("hex");
+}
+
+function readEnv(...keys: string[]): string | undefined {
+  for (const key of keys) {
+    const value = process.env[key];
+    if (value?.trim()) return value.trim();
+  }
+  return undefined;
+}
+
+function resolveEvalProvider(provider: ModelProvider | undefined): ModelProvider {
+  const raw = provider ?? readEnv("ATLAS_PROVIDER");
+  if (raw === "anthropic" || raw === "openai") return raw;
+  if (raw) fail(`provider must be one of: anthropic, openai (got "${raw}")`);
+  const hasOpenAI = Boolean(readEnv("ATLAS_OPENAI_API_KEY", "OPENAI_API_KEY"));
+  const hasAnthropic = Boolean(
+    readEnv("ATLAS_ANTHROPIC_API_KEY", "ANTHROPIC_API_KEY"),
+  );
+  return hasOpenAI && !hasAnthropic ? "openai" : "anthropic";
+}
+
+function resolveEvalModel(
+  provider: ModelProvider,
+  model: string | undefined,
+): string {
+  const raw =
+    model ??
+    readEnv(
+      "ATLAS_MODEL",
+      provider === "anthropic" ? "ATLAS_ANTHROPIC_MODEL" : "ATLAS_OPENAI_MODEL",
+    );
+  if (raw?.trim()) return raw.trim();
+  return provider === "anthropic"
+    ? DEFAULT_ANTHROPIC_MODEL
+    : DEFAULT_OPENAI_MODEL;
+}
+
+function createJudgeAdapter(opts: EvalOptions): ModelAdapter {
+  const provider = resolveEvalProvider(opts.judgeProvider ?? opts.provider);
+  const model = resolveEvalModel(provider, opts.judgeModel ?? opts.model);
+  if (provider === "anthropic") {
+    const apiKey = readEnv("ATLAS_ANTHROPIC_API_KEY", "ANTHROPIC_API_KEY");
+    if (!apiKey) {
+      fail(
+        "judge: ANTHROPIC_API_KEY or ATLAS_ANTHROPIC_API_KEY is required for provider=anthropic",
+      );
+    }
+    return createAnthropicModelAdapter({ apiKey, model });
+  }
+
+  const apiKey = readEnv("ATLAS_OPENAI_API_KEY", "OPENAI_API_KEY");
+  if (!apiKey) {
+    fail(
+      "judge: OPENAI_API_KEY or ATLAS_OPENAI_API_KEY is required for provider=openai",
+    );
+  }
+  const baseUrl =
+    opts.judgeBaseUrl ??
+    opts.openaiBaseUrl ??
+    readEnv("ATLAS_OPENAI_BASE_URL", "OPENAI_BASE_URL");
+  return createOpenAIModelAdapter({ apiKey, baseUrl, model });
 }
 
 function deriveKey(password: string, length: number): Buffer {
@@ -487,6 +608,77 @@ function gradeAnswer(
   return expectedAnswers.some((answer) => predicted === normalizeAnswer(answer));
 }
 
+function judgePrompt(opts: {
+  question: string;
+  correctAnswer: string;
+  response: string;
+}): string {
+  return [
+    "Judge whether the following [response] to [question] is correct based on the precise and unambiguous [correct_answer] below.",
+    "",
+    `[question]: ${opts.question}`,
+    "",
+    `[response]: ${opts.response}`,
+    "",
+    "Your judgement must use this exact format:",
+    "",
+    "extracted_final_answer: The final exact answer extracted from the [response]. Put None if there is no exact final answer.",
+    "",
+    `[correct_answer]: ${opts.correctAnswer}`,
+    "",
+    "reasoning: Explain only whether the extracted_final_answer matches the correct_answer. Do not solve the problem or propose another answer.",
+    "",
+    "correct: yes or no",
+  ].join("\n");
+}
+
+function readJudgeField(raw: string, field: string): string | null {
+  const pattern = new RegExp(`^${field}:\\s*(.*)$`, "im");
+  const match = raw.match(pattern);
+  return match?.[1]?.trim() || null;
+}
+
+async function judgeResponse(opts: {
+  judge: ModelAdapter;
+  question: string;
+  correctAnswer: string;
+  response: string;
+  timeoutMs: number;
+}): Promise<JudgeResult> {
+  const signal = AbortSignal.timeout(opts.timeoutMs);
+  const resp = await opts.judge.step({
+    system:
+      "You are a strict evaluator for BrowseComp-style answers. Grade only answer equivalence.",
+    messages: [
+      {
+        role: "user",
+        content: judgePrompt({
+          question: opts.question,
+          correctAnswer: opts.correctAnswer,
+          response: opts.response,
+        }),
+      },
+    ],
+    maxTokens: 1024,
+    signal,
+  });
+  const raw = resp.content
+    .map((block) => (block.type === "text" ? block.text : ""))
+    .join("")
+    .trim();
+  const correctRaw = readJudgeField(raw, "correct")?.toLowerCase() ?? "";
+  const extracted = readJudgeField(raw, "extracted_final_answer");
+  return {
+    provider: opts.judge.provider,
+    model: opts.judge.model,
+    correct: /^yes\b/.test(correctRaw),
+    extractedFinalAnswer:
+      extracted && extracted.toLowerCase() !== "none" ? extracted : null,
+    reasoning: readJudgeField(raw, "reasoning") ?? "",
+    raw,
+  };
+}
+
 function summarizeRun(result: ResearchResult): EvalResult["metrics"] {
   return {
     provider: result.provider,
@@ -573,7 +765,11 @@ function traceEvent(event: ResearchEvent, started: number): EvalTraceEvent {
   }
 }
 
-async function runCase(entry: EvalCase, opts: EvalOptions): Promise<EvalResult> {
+async function runCase(
+  entry: EvalCase,
+  opts: EvalOptions,
+  judge: ModelAdapter | undefined,
+): Promise<EvalResult> {
   const started = Date.now();
   const trace: EvalTraceEvent[] = [];
   const heartbeat = setInterval(() => {
@@ -601,13 +797,33 @@ async function runCase(entry: EvalCase, opts: EvalOptions): Promise<EvalResult> 
     });
     clearInterval(heartbeat);
     const predictedAnswer = extractFinalAnswer(result.markdown);
+    const exactCorrect = gradeAnswer(predictedAnswer, entry.answers);
+    let judgeResult: JudgeResult | undefined;
+    let judgeError: string | undefined;
+    if (judge) {
+      try {
+        process.stderr.write(`eval:browsecomp: ${entry.id}: judging response\n`);
+        judgeResult = await judgeResponse({
+          judge,
+          question: entry.query,
+          correctAnswer: entry.answers.join(" OR "),
+          response: result.markdown,
+          timeoutMs: opts.judgeTimeoutMs,
+        });
+      } catch (err) {
+        judgeError = err instanceof Error ? err.message : String(err);
+      }
+    }
     return {
       type: "result",
       id: entry.id,
       query: entry.query,
       expectedAnswers: entry.answers,
       predictedAnswer,
-      correct: gradeAnswer(predictedAnswer, entry.answers),
+      exactCorrect,
+      correct: judgeResult?.correct ?? exactCorrect,
+      ...(judgeResult ? { judge: judgeResult } : {}),
+      ...(judgeError ? { judgeError } : {}),
       latencyMs: Date.now() - started,
       trace,
       metrics: summarizeRun(result),
@@ -620,6 +836,7 @@ async function runCase(entry: EvalCase, opts: EvalOptions): Promise<EvalResult> 
       query: entry.query,
       expectedAnswers: entry.answers,
       predictedAnswer: null,
+      exactCorrect: false,
       correct: false,
       error: err instanceof Error ? err.message : String(err),
       latencyMs: Date.now() - started,
@@ -660,6 +877,9 @@ function median(values: number[]): number {
 function summarize(results: EvalResult[]) {
   const completed = results.filter((result) => !result.error);
   const correct = results.filter((result) => result.correct).length;
+  const exactCorrect = results.filter((result) => result.exactCorrect).length;
+  const judged = results.filter((result) => result.judge !== undefined);
+  const judgeCorrect = judged.filter((result) => result.judge?.correct).length;
   const totalToolCalls = completed.reduce(
     (sum, result) => sum + (result.metrics?.toolCalls ?? 0),
     0,
@@ -670,7 +890,12 @@ function summarize(results: EvalResult[]) {
     completed: completed.length,
     errors: results.length - completed.length,
     correct,
+    exactCorrect,
+    judged: judged.length,
+    judgeCorrect,
     accuracy: results.length === 0 ? 0 : correct / results.length,
+    exactAccuracy: results.length === 0 ? 0 : exactCorrect / results.length,
+    judgeAccuracy: judged.length === 0 ? null : judgeCorrect / judged.length,
     medianLatencyMs: median(completed.map((result) => result.latencyMs)),
     averageToolCalls:
       completed.length === 0 ? 0 : totalToolCalls / completed.length,
@@ -709,6 +934,16 @@ async function main(): Promise<void> {
     sample: opts.sample ?? null,
     timeoutMs: opts.timeoutMs ?? null,
     effort: opts.effort ?? null,
+    judge: opts.judge,
+    judgeProvider: opts.judge
+      ? resolveEvalProvider(opts.judgeProvider ?? opts.provider)
+      : null,
+    judgeModel: opts.judge
+      ? resolveEvalModel(
+          resolveEvalProvider(opts.judgeProvider ?? opts.provider),
+          opts.judgeModel ?? opts.model,
+        )
+      : null,
     selectedCaseIds: selected.map((entry) => entry.id),
     startedAt: new Date().toISOString(),
   };
@@ -720,8 +955,9 @@ async function main(): Promise<void> {
     return;
   }
 
+  const judge = opts.judge ? createJudgeAdapter(opts) : undefined;
   process.stderr.write(
-    `eval:browsecomp: running ${selected.length} case(s), seed=${opts.seed}, timeout=${Math.round((opts.timeoutMs ?? 0) / 1000)}s\n`,
+    `eval:browsecomp: running ${selected.length} case(s), seed=${opts.seed}, timeout=${Math.round((opts.timeoutMs ?? 0) / 1000)}s${judge ? `, judge=${judge.provider}/${judge.model}` : ""}\n`,
   );
   const results = await mapWithConcurrency(
     selected,
@@ -730,7 +966,7 @@ async function main(): Promise<void> {
       process.stderr.write(
         `eval:browsecomp: [${index + 1}/${selected.length}] ${entry.id}\n`,
       );
-      return runCase(entry, opts);
+      return runCase(entry, opts, judge);
     },
   );
   const summary = summarize(results);
@@ -740,6 +976,10 @@ async function main(): Promise<void> {
     [
       `cases: ${summary.total}`,
       `accuracy: ${(summary.accuracy * 100).toFixed(1)}% (${summary.correct}/${summary.total})`,
+      `exact accuracy: ${(summary.exactAccuracy * 100).toFixed(1)}% (${summary.exactCorrect}/${summary.total})`,
+      summary.judgeAccuracy === null
+        ? "judge accuracy: n/a"
+        : `judge accuracy: ${(summary.judgeAccuracy * 100).toFixed(1)}% (${summary.judgeCorrect}/${summary.judged})`,
       `errors: ${summary.errors}`,
       `median latency: ${(summary.medianLatencyMs / 1000).toFixed(1)}s`,
       `avg tool calls: ${summary.averageToolCalls.toFixed(1)}`,
