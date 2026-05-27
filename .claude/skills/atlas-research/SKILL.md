@@ -14,7 +14,7 @@ allowed-tools: Bash, Read
 
 Run a deep-research query via this repo's atlas CLI and return the cited markdown report.
 
-Atlas runs a lightweight agent loop: the selected model chooses when to search, open pages, read opened
+Atlas runs a lightweight research loop: the selected model chooses when to search, fetch sources, read fetched
 sources, and stop with a cited Markdown answer. The harness provides web/search/browser tools,
 runtime limits, caching, and progress events; it does not impose a fixed planning, coverage,
 verification, or rewrite pipeline.

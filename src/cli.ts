@@ -13,12 +13,12 @@ const USAGE = `atlas — deep research from your terminal
 Usage:
   atlas "<question>" [options]
 
-An agent searches, fetches sources, and writes a cited Markdown report.
+A research loop searches, fetches sources, and writes a cited Markdown report.
 
 Options:
   -o, --out <file>            Write the markdown report to <file> (default: stdout)
       --timeout N             Overall wall-clock budget in seconds (default: none)
-      --effort LEVEL          Agent effort: low, medium, high, max (default: high)
+      --effort LEVEL          Research effort: low, medium, high, max (default: high)
       --provider PROVIDER     Model provider: anthropic, openai (default: auto)
       --model MODEL           Model name (default: provider-specific)
       --base-url URL          OpenAI-compatible base URL (provider=openai)
@@ -91,12 +91,12 @@ function paint(color: string, text: string): string {
 
 function prettyEvent(e: ResearchEvent): string {
   switch (e.type) {
-    case "agent_started":
-      return paint(DIM, "  →") + " agent started";
-    case "agent_finished":
+    case "research_started":
+      return paint(DIM, "  →") + " research started";
+    case "research_finished":
       return (
         paint(DIM, "  ✓") +
-        ` agent done — ${e.pages_opened} page${e.pages_opened === 1 ? "" : "s"} opened`
+        ` research done — ${e.sourcesFetched} source${e.sourcesFetched === 1 ? "" : "s"} fetched`
       );
     case "searching":
       return paint(DIM, `    search:`) + ` ${e.query}`;
@@ -109,9 +109,9 @@ function prettyEvent(e: ResearchEvent): string {
     case "rate_limited":
       return (
         paint(YELLOW, "    ! rate limited:") +
-        ` waiting ${e.retry_after_seconds}s (retry ${e.attempt}/${e.max_attempts - 1})`
+        ` waiting ${e.retryAfterSeconds}s (retry ${e.attempt}/${e.maxAttempts - 1})`
       );
-    case "page_opened":
+    case "source_fetched":
       return paint(GREEN, `    ✓`) + ` ${e.url}`;
     case "source_error":
       return paint(YELLOW, `    ! ${e.url} — ${e.error}`);
@@ -122,10 +122,10 @@ function prettyEvent(e: ResearchEvent): string {
       );
     case "written":
       return (
-        paint(GREEN, "✓") + ` written (${e.markdown_chars.toLocaleString()} chars)`
+        paint(GREEN, "✓") + ` written (${e.markdownChars.toLocaleString()} chars)`
       );
     case "completed": {
-      const us = e.result.usage_summary;
+      const us = e.result.usage;
       const totalInput =
         us.input_tokens +
         us.cache_creation_input_tokens +
@@ -140,7 +140,7 @@ function prettyEvent(e: ResearchEvent): string {
       );
       return (
         paint(GREEN, "✓") +
-        ` done — ${e.result.sources.length} documents\n` +
+        ` done — ${e.result.verifiedSources.length} documents\n` +
         tokenLine
       );
     }

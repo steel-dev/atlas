@@ -1,10 +1,12 @@
 export { research } from "./research.js";
 export type {
-  AgentRun,
-  CitedSource,
+  FetchedSource,
   ModelProvider,
   ResearchEvent,
   ResearchOptions,
   ResearchResult,
+  ResearchRun,
+  SourceDocument,
   UsageSummary,
+  VerifiedSource,
 } from "./research.js";

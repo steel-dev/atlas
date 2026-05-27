@@ -53,8 +53,8 @@ const result = await research({
 });
 
 console.log(result.markdown);
-console.log(result.sources); // URLs Atlas fetched and the report cited
-console.log(result.unverified_citations); // cited URLs Atlas did not fetch
+console.log(result.verifiedSources); // URLs Atlas fetched and the report cited
+console.log(result.unverifiedCitations); // cited URLs Atlas did not fetch
 ```
 
 Atlas supports Anthropic and OpenAI-compatible chat completions through a thin internal model adapter. The research loop stays the same: models can call `search` and `fetch`, then Atlas applies runtime limits, source tracking, and citation auditing.

@@ -1,6 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import OpenAI from "openai";
-import type { ResearchEffort } from "./pipeline.js";
+import type { ResearchEffort } from "./defaults.js";
 
 export type ModelProvider = "anthropic" | "openai";
 

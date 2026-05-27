@@ -13,38 +13,38 @@ describe("research source citations", () => {
       ],
     );
 
-    expect(audit.sources).toEqual([
+    expect(audit.verifiedSources).toEqual([
       {
         url: "https://example.com/report?a=1&b=2",
         title: "Example Report",
       },
     ]);
-    expect(audit.unverified_citations).toEqual([]);
+    expect(audit.unverifiedCitations).toEqual([]);
   });
 
-  it("does not promote unopened cited URLs into verified sources", () => {
+  it("does not promote unfetched cited URLs into verified sources", () => {
     const audit = __testing.auditCitationsInMarkdown(
       [
-        "Verified evidence from [Opened](https://example.com/opened).",
-        "Unverified claim from [Unopened](https://example.com/unopened).",
-        "Repeated bare URL should dedupe: https://example.com/unopened.",
+        "Verified evidence from [Fetched](https://example.com/fetched).",
+        "Unverified claim from [Unfetched](https://example.com/unfetched).",
+        "Repeated bare URL should dedupe: https://example.com/unfetched.",
       ].join("\n"),
       [
         {
-          url: "https://example.com/opened",
-          title: "Opened Source",
+          url: "https://example.com/fetched",
+          title: "Fetched Source",
         },
       ],
     );
 
-    expect(audit.sources).toEqual([
+    expect(audit.verifiedSources).toEqual([
       {
-        url: "https://example.com/opened",
-        title: "Opened Source",
+        url: "https://example.com/fetched",
+        title: "Fetched Source",
       },
     ]);
-    expect(audit.unverified_citations).toEqual([
-      "https://example.com/unopened",
+    expect(audit.unverifiedCitations).toEqual([
+      "https://example.com/unfetched",
     ]);
   });
 });

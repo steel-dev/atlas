@@ -8,13 +8,13 @@ import type {
 } from "./model.js";
 import {
   __testing,
-  createOpenReservations,
+  createSourceReservations,
   createResearchCaches,
-  createSteelGate,
-  runGatherAgent,
-  type AgentContext,
-  type OpenedSourceFile,
+  createSteelConcurrencyGate,
+  runResearchLoop,
+  type ResearchLoopContext,
 } from "./tools.js";
+import type { SourceDocument } from "./sources.js";
 
 function messageWith(content: ModelAssistantBlock[]): { content: ModelAssistantBlock[] } {
   return { content };
@@ -38,21 +38,21 @@ function toolUse(
   return { type: "tool_call", id, name, input };
 }
 
-function sourceFile(
+function sourceDocument(
   url: string,
   title: string,
   markdown: string,
-): OpenedSourceFile {
+): SourceDocument {
   return {
     url,
     title,
     markdown,
-    original_chars: markdown.length,
-    stored_chars: markdown.length,
+    originalChars: markdown.length,
+    storedChars: markdown.length,
     truncated: false,
     metadata: {
-      markdown_chars: markdown.length,
-      extraction_notes: ["Test source."],
+      markdownChars: markdown.length,
+      extractionNotes: ["Test source."],
     },
   };
 }
@@ -60,11 +60,11 @@ function sourceFile(
 function createContext(opts: {
   messagesCreate: ReturnType<typeof vi.fn>;
   scrape?: unknown;
-  openedPages?: AgentContext["openedPages"];
-  openedSourceFiles?: AgentContext["openedSourceFiles"];
-  openedPageCap?: number;
+  fetchedSources?: ResearchLoopContext["fetchedSources"];
+  sourceDocuments?: ResearchLoopContext["sourceDocuments"];
+  sourceCap?: number;
   useProxy?: boolean;
-}): AgentContext {
+}): ResearchLoopContext {
   return {
     model: {
       provider: "anthropic",
@@ -78,16 +78,16 @@ function createContext(opts: {
       step: opts.messagesCreate as (input: ModelStepInput) => Promise<{ content: ModelAssistantBlock[] }>,
     } satisfies ModelAdapter,
     steel: { scrape: opts.scrape ?? vi.fn() } as unknown as Steel,
-    openedPages: opts.openedPages ?? [],
-    openedSourceFiles: opts.openedSourceFiles ?? new Map(),
+    fetchedSources: opts.fetchedSources ?? [],
+    sourceDocuments: opts.sourceDocuments ?? new Map(),
     emit: vi.fn(),
     abort: vi.fn(),
     defaultEngine: "ddg",
     useProxy: opts.useProxy ?? false,
-    openedPageCap: opts.openedPageCap ?? 4,
+    sourceCap: opts.sourceCap ?? 4,
     maxConcurrentTools: 2,
-    steelGate: createSteelGate(2),
-    openReservations: createOpenReservations(),
+    steelConcurrencyGate: createSteelConcurrencyGate(2),
+    sourceReservations: createSourceReservations(),
     caches: createResearchCaches(),
   };
 }
@@ -146,7 +146,7 @@ describe("tool helpers", () => {
   });
 });
 
-describe("gather loop cache integration", () => {
+describe("research loop cache integration", () => {
   it("reuses cached SERPs across repeated search tool calls", async () => {
     vi.stubGlobal(
       "fetch",
@@ -177,16 +177,16 @@ describe("gather loop cache integration", () => {
       .mockResolvedValueOnce(finalReport());
     const ctx = createContext({ messagesCreate, scrape });
 
-    const result = await runGatherAgent({
+    const result = await runResearchLoop({
       ctx,
       query: "What is Atlas?",
-      max_tool_calls: 3,
+      maxToolCalls: 3,
     });
     const secondRequest = messagesCreate.mock.calls[1]?.[0] as {
       messages: Array<{ content: unknown }>;
     };
 
-    expect(result.finish_reason).toBe("final report");
+    expect(result.finishReason).toBe("final report");
     expect(result.markdown).toContain("# Test Report");
     expect(messagesCreate).toHaveBeenCalledTimes(3);
     expect(toolResultText(secondRequest)).toContain('"results"');
@@ -231,10 +231,10 @@ describe("gather loop cache integration", () => {
       .mockResolvedValueOnce(finalReport());
     const ctx = createContext({ messagesCreate });
 
-    const result = await runGatherAgent({
+    const result = await runResearchLoop({
       ctx,
       query: "What is Atlas?",
-      max_tool_calls: 2,
+      maxToolCalls: 2,
     });
     const followupRequest = messagesCreate.mock.calls[1]?.[0] as {
       messages: Array<{ content: unknown }>;
@@ -251,7 +251,7 @@ describe("gather loop cache integration", () => {
       }>;
     };
 
-    expect(result.finish_reason).toBe("final report");
+    expect(result.finishReason).toBe("final report");
     expect(payload.engine).toBe("ddg");
     expect(payload.results).toEqual([
       {
@@ -306,10 +306,10 @@ describe("gather loop cache integration", () => {
       .mockResolvedValueOnce(finalReport());
     const ctx = createContext({ messagesCreate, scrape });
 
-    const result = await runGatherAgent({
+    const result = await runResearchLoop({
       ctx,
       query: "What is Atlas?",
-      max_tool_calls: 2,
+      maxToolCalls: 2,
     });
     const followupRequest = messagesCreate.mock.calls[1]?.[0] as {
       messages: Array<{ content: unknown }>;
@@ -326,7 +326,7 @@ describe("gather loop cache integration", () => {
       }>;
     };
 
-    expect(result.finish_reason).toBe("final report");
+    expect(result.finishReason).toBe("final report");
     expect(payload.engine).toBe("bing");
     expect(payload.results).toEqual([
       {
@@ -383,10 +383,10 @@ describe("gather loop cache integration", () => {
       .mockResolvedValueOnce(finalReport());
     const ctx = createContext({ messagesCreate, scrape });
 
-    const result = await runGatherAgent({
+    const result = await runResearchLoop({
       ctx,
       query: "What is Atlas?",
-      max_tool_calls: 2,
+      maxToolCalls: 2,
     });
     const followupRequest = messagesCreate.mock.calls[1]?.[0] as {
       messages: Array<{ content: unknown }>;
@@ -403,7 +403,7 @@ describe("gather loop cache integration", () => {
       }>;
     };
 
-    expect(result.finish_reason).toBe("final report");
+    expect(result.finishReason).toBe("final report");
     expect(payload.engine).toBe("bing");
     expect(payload.results).toEqual([
       {
@@ -423,10 +423,10 @@ describe("gather loop cache integration", () => {
     const messagesCreate = vi.fn().mockResolvedValueOnce(finalReport());
     const ctx = createContext({ messagesCreate });
 
-    await runGatherAgent({
+    await runResearchLoop({
       ctx,
       query: "What is Atlas?",
-      max_tool_calls: 2,
+      maxToolCalls: 2,
     });
     const request = messagesCreate.mock.calls[0]?.[0] as {
       tools: Array<{
@@ -456,25 +456,25 @@ describe("gather loop cache integration", () => {
       .mockResolvedValueOnce(finalReport());
     const ctx = createContext({ messagesCreate, scrape });
 
-    const result = await runGatherAgent({
+    const result = await runResearchLoop({
       ctx,
       query: "What is Atlas?",
-      max_tool_calls: 2,
+      maxToolCalls: 2,
     });
     const followupRequest = messagesCreate.mock.calls[1]?.[0] as {
       messages: Array<{ content: unknown }>;
     };
 
-    expect(result.finish_reason).toBe("final report");
+    expect(result.finishReason).toBe("final report");
     expect(result.markdown).toContain("# Test Report");
     expect(scrape).toHaveBeenCalledTimes(1);
-    expect(ctx.openedPages).toEqual([
+    expect(ctx.fetchedSources).toEqual([
       {
         url: "https://example.com/source",
         title: "Primary Source",
       },
     ]);
-    expect(ctx.openedSourceFiles.get("https://example.com/source")?.markdown).toContain("Detailed source body");
+    expect(ctx.sourceDocuments.get("https://example.com/source")?.markdown).toContain("Detailed source body");
     expect(toolResultText(followupRequest)).toContain('"url": "https://example.com/source"');
     expect(toolResultText(followupRequest)).not.toContain('"extraction_method"');
     expect(toolResultText(followupRequest)).toContain('"content"');
@@ -509,16 +509,16 @@ describe("gather loop cache integration", () => {
       .mockResolvedValueOnce(finalReport());
     const ctx = createContext({ messagesCreate, scrape });
 
-    const result = await runGatherAgent({
+    const result = await runResearchLoop({
       ctx,
       query: "What is Atlas?",
-      max_tool_calls: 3,
+      maxToolCalls: 3,
     });
     const readRequest = messagesCreate.mock.calls[2]?.[0] as {
       messages: Array<{ content: unknown }>;
     };
 
-    expect(result.finish_reason).toBe("final report");
+    expect(result.finishReason).toBe("final report");
     expect(scrape).toHaveBeenCalledTimes(1);
     expect(toolResultText(readRequest)).toContain('"url": "https://example.com/source"');
     expect(toolResultText(readRequest)).toContain('"offset": 80');
@@ -552,18 +552,18 @@ describe("gather loop cache integration", () => {
       .mockResolvedValueOnce(finalReport());
     const ctx = createContext({ messagesCreate, scrape });
 
-    const result = await runGatherAgent({
+    const result = await runResearchLoop({
       ctx,
       query: "What is Atlas?",
-      max_tool_calls: 2,
+      maxToolCalls: 2,
     });
     const followupRequest = messagesCreate.mock.calls[1]?.[0] as {
       messages: Array<{ content: unknown }>;
     };
 
-    expect(result.finish_reason).toBe("final report after tool call budget exhausted");
+    expect(result.finishReason).toBe("final report after tool call budget exhausted");
     expect(scrape).toHaveBeenCalledTimes(1);
-    expect(ctx.openedPages).toEqual([
+    expect(ctx.fetchedSources).toEqual([
       {
         url: "https://example.com/shared",
         title: "Shared Source",
@@ -573,20 +573,20 @@ describe("gather loop cache integration", () => {
     expect(toolResultText(followupRequest)).toContain("Evidence from one browser fetch");
   });
 
-  it("starts gather runs with a minimal research-question prompt", async () => {
+  it("starts research runs with a minimal research-question prompt", async () => {
     const messagesCreate = vi.fn().mockResolvedValueOnce(finalReport());
     const ctx = createContext({
       messagesCreate,
-      openedPages: [
+      fetchedSources: [
         {
           url: "https://example.com/primary",
           title: "Primary Source",
         },
       ],
-      openedSourceFiles: new Map([
+      sourceDocuments: new Map([
         [
           "https://example.com/primary",
-          sourceFile(
+          sourceDocument(
             "https://example.com/primary",
             "Primary Source",
             "# Primary Source\n\nUseful evidence.",
@@ -595,20 +595,20 @@ describe("gather loop cache integration", () => {
       ]),
     });
 
-    const result = await runGatherAgent({
+    const result = await runResearchLoop({
       ctx,
       query: "What is Atlas?",
-      max_tool_calls: 3,
+      maxToolCalls: 3,
     });
     const request = messagesCreate.mock.calls[0]?.[0] as {
       messages: Array<{ content: string }>;
     };
 
-    expect(result.finish_reason).toBe("final report");
+    expect(result.finishReason).toBe("final report");
     expect(result.markdown).toContain("# Test Report");
     expect(request.messages[0]?.content).toBe("Research question: What is Atlas?");
     expect(ctx.emit).toHaveBeenCalledWith({
-      type: "agent_started",
+      type: "research_started",
     });
   });
 
@@ -616,24 +616,24 @@ describe("gather loop cache integration", () => {
     const messagesCreate = vi.fn().mockResolvedValueOnce(finalReport());
     const ctx = createContext({
       messagesCreate,
-      openedPages: [
+      fetchedSources: [
         { url: "https://example.com/one", title: "One" },
         { url: "https://example.com/two", title: "Two" },
       ],
     });
 
-    const result = await runGatherAgent({
+    const result = await runResearchLoop({
       ctx,
       query: "What is Atlas?",
-      max_tool_calls: 2,
+      maxToolCalls: 2,
     });
 
-    expect(result.finish_reason).toBe("final report");
+    expect(result.finishReason).toBe("final report");
     expect(result.markdown).toContain("# Test Report");
     expect(messagesCreate).toHaveBeenCalledTimes(1);
   });
 
-  it("continues reading fetched sources after the open page cap is reached", async () => {
+  it("continues reading fetched sources after the source cap is reached", async () => {
     const messagesCreate = vi
       .fn()
       .mockResolvedValueOnce(
@@ -648,32 +648,32 @@ describe("gather loop cache integration", () => {
       .mockResolvedValueOnce(finalReport());
     const ctx = createContext({
       messagesCreate,
-      openedPages: [
+      fetchedSources: [
         { url: "https://example.com/capped", title: "Capped Source" },
       ],
-      openedSourceFiles: new Map([
+      sourceDocuments: new Map([
         [
           "https://example.com/capped",
-          sourceFile(
+          sourceDocument(
             "https://example.com/capped",
             "Capped Source",
             "# Capped Source\n\nEvidence remains readable after the open cap.",
           ),
         ],
       ]),
-      openedPageCap: 1,
+      sourceCap: 1,
     });
 
-    const result = await runGatherAgent({
+    const result = await runResearchLoop({
       ctx,
       query: "What is Atlas?",
-      max_tool_calls: 2,
+      maxToolCalls: 2,
     });
     const followupRequest = messagesCreate.mock.calls[1]?.[0] as {
       messages: Array<{ content: unknown }>;
     };
 
-    expect(result.finish_reason).toBe("final report");
+    expect(result.finishReason).toBe("final report");
     expect(messagesCreate).toHaveBeenCalledTimes(2);
     expect(JSON.stringify(followupRequest.messages)).toContain(
       "Evidence remains readable after the open cap.",
@@ -693,13 +693,13 @@ describe("gather loop cache integration", () => {
       );
     const ctx = createContext({ messagesCreate });
 
-    const result = await runGatherAgent({
+    const result = await runResearchLoop({
       ctx,
       query: "What is Atlas?",
-      max_tool_calls: 2,
+      maxToolCalls: 2,
     });
 
-    expect(result.finish_reason).toBe("final report");
+    expect(result.finishReason).toBe("final report");
     expect(result.markdown).toBe(
       "A concise supported answer without a forced heading scaffold.",
     );
@@ -726,21 +726,21 @@ describe("gather loop cache integration", () => {
       .mockResolvedValueOnce(finalReport());
     const ctx = createContext({ messagesCreate, scrape });
 
-    const result = await runGatherAgent({
+    const result = await runResearchLoop({
       ctx,
       query: "What is Atlas?",
-      max_tool_calls: 1,
+      maxToolCalls: 1,
     });
     const synthesisRequest = messagesCreate.mock.calls[1]?.[0] as {
       messages: Array<{ content: unknown }>;
       tools?: unknown;
     };
 
-    expect(result.finish_reason).toBe(
+    expect(result.finishReason).toBe(
       "final report after tool call budget exhausted",
     );
     expect(result.markdown).toContain("# Test Report");
-    expect(result.tool_calls).toBe(1);
+    expect(result.toolCalls).toBe(1);
     expect(messagesCreate).toHaveBeenCalledTimes(2);
     expect(scrape).toHaveBeenCalledTimes(1);
     expect(synthesisRequest.tools).toBeUndefined();
@@ -769,20 +769,20 @@ describe("gather loop cache integration", () => {
       .mockResolvedValueOnce(finalReport());
     const ctx = createContext({ messagesCreate, scrape });
 
-    const result = await runGatherAgent({
+    const result = await runResearchLoop({
       ctx,
       query: "What is Atlas?",
-      max_tool_calls: 2,
+      maxToolCalls: 2,
     });
     const followupRequest = messagesCreate.mock.calls[1]?.[0] as {
       messages: Array<{ content: unknown }>;
     };
 
-    expect(result.finish_reason).toBe("final report");
+    expect(result.finishReason).toBe("final report");
     expect(result.markdown).toContain("# Test Report");
     expect(fetch).not.toHaveBeenCalled();
     expect(scrape).toHaveBeenCalledTimes(1);
-    expect(ctx.openedPages[0]).toMatchObject({
+    expect(ctx.fetchedSources[0]).toMatchObject({
       url: "https://example.com/js-app",
       title: "Steel Fetch",
     });
@@ -804,13 +804,13 @@ describe("gather loop cache integration", () => {
       .mockResolvedValueOnce(finalReport());
     const ctx = createContext({ messagesCreate, scrape, useProxy: true });
 
-    const result = await runGatherAgent({
+    const result = await runResearchLoop({
       ctx,
       query: "What is Atlas?",
-      max_tool_calls: 2,
+      maxToolCalls: 2,
     });
 
-    expect(result.finish_reason).toBe("final report");
+    expect(result.finishReason).toBe("final report");
     expect(scrape).toHaveBeenCalledWith(
       {
         url: "https://example.com/proxy",
@@ -834,13 +834,13 @@ describe("gather loop cache integration", () => {
       .mockResolvedValueOnce(finalReport());
     const ctx = createContext({ messagesCreate });
 
-    const result = await runGatherAgent({
+    const result = await runResearchLoop({
       ctx,
       query: "What is Atlas?",
-      max_tool_calls: 2,
+      maxToolCalls: 2,
     });
 
-    expect(result.finish_reason).toBe("final report");
-    expect(ctx.openedPages).toEqual([]);
+    expect(result.finishReason).toBe("final report");
+    expect(ctx.fetchedSources).toEqual([]);
   });
 });

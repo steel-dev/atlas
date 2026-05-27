@@ -7,7 +7,7 @@ import type {
   ModelToolDefinition,
   ModelToolResult,
 } from "./model.js";
-import { type CitedSource, type ResearchEffort } from "./pipeline.js";
+import type { ResearchEffort } from "./defaults.js";
 import {
   ENGINES,
   webSearch,
@@ -15,6 +15,11 @@ import {
   type SearchResult,
   type WebSearchOutcome,
 } from "./search.js";
+import type {
+  FetchedSource,
+  SourceDocument,
+  SourceExtractionMetadata,
+} from "./sources.js";
 import { normalizeUrlForSource } from "./url.js";
 
 const STORED_MARKDOWN_CAP = 500_000;
@@ -25,35 +30,20 @@ const DEFAULT_MAX_TOOL_CALLS = 12;
 const DEFAULT_MAX_CONCURRENT_TOOLS = 4;
 const STEEL_RATE_LIMIT_MAX_ATTEMPTS = 6;
 const DEFAULT_RATE_LIMIT_RETRY_SECONDS = 15;
-export interface SteelGate {
+export interface SteelConcurrencyGate {
   run<T>(fn: () => Promise<T>): Promise<T>;
 }
 
-export interface OpenReservations {
+export interface SourceReservations {
   urls: Set<string>;
-  pageSlots: number;
-  files: Map<string, Promise<OpenedSourceFile | null>>;
+  sourceSlots: number;
+  documents: Map<string, Promise<SourceDocument | null>>;
 }
 
 interface ScrapeCacheEntry {
   markdown: string;
   title: string | null;
-  metadata: ExtractionMetadata;
-}
-
-interface ExtractionMetadata {
-  markdown_chars: number;
-  extraction_notes: string[];
-}
-
-export interface OpenedSourceFile {
-  url: string;
-  title: string;
-  markdown: string;
-  original_chars: number;
-  stored_chars: number;
-  truncated: boolean;
-  metadata: ExtractionMetadata;
+  metadata: SourceExtractionMetadata;
 }
 
 export interface ResearchCaches {
@@ -61,7 +51,7 @@ export interface ResearchCaches {
   scrape: Map<string, Promise<ScrapeCacheEntry>>;
 }
 
-class Semaphore implements SteelGate {
+class Semaphore implements SteelConcurrencyGate {
   private active = 0;
   private readonly waiting: Array<() => void> = [];
 
@@ -95,7 +85,7 @@ class Semaphore implements SteelGate {
   }
 }
 
-export function createSteelGate(limit: number): SteelGate {
+export function createSteelConcurrencyGate(limit: number): SteelConcurrencyGate {
   const normalized = Number.isFinite(limit)
     ? Math.max(1, Math.floor(limit))
     : 1;
@@ -109,38 +99,38 @@ export function createResearchCaches(): ResearchCaches {
   };
 }
 
-export function createOpenReservations(): OpenReservations {
+export function createSourceReservations(): SourceReservations {
   return {
     urls: new Set<string>(),
-    pageSlots: 0,
-    files: new Map<string, Promise<OpenedSourceFile | null>>(),
+    sourceSlots: 0,
+    documents: new Map<string, Promise<SourceDocument | null>>(),
   };
 }
 
-export interface AgentContext {
+export interface ResearchLoopContext {
   model: ModelAdapter;
   steel: Steel;
-  openedPages: CitedSource[];
-  openedSourceFiles: Map<string, OpenedSourceFile>;
-  emit: (e: AgenticEvent) => void;
+  fetchedSources: FetchedSource[];
+  sourceDocuments: Map<string, SourceDocument>;
+  emit: (e: ResearchLoopEvent) => void;
   abort: () => void;
   /** Forwarded to every model / Steel / HTTP call so cancellation
    *  interrupts in-flight requests, not just step boundaries. */
   signal?: AbortSignal;
   defaultEngine: Engine;
   useProxy: boolean;
-  openedPageCap: number;
-  gatherMaxTokens?: number;
+  sourceCap: number;
+  maxOutputTokens?: number;
   defaultSearchLimit?: number;
   maxConcurrentTools?: number;
   fetchSnippetChars?: number;
-  steelGate: SteelGate;
-  openReservations: OpenReservations;
+  steelConcurrencyGate: SteelConcurrencyGate;
+  sourceReservations: SourceReservations;
   caches: ResearchCaches;
 }
 
-export type AgenticEvent =
-  | { type: "agent_started" }
+export type ResearchLoopEvent =
+  | { type: "research_started" }
   | {
       type: "searching";
       index: number;
@@ -159,22 +149,22 @@ export type AgenticEvent =
   | { type: "fetching"; url: string }
   | {
       type: "rate_limited";
-      retry_after_seconds: number;
+      retryAfterSeconds: number;
       attempt: number;
-      max_attempts: number;
+      maxAttempts: number;
     }
   | {
-      type: "page_opened";
+      type: "source_fetched";
       url: string;
       title: string;
     }
   | { type: "source_error"; url: string; error: string }
-  | { type: "agent_finished"; pages_opened: number };
+  | { type: "research_finished"; sourcesFetched: number };
 
-export interface AgenticRunResult {
-  opened_urls: string[];
-  tool_calls: number;
-  finish_reason: string;
+export interface ResearchLoopResult {
+  fetchedUrls: string[];
+  toolCalls: number;
+  finishReason: string;
   messages: ModelMessage[];
   markdown: string;
 }
@@ -190,7 +180,7 @@ interface FetchToolInput {
   max_chars?: number;
 }
 
-const AGENT_TOOLS: ModelToolDefinition[] = [
+const RESEARCH_TOOLS: ModelToolDefinition[] = [
   {
     name: "search",
     description: "Search the web.",
@@ -238,10 +228,10 @@ const AGENT_TOOLS: ModelToolDefinition[] = [
   },
 ];
 
-const AGENT_SYSTEM = `You're a deep research agent. Use the available tools as needed to answer the user's question. When you have enough evidence, stop using tools and write a cited Markdown report.`;
+const RESEARCH_SYSTEM_PROMPT = `You're a deep research agent. Use the available tools as needed to answer the user's question. When you have enough evidence, stop using tools and write a cited Markdown report.`;
 
-function totalOpenSlots(ctx: AgentContext): number {
-  return ctx.openedPages.length + ctx.openReservations.pageSlots;
+function totalSourceSlots(ctx: ResearchLoopContext): number {
+  return ctx.fetchedSources.length + ctx.sourceReservations.sourceSlots;
 }
 
 const normalizeFetchUrl = normalizeUrlForSource;
@@ -272,29 +262,29 @@ function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-function createSourceFile(
+function createSourceDocument(
   url: string,
   title: string,
   markdown: string,
-  metadata: ExtractionMetadata,
+  metadata: SourceExtractionMetadata,
   originalChars = markdown.length,
-): OpenedSourceFile {
+): SourceDocument {
   return {
     url,
     title,
     markdown,
-    original_chars: originalChars,
-    stored_chars: markdown.length,
+    originalChars,
+    storedChars: markdown.length,
     truncated: originalChars > markdown.length,
     metadata,
   };
 }
 
-function findSourceByUrl(
-  ctx: AgentContext,
+function findSourceDocumentByUrl(
+  ctx: ResearchLoopContext,
   normalizedUrl: string,
-): OpenedSourceFile | undefined {
-  return ctx.openedSourceFiles.get(normalizedUrl);
+): SourceDocument | undefined {
+  return ctx.sourceDocuments.get(normalizedUrl);
 }
 
 function textFromContent(content: ModelAssistantBlock[]): string {
@@ -304,7 +294,7 @@ function textFromContent(content: ModelAssistantBlock[]): string {
     .trim();
 }
 
-function gatherStartPrompt(opts: { query: string }): string {
+function researchQuestionPrompt(opts: { query: string }): string {
   return `Research question: ${opts.query}`;
 }
 
@@ -376,12 +366,12 @@ async function delay(ms: number, signal?: AbortSignal): Promise<void> {
 }
 
 async function runSteelRequest<T>(
-  ctx: AgentContext,
+  ctx: ResearchLoopContext,
   request: () => Promise<T>,
 ): Promise<T> {
   for (let attempt = 1; attempt <= STEEL_RATE_LIMIT_MAX_ATTEMPTS; attempt++) {
     try {
-      return await ctx.steelGate.run(request);
+      return await ctx.steelConcurrencyGate.run(request);
     } catch (err) {
       const retryAfterSeconds = parseRetryAfterSeconds(err);
       if (!retryAfterSeconds || attempt >= STEEL_RATE_LIMIT_MAX_ATTEMPTS) {
@@ -389,9 +379,9 @@ async function runSteelRequest<T>(
       }
       ctx.emit({
         type: "rate_limited",
-        retry_after_seconds: retryAfterSeconds,
+        retryAfterSeconds,
         attempt,
-        max_attempts: STEEL_RATE_LIMIT_MAX_ATTEMPTS,
+        maxAttempts: STEEL_RATE_LIMIT_MAX_ATTEMPTS,
       });
       await delay((retryAfterSeconds + 1) * 1000, ctx.signal);
     }
@@ -401,7 +391,7 @@ async function runSteelRequest<T>(
 }
 
 async function searchWithCache(
-  ctx: AgentContext,
+  ctx: ResearchLoopContext,
   opts: { query: string; limit: number; engine: Engine },
 ): Promise<WebSearchOutcome> {
   const cacheKey = searchCacheKey({
@@ -433,32 +423,35 @@ async function searchWithCache(
   }
 }
 
-interface OpenReservation {
+interface SourceReservation {
   url: string;
 }
 
-function reserveOpen(ctx: AgentContext, url: string): OpenReservation | string {
+function reserveSource(
+  ctx: ResearchLoopContext,
+  url: string,
+): SourceReservation | string {
   const normalizedUrl = normalizeFetchUrl(url);
-  if (ctx.openReservations.urls.has(normalizedUrl)) {
+  if (ctx.sourceReservations.urls.has(normalizedUrl)) {
     return `Already being fetched: ${url}. Try another source or continue after this fetch completes.`;
   }
-  if (totalOpenSlots(ctx) >= ctx.openedPageCap) {
-    return `Opened page cap reached (${ctx.openedPageCap}). Continue reading fetched URLs with offset/max_chars or write the report.`;
+  if (totalSourceSlots(ctx) >= ctx.sourceCap) {
+    return `Fetched source cap reached (${ctx.sourceCap}). Continue reading fetched URLs with offset/max_chars or write the report.`;
   }
 
-  ctx.openReservations.urls.add(normalizedUrl);
-  ctx.openReservations.pageSlots++;
+  ctx.sourceReservations.urls.add(normalizedUrl);
+  ctx.sourceReservations.sourceSlots++;
   return { url: normalizedUrl };
 }
 
-function releaseOpenReservation(
-  ctx: AgentContext,
-  reservation: OpenReservation,
+function releaseSourceReservation(
+  ctx: ResearchLoopContext,
+  reservation: SourceReservation,
 ): void {
-  ctx.openReservations.urls.delete(reservation.url);
-  ctx.openReservations.pageSlots = Math.max(
+  ctx.sourceReservations.urls.delete(reservation.url);
+  ctx.sourceReservations.sourceSlots = Math.max(
     0,
-    ctx.openReservations.pageSlots - 1,
+    ctx.sourceReservations.sourceSlots - 1,
   );
 }
 
@@ -504,7 +497,7 @@ function dedupeSearchResults(
 
 async function execSearch(
   args: SearchToolInput,
-  ctx: AgentContext,
+  ctx: ResearchLoopContext,
   searchIndex: number,
 ): Promise<string> {
   const query = String(args.query ?? "").trim();
@@ -586,14 +579,14 @@ async function execSearch(
   return `Search failed: ${error}`;
 }
 
-interface OpenOutcome {
+interface FetchOutcome {
   text: string;
-  opened_url?: string;
+  fetchedUrl?: string;
 }
 
 interface ToolExecution {
   toolResult: ModelToolResult;
-  opened_url?: string;
+  fetchedUrl?: string;
 }
 
 async function mapWithConcurrency<T, R>(
@@ -621,7 +614,7 @@ async function mapWithConcurrency<T, R>(
 
 async function executeToolUse(
   tu: ModelToolCall,
-  ctx: AgentContext,
+  ctx: ResearchLoopContext,
   searchIndex?: number,
 ): Promise<ToolExecution> {
   if (tu.name === "search") {
@@ -655,7 +648,7 @@ async function executeToolUse(
     try {
       const out = await execFetch((tu.input as FetchToolInput) ?? {}, ctx);
       return {
-        opened_url: out.opened_url,
+        fetchedUrl: out.fetchedUrl,
         toolResult: {
           type: "tool_result",
           tool_call_id: tu.id,
@@ -695,10 +688,10 @@ function validateHttpUrl(url: string): string | null {
 
 function extractionMetadataFromSteel(
   markdownChars: number,
-): ExtractionMetadata {
+): SourceExtractionMetadata {
   return {
-    markdown_chars: markdownChars,
-    extraction_notes: ["Fetched with browser-rendered markdown."],
+    markdownChars,
+    extractionNotes: ["Fetched with browser-rendered markdown."],
   };
 }
 
@@ -722,7 +715,7 @@ function storeMarkdown(markdown: string): {
 }
 
 async function scrapeWithCache(
-  ctx: AgentContext,
+  ctx: ResearchLoopContext,
   url: string,
 ): Promise<ScrapeCacheEntry> {
   let scrapePromise = ctx.caches.scrape.get(url);
@@ -766,7 +759,7 @@ function readOffset(args: FetchToolInput): number | string {
 
 function readMaxChars(
   args: FetchToolInput,
-  ctx: AgentContext,
+  ctx: ResearchLoopContext,
 ): number | string {
   const raw = args.max_chars ?? ctx.fetchSnippetChars ?? DEFAULT_FETCH_CHARS;
   const maxChars = Math.min(
@@ -780,17 +773,17 @@ function readMaxChars(
 }
 
 function formatFetchResult(
-  file: OpenedSourceFile,
+  document: SourceDocument,
   offset: number,
   maxChars: number,
 ): string {
-  const start = Math.min(offset, file.markdown.length);
-  const end = Math.min(file.markdown.length, start + maxChars);
-  const content = file.markdown.slice(start, end);
-  const hasMore = end < file.markdown.length;
+  const start = Math.min(offset, document.markdown.length);
+  const end = Math.min(document.markdown.length, start + maxChars);
+  const content = document.markdown.slice(start, end);
+  const hasMore = end < document.markdown.length;
   const result = {
-    title: file.title,
-    url: file.url,
+    title: document.title,
+    url: document.url,
     offset: start,
     next_offset: hasMore ? end : null,
     has_more: hasMore,
@@ -799,10 +792,10 @@ function formatFetchResult(
   return JSON.stringify(result, null, 2);
 }
 
-async function openSourceFile(
-  ctx: AgentContext,
+async function fetchSourceDocument(
+  ctx: ResearchLoopContext,
   url: string,
-): Promise<OpenedSourceFile | null> {
+): Promise<SourceDocument | null> {
   ctx.emit({ type: "fetching", url });
 
   const { markdown, title, metadata } = await scrapeWithCache(ctx, url);
@@ -818,32 +811,32 @@ async function openSourceFile(
 
   const resolvedTitle = title ?? url;
   const stored = storeMarkdown(markdown);
-  const file = createSourceFile(
+  const document = createSourceDocument(
     url,
     resolvedTitle,
     stored.markdown,
     metadata,
     stored.originalChars,
   );
-  ctx.openedPages.push({
+  ctx.fetchedSources.push({
     url,
     title: resolvedTitle,
   });
-  ctx.openedSourceFiles.set(normalizeFetchUrl(url), file);
+  ctx.sourceDocuments.set(normalizeFetchUrl(url), document);
 
   ctx.emit({
-    type: "page_opened",
+    type: "source_fetched",
     url,
     title: resolvedTitle,
   });
 
-  return file;
+  return document;
 }
 
 async function execFetch(
   args: FetchToolInput,
-  ctx: AgentContext,
-): Promise<OpenOutcome> {
+  ctx: ResearchLoopContext,
+): Promise<FetchOutcome> {
   const offset = readOffset(args);
   if (typeof offset === "string") return { text: offset };
   const maxChars = readMaxChars(args, ctx);
@@ -853,36 +846,36 @@ async function execFetch(
   const validationError = validateHttpUrl(requestedUrl);
   if (validationError) return { text: validationError };
   const normalizedUrl = normalizeFetchUrl(requestedUrl);
-  const existing = findSourceByUrl(ctx, normalizedUrl);
+  const existing = findSourceDocumentByUrl(ctx, normalizedUrl);
   if (existing) {
     return { text: formatFetchResult(existing, offset, maxChars) };
   }
 
   ctx.abort();
 
-  let openedThisCall = false;
-  let openPromise = ctx.openReservations.files.get(normalizedUrl);
-  if (!openPromise) {
-    const reservation = reserveOpen(ctx, requestedUrl);
+  let fetchedThisCall = false;
+  let documentPromise = ctx.sourceReservations.documents.get(normalizedUrl);
+  if (!documentPromise) {
+    const reservation = reserveSource(ctx, requestedUrl);
     if (typeof reservation === "string") return { text: reservation };
     const url = reservation.url;
-    openedThisCall = true;
-    openPromise = openSourceFile(ctx, url).finally(() => {
-      ctx.openReservations.files.delete(normalizedUrl);
-      releaseOpenReservation(ctx, reservation);
+    fetchedThisCall = true;
+    documentPromise = fetchSourceDocument(ctx, url).finally(() => {
+      ctx.sourceReservations.documents.delete(normalizedUrl);
+      releaseSourceReservation(ctx, reservation);
     });
-    ctx.openReservations.files.set(normalizedUrl, openPromise);
+    ctx.sourceReservations.documents.set(normalizedUrl, documentPromise);
   }
 
   try {
-    const file = await openPromise;
-    if (!file) {
+    const document = await documentPromise;
+    if (!document) {
       return { text: "Empty page (no content fetched)." };
     }
 
     return {
-      opened_url: openedThisCall ? file.url : undefined,
-      text: formatFetchResult(file, offset, maxChars),
+      fetchedUrl: fetchedThisCall ? document.url : undefined,
+      text: formatFetchResult(document, offset, maxChars),
     };
   } catch (err) {
     ctx.caches.scrape.delete(normalizedUrl);
@@ -896,18 +889,18 @@ async function execFetch(
   }
 }
 
-export async function runGatherAgent(opts: {
-  ctx: AgentContext;
+export async function runResearchLoop(opts: {
+  ctx: ResearchLoopContext;
   query: string;
-  max_tool_calls?: number;
+  maxToolCalls?: number;
   effort?: ResearchEffort;
-}): Promise<AgenticRunResult> {
+}): Promise<ResearchLoopResult> {
   const { ctx, query } = opts;
-  const maxToolCalls = opts.max_tool_calls ?? DEFAULT_MAX_TOOL_CALLS;
+  const maxToolCalls = opts.maxToolCalls ?? DEFAULT_MAX_TOOL_CALLS;
 
-  ctx.emit({ type: "agent_started" });
+  ctx.emit({ type: "research_started" });
 
-  const openedUrls: string[] = [];
+  const fetchedUrls: string[] = [];
   let toolCalls = 0;
   let finishReason = "tool call budget exhausted";
   let markdown = "";
@@ -916,7 +909,7 @@ export async function runGatherAgent(opts: {
   const messages: ModelMessage[] = [
     {
       role: "user",
-      content: gatherStartPrompt({ query }),
+      content: researchQuestionPrompt({ query }),
     },
   ];
 
@@ -926,10 +919,10 @@ export async function runGatherAgent(opts: {
     let resp: { content: ModelAssistantBlock[] };
     try {
       resp = await ctx.model.step({
-        system: AGENT_SYSTEM,
-        tools: AGENT_TOOLS,
+        system: RESEARCH_SYSTEM_PROMPT,
+        tools: RESEARCH_TOOLS,
         messages,
-        maxTokens: ctx.gatherMaxTokens ?? 2048,
+        maxTokens: ctx.maxOutputTokens ?? 2048,
         effort: opts.effort,
         signal: ctx.signal,
       });
@@ -977,8 +970,8 @@ export async function runGatherAgent(opts: {
       ),
     ];
     for (const execution of executions) {
-      if (execution.opened_url !== undefined) {
-        openedUrls.push(execution.opened_url);
+      if (execution.fetchedUrl !== undefined) {
+        fetchedUrls.push(execution.fetchedUrl);
       }
     }
 
@@ -999,9 +992,9 @@ export async function runGatherAgent(opts: {
 
     try {
       const resp = await ctx.model.step({
-        system: AGENT_SYSTEM,
+        system: RESEARCH_SYSTEM_PROMPT,
         messages,
-        maxTokens: ctx.gatherMaxTokens ?? 2048,
+        maxTokens: ctx.maxOutputTokens ?? 2048,
         effort: opts.effort,
         signal: ctx.signal,
       });
@@ -1019,14 +1012,14 @@ export async function runGatherAgent(opts: {
   }
 
   ctx.emit({
-    type: "agent_finished",
-    pages_opened: openedUrls.length,
+    type: "research_finished",
+    sourcesFetched: fetchedUrls.length,
   });
 
   return {
-    opened_urls: [...openedUrls],
-    tool_calls: toolCalls,
-    finish_reason: finishReason,
+    fetchedUrls: [...fetchedUrls],
+    toolCalls,
+    finishReason,
     messages: [...messages],
     markdown,
   };

@@ -8,17 +8,16 @@ import {
 import {
   DEFAULT_ANTHROPIC_MODEL,
   DEFAULT_OPENAI_MODEL,
-  type CitedSource,
   type ResearchEffort,
-} from "./pipeline.js";
+} from "./defaults.js";
+import type { FetchedSource, SourceDocument, VerifiedSource } from "./sources.js";
 import { createSteel } from "./steel.js";
 import {
-  createOpenReservations,
+  createSourceReservations,
   createResearchCaches,
-  createSteelGate,
-  runGatherAgent,
-  type AgentContext,
-  type OpenedSourceFile,
+  createSteelConcurrencyGate,
+  runResearchLoop,
+  type ResearchLoopContext,
 } from "./tools.js";
 import { normalizeUrlForSource } from "./url.js";
 
@@ -28,40 +27,41 @@ const DEFAULT_RUNTIME_LIMITS = {
   maxConcurrentTools: 8,
   maxConcurrentSteelCalls: 4,
   defaultSearchLimit: 8,
-  agentEffort: "high",
-  agentMaxTokens: 16_384,
+  defaultEffort: "high",
+  maxOutputTokens: 16_384,
 } satisfies {
   safetySourceCap: number;
   safetyMaxToolCalls: number;
   maxConcurrentTools: number;
   maxConcurrentSteelCalls: number;
   defaultSearchLimit: number;
-  agentEffort: ResearchEffort;
-  agentMaxTokens: number;
+  defaultEffort: ResearchEffort;
+  maxOutputTokens: number;
 };
 
 export type { ModelProvider, UsageSummary } from "./model.js";
-export type { CitedSource, ResearchEffort } from "./pipeline.js";
+export type { ResearchEffort } from "./defaults.js";
+export type { FetchedSource, SourceDocument, VerifiedSource } from "./sources.js";
 
-export interface AgentRun {
-  opened_urls: string[];
-  tool_calls: number;
-  finish_reason: string;
+export interface ResearchRun {
+  fetchedUrls: string[];
+  toolCalls: number;
+  finishReason: string;
 }
 
 export interface ResearchResult {
   query: string;
   provider: ModelProvider;
   model: string;
-  agent_runs: AgentRun[];
-  sources: CitedSource[];
-  unverified_citations: string[];
+  runs: ResearchRun[];
+  verifiedSources: VerifiedSource[];
+  unverifiedCitations: string[];
   markdown: string;
-  usage_summary: UsageSummary;
+  usage: UsageSummary;
 }
 
 export type ResearchEvent =
-  | { type: "agent_started" }
+  | { type: "research_started" }
   | { type: "searching"; index: number; query: string }
   | {
       type: "search_results";
@@ -76,19 +76,19 @@ export type ResearchEvent =
   | { type: "fetching"; url: string }
   | {
       type: "rate_limited";
-      retry_after_seconds: number;
+      retryAfterSeconds: number;
       attempt: number;
-      max_attempts: number;
+      maxAttempts: number;
     }
   | {
-      type: "page_opened";
+      type: "source_fetched";
       url: string;
       title: string;
     }
   | { type: "source_error"; url: string; error: string }
-  | { type: "agent_finished"; pages_opened: number }
+  | { type: "research_finished"; sourcesFetched: number }
   | { type: "unverified_citations"; count: number; urls: string[] }
-  | { type: "written"; markdown_chars: number }
+  | { type: "written"; markdownChars: number }
   | { type: "completed"; result: ResearchResult };
 
 export interface ResearchOptions {
@@ -148,7 +148,7 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
     try {
       onEvent?.(e);
     } catch {
-      // user callbacks must never break the pipeline
+      // user callbacks must never break the research run
     }
   };
   const abort = () => runSignal?.throwIfAborted();
@@ -162,68 +162,70 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
   });
   const steel = createSteel({ apiKey: steelApiKey, baseUrl: steelBaseUrl });
 
-  const openedPages: CitedSource[] = [];
-  const openedSourceFiles = new Map<string, OpenedSourceFile>();
+  const fetchedSources: FetchedSource[] = [];
+  const sourceDocuments = new Map<string, SourceDocument>();
 
-  const ctx: AgentContext = {
+  const ctx: ResearchLoopContext = {
     model: modelAdapter,
     steel,
-    openedPages,
-    openedSourceFiles,
+    fetchedSources,
+    sourceDocuments,
     emit,
     abort,
     signal: runSignal,
     defaultEngine: "ddg",
     useProxy,
-    openedPageCap: safetySourceCap,
-    gatherMaxTokens: limits.agentMaxTokens,
+    sourceCap: safetySourceCap,
+    maxOutputTokens: limits.maxOutputTokens,
     defaultSearchLimit: limits.defaultSearchLimit,
     maxConcurrentTools: limits.maxConcurrentTools,
-    steelGate: createSteelGate(limits.maxConcurrentSteelCalls),
-    openReservations: createOpenReservations(),
+    steelConcurrencyGate: createSteelConcurrencyGate(
+      limits.maxConcurrentSteelCalls,
+    ),
+    sourceReservations: createSourceReservations(),
     caches: createResearchCaches(),
   };
 
-  const gather = await runGatherAgent({
+  const run = await runResearchLoop({
     ctx,
     query,
-    max_tool_calls: safetyMaxToolCalls,
-    effort: effort ?? limits.agentEffort,
+    maxToolCalls: safetyMaxToolCalls,
+    effort: effort ?? limits.defaultEffort,
   });
-  const agentRuns: AgentRun[] = [
+  const runs: ResearchRun[] = [
     {
-      opened_urls: gather.opened_urls,
-      tool_calls: gather.tool_calls,
-      finish_reason: gather.finish_reason,
+      fetchedUrls: run.fetchedUrls,
+      toolCalls: run.toolCalls,
+      finishReason: run.finishReason,
     },
   ];
 
   abort();
-  const markdown = gather.markdown.trim();
+  const markdown = run.markdown.trim();
   if (!markdown) {
     throw new Error(
-      `research: agent did not produce a final report (${gather.finish_reason})`,
+      `research: loop did not produce a final report (${run.finishReason})`,
     );
   }
-  const citationAudit = auditCitationsInMarkdown(markdown, openedPages);
-  if (citationAudit.unverified_citations.length > 0) {
+  const citationAudit = auditCitationsInMarkdown(markdown, fetchedSources);
+  if (citationAudit.unverifiedCitations.length > 0) {
     emit({
       type: "unverified_citations",
-      count: citationAudit.unverified_citations.length,
-      urls: citationAudit.unverified_citations,
+      count: citationAudit.unverifiedCitations.length,
+      urls: citationAudit.unverifiedCitations,
     });
   }
-  emit({ type: "written", markdown_chars: markdown.length });
+  emit({ type: "written", markdownChars: markdown.length });
 
   const result: ResearchResult = {
     query,
     provider,
     model,
-    agent_runs: agentRuns,
-    sources: citationAudit.sources,
-    unverified_citations: citationAudit.unverified_citations,
+    runs,
+    verifiedSources: citationAudit.verifiedSources,
+    unverifiedCitations: citationAudit.unverifiedCitations,
     markdown,
-    usage_summary: { ...modelAdapter.usage },
+    usage: { ...modelAdapter.usage },
   };
 
   emit({ type: "completed", result });
@@ -302,39 +304,39 @@ function createModelAdapter(opts: {
 }
 
 interface CitationAudit {
-  sources: CitedSource[];
-  unverified_citations: string[];
+  verifiedSources: VerifiedSource[];
+  unverifiedCitations: string[];
 }
 
 function auditCitationsInMarkdown(
   markdown: string,
-  openedSources: CitedSource[],
+  fetchedSources: FetchedSource[],
 ): CitationAudit {
   const citedUrls = extractMarkdownUrls(markdown);
   const byNormalizedUrl = new Map(
-    openedSources.map((source) => [
+    fetchedSources.map((source) => [
       normalizeUrlForCitation(source.url),
       source,
     ]),
   );
 
-  const citedSources: CitedSource[] = [];
+  const verifiedSources: VerifiedSource[] = [];
   const unverifiedCitations: string[] = [];
   const seen = new Set<string>();
   for (const url of citedUrls) {
     const normalized = normalizeUrlForCitation(url);
     if (seen.has(normalized)) continue;
     seen.add(normalized);
-    const openedSource = byNormalizedUrl.get(normalized);
-    if (openedSource) {
-      citedSources.push(openedSource);
+    const fetchedSource = byNormalizedUrl.get(normalized);
+    if (fetchedSource) {
+      verifiedSources.push(fetchedSource);
     } else {
       unverifiedCitations.push(url);
     }
   }
   return {
-    sources: citedSources,
-    unverified_citations: unverifiedCitations,
+    verifiedSources,
+    unverifiedCitations,
   };
 }
 
