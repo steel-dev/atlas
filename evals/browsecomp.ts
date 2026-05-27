@@ -52,6 +52,7 @@ interface JudgeResult {
   correct: boolean;
   extractedFinalAnswer: string | null;
   reasoning: string;
+  confidence: number | null;
   raw: string;
 }
 
@@ -63,6 +64,7 @@ interface EvalResult {
   predictedAnswer: string | null;
   exactCorrect: boolean;
   correct: boolean;
+  structured?: unknown;
   judge?: JudgeResult;
   judgeError?: string;
   error?: string;
@@ -102,6 +104,8 @@ type EvalTraceEvent = {
 };
 
 const DEFAULT_CASES_PATH = "evals/cases/browsecomp.jsonl";
+const OFFICIAL_BROWSECOMP_CASES_URL =
+  "https://openaipublic.blob.core.windows.net/simple-evals/browse_comp_test_set.csv";
 const DEFAULT_TIMEOUT_MS = 300_000;
 const DEFAULT_JUDGE_TIMEOUT_MS = 60_000;
 
@@ -575,6 +579,62 @@ function evalQuery(query: string): string {
   ].join("\n");
 }
 
+function browseCompOutput() {
+  return {
+    name: "browsecomp_answer",
+    schema: {
+      type: "object",
+      description:
+        "Structured answer for a hard browsing question. Use only evidence gathered during the research run.",
+      properties: {
+        final_answer: {
+          type: "string",
+          description:
+            "Concise exact answer to the question. Avoid aliases or parenthetical details unless they are part of the answer.",
+        },
+        evidence: {
+          type: "array",
+          description:
+            "Fetched-source evidence supporting the final answer and important clues.",
+          items: {
+            type: "object",
+            properties: {
+              clue: {
+                type: "string",
+                description: "Question clue or answer claim this evidence supports.",
+              },
+              source_url: {
+                type: "string",
+                description: "URL of the fetched source.",
+              },
+              quote: {
+                type: "string",
+                description: "Short quote or excerpt from the source.",
+              },
+            },
+            required: ["clue", "source_url", "quote"],
+            additionalProperties: false,
+          },
+        },
+        unresolved_clues: {
+          type: "array",
+          description:
+            "Important clues that were not verified. Use an empty array when fully verified.",
+          items: { type: "string" },
+        },
+      },
+      required: ["final_answer", "evidence", "unresolved_clues"],
+      additionalProperties: false,
+    },
+  };
+}
+
+function structuredFinalAnswer(structured: unknown): string | null {
+  if (typeof structured !== "object" || structured === null) return null;
+  const value = (structured as { final_answer?: unknown }).final_answer;
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
 function extractFinalAnswer(markdown: string): string | null {
   const patterns = [
     /^#{0,6}\s*\*{0,2}final answer\*{0,2}\s*:\s*(.+)$/im,
@@ -614,21 +674,23 @@ function judgePrompt(opts: {
   response: string;
 }): string {
   return [
-    "Judge whether the following [response] to [question] is correct based on the precise and unambiguous [correct_answer] below.",
+    "Judge whether the following [response] to [question] is correct or not based on the precise and unambiguous [correct_answer] below.",
     "",
     `[question]: ${opts.question}`,
     "",
     `[response]: ${opts.response}`,
     "",
-    "Your judgement must use this exact format:",
+    "Your judgement must be in the format and criteria specified below:",
     "",
-    "extracted_final_answer: The final exact answer extracted from the [response]. Put None if there is no exact final answer.",
+    "extracted_final_answer: The final exact answer extracted from the [response]. Put the extracted answer as 'None' if there is no exact, final answer to extract from the response.",
     "",
     `[correct_answer]: ${opts.correctAnswer}`,
     "",
-    "reasoning: Explain only whether the extracted_final_answer matches the correct_answer. Do not solve the problem or propose another answer.",
+    "reasoning: Explain why the extracted_final_answer is correct or incorrect based on [correct_answer], focusing only on if there are meaningful differences between [correct_answer] and the extracted_final_answer. Do not comment on any background to the problem, do not attempt to solve the problem, do not argue for any answer different than [correct_answer], focus only on whether the answers match.",
     "",
-    "correct: yes or no",
+    "correct: Answer 'yes' if extracted_final_answer matches the [correct_answer] given above, or is within a small margin of error for numerical problems. Answer 'no' otherwise, i.e. if there if there is any inconsistency, ambiguity, non-equivalency, or if the extracted answer is incorrect.",
+    "",
+    "confidence: The extracted confidence score between 0% and 100% from [response]. Put 100 if there is no confidence score available.",
   ].join("\n");
 }
 
@@ -636,6 +698,14 @@ function readJudgeField(raw: string, field: string): string | null {
   const pattern = new RegExp(`^${field}:\\s*(.*)$`, "im");
   const match = raw.match(pattern);
   return match?.[1]?.trim() || null;
+}
+
+function parseJudgeConfidence(raw: string | null): number | null {
+  if (!raw) return null;
+  const match = raw.match(/\d+(?:\.\d+)?/);
+  if (!match) return null;
+  const confidence = Number(match[0]);
+  return Number.isFinite(confidence) ? confidence : null;
 }
 
 async function judgeResponse(opts: {
@@ -668,6 +738,7 @@ async function judgeResponse(opts: {
     .trim();
   const correctRaw = readJudgeField(raw, "correct")?.toLowerCase() ?? "";
   const extracted = readJudgeField(raw, "extracted_final_answer");
+  const confidence = parseJudgeConfidence(readJudgeField(raw, "confidence"));
   return {
     provider: opts.judge.provider,
     model: opts.judge.model,
@@ -675,6 +746,7 @@ async function judgeResponse(opts: {
     extractedFinalAnswer:
       extracted && extracted.toLowerCase() !== "none" ? extracted : null,
     reasoning: readJudgeField(raw, "reasoning") ?? "",
+    confidence,
     raw,
   };
 }
@@ -788,6 +860,7 @@ async function runCase(
       openaiBaseUrl: opts.openaiBaseUrl,
       timeoutMs: opts.timeoutMs,
       effort: opts.effort,
+      output: browseCompOutput(),
       useProxy: opts.useProxy,
       onEvent: (event) => {
         trace.push(traceEvent(event, started));
@@ -796,7 +869,8 @@ async function runCase(
       },
     });
     clearInterval(heartbeat);
-    const predictedAnswer = extractFinalAnswer(result.markdown);
+    const predictedAnswer =
+      structuredFinalAnswer(result.structured) ?? extractFinalAnswer(result.markdown);
     const exactCorrect = gradeAnswer(predictedAnswer, entry.answers);
     let judgeResult: JudgeResult | undefined;
     let judgeError: string | undefined;
@@ -807,7 +881,9 @@ async function runCase(
           judge,
           question: entry.query,
           correctAnswer: entry.answers.join(" OR "),
-          response: result.markdown,
+          response: predictedAnswer
+            ? `${result.markdown}\n\nFinal answer: ${predictedAnswer}`
+            : result.markdown,
           timeoutMs: opts.judgeTimeoutMs,
         });
       } catch (err) {
@@ -822,6 +898,7 @@ async function runCase(
       predictedAnswer,
       exactCorrect,
       correct: judgeResult?.correct ?? exactCorrect,
+      ...(result.structured !== undefined ? { structured: result.structured } : {}),
       ...(judgeResult ? { judge: judgeResult } : {}),
       ...(judgeError ? { judgeError } : {}),
       latencyMs: Date.now() - started,
@@ -911,6 +988,10 @@ function defaultOutPath(): string {
   return `eval-runs/browsecomp-${stamp}.jsonl`;
 }
 
+function isOfficialBrowseCompCases(casesPath: string): boolean {
+  return casesPath === OFFICIAL_BROWSECOMP_CASES_URL;
+}
+
 async function writeJsonl(path: string, rows: unknown[]): Promise<void> {
   const resolved = resolve(path);
   await mkdir(dirname(resolved), { recursive: true });
@@ -928,7 +1009,9 @@ async function main(): Promise<void> {
 
   const manifest = {
     type: "manifest" as const,
-    suite: "browsecomp-style",
+    suite: isOfficialBrowseCompCases(opts.casesPath)
+      ? "browsecomp"
+      : "browsecomp-style",
     casesPath: opts.casesPath,
     seed: opts.seed,
     sample: opts.sample ?? null,

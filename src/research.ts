@@ -2,6 +2,9 @@ import {
   createAnthropicModelAdapter,
   createOpenAIModelAdapter,
   type ModelAdapter,
+  type ModelAssistantBlock,
+  type ModelMessage,
+  type ModelOutputSchema,
   type ModelProvider,
   type UsageSummary,
 } from "./model.js";
@@ -59,7 +62,13 @@ export interface ResearchResult {
   verifiedSources: VerifiedSource[];
   unverifiedCitations: string[];
   markdown: string;
+  structured?: unknown;
   usage: UsageSummary;
+}
+
+export interface ResearchOutputOptions {
+  schema: Record<string, unknown>;
+  name?: string;
 }
 
 export type ResearchEvent =
@@ -105,6 +114,7 @@ export interface ResearchOptions {
   useProxy?: boolean;
   timeoutMs?: number;
   effort?: ResearchEffort;
+  output?: ResearchOutputOptions;
   onEvent?: (event: ResearchEvent) => void;
   signal?: AbortSignal;
 }
@@ -122,6 +132,7 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
     useProxy = false,
     timeoutMs,
     effort,
+    output,
     onEvent,
     signal,
   } = opts;
@@ -225,6 +236,17 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
     });
   }
   emit({ type: "written", markdownChars: markdown.length });
+  const structured =
+    output === undefined
+      ? undefined
+      : await generateStructuredOutput({
+          model: modelAdapter,
+          messages: run.messages,
+          output,
+          maxTokens: limits.maxOutputTokens,
+          effort: effort ?? limits.defaultEffort,
+          signal: runSignal,
+        });
 
   const result: ResearchResult = {
     query,
@@ -234,11 +256,119 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
     verifiedSources: citationAudit.verifiedSources,
     unverifiedCitations: citationAudit.unverifiedCitations,
     markdown,
+    ...(structured !== undefined ? { structured } : {}),
     usage: { ...modelAdapter.usage },
   };
 
   emit({ type: "completed", result });
   return result;
+}
+
+function textFromBlocks(content: ModelAssistantBlock[]): string {
+  return content
+    .map((block) => (block.type === "text" ? block.text : ""))
+    .join("")
+    .trim();
+}
+
+async function generateStructuredOutput(opts: {
+  model: ModelAdapter;
+  messages: ModelMessage[];
+  output: ResearchOutputOptions;
+  maxTokens: number;
+  effort: ResearchEffort;
+  signal?: AbortSignal;
+}): Promise<unknown> {
+  const schema = modelOutputSchema(opts.output);
+  const prompt = structuredOutputPrompt(opts.output);
+  try {
+    return await runStructuredOutputStep({ ...opts, schema, prompt });
+  } catch {
+    return runStructuredOutputStep({ ...opts, prompt });
+  }
+}
+
+async function runStructuredOutputStep(opts: {
+  model: ModelAdapter;
+  messages: ModelMessage[];
+  output: ResearchOutputOptions;
+  maxTokens: number;
+  effort: ResearchEffort;
+  signal?: AbortSignal;
+  schema?: ModelOutputSchema;
+  prompt: string;
+}): Promise<unknown> {
+  const resp = await opts.model.step({
+    system:
+      "You format completed research results. Do not call tools. Return only the requested JSON.",
+    messages: [
+      ...opts.messages,
+      {
+        role: "user",
+        content: opts.prompt,
+      },
+    ],
+    maxTokens: opts.maxTokens,
+    effort: opts.effort,
+    outputSchema: opts.schema,
+    signal: opts.signal,
+  });
+  return parseJsonOutput(textFromBlocks(resp.content));
+}
+
+function modelOutputSchema(output: ResearchOutputOptions): ModelOutputSchema {
+  return {
+    name: sanitizeSchemaName(output.name ?? "atlas_research_output"),
+    schema: output.schema,
+    strict: true,
+  };
+}
+
+function sanitizeSchemaName(name: string): string {
+  const normalized = name.replace(/[^a-zA-Z0-9_-]+/g, "_").slice(0, 64);
+  return normalized || "atlas_research_output";
+}
+
+function structuredOutputPrompt(output: ResearchOutputOptions): string {
+  return [
+    "Using only the research transcript above, return a JSON object matching the provided schema.",
+    "Do not include Markdown fences or explanatory prose outside the JSON object.",
+    "Schema:",
+    JSON.stringify(output.schema),
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+}
+
+function parseJsonOutput(text: string): unknown {
+  const trimmed = text.trim();
+  if (!trimmed) throw new Error("structured output was empty");
+  const candidates = [
+    trimmed,
+    fencedJson(trimmed),
+    substringBetween(trimmed, "{", "}"),
+    substringBetween(trimmed, "[", "]"),
+  ].filter((candidate): candidate is string => Boolean(candidate));
+  for (const candidate of candidates) {
+    try {
+      return JSON.parse(candidate);
+    } catch {
+      // try the next likely JSON span
+    }
+  }
+  throw new Error("structured output was not valid JSON");
+}
+
+function fencedJson(text: string): string | null {
+  const match = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  return match?.[1]?.trim() ?? null;
+}
+
+function substringBetween(text: string, startChar: string, endChar: string): string | null {
+  const start = text.indexOf(startChar);
+  const end = text.lastIndexOf(endChar);
+  if (start === -1 || end === -1 || end <= start) return null;
+  return text.slice(start, end + 1);
 }
 
 function readEnv(...keys: string[]): string | undefined {

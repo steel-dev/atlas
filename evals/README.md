@@ -1,8 +1,9 @@
 # Atlas Evals
 
-`eval:browsecomp` runs BrowseComp-style hard retrieval cases with reproducible
-seeded sampling. The runner does not vendor benchmark data; pass a JSONL file
-with public BrowseComp cases or an internal bespoke set.
+`eval:browsecomp` runs hard retrieval cases with reproducible seeded sampling.
+When the official OpenAI BrowseComp CSV is used, the manifest records
+`suite: "browsecomp"`. Other JSONL/CSV inputs are recorded as
+`suite: "browsecomp-style"`.
 
 The official OpenAI BrowseComp CSV can be used directly; encrypted `problem`
 and `answer` fields are decrypted from each row's `canary` field:
@@ -17,8 +18,8 @@ Use the shortcut when running the official set:
 npm run eval:browsecomp:official -- --sample 25 --seed pr-smoke-v1
 ```
 
-Add `--judge` to grade final reports with an LLM judge, following the official
-BrowseComp style of semantic answer equivalence:
+Add `--judge` to grade final reports with an LLM judge using the official
+BrowseComp grader template:
 
 ```bash
 npm run eval:browsecomp:official -- --sample 25 --seed pr-smoke-v1 --judge
@@ -73,10 +74,12 @@ Results are written to `eval-runs/browsecomp-<timestamp>.jsonl` unless `--out`
 is provided. The file contains:
 
 - `manifest`: seed, sample size, selected case IDs
-- one `result` row per case, including a compact `trace` of research events
+- one `result` row per case, including `structured.final_answer` when available
+  and a compact `trace` of research events
 - `summary`: exact-answer accuracy and operational metrics
 
-Primary score is exact-answer accuracy. Secondary metrics include latency,
-tool calls, verified source count, and unverified citation count. When `--judge`
-is enabled, `accuracy` uses judge correctness while `exactAccuracy` remains in
-the summary for comparison.
+Primary exact scoring uses `structured.final_answer`, falling back to the
+Markdown `Final answer:` line. Secondary metrics include latency, tool calls,
+verified source count, and unverified citation count. When `--judge` is enabled,
+`accuracy` uses judge correctness while `exactAccuracy` remains in the summary
+for comparison.

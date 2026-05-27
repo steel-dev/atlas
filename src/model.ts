@@ -17,6 +17,12 @@ export interface ModelToolDefinition {
   input_schema: Record<string, unknown>;
 }
 
+export interface ModelOutputSchema {
+  name: string;
+  schema: Record<string, unknown>;
+  strict?: boolean;
+}
+
 export interface ModelTextBlock {
   type: "text";
   text: string;
@@ -48,6 +54,7 @@ export interface ModelStepInput {
   messages: ModelMessage[];
   maxTokens: number;
   effort?: ResearchEffort;
+  outputSchema?: ModelOutputSchema;
   signal?: AbortSignal;
 }
 
@@ -101,7 +108,7 @@ export function createAnthropicModelAdapter(opts: {
           tools: input.tools?.map(toAnthropicTool),
           messages: input.messages.map(toAnthropicMessage),
           cache_control: { type: "ephemeral" },
-          ...anthropicEffortConfig(input.effort),
+          ...anthropicRequestConfig(input),
         },
         { signal: input.signal },
       );
@@ -117,13 +124,24 @@ export function createAnthropicModelAdapter(opts: {
   };
 }
 
-function anthropicEffortConfig(effort: ResearchEffort | undefined): object {
-  return effort
-    ? {
-        thinking: { type: "adaptive" as const },
-        output_config: { effort },
-      }
-    : {};
+function anthropicRequestConfig(input: ModelStepInput): object {
+  const outputConfig = {
+    ...(input.effort ? { effort: input.effort } : {}),
+    ...(input.outputSchema
+      ? {
+          format: {
+            type: "json_schema" as const,
+            schema: input.outputSchema.schema,
+          },
+        }
+      : {}),
+  };
+  return {
+    ...(input.effort ? { thinking: { type: "adaptive" as const } } : {}),
+    ...(Object.keys(outputConfig).length > 0
+      ? { output_config: outputConfig }
+      : {}),
+  };
 }
 
 function toAnthropicTool(tool: ModelToolDefinition): Anthropic.Tool {
@@ -204,6 +222,7 @@ export function createOpenAIModelAdapter(opts: {
           messages: toOpenAIMessages(input.system, input.messages),
           tools: input.tools?.map(toOpenAITool),
           tool_choice: input.tools?.length ? "auto" : undefined,
+          response_format: openAIResponseFormat(input.outputSchema),
           max_tokens: input.maxTokens,
         },
         { signal: input.signal },
@@ -215,6 +234,20 @@ export function createOpenAIModelAdapter(opts: {
       const message = resp.choices[0]?.message;
       if (!message) return { content: [] };
       return { content: fromOpenAIMessage(message) };
+    },
+  };
+}
+
+function openAIResponseFormat(
+  outputSchema: ModelOutputSchema | undefined,
+): OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming["response_format"] {
+  if (!outputSchema) return undefined;
+  return {
+    type: "json_schema",
+    json_schema: {
+      name: outputSchema.name,
+      schema: outputSchema.schema,
+      strict: outputSchema.strict ?? true,
     },
   };
 }
