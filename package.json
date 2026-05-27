@@ -12,7 +12,7 @@
     }
   },
   "bin": {
-    "@steel-dev/atlas": "./dist/cli.js"
+    "atlas": "./dist/cli.js"
   },
   "files": [
     "dist",
