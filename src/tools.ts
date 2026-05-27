@@ -14,6 +14,14 @@ import {
   type FetchToolInput,
 } from "./fetch-tool.js";
 import {
+  execFindInSource,
+  execQuoteSource,
+  execReadSourceChunk,
+  type FindInSourceToolInput,
+  type QuoteSourceToolInput,
+  type ReadSourceChunkToolInput,
+} from "./evidence-tool.js";
+import {
   execSearch,
   searchEnginesInFallbackOrder,
   type SearchToolInput,
@@ -140,11 +148,46 @@ async function executeToolUse(
     }
   }
 
+  if (tu.name === "read_source_chunk") {
+    return {
+      toolResult: {
+        type: "tool_result",
+        tool_call_id: tu.id,
+        content: execReadSourceChunk(
+          (tu.input as ReadSourceChunkToolInput) ?? {},
+          ctx,
+        ),
+      },
+    };
+  }
+
+  if (tu.name === "find_in_source") {
+    return {
+      toolResult: {
+        type: "tool_result",
+        tool_call_id: tu.id,
+        content: execFindInSource((tu.input as FindInSourceToolInput) ?? {}, ctx),
+      },
+    };
+  }
+
+  if (tu.name === "quote_source") {
+    return {
+      toolResult: {
+        type: "tool_result",
+        tool_call_id: tu.id,
+        content: execQuoteSource((tu.input as QuoteSourceToolInput) ?? {}, ctx),
+      },
+    };
+  }
+
   return {
     toolResult: {
       type: "tool_result",
       tool_call_id: tu.id,
-      content: `Unknown tool: ${tu.name}. Available tools: search, fetch.`,
+      content:
+        `Unknown tool: ${tu.name}. Available tools: ` +
+        "search, fetch, read_source_chunk, find_in_source, quote_source.",
       is_error: true,
     },
   };

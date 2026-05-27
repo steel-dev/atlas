@@ -21,6 +21,9 @@
   ],
   "scripts": {
     "dev": "tsx src/cli.ts",
+    "eval:browsecomp": "tsx evals/browsecomp.ts",
+    "eval:browsecomp:official": "tsx evals/browsecomp.ts --cases https://openaipublic.blob.core.windows.net/simple-evals/browse_comp_test_set.csv",
+    "eval:typecheck": "tsc -p evals/tsconfig.json",
     "build": "tsc -p tsconfig.build.json && chmod +x dist/cli.js",
     "typecheck": "tsc -p tsconfig.json",
     "test": "vitest",

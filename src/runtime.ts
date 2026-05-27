@@ -14,6 +14,7 @@ export interface SteelConcurrencyGate {
 export interface SourceReservations {
   urls: Set<string>;
   sourceSlots: number;
+  nextSourceNumber: number;
   documents: Map<string, Promise<SourceDocument | null>>;
 }
 
@@ -80,6 +81,7 @@ export function createSourceReservations(): SourceReservations {
   return {
     urls: new Set<string>(),
     sourceSlots: 0,
+    nextSourceNumber: 1,
     documents: new Map<string, Promise<SourceDocument | null>>(),
   };
 }

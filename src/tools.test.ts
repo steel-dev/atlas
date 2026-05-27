@@ -44,7 +44,9 @@ function sourceDocument(
   markdown: string,
 ): SourceDocument {
   return {
+    sourceId: "source_test",
     url,
+    canonicalUrl: url,
     title,
     markdown,
     originalChars: markdown.length,
@@ -54,6 +56,7 @@ function sourceDocument(
       markdownChars: markdown.length,
       extractionNotes: ["Test source."],
     },
+    chunks: [{ index: 0, start: 0, end: markdown.length }],
   };
 }
 
@@ -543,7 +546,7 @@ describe("research loop cache integration", () => {
     expect(scrape).toHaveBeenCalledTimes(2);
   });
 
-  it("advertises only search and fetch to the agent", async () => {
+  it("advertises search, fetch, and evidence retrieval tools to the agent", async () => {
     const messagesCreate = vi.fn().mockResolvedValueOnce(finalReport());
     const ctx = createContext({ messagesCreate });
 
@@ -561,7 +564,13 @@ describe("research loop cache integration", () => {
       }>;
     };
 
-    expect(request.tools.map((tool) => tool.name)).toEqual(["search", "fetch"]);
+    expect(request.tools.map((tool) => tool.name)).toEqual([
+      "search",
+      "fetch",
+      "read_source_chunk",
+      "find_in_source",
+      "quote_source",
+    ]);
     expect(request.tools[0]?.input_schema.properties ?? {}).not.toHaveProperty("engine");
   });
 
@@ -596,10 +605,15 @@ describe("research loop cache integration", () => {
       {
         url: "https://example.com/source",
         title: "Primary Source",
+        sourceId: "source_1",
+        canonicalUrl: "https://example.com/source",
       },
     ]);
     expect(ctx.sourceDocuments.get("https://example.com/source")?.markdown).toContain("Detailed source body");
     expect(toolResultText(followupRequest)).toContain('"url": "https://example.com/source"');
+    expect(toolResultText(followupRequest)).toContain('"source_id": "source_1"');
+    expect(toolResultText(followupRequest)).toContain('"canonical_url": "https://example.com/source"');
+    expect(toolResultText(followupRequest)).toContain('"chunk"');
     expect(toolResultText(followupRequest)).not.toContain('"extraction_method"');
     expect(toolResultText(followupRequest)).toContain('"content"');
   });
@@ -649,6 +663,63 @@ describe("research loop cache integration", () => {
     expect(toolResultText(readRequest)).toContain("Line-readable evidence");
   });
 
+  it("revisits fetched source evidence by source id, chunk, search, and quote span", async () => {
+    const markdown =
+      "# Evidence Source\n\nThis page compares methods and controls for the study.";
+    const quoteStart = markdown.indexOf("methods and controls");
+    const quoteEnd = quoteStart + "methods and controls".length;
+    const scrape = vi.fn(async () => ({
+      content: { markdown },
+      metadata: { title: "Evidence Source" },
+    }));
+    const messagesCreate = vi
+      .fn()
+      .mockResolvedValueOnce(
+        messageWith([
+          toolUse("fetch_1", "fetch", {
+            url: "https://example.com/evidence",
+            max_chars: 40,
+          }),
+        ]),
+      )
+      .mockResolvedValueOnce(
+        messageWith([
+          toolUse("read_1", "read_source_chunk", {
+            source_id: "source_1",
+            chunk_index: 0,
+          }),
+          toolUse("find_1", "find_in_source", {
+            source_id: "source_1",
+            query: "methods and controls",
+          }),
+          toolUse("quote_1", "quote_source", {
+            source_id: "source_1",
+            start: quoteStart,
+            end: quoteEnd,
+          }),
+        ]),
+      )
+      .mockResolvedValueOnce(finalReport());
+    const ctx = createContext({ messagesCreate, scrape });
+
+    const result = await runResearchLoop({
+      ctx,
+      query: "What is Atlas?",
+      maxToolCalls: 5,
+    });
+    const finalRequest = messagesCreate.mock.calls[2]?.[0] as {
+      messages: Array<{ content: unknown }>;
+    };
+    const text = toolResultText(finalRequest);
+
+    expect(result.finishReason).toBe("final report");
+    expect(scrape).toHaveBeenCalledTimes(1);
+    expect(text).toContain('"source_id": "source_1"');
+    expect(text).toContain('"chunk":');
+    expect(text).toContain('"matches":');
+    expect(text).toContain('"quote": "methods and controls"');
+  });
+
   it("shares an in-flight scrape for duplicate parallel fetches", async () => {
     const scrape = vi.fn(
       async () =>
@@ -691,6 +762,8 @@ describe("research loop cache integration", () => {
       {
         url: "https://example.com/shared",
         title: "Shared Source",
+        sourceId: "source_1",
+        canonicalUrl: "https://example.com/shared",
       },
     ]);
     expect(toolResultText(followupRequest)).not.toContain("Already being fetched");

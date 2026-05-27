@@ -25,6 +25,7 @@ export interface FetchOutcome {
 
 interface SourceReservation {
   url: string;
+  sourceId: string;
 }
 
 export const normalizeFetchUrl = normalizeUrlForSource;
@@ -47,7 +48,10 @@ function reserveSource(
 
   ctx.sourceReservations.urls.add(normalizedUrl);
   ctx.sourceReservations.sourceSlots++;
-  return { url: normalizedUrl };
+  return {
+    url: normalizedUrl,
+    sourceId: `source_${ctx.sourceReservations.nextSourceNumber++}`,
+  };
 }
 
 function releaseSourceReservation(
@@ -130,6 +134,7 @@ function readMaxChars(
 async function fetchSourceDocument(
   ctx: ResearchLoopContext,
   url: string,
+  sourceId: string,
 ): Promise<SourceDocument | null> {
   ctx.emit({ type: "fetching", url });
 
@@ -152,10 +157,14 @@ async function fetchSourceDocument(
     stored.markdown,
     metadata,
     stored.originalChars,
+    sourceId,
+    normalizeFetchUrl(url),
   );
   ctx.fetchedSources.push({
     url,
     title: resolvedTitle,
+    sourceId: document.sourceId,
+    canonicalUrl: document.canonicalUrl,
   });
   ctx.sourceDocuments.set(normalizeFetchUrl(url), document);
 
@@ -195,7 +204,7 @@ export async function execFetch(
     if (typeof reservation === "string") return { text: reservation };
     const url = reservation.url;
     fetchedThisCall = true;
-    documentPromise = fetchSourceDocument(ctx, url).finally(() => {
+    documentPromise = fetchSourceDocument(ctx, url, reservation.sourceId).finally(() => {
       ctx.sourceReservations.documents.delete(normalizedUrl);
       releaseSourceReservation(ctx, reservation);
     });
