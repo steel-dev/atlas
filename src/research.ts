@@ -29,6 +29,7 @@ const DEFAULT_RUNTIME_LIMITS = {
   defaultSearchLimit: 8,
   defaultEffort: "high",
   maxOutputTokens: 16_384,
+  timeoutSynthesisReserveMs: 60_000,
 } satisfies {
   safetySourceCap: number;
   safetyMaxToolCalls: number;
@@ -37,6 +38,7 @@ const DEFAULT_RUNTIME_LIMITS = {
   defaultSearchLimit: number;
   defaultEffort: ResearchEffort;
   maxOutputTokens: number;
+  timeoutSynthesisReserveMs: number;
 };
 
 export type { ModelProvider, UsageSummary } from "./model.js";
@@ -142,6 +144,8 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
   const limits = DEFAULT_RUNTIME_LIMITS;
   const safetySourceCap = limits.safetySourceCap;
   const safetyMaxToolCalls = limits.safetyMaxToolCalls;
+  const timeoutDeadlineAt =
+    timeoutMs === undefined ? undefined : Date.now() + Math.floor(timeoutMs);
   const runSignal = combineSignals(signal, timeoutMs);
 
   const emit = (e: ResearchEvent) => {
@@ -179,6 +183,11 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
     maxOutputTokens: limits.maxOutputTokens,
     defaultSearchLimit: limits.defaultSearchLimit,
     maxConcurrentTools: limits.maxConcurrentTools,
+    deadlineAt: timeoutDeadlineAt,
+    synthesisReserveMs:
+      timeoutMs === undefined
+        ? undefined
+        : timeoutSynthesisReserveMs(timeoutMs, limits.timeoutSynthesisReserveMs),
     steelConcurrencyGate: createSteelConcurrencyGate(
       limits.maxConcurrentSteelCalls,
     ),
@@ -373,6 +382,19 @@ function combineSignals(
 
   const timeoutSignal = AbortSignal.timeout(Math.floor(timeoutMs));
   return signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
+}
+
+function timeoutSynthesisReserveMs(timeoutMs: number, maxReserveMs: number): number {
+  const normalizedTimeoutMs = Math.floor(timeoutMs);
+  const preferredReserveMs = Math.max(
+    15_000,
+    Math.floor(normalizedTimeoutMs * 0.25),
+  );
+  return Math.min(
+    maxReserveMs,
+    preferredReserveMs,
+    Math.max(1_000, Math.floor(normalizedTimeoutMs * 0.5)),
+  );
 }
 
 export const __testing = {

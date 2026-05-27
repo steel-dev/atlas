@@ -103,6 +103,8 @@ export interface ResearchLoopContext {
   defaultSearchLimit?: number;
   maxConcurrentTools?: number;
   fetchSnippetChars?: number;
+  deadlineAt?: number;
+  synthesisReserveMs?: number;
   steelConcurrencyGate: SteelConcurrencyGate;
   sourceReservations: SourceReservations;
   caches: ResearchCaches;

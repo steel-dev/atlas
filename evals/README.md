@@ -38,6 +38,10 @@ npm run eval:browsecomp -- --cases evals/cases/browsecomp.jsonl --sample 25 --se
 The same seed and case file always produce the same subset. Sampling ranks cases
 by `sha256(seed + case.id)`, then takes the first `N` cases.
 
+Each case has a default 300 second timeout. Override it with `--timeout` when
+running larger launch batches. Progress events are written to stderr while each
+case runs.
+
 ## Case Format
 
 Each JSONL/CSV row may use common BrowseComp/simple-evals field names:
@@ -59,7 +63,7 @@ Results are written to `eval-runs/browsecomp-<timestamp>.jsonl` unless `--out`
 is provided. The file contains:
 
 - `manifest`: seed, sample size, selected case IDs
-- one `result` row per case
+- one `result` row per case, including a compact `trace` of research events
 - `summary`: exact-answer accuracy and operational metrics
 
 Primary score is exact-answer accuracy. Secondary metrics include latency,

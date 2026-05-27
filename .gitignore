@@ -8,3 +8,5 @@ dist/
 
 # Cloned OSS reference projects — not part of this repo
 refs/
+
+eval-runs/

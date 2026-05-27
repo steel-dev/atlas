@@ -69,6 +69,23 @@ interface ToolExecution {
   fetchedUrl?: string;
 }
 
+function timeoutSynthesisReason(ctx: ResearchLoopContext): string | null {
+  if (ctx.deadlineAt === undefined || ctx.synthesisReserveMs === undefined) {
+    return null;
+  }
+  const remainingMs = ctx.deadlineAt - Date.now();
+  if (remainingMs > ctx.synthesisReserveMs) return null;
+  const remainingSeconds = Math.max(0, Math.ceil(remainingMs / 1000));
+  return `timeout approaching (${remainingSeconds}s remaining)`;
+}
+
+function shouldAttemptFinalSynthesis(finishReason: string): boolean {
+  return (
+    finishReason === "tool call budget exhausted" ||
+    finishReason.startsWith("timeout approaching")
+  );
+}
+
 async function mapWithConcurrency<T, R>(
   items: T[],
   limit: number,
@@ -219,6 +236,11 @@ export async function runResearchLoop(opts: {
 
   while (toolCalls < maxToolCalls) {
     ctx.abort();
+    const preStepTimeoutReason = timeoutSynthesisReason(ctx);
+    if (preStepTimeoutReason) {
+      finishReason = preStepTimeoutReason;
+      break;
+    }
 
     let resp: { content: ModelAssistantBlock[] };
     try {
@@ -237,17 +259,24 @@ export async function runResearchLoop(opts: {
       break;
     }
 
-    messages.push({ role: "assistant", content: resp.content });
-
     const toolUses = resp.content.filter(
       (c): c is ModelToolCall => c.type === "tool_call",
     );
     if (toolUses.length === 0) {
+      messages.push({ role: "assistant", content: resp.content });
       const text = textFromContent(resp.content);
       markdown = text;
       finishReason = text ? "final report" : "empty final response";
       break;
     }
+
+    const postStepTimeoutReason = timeoutSynthesisReason(ctx);
+    if (postStepTimeoutReason) {
+      finishReason = postStepTimeoutReason;
+      break;
+    }
+
+    messages.push({ role: "assistant", content: resp.content });
 
     const remainingToolCalls = maxToolCalls - toolCalls;
     const activeToolUses = toolUses.slice(0, remainingToolCalls);
@@ -287,7 +316,7 @@ export async function runResearchLoop(opts: {
     }
   }
 
-  if (!markdown && finishReason === "tool call budget exhausted") {
+  if (!markdown && shouldAttemptFinalSynthesis(finishReason)) {
     ctx.abort();
     messages.push({
       role: "user",

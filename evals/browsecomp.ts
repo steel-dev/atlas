@@ -5,6 +5,7 @@ import {
   research,
   type ModelProvider,
   type ResearchEffort,
+  type ResearchEvent,
   type ResearchResult,
 } from "../src/research.js";
 
@@ -40,6 +41,7 @@ interface EvalResult {
   correct: boolean;
   error?: string;
   latencyMs: number;
+  trace: EvalTraceEvent[];
   metrics?: {
     provider: ModelProvider;
     model: string;
@@ -52,7 +54,29 @@ interface EvalResult {
   };
 }
 
+type EvalTraceEvent = {
+  atMs: number;
+  event: ResearchEvent["type"];
+  index?: number;
+  query?: string;
+  count?: number;
+  url?: string;
+  title?: string;
+  error?: string;
+  retryAfterSeconds?: number;
+  attempt?: number;
+  maxAttempts?: number;
+  sourcesFetched?: number;
+  markdownChars?: number;
+  result?: {
+    verifiedSources: number;
+    unverifiedCitations: number;
+    markdownChars: number;
+  };
+};
+
 const DEFAULT_CASES_PATH = "evals/cases/browsecomp.jsonl";
+const DEFAULT_TIMEOUT_MS = 300_000;
 
 function usage(): string {
   return `Usage:
@@ -64,7 +88,7 @@ Options:
       --seed TEXT          Sampling seed (default: atlas-browsecomp-v1)
       --case-id ID         Run one case ID; repeat or comma-separate
       --out <file>         Write manifest/results/summary JSONL
-      --timeout N          Per-case timeout in seconds
+      --timeout N          Per-case timeout in seconds (default: 300)
       --effort LEVEL       Research effort: low, medium, high, max
       --provider NAME      Model provider: anthropic, openai
       --model NAME         Model name
@@ -127,6 +151,7 @@ function parseArgs(argv: string[]): EvalOptions {
     casesPath: DEFAULT_CASES_PATH,
     seed: "atlas-browsecomp-v1",
     caseIds,
+    timeoutMs: DEFAULT_TIMEOUT_MS,
     concurrency: 1,
     useProxy: false,
     dryRun: false,
@@ -478,8 +503,87 @@ function summarizeRun(result: ResearchResult): EvalResult["metrics"] {
   };
 }
 
+function progressLine(caseId: string, event: ResearchEvent): string | null {
+  switch (event.type) {
+    case "searching":
+      return `${caseId}: search[${event.index}] ${event.query}`;
+    case "search_results":
+      return `${caseId}: search[${event.index}] ${event.count} result(s)`;
+    case "search_failed":
+      return `${caseId}: search[${event.index}] failed: ${event.error}`;
+    case "fetching":
+      return `${caseId}: fetch ${event.url}`;
+    case "source_fetched":
+      return `${caseId}: fetched ${event.url}`;
+    case "source_error":
+      return `${caseId}: source error ${event.url}: ${event.error}`;
+    case "rate_limited":
+      return `${caseId}: rate limited, waiting ${event.retryAfterSeconds}s`;
+    case "research_finished":
+      return `${caseId}: research finished with ${event.sourcesFetched} source(s)`;
+    case "unverified_citations":
+      return `${caseId}: ${event.count} unverified citation(s)`;
+    case "written":
+      return `${caseId}: wrote ${event.markdownChars} markdown chars`;
+    case "completed":
+    case "research_started":
+      return null;
+  }
+}
+
+function traceEvent(event: ResearchEvent, started: number): EvalTraceEvent {
+  const base = { atMs: Date.now() - started, event: event.type };
+  switch (event.type) {
+    case "searching":
+      return { ...base, index: event.index, query: event.query };
+    case "search_results":
+      return { ...base, index: event.index, count: event.count };
+    case "search_failed":
+      return { ...base, index: event.index, error: event.error };
+    case "fetching":
+      return { ...base, url: event.url };
+    case "rate_limited":
+      return {
+        ...base,
+        retryAfterSeconds: event.retryAfterSeconds,
+        attempt: event.attempt,
+        maxAttempts: event.maxAttempts,
+      };
+    case "source_fetched":
+      return { ...base, url: event.url, title: event.title };
+    case "source_error":
+      return { ...base, url: event.url, error: event.error };
+    case "research_finished":
+      return { ...base, sourcesFetched: event.sourcesFetched };
+    case "unverified_citations":
+      return { ...base, count: event.count };
+    case "written":
+      return { ...base, markdownChars: event.markdownChars };
+    case "completed":
+      return {
+        ...base,
+        result: {
+          verifiedSources: event.result.verifiedSources.length,
+          unverifiedCitations: event.result.unverifiedCitations.length,
+          markdownChars: event.result.markdown.length,
+        },
+      };
+    case "research_started":
+      return base;
+  }
+}
+
 async function runCase(entry: EvalCase, opts: EvalOptions): Promise<EvalResult> {
   const started = Date.now();
+  const trace: EvalTraceEvent[] = [];
+  const heartbeat = setInterval(() => {
+    const elapsedSeconds = Math.round((Date.now() - started) / 1000);
+    const timeoutSeconds =
+      opts.timeoutMs === undefined ? "none" : Math.round(opts.timeoutMs / 1000);
+    process.stderr.write(
+      `eval:browsecomp: ${entry.id} still running (${elapsedSeconds}s elapsed, timeout=${timeoutSeconds}s)\n`,
+    );
+  }, 30_000);
   try {
     const result = await research({
       query: evalQuery(entry.query),
@@ -489,7 +593,13 @@ async function runCase(entry: EvalCase, opts: EvalOptions): Promise<EvalResult> 
       timeoutMs: opts.timeoutMs,
       effort: opts.effort,
       useProxy: opts.useProxy,
+      onEvent: (event) => {
+        trace.push(traceEvent(event, started));
+        const line = progressLine(entry.id, event);
+        if (line) process.stderr.write(`eval:browsecomp: ${line}\n`);
+      },
     });
+    clearInterval(heartbeat);
     const predictedAnswer = extractFinalAnswer(result.markdown);
     return {
       type: "result",
@@ -499,9 +609,11 @@ async function runCase(entry: EvalCase, opts: EvalOptions): Promise<EvalResult> 
       predictedAnswer,
       correct: gradeAnswer(predictedAnswer, entry.answers),
       latencyMs: Date.now() - started,
+      trace,
       metrics: summarizeRun(result),
     };
   } catch (err) {
+    clearInterval(heartbeat);
     return {
       type: "result",
       id: entry.id,
@@ -511,6 +623,7 @@ async function runCase(entry: EvalCase, opts: EvalOptions): Promise<EvalResult> 
       correct: false,
       error: err instanceof Error ? err.message : String(err),
       latencyMs: Date.now() - started,
+      trace,
     };
   }
 }
@@ -594,6 +707,8 @@ async function main(): Promise<void> {
     casesPath: opts.casesPath,
     seed: opts.seed,
     sample: opts.sample ?? null,
+    timeoutMs: opts.timeoutMs ?? null,
+    effort: opts.effort ?? null,
     selectedCaseIds: selected.map((entry) => entry.id),
     startedAt: new Date().toISOString(),
   };
@@ -606,7 +721,7 @@ async function main(): Promise<void> {
   }
 
   process.stderr.write(
-    `eval:browsecomp: running ${selected.length} case(s), seed=${opts.seed}\n`,
+    `eval:browsecomp: running ${selected.length} case(s), seed=${opts.seed}, timeout=${Math.round((opts.timeoutMs ?? 0) / 1000)}s\n`,
   );
   const results = await mapWithConcurrency(
     selected,

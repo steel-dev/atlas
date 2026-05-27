@@ -67,6 +67,8 @@ function createContext(opts: {
   sourceDocuments?: ResearchLoopContext["sourceDocuments"];
   sourceCap?: number;
   useProxy?: boolean;
+  deadlineAt?: number;
+  synthesisReserveMs?: number;
 }): ResearchLoopContext {
   return {
     model: {
@@ -89,6 +91,8 @@ function createContext(opts: {
     useProxy: opts.useProxy ?? false,
     sourceCap: opts.sourceCap ?? 4,
     maxConcurrentTools: 2,
+    deadlineAt: opts.deadlineAt,
+    synthesisReserveMs: opts.synthesisReserveMs,
     steelConcurrencyGate: createSteelConcurrencyGate(2),
     sourceReservations: createSourceReservations(),
     caches: createResearchCaches(),
@@ -768,6 +772,46 @@ describe("research loop cache integration", () => {
     ]);
     expect(toolResultText(followupRequest)).not.toContain("Already being fetched");
     expect(toolResultText(followupRequest)).toContain("Evidence from one browser fetch");
+  });
+
+  it("switches to final synthesis instead of starting tools near the deadline", async () => {
+    const scrape = vi.fn();
+    const messagesCreate = vi.fn();
+    const ctx = createContext({
+      messagesCreate,
+      scrape,
+      deadlineAt: Date.now() + 60_000,
+      synthesisReserveMs: 10_000,
+    });
+    messagesCreate
+      .mockImplementationOnce(async () => {
+        ctx.deadlineAt = Date.now() + 5_000;
+        return messageWith([
+          toolUse("search_1", "search", { query: "expensive follow-up" }),
+        ]);
+      })
+      .mockResolvedValueOnce(finalReport());
+
+    const result = await runResearchLoop({
+      ctx,
+      query: "What is Atlas?",
+      maxToolCalls: 3,
+    });
+    const synthesisRequest = messagesCreate.mock.calls[1]?.[0] as {
+      tools?: unknown;
+      messages: Array<{ content: unknown }>;
+    };
+
+    expect(result.finishReason).toBe(
+      "final report after timeout approaching (5s remaining)",
+    );
+    expect(result.markdown).toContain("# Test Report");
+    expect(result.toolCalls).toBe(0);
+    expect(scrape).not.toHaveBeenCalled();
+    expect(synthesisRequest.tools).toBeUndefined();
+    expect(JSON.stringify(synthesisRequest.messages)).toContain(
+      "timeout approaching",
+    );
   });
 
   it("starts research runs with a minimal research-question prompt", async () => {
