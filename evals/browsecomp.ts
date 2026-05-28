@@ -126,6 +126,7 @@ type EvalTraceEvent = {
     ok: boolean;
     note: string;
   }>;
+  qualityWarnings?: string[];
   sourcesFetched?: number;
   markdownChars?: number;
   result?: {
@@ -1148,6 +1149,9 @@ function traceEvent(event: ResearchEvent, started: number): EvalTraceEvent {
           ? { markdownChars: event.markdownChars }
           : {}),
         ...(event.attempts ? { attempts: event.attempts } : {}),
+        ...(event.qualityWarnings
+          ? { qualityWarnings: event.qualityWarnings }
+          : {}),
       };
     case "source_error":
       return { ...base, url: event.url, error: event.error };
@@ -1297,6 +1301,54 @@ function median(values: number[]): number {
     : sorted[mid];
 }
 
+function formatCountMap(counts: Record<string, number>): string {
+  const entries = Object.entries(counts).sort(([a], [b]) => a.localeCompare(b));
+  return entries.length === 0
+    ? "none"
+    : entries.map(([key, value]) => `${key}:${value}`).join(",");
+}
+
+function summarizeFetchHealth(results: EvalResult[]) {
+  const fetchedByMethod: Record<string, number> = {};
+  const failedAttemptsByMethod: Record<string, number> = {};
+  let fetched = 0;
+  let rejected = 0;
+  let totalFetchedMarkdownChars = 0;
+  let qualityWarnings = 0;
+
+  for (const result of results) {
+    for (const event of result.trace) {
+      if (event.event === "source_fetched") {
+        fetched++;
+        const method = event.method ?? "unknown";
+        fetchedByMethod[method] = (fetchedByMethod[method] ?? 0) + 1;
+        totalFetchedMarkdownChars += event.markdownChars ?? 0;
+        qualityWarnings += event.qualityWarnings?.length ?? 0;
+        for (const attempt of event.attempts ?? []) {
+          if (!attempt.ok) {
+            failedAttemptsByMethod[attempt.method] =
+              (failedAttemptsByMethod[attempt.method] ?? 0) + 1;
+          }
+        }
+        continue;
+      }
+      if (event.event === "source_error") {
+        rejected++;
+        continue;
+      }
+    }
+  }
+
+  return {
+    fetched,
+    rejected,
+    fetchedByMethod,
+    failedAttemptsByMethod,
+    totalFetchedMarkdownChars,
+    qualityWarnings,
+  };
+}
+
 function summarize(results: EvalResult[]) {
   const completed = results.filter((result) => !result.error);
   const correct = results.filter((result) => result.correct).length;
@@ -1334,6 +1386,7 @@ function summarize(results: EvalResult[]) {
       (sum, result) => sum + (result.evidenceValidation?.invalid ?? 0),
       0,
     ),
+    fetchHealth: summarizeFetchHealth(results),
   };
 }
 
@@ -1421,6 +1474,7 @@ async function main(): Promise<void> {
       `median latency: ${(summary.medianLatencyMs / 1000).toFixed(1)}s`,
       `avg tool calls: ${summary.averageToolCalls.toFixed(1)}`,
       `invalid evidence: ${summary.totalInvalidEvidence}/${summary.totalEvidenceChecked}`,
+      `fetch health: fetched=${summary.fetchHealth.fetched}, rejected=${summary.fetchHealth.rejected}, methods=${formatCountMap(summary.fetchHealth.fetchedByMethod)}`,
       `results: ${outPath}`,
     ].join("\n") + "\n",
   );

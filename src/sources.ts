@@ -19,6 +19,7 @@ export interface SourceExtractionMetadata {
   contentType?: string;
   finalUrl?: string;
   attempts?: SourceExtractionAttempt[];
+  qualityWarnings?: string[];
 }
 
 export interface SourceExtractionAttempt {

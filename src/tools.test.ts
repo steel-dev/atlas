@@ -1162,6 +1162,7 @@ describe("research loop cache integration", () => {
           note: expect.stringContaining("html_direct: extracted"),
         },
       ],
+      qualityWarnings: expect.any(Array),
     });
     expect(toolText).toContain("Static evidence from the original HTML page.");
     expect(toolText).toContain('"method": "html_direct"');
@@ -1305,6 +1306,51 @@ describe("research loop cache integration", () => {
       type: "source_error",
       url: "https://example.com/blocked",
       error: expect.stringContaining("blocked_or_challenge: direct HTML looked blocked"),
+    });
+    expect(toolResultText(followupRequest)).toContain(
+      "Fetch failed: no content fetched.",
+    );
+  });
+
+  it("rejects tiny error pages instead of storing them as sources", async () => {
+    const fetch = vi.fn(
+      async () =>
+        new Response("Not found", {
+          status: 404,
+          headers: { "content-type": "text/html" },
+        }),
+    );
+    vi.stubGlobal("fetch", fetch);
+    const scrape = vi.fn(async () => ({
+      content: { markdown: "404 Page not found" },
+      metadata: { title: "404 Page not found" },
+    }));
+    const messagesCreate = vi
+      .fn()
+      .mockResolvedValueOnce(
+        messageWith([
+          toolUse("fetch_1", "fetch", { url: "https://example.com/missing" }),
+        ]),
+      )
+      .mockResolvedValueOnce(finalReport());
+    const ctx = createContext({ messagesCreate, scrape });
+
+    const result = await runResearchLoop({
+      ctx,
+      query: "What is Atlas?",
+      maxToolCalls: 2,
+    });
+    const followupRequest = messagesCreate.mock.calls[1]?.[0] as {
+      messages: Array<{ content: unknown }>;
+    };
+
+    expect(result.finishReason).toBe("final report");
+    expect(ctx.fetchedSources).toEqual([]);
+    expect(ctx.sourceDocuments.size).toBe(0);
+    expect(ctx.emit).toHaveBeenCalledWith({
+      type: "source_error",
+      url: "https://example.com/missing",
+      error: "thin_content: extracted only 18 chars",
     });
     expect(toolResultText(followupRequest)).toContain(
       "Fetch failed: no content fetched.",

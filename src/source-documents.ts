@@ -77,11 +77,13 @@ export function extractionMetadataFromSteel(
   markdownChars: number,
   notes: string[] = [],
   attempts: SourceExtractionAttempt[] = [],
+  qualityWarnings: string[] = [],
 ): SourceExtractionMetadata {
   return {
     markdownChars,
     method: "steel_markdown",
     ...(attempts.length > 0 ? { attempts } : {}),
+    ...(qualityWarnings.length > 0 ? { qualityWarnings } : {}),
     extractionNotes: ["Fetched with browser-rendered markdown.", ...notes],
   };
 }
@@ -92,6 +94,7 @@ export function extractionMetadataFromPdf(opts: {
   finalUrl?: string;
   notes?: string[];
   attempts?: SourceExtractionAttempt[];
+  qualityWarnings?: string[];
 }): SourceExtractionMetadata {
   return {
     markdownChars: opts.markdownChars,
@@ -100,6 +103,9 @@ export function extractionMetadataFromPdf(opts: {
     ...(opts.finalUrl ? { finalUrl: opts.finalUrl } : {}),
     ...(opts.attempts && opts.attempts.length > 0
       ? { attempts: opts.attempts }
+      : {}),
+    ...(opts.qualityWarnings && opts.qualityWarnings.length > 0
+      ? { qualityWarnings: opts.qualityWarnings }
       : {}),
     extractionNotes: ["Fetched with direct PDF text extraction.", ...(opts.notes ?? [])],
   };
@@ -111,6 +117,7 @@ export function extractionMetadataFromHtml(opts: {
   finalUrl?: string;
   notes?: string[];
   attempts?: SourceExtractionAttempt[];
+  qualityWarnings?: string[];
 }): SourceExtractionMetadata {
   return {
     markdownChars: opts.markdownChars,
@@ -119,6 +126,9 @@ export function extractionMetadataFromHtml(opts: {
     ...(opts.finalUrl ? { finalUrl: opts.finalUrl } : {}),
     ...(opts.attempts && opts.attempts.length > 0
       ? { attempts: opts.attempts }
+      : {}),
+    ...(opts.qualityWarnings && opts.qualityWarnings.length > 0
+      ? { qualityWarnings: opts.qualityWarnings }
       : {}),
     extractionNotes: ["Fetched with direct HTML text extraction.", ...(opts.notes ?? [])],
   };
@@ -172,6 +182,10 @@ export function formatFetchResult(
               : {}),
             ...(document.metadata.attempts && document.metadata.attempts.length > 0
               ? { attempts: document.metadata.attempts }
+              : {}),
+            ...(document.metadata.qualityWarnings &&
+            document.metadata.qualityWarnings.length > 0
+              ? { quality_warnings: document.metadata.qualityWarnings }
               : {}),
             notes: document.metadata.extractionNotes,
           },

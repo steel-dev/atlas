@@ -142,6 +142,7 @@ export type ResearchLoopEvent =
       method?: string;
       markdownChars?: number;
       attempts?: SourceExtractionAttempt[];
+      qualityWarnings?: string[];
     }
   | { type: "source_error"; url: string; error: string }
   | { type: "research_finished"; sourcesFetched: number };

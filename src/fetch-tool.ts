@@ -43,9 +43,15 @@ export const normalizeFetchUrl = normalizeUrlForSource;
 const DIRECT_PDF_MAX_BYTES = 25 * 1024 * 1024;
 const DIRECT_HTML_MAX_BYTES = 5 * 1024 * 1024;
 const DIRECT_HTML_MIN_CHARS = 100;
+const MIN_SOURCE_MARKDOWN_CHARS = 20;
+const THIN_SOURCE_MARKDOWN_CHARS = 300;
 const PDF_MAGIC = "%PDF";
 const DIRECT_FETCH_USER_AGENT =
   "Mozilla/5.0 (compatible; AtlasResearchBot/0.1; +https://github.com/steel-experiments/atlas)";
+const ERROR_TITLE_PATTERN =
+  /\b(?:404|not found|access denied|forbidden|error report|captcha|just a moment|sorry)\b/i;
+const SEARCH_LISTING_TITLE_PATTERN =
+  /\b(?:search results?|advanced search|site search)\b|검색/i;
 
 function totalSourceSlots(ctx: ResearchLoopContext): number {
   return ctx.fetchedSources.length + ctx.sourceReservations.sourceSlots;
@@ -424,12 +430,32 @@ async function fetchSourceDocument(
   }
 
   const resolvedTitle = title ?? url;
+  const quality = assessSourceQuality(markdown, resolvedTitle, metadata);
+  if (quality.fatalError) {
+    ctx.caches.scrape.delete(url);
+    ctx.emit({
+      type: "source_error",
+      url,
+      error: quality.fatalError,
+    });
+    return null;
+  }
+  const metadataWithQuality =
+    quality.warnings.length === 0
+      ? metadata
+      : {
+          ...metadata,
+          qualityWarnings: [
+            ...(metadata.qualityWarnings ?? []),
+            ...quality.warnings,
+          ],
+        };
   const stored = storeMarkdown(markdown);
   const document = createSourceDocument(
     url,
     resolvedTitle,
     stored.markdown,
-    metadata,
+    metadataWithQuality,
     stored.originalChars,
     sourceId,
     normalizeFetchUrl(url),
@@ -449,6 +475,7 @@ async function fetchSourceDocument(
     method: document.metadata.method,
     markdownChars: document.metadata.markdownChars,
     attempts: document.metadata.attempts,
+    qualityWarnings: document.metadata.qualityWarnings,
   });
 
   return document;
@@ -522,4 +549,47 @@ function sourceErrorFromMetadata(metadata: ScrapeCacheEntry["metadata"]): string
     return `${priorityAttempt.note}; attempts: ${attempts}`;
   }
   return "empty_markdown: no content fetched";
+}
+
+function assessSourceQuality(
+  markdown: string,
+  title: string,
+  metadata: ScrapeCacheEntry["metadata"],
+): { fatalError?: string; warnings: string[] } {
+  const trimmed = markdown.trim();
+  const warnings: string[] = [];
+
+  if (looksBlocked(`${title}\n${trimmed}`)) {
+    return {
+      fatalError: "blocked_or_challenge: fetched content looked blocked",
+      warnings,
+    };
+  }
+
+  if (trimmed.length < MIN_SOURCE_MARKDOWN_CHARS) {
+    return {
+      fatalError: `thin_content: extracted only ${trimmed.length} chars`,
+      warnings,
+    };
+  }
+
+  const titleLooksLikeError = ERROR_TITLE_PATTERN.test(title);
+  const hadHttpError = metadata.attempts?.some((attempt) =>
+    /^http_error:/.test(attempt.note),
+  );
+  if (titleLooksLikeError && (trimmed.length < 500 || hadHttpError)) {
+    return {
+      fatalError: `error_page: ${title} (${trimmed.length} chars)`,
+      warnings,
+    };
+  }
+
+  if (trimmed.length < THIN_SOURCE_MARKDOWN_CHARS) {
+    warnings.push(`thin_content: extracted ${trimmed.length} chars`);
+  }
+  if (SEARCH_LISTING_TITLE_PATTERN.test(title)) {
+    warnings.push("search_listing_page: title looks like a search/listing page");
+  }
+
+  return { warnings };
 }
