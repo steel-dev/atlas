@@ -13,7 +13,11 @@ import {
   DEFAULT_OPENAI_MODEL,
   type ResearchEffort,
 } from "./defaults.js";
-import type { FetchedSource, SourceDocument, VerifiedSource } from "./sources.js";
+import type {
+  FetchedSource,
+  SourceDocument,
+  VerifiedSource,
+} from "./sources.js";
 import { createSteel } from "./steel.js";
 import {
   createSourceReservations,
@@ -32,7 +36,7 @@ const DEFAULT_RUNTIME_LIMITS = {
   defaultSearchLimit: 8,
   defaultEffort: "high",
   maxOutputTokens: 16_384,
-  timeoutSynthesisReserveMs: 60_000,
+  timeoutSynthesisReserveMs: 180_000,
 } satisfies {
   safetySourceCap: number;
   safetyMaxToolCalls: number;
@@ -46,7 +50,11 @@ const DEFAULT_RUNTIME_LIMITS = {
 
 export type { ModelProvider, UsageSummary } from "./model.js";
 export type { ResearchEffort } from "./defaults.js";
-export type { FetchedSource, SourceDocument, VerifiedSource } from "./sources.js";
+export type {
+  FetchedSource,
+  SourceDocument,
+  VerifiedSource,
+} from "./sources.js";
 
 export interface ResearchRun {
   fetchedUrls: string[];
@@ -63,6 +71,7 @@ export interface ResearchResult {
   unverifiedCitations: string[];
   markdown: string;
   structured?: unknown;
+  sourceDocuments?: SourceDocument[];
   usage: UsageSummary;
 }
 
@@ -115,6 +124,7 @@ export interface ResearchOptions {
   timeoutMs?: number;
   effort?: ResearchEffort;
   output?: ResearchOutputOptions;
+  includeSourceDocuments?: boolean;
   onEvent?: (event: ResearchEvent) => void;
   signal?: AbortSignal;
 }
@@ -133,6 +143,7 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
     timeoutMs,
     effort,
     output,
+    includeSourceDocuments = false,
     onEvent,
     signal,
   } = opts;
@@ -198,7 +209,10 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
     synthesisReserveMs:
       timeoutMs === undefined
         ? undefined
-        : timeoutSynthesisReserveMs(timeoutMs, limits.timeoutSynthesisReserveMs),
+        : timeoutSynthesisReserveMs(
+            timeoutMs,
+            limits.timeoutSynthesisReserveMs,
+          ),
     steelConcurrencyGate: createSteelConcurrencyGate(
       limits.maxConcurrentSteelCalls,
     ),
@@ -257,6 +271,9 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
     unverifiedCitations: citationAudit.unverifiedCitations,
     markdown,
     ...(structured !== undefined ? { structured } : {}),
+    ...(includeSourceDocuments
+      ? { sourceDocuments: [...sourceDocuments.values()] }
+      : {}),
     usage: { ...modelAdapter.usage },
   };
 
@@ -364,7 +381,11 @@ function fencedJson(text: string): string | null {
   return match?.[1]?.trim() ?? null;
 }
 
-function substringBetween(text: string, startChar: string, endChar: string): string | null {
+function substringBetween(
+  text: string,
+  startChar: string,
+  endChar: string,
+): string | null {
   const start = text.indexOf(startChar);
   const end = text.lastIndexOf(endChar);
   if (start === -1 || end === -1 || end <= start) return null;
@@ -432,8 +453,7 @@ function createModelAdapter(opts: {
   const apiKey =
     opts.openaiApiKey ?? readEnv("ATLAS_OPENAI_API_KEY", "OPENAI_API_KEY");
   const baseUrl =
-    opts.openaiBaseUrl ??
-    readEnv("ATLAS_OPENAI_BASE_URL", "OPENAI_BASE_URL");
+    opts.openaiBaseUrl ?? readEnv("ATLAS_OPENAI_BASE_URL", "OPENAI_BASE_URL");
   if (!apiKey) {
     throw new Error(
       "research: OPENAI_API_KEY or ATLAS_OPENAI_API_KEY is required for provider=openai",
@@ -514,7 +534,10 @@ function combineSignals(
   return signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
 }
 
-function timeoutSynthesisReserveMs(timeoutMs: number, maxReserveMs: number): number {
+function timeoutSynthesisReserveMs(
+  timeoutMs: number,
+  maxReserveMs: number,
+): number {
   const normalizedTimeoutMs = Math.floor(timeoutMs);
   const preferredReserveMs = Math.max(
     15_000,

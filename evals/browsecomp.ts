@@ -17,6 +17,8 @@ import {
   type ResearchEvent,
   type ResearchResult,
 } from "../src/research.js";
+import type { SourceDocument } from "../src/sources.js";
+import { normalizeUrlForSource } from "../src/url.js";
 
 interface EvalCase {
   id: string;
@@ -56,6 +58,27 @@ interface JudgeResult {
   raw: string;
 }
 
+interface EvidenceValidation {
+  checked: number;
+  valid: number;
+  invalid: number;
+  items: EvidenceValidationItem[];
+}
+
+interface EvidenceValidationItem {
+  index: number;
+  valid: boolean;
+  clue?: string;
+  source_id?: string;
+  source_url?: string;
+  source_title?: string;
+  start?: number;
+  end?: number;
+  quote?: string;
+  quote_found_elsewhere_at?: number;
+  reason?: string;
+}
+
 interface EvalResult {
   type: "result";
   id: string;
@@ -65,9 +88,12 @@ interface EvalResult {
   exactCorrect: boolean;
   correct: boolean;
   structured?: unknown;
+  evidenceValidation?: EvidenceValidation;
   judge?: JudgeResult;
   judgeError?: string;
   error?: string;
+  finishReason?: string;
+  markdown?: string;
   latencyMs: number;
   trace: EvalTraceEvent[];
   metrics?: {
@@ -572,6 +598,8 @@ function evalQuery(query: string): string {
   return [
     "Answer the following hard browsing question.",
     "Write a concise cited Markdown report using reliable sources.",
+    "For decisive evidence, prefer exact quotes from fetched sources and preserve source_id plus character spans when available.",
+    "Use quote_source for important quotes when you need exact source spans.",
     "End with a single final line in this exact format: Final answer: <answer>",
     "Keep the final answer as short as possible so it can be exact-graded.",
     "",
@@ -607,12 +635,29 @@ function browseCompOutput() {
                 type: "string",
                 description: "URL of the fetched source.",
               },
+              source_id: {
+                type: "string",
+                description:
+                  "source_id returned by fetch for the cited source, such as source_1.",
+              },
+              start: {
+                type: "integer",
+                minimum: 0,
+                description:
+                  "Start character offset of the quote in the fetched source markdown.",
+              },
+              end: {
+                type: "integer",
+                minimum: 0,
+                description:
+                  "End character offset of the quote in the fetched source markdown.",
+              },
               quote: {
                 type: "string",
                 description: "Short quote or excerpt from the source.",
               },
             },
-            required: ["clue", "source_url", "quote"],
+            required: ["clue", "source_url", "source_id", "start", "end", "quote"],
             additionalProperties: false,
           },
         },
@@ -633,6 +678,130 @@ function structuredFinalAnswer(structured: unknown): string | null {
   if (typeof structured !== "object" || structured === null) return null;
   const value = (structured as { final_answer?: unknown }).final_answer;
   return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function structuredEvidence(structured: unknown): unknown[] {
+  if (typeof structured !== "object" || structured === null) return [];
+  const evidence = (structured as { evidence?: unknown }).evidence;
+  return Array.isArray(evidence) ? evidence : [];
+}
+
+function readStructuredString(
+  record: Record<string, unknown>,
+  field: string,
+): string | undefined {
+  const value = record[field];
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function readStructuredInteger(
+  record: Record<string, unknown>,
+  field: string,
+): number | undefined {
+  const value = record[field];
+  const n = typeof value === "number" ? value : Number(value);
+  if (!Number.isInteger(n) || n < 0) return undefined;
+  return n;
+}
+
+function sourceMatchesUrl(source: SourceDocument, sourceUrl: string): boolean {
+  const normalized = normalizeUrlForSource(sourceUrl);
+  return (
+    normalized === source.canonicalUrl ||
+    normalized === normalizeUrlForSource(source.url)
+  );
+}
+
+function findEvidenceSource(
+  sources: SourceDocument[],
+  sourceId: string | undefined,
+  sourceUrl: string | undefined,
+): SourceDocument | undefined {
+  if (sourceId) {
+    const source = sources.find((entry) => entry.sourceId === sourceId);
+    if (source) return source;
+  }
+  if (sourceUrl) {
+    return sources.find((entry) => sourceMatchesUrl(entry, sourceUrl));
+  }
+  return undefined;
+}
+
+function validateStructuredEvidence(
+  structured: unknown,
+  sources: SourceDocument[] | undefined,
+): EvidenceValidation | undefined {
+  const evidence = structuredEvidence(structured);
+  if (evidence.length === 0) return undefined;
+
+  const sourceDocuments = sources ?? [];
+  const items = evidence.map((entry, index): EvidenceValidationItem => {
+    if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
+      return { index, valid: false, reason: "evidence item is not an object" };
+    }
+
+    const record = entry as Record<string, unknown>;
+    const clue = readStructuredString(record, "clue");
+    const sourceId = readStructuredString(record, "source_id");
+    const sourceUrl = readStructuredString(record, "source_url");
+    const quote = readStructuredString(record, "quote");
+    const start = readStructuredInteger(record, "start");
+    const end = readStructuredInteger(record, "end");
+    const base: EvidenceValidationItem = {
+      index,
+      ...(clue ? { clue } : {}),
+      ...(sourceId ? { source_id: sourceId } : {}),
+      ...(sourceUrl ? { source_url: sourceUrl } : {}),
+      ...(start !== undefined ? { start } : {}),
+      ...(end !== undefined ? { end } : {}),
+      ...(quote ? { quote } : {}),
+      valid: false,
+    };
+
+    const source = findEvidenceSource(sourceDocuments, sourceId, sourceUrl);
+    if (!source) {
+      return {
+        ...base,
+        reason: sourceId || sourceUrl ? "source not found" : "missing source_id/source_url",
+      };
+    }
+    const withSource = { ...base, source_title: source.title };
+    if (sourceId && source.sourceId !== sourceId) {
+      return { ...withSource, reason: "source_id does not match fetched source" };
+    }
+    if (sourceUrl && !sourceMatchesUrl(source, sourceUrl)) {
+      return { ...withSource, reason: "source_url does not match fetched source" };
+    }
+    if (!quote) {
+      return { ...withSource, reason: "missing quote" };
+    }
+    if (start === undefined || end === undefined) {
+      return { ...withSource, reason: "missing or invalid quote span" };
+    }
+    if (end <= start || end > source.markdown.length) {
+      return { ...withSource, reason: "quote span out of bounds" };
+    }
+
+    const spanned = source.markdown.slice(start, end);
+    if (spanned !== quote) {
+      const quoteIndex = source.markdown.indexOf(quote);
+      return {
+        ...withSource,
+        ...(quoteIndex >= 0 ? { quote_found_elsewhere_at: quoteIndex } : {}),
+        reason: "quote does not match source span",
+      };
+    }
+
+    return { ...withSource, valid: true };
+  });
+
+  const valid = items.filter((item) => item.valid).length;
+  return {
+    checked: items.length,
+    valid,
+    invalid: items.length - valid,
+    items,
+  };
 }
 
 function extractFinalAnswer(markdown: string): string | null {
@@ -861,6 +1030,7 @@ async function runCase(
       timeoutMs: opts.timeoutMs,
       effort: opts.effort,
       output: browseCompOutput(),
+      includeSourceDocuments: true,
       useProxy: opts.useProxy,
       onEvent: (event) => {
         trace.push(traceEvent(event, started));
@@ -871,6 +1041,10 @@ async function runCase(
     clearInterval(heartbeat);
     const predictedAnswer =
       structuredFinalAnswer(result.structured) ?? extractFinalAnswer(result.markdown);
+    const evidenceValidation = validateStructuredEvidence(
+      result.structured,
+      result.sourceDocuments,
+    );
     const exactCorrect = gradeAnswer(predictedAnswer, entry.answers);
     let judgeResult: JudgeResult | undefined;
     let judgeError: string | undefined;
@@ -899,8 +1073,11 @@ async function runCase(
       exactCorrect,
       correct: judgeResult?.correct ?? exactCorrect,
       ...(result.structured !== undefined ? { structured: result.structured } : {}),
+      ...(evidenceValidation ? { evidenceValidation } : {}),
       ...(judgeResult ? { judge: judgeResult } : {}),
       ...(judgeError ? { judgeError } : {}),
+      finishReason: result.runs.map((run) => run.finishReason).join("; "),
+      markdown: result.markdown,
       latencyMs: Date.now() - started,
       trace,
       metrics: summarizeRun(result),
@@ -978,6 +1155,14 @@ function summarize(results: EvalResult[]) {
       completed.length === 0 ? 0 : totalToolCalls / completed.length,
     totalUnverifiedCitations: completed.reduce(
       (sum, result) => sum + (result.metrics?.unverifiedCitations ?? 0),
+      0,
+    ),
+    totalEvidenceChecked: completed.reduce(
+      (sum, result) => sum + (result.evidenceValidation?.checked ?? 0),
+      0,
+    ),
+    totalInvalidEvidence: completed.reduce(
+      (sum, result) => sum + (result.evidenceValidation?.invalid ?? 0),
       0,
     ),
   };
@@ -1066,6 +1251,7 @@ async function main(): Promise<void> {
       `errors: ${summary.errors}`,
       `median latency: ${(summary.medianLatencyMs / 1000).toFixed(1)}s`,
       `avg tool calls: ${summary.averageToolCalls.toFixed(1)}`,
+      `invalid evidence: ${summary.totalInvalidEvidence}/${summary.totalEvidenceChecked}`,
       `results: ${outPath}`,
     ].join("\n") + "\n",
   );
