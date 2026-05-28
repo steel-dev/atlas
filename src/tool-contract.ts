@@ -34,7 +34,7 @@ export const RESEARCH_TOOLS: ModelToolDefinition[] = [
   {
     name: "fetch",
     description:
-      "Fetch a URL as Markdown. Use offset/max_chars to continue reading long pages.",
+      "Fetch a URL as Markdown. Multiple fetch calls in the same turn run in parallel. Use offset/max_chars to continue reading long pages.",
     input_schema: {
       type: "object",
       properties: {
