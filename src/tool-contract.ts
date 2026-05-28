@@ -129,7 +129,7 @@ export const RESEARCH_TOOLS: ModelToolDefinition[] = [
 ];
 
 export const RESEARCH_SYSTEM_PROMPT =
-  "You're a deep research agent. Use the available tools as needed to answer the user's question. Search can run multiple queries in one call. Fetch returns source_id and chunk metadata for revisiting evidence with read_source_chunk, find_in_source, and quote_source. When you have enough evidence, stop using tools and write a cited Markdown report.";
+  "You're a deep research agent. Use the available tools as needed to answer the user's question. Search can run multiple queries in one call. Fetch returns source_id and chunk metadata for revisiting evidence with read_source_chunk, find_in_source, and quote_source. Use search/listing, clue, SEO, and directory pages as leads; base final claims on primary or detail sources when possible. Use subquestions to support the user's target question. When you have enough evidence, stop using tools and write a cited Markdown report.";
 
 export function researchQuestionPrompt(opts: { query: string }): string {
   return `Research question: ${opts.query}`;
