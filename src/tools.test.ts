@@ -405,6 +405,74 @@ describe("research loop cache integration", () => {
     expect(fetch).toHaveBeenCalledTimes(3);
   });
 
+  it("runs batched search queries in one tool call", async () => {
+    const fetch = vi.fn(async (url: string | URL | Request) => {
+      const href = String(url);
+      const q = new URL(href).searchParams.get("q") ?? "";
+      if (href.includes("duckduckgo.com")) {
+        return new Response(
+          `
+            <html>
+              <body>
+                <div class="result">
+                  <a class="result__a" href="https://example.com/shared-paper">Shared Paper</a>
+                  <a class="result__snippet">Snippet for ${q}.</a>
+                </div>
+              </body>
+            </html>
+          `,
+          { headers: { "content-type": "text/html" } },
+        );
+      }
+      return new Response("<html><body>No matching results.</body></html>", {
+        headers: { "content-type": "text/html" },
+      });
+    });
+    vi.stubGlobal("fetch", fetch);
+    const messagesCreate = vi
+      .fn()
+      .mockResolvedValueOnce(
+        messageWith([
+          toolUse("search_1", "search", {
+            queries: ["alpha query", "beta query"],
+          }),
+        ]),
+      )
+      .mockResolvedValueOnce(finalReport());
+    const ctx = createContext({ messagesCreate });
+
+    const result = await runResearchLoop({
+      ctx,
+      query: "What is Atlas?",
+      maxToolCalls: 2,
+    });
+    const followupRequest = messagesCreate.mock.calls[1]?.[0] as {
+      messages: Array<{ content: unknown }>;
+    };
+    const payload = JSON.parse(toolResultText(followupRequest)) as {
+      queries: string[];
+      results: Array<{ url: string; queries?: string[] }>;
+    };
+
+    expect(result.finishReason).toBe("final report");
+    expect(result.toolCalls).toBe(1);
+    expect(payload.queries).toEqual(["alpha query", "beta query"]);
+    expect(payload.results[0]).toMatchObject({
+      url: "https://example.com/shared-paper",
+      queries: ["alpha query", "beta query"],
+    });
+    expect(ctx.emit).toHaveBeenCalledWith({
+      type: "search_results",
+      index: 1,
+      count: 1,
+    });
+    expect(ctx.emit).toHaveBeenCalledWith({
+      type: "search_results",
+      index: 2,
+      count: 1,
+    });
+  });
+
   it("merges another engine when the default engine fails", async () => {
     const fetch = vi.fn(async (url: string | URL | Request) => {
       const href = String(url);

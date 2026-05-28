@@ -10,18 +10,24 @@ export const RESEARCH_TOOLS: ModelToolDefinition[] = [
     input_schema: {
       type: "object",
       properties: {
-        query: {
-          type: "string",
-          description: "Search query.",
+        queries: {
+          type: "array",
+          minItems: 1,
+          maxItems: 6,
+          items: {
+            type: "string",
+          },
+          description:
+            "One or more related search queries to run in parallel. Prefer batching query variants together.",
         },
         limit: {
           type: "integer",
           minimum: 1,
           maximum: 20,
-          description: "Maximum results to return.",
+          description: "Maximum merged results to return.",
         },
       },
-      required: ["query"],
+      required: ["queries"],
     },
   },
   {

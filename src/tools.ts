@@ -23,6 +23,7 @@ import {
 } from "./evidence-tool.js";
 import {
   execSearch,
+  searchQueryCount,
   searchEnginesInFallbackOrder,
   type SearchToolInput,
 } from "./search-tool.js";
@@ -316,9 +317,12 @@ export async function runResearchLoop(opts: {
     const remainingToolCalls = maxToolCalls - toolCalls;
     const activeToolUses = toolUses.slice(0, remainingToolCalls);
     const skippedToolUses = toolUses.slice(remainingToolCalls);
-    const searchIndexes = activeToolUses.map((tu) =>
-      tu.name === "search" ? ++searchIndex : undefined,
-    );
+    const searchIndexes = activeToolUses.map((tu) => {
+      if (tu.name !== "search") return undefined;
+      const start = searchIndex + 1;
+      searchIndex += searchQueryCount((tu.input as SearchToolInput) ?? {});
+      return start;
+    });
     toolCalls += activeToolUses.length;
 
     const executions = await mapWithConcurrency(

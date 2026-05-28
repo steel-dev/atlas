@@ -15,6 +15,7 @@ const RRF_K = 60;
 
 export interface SearchToolInput {
   query?: string;
+  queries?: string[];
   limit?: number;
 }
 
@@ -85,6 +86,7 @@ function compactSearchResults(
   engine: Engine;
   engine_rank: number;
   engines: Engine[];
+  queries?: string[];
 }> {
   return results.map((result, index) => ({
     rank: index + 1,
@@ -96,6 +98,7 @@ function compactSearchResults(
     engine: result.engine,
     engine_rank: result.engineRank,
     engines: result.engines,
+    ...(result.queries.length > 1 ? { queries: result.queries } : {}),
   }));
 }
 
@@ -119,6 +122,7 @@ function dedupeSearchResults(
 }
 
 interface EngineSearchResults {
+  query: string;
   engine: Engine;
   results: SearchResult[];
   engineOrder: number;
@@ -131,8 +135,18 @@ interface MergedSearchResult {
   engine: Engine;
   engineRank: number;
   engines: Engine[];
+  queries: string[];
   score: number;
   engineOrder: number;
+}
+
+interface SearchCollection {
+  query: string;
+  engines: Engine[];
+  searchedEngines: Engine[];
+  successfulSearches: EngineSearchResults[];
+  warnings: string[];
+  sawEmptyResults: boolean;
 }
 
 function mergeSearchResults(
@@ -155,6 +169,7 @@ function mergeSearchResults(
           engine: search.engine,
           engineRank: result.position,
           engines: [search.engine],
+          queries: [search.query],
           score,
           engineOrder: search.engineOrder,
         });
@@ -164,6 +179,9 @@ function mergeSearchResults(
       existing.score += score;
       if (!existing.engines.includes(search.engine)) {
         existing.engines.push(search.engine);
+      }
+      if (!existing.queries.includes(search.query)) {
+        existing.queries.push(search.query);
       }
       const isBetterDisplayResult =
         result.position < existing.engineRank ||
@@ -189,20 +207,38 @@ function mergeSearchResults(
     .slice(0, limit);
 }
 
-export async function execSearch(
-  args: SearchToolInput,
-  ctx: ResearchLoopContext,
-  searchIndex: number,
-): Promise<string> {
-  const query = String(args.query ?? "").trim();
-  if (!query) return "Error: search requires a non-empty `query`.";
+export function searchQueryCount(args: SearchToolInput): number {
+  return readSearchQueries(args).length || 1;
+}
 
-  const rawLimit = args.limit ?? ctx.defaultSearchLimit ?? 5;
-  const limit = Math.min(Math.max(1, Math.floor(Number(rawLimit))), 20);
+function readSearchQueries(args: SearchToolInput): string[] {
+  const rawQueries = Array.isArray(args.queries)
+    ? args.queries
+    : args.query !== undefined
+      ? [args.query]
+      : [];
+  const seen = new Set<string>();
+  const queries: string[] = [];
+  for (const raw of rawQueries) {
+    const query = String(raw ?? "").trim();
+    if (!query || seen.has(query)) continue;
+    seen.add(query);
+    queries.push(query);
+    if (queries.length >= 6) break;
+  }
+  return queries;
+}
 
+async function collectSearchResults(opts: {
+  query: string;
+  limit: number;
+  index: number;
+  ctx: ResearchLoopContext;
+}): Promise<SearchCollection> {
+  const { query, limit, index, ctx } = opts;
   ctx.emit({
     type: "searching",
-    index: searchIndex,
+    index,
     query,
   });
 
@@ -251,6 +287,7 @@ export async function execSearch(
     }
 
     successfulSearches.push({
+      query,
       engine,
       engineOrder: engineOutcome.engineOrder,
       results,
@@ -258,47 +295,99 @@ export async function execSearch(
   }
 
   const results = mergeSearchResults(successfulSearches, limit);
+  ctx.emit({
+    type: "search_results",
+    index,
+    count: results.length,
+  });
+  return {
+    query,
+    engines: successfulSearches.map((search) => search.engine),
+    searchedEngines: engines,
+    successfulSearches,
+    warnings: failures,
+    sawEmptyResults,
+  };
+}
+
+export async function execSearch(
+  args: SearchToolInput,
+  ctx: ResearchLoopContext,
+  searchIndex: number,
+): Promise<string> {
+  const queries = readSearchQueries(args);
+  if (queries.length === 0) return "Error: search requires non-empty `queries`.";
+
+  const rawLimit = args.limit ?? ctx.defaultSearchLimit ?? 5;
+  const limit = Math.min(Math.max(1, Math.floor(Number(rawLimit))), 20);
+  const collections = await Promise.all(
+    queries.map((query, offset) =>
+      collectSearchResults({
+        query,
+        limit,
+        index: searchIndex + offset,
+        ctx,
+      }),
+    ),
+  );
+  const successfulSearches = collections.flatMap(
+    (collection) => collection.successfulSearches,
+  );
+  const results = mergeSearchResults(successfulSearches, limit);
   if (results.length > 0) {
-    const successfulEngines = successfulSearches.map((search) => search.engine);
-    ctx.emit({
-      type: "search_results",
-      index: searchIndex,
-      count: results.length,
-    });
+    const successfulEngines = unique(
+      successfulSearches.map((search) => search.engine),
+    );
+    const searchedEngines = unique(
+      collections.flatMap((collection) => collection.searchedEngines),
+    );
+    const warnings = formatWarnings(collections, queries.length > 1);
     return JSON.stringify(
       {
-        query,
+        ...(queries.length === 1 ? { query: queries[0] } : { queries }),
         engines: successfulEngines,
-        searched_engines: engines,
+        searched_engines: searchedEngines,
         results: compactSearchResults(results),
-        warnings: failures.length > 0 ? failures : undefined,
+        warnings: warnings.length > 0 ? warnings : undefined,
       },
       null,
       2,
     );
   }
 
-  const error = failures.join("; ") || "all engines failed";
-  ctx.emit({
-    type: "search_results",
-    index: searchIndex,
-    count: 0,
-  });
+  const warnings = formatWarnings(collections, queries.length > 1);
+  const sawEmptyResults = collections.some((collection) => collection.sawEmptyResults);
   if (sawEmptyResults) {
     return JSON.stringify(
       {
-        query,
+        ...(queries.length === 1 ? { query: queries[0] } : { queries }),
         results: [],
-        warnings: failures.length > 0 ? failures : undefined,
+        warnings: warnings.length > 0 ? warnings : undefined,
       },
       null,
       2,
     );
   }
+  const error = warnings.join("; ") || "all engines failed";
   ctx.emit({
     type: "search_failed",
     index: searchIndex,
     error,
   });
   return `Search failed: ${error}`;
+}
+
+function unique<T>(values: T[]): T[] {
+  return [...new Set(values)];
+}
+
+function formatWarnings(
+  collections: SearchCollection[],
+  includeQuery: boolean,
+): string[] {
+  return collections.flatMap((collection) =>
+    collection.warnings.map((warning) =>
+      includeQuery ? `${collection.query}: ${warning}` : warning,
+    ),
+  );
 }
