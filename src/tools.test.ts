@@ -1219,8 +1219,11 @@ describe("research loop cache integration", () => {
       "TAIL_MARKER",
     );
     expect(toolText).toContain('"search_listing_page');
+    expect(toolText).toContain('"source_quality"');
+    expect(toolText).toContain("better suited for discovery");
     expect(toolText).toContain('"discovery"');
-    expect(toolText).toContain("fetch individual result pages before citing");
+    expect(toolText).toContain('"source_kind": "discovery_page"');
+    expect(toolText).toContain("aggregate or list other pages");
     expect(toolText).toContain("https://example.com/article/123");
     expect(toolText).toContain("Useful Article");
     expect(toolText).not.toContain("TAIL_MARKER");

@@ -177,11 +177,21 @@ export function formatFetchResult(
   const content = document.markdown.slice(start, end);
   const hasMore = end < document.markdown.length;
   const chunk = chunkForRange(document, start);
+  const qualityWarnings = document.metadata.qualityWarnings ?? [];
   const result = {
     source_id: document.sourceId,
     title: document.title,
     url: document.url,
     canonical_url: document.canonicalUrl,
+    ...(qualityWarnings.length > 0
+      ? {
+          source_quality: {
+            warnings: qualityWarnings,
+            guidance:
+              "This source may be better suited for discovery than decisive evidence.",
+          },
+        }
+      : {}),
     ...(document.metadata.method &&
     (document.metadata.method !== "steel_markdown" ||
       (document.metadata.attempts?.length ?? 0) > 0)
@@ -197,9 +207,8 @@ export function formatFetchResult(
             ...(document.metadata.attempts && document.metadata.attempts.length > 0
               ? { attempts: document.metadata.attempts }
               : {}),
-            ...(document.metadata.qualityWarnings &&
-            document.metadata.qualityWarnings.length > 0
-              ? { quality_warnings: document.metadata.qualityWarnings }
+            ...(qualityWarnings.length > 0
+              ? { quality_warnings: qualityWarnings }
               : {}),
             notes: document.metadata.extractionNotes,
           },
@@ -208,8 +217,9 @@ export function formatFetchResult(
     ...(isDiscoveryPage
       ? {
           discovery: {
+            source_kind: "discovery_page",
             note:
-              "This looks like a search or listing page. Use it for discovery only; fetch individual result pages before citing decisive evidence.",
+              "This page appears to aggregate or list other pages rather than serve as a primary source.",
             content_limited_to_chars: effectiveMaxChars,
             links: (document.metadata.discoveredLinks ?? []).slice(
               0,
