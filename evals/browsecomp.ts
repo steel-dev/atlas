@@ -733,6 +733,144 @@ function findEvidenceSource(
   return undefined;
 }
 
+function repairStructuredEvidenceSpans(
+  structured: unknown,
+  sources: SourceDocument[] | undefined,
+): unknown {
+  if (typeof structured !== "object" || structured === null || Array.isArray(structured)) {
+    return structured;
+  }
+  const evidence = structuredEvidence(structured);
+  if (evidence.length === 0) return structured;
+
+  const sourceDocuments = sources ?? [];
+  const repairedEvidence = evidence.map((entry) => {
+    if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
+      return entry;
+    }
+    const record = entry as Record<string, unknown>;
+    const source = findEvidenceSource(
+      sourceDocuments,
+      readStructuredString(record, "source_id"),
+      readStructuredString(record, "source_url"),
+    );
+    const quote = readStructuredString(record, "quote");
+    if (!source || !quote) return entry;
+
+    const preferredStart = readStructuredInteger(record, "start");
+    const span = findBestQuoteSpan(source.markdown, quote, preferredStart);
+    if (!span) return entry;
+
+    return {
+      ...record,
+      start: span.start,
+      end: span.end,
+      quote: source.markdown.slice(span.start, span.end),
+    };
+  });
+
+  return {
+    ...(structured as Record<string, unknown>),
+    evidence: repairedEvidence,
+  };
+}
+
+function findBestQuoteSpan(
+  source: string,
+  quote: string,
+  preferredStart: number | undefined,
+): { start: number; end: number } | null {
+  const exactMatches = findAllExactMatches(source, quote);
+  if (exactMatches.length > 0) {
+    const start = chooseClosestStart(exactMatches, preferredStart);
+    return { start, end: start + quote.length };
+  }
+  return findWhitespaceNormalizedSpan(source, quote, preferredStart);
+}
+
+function findAllExactMatches(source: string, quote: string): number[] {
+  const matches: number[] = [];
+  let fromIndex = 0;
+  while (fromIndex <= source.length) {
+    const index = source.indexOf(quote, fromIndex);
+    if (index === -1) break;
+    matches.push(index);
+    fromIndex = index + Math.max(1, quote.length);
+  }
+  return matches;
+}
+
+function chooseClosestStart(
+  starts: number[],
+  preferredStart: number | undefined,
+): number {
+  if (preferredStart === undefined) return starts[0] ?? 0;
+  return starts.reduce((best, candidate) =>
+    Math.abs(candidate - preferredStart) < Math.abs(best - preferredStart)
+      ? candidate
+      : best,
+  );
+}
+
+function findWhitespaceNormalizedSpan(
+  source: string,
+  quote: string,
+  preferredStart: number | undefined,
+): { start: number; end: number } | null {
+  const normalizedSource = normalizeTextWithOffsets(source);
+  const normalizedQuote = normalizeWhitespace(quote);
+  if (!normalizedQuote) return null;
+
+  const matches = findAllExactMatches(normalizedSource.text, normalizedQuote);
+  if (matches.length === 0) return null;
+
+  const preferredNormalizedStart: number | undefined =
+    preferredStart === undefined
+      ? undefined
+      : normalizedSource.offsets.findIndex((offset) => offset >= preferredStart);
+  const normalizedStart = chooseClosestStart(
+    matches,
+    preferredNormalizedStart !== undefined && preferredNormalizedStart >= 0
+      ? preferredNormalizedStart
+      : undefined,
+  );
+  const normalizedEnd = normalizedStart + normalizedQuote.length - 1;
+  const start = normalizedSource.offsets[normalizedStart];
+  const end = normalizedSource.offsets[normalizedEnd];
+  if (start === undefined || end === undefined) return null;
+  return { start, end: end + 1 };
+}
+
+function normalizeTextWithOffsets(text: string): {
+  text: string;
+  offsets: number[];
+} {
+  let normalized = "";
+  const offsets: number[] = [];
+  let pendingWhitespaceOffset: number | undefined;
+  for (let index = 0; index < text.length; index++) {
+    const char = text[index];
+    if (/\s/.test(char)) {
+      if (normalized && pendingWhitespaceOffset === undefined) {
+        pendingWhitespaceOffset = index;
+      }
+      continue;
+    }
+    if (pendingWhitespaceOffset !== undefined) {
+      normalized += " ";
+      offsets.push(pendingWhitespaceOffset);
+      pendingWhitespaceOffset = undefined;
+    }
+    normalized += char;
+    offsets.push(index);
+  }
+  return { text: normalized, offsets };
+}
+
+function normalizeWhitespace(text: string): string {
+  return text.replace(/\s+/g, " ").trim();
+}
+
 function validateStructuredEvidence(
   structured: unknown,
   sources: SourceDocument[] | undefined,
@@ -1054,10 +1192,14 @@ async function runCase(
       },
     });
     clearInterval(heartbeat);
+    const structured =
+      result.structured === undefined
+        ? undefined
+        : repairStructuredEvidenceSpans(result.structured, result.sourceDocuments);
     const predictedAnswer =
-      structuredFinalAnswer(result.structured) ?? extractFinalAnswer(result.markdown);
+      structuredFinalAnswer(structured) ?? extractFinalAnswer(result.markdown);
     const evidenceValidation = validateStructuredEvidence(
-      result.structured,
+      structured,
       result.sourceDocuments,
     );
     const exactCorrect = gradeAnswer(predictedAnswer, entry.answers);
@@ -1087,7 +1229,7 @@ async function runCase(
       predictedAnswer,
       exactCorrect,
       correct: judgeResult?.correct ?? exactCorrect,
-      ...(result.structured !== undefined ? { structured: result.structured } : {}),
+      ...(structured !== undefined ? { structured } : {}),
       ...(evidenceValidation ? { evidenceValidation } : {}),
       ...(judgeResult ? { judge: judgeResult } : {}),
       ...(judgeError ? { judgeError } : {}),
