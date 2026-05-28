@@ -15,6 +15,16 @@ export interface VerifiedSource {
 export interface SourceExtractionMetadata {
   markdownChars: number;
   extractionNotes: string[];
+  method?: string;
+  contentType?: string;
+  finalUrl?: string;
+  attempts?: SourceExtractionAttempt[];
+}
+
+export interface SourceExtractionAttempt {
+  method: string;
+  ok: boolean;
+  note: string;
 }
 
 export interface SourceDocument {

@@ -31,12 +31,13 @@
     "prepublishOnly": "npm run build"
   },
   "engines": {
-    "node": ">=20.0.0"
+    "node": ">=20.16.0"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.92.0",
     "cheerio": "^1.0.0",
     "openai": "^6.39.0",
+    "pdf-parse": "^2.4.5",
     "steel-sdk": "^0.18.0"
   },
   "devDependencies": {

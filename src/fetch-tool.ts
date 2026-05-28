@@ -1,13 +1,18 @@
+import * as cheerio from "cheerio";
 import type { ResearchLoopContext, ScrapeCacheEntry } from "./runtime.js";
-import type { SourceDocument } from "./sources.js";
+import type { SourceDocument, SourceExtractionAttempt } from "./sources.js";
 import {
   createSourceDocument,
+  extractionMetadataFromHtml,
+  extractionMetadataFromPdf,
   extractionMetadataFromSteel,
   findSourceDocumentByUrl,
   formatFetchResult,
   storeMarkdown,
 } from "./source-documents.js";
 import { errorMessage } from "./errors.js";
+import { extractPdfText } from "./pdf-extract.js";
+import { looksBlocked } from "./steel.js";
 import { runSteelRequest } from "./steel-runtime.js";
 import { DEFAULT_FETCH_CHARS, MAX_FETCH_CHARS } from "./tool-contract.js";
 import { normalizeUrlForSource } from "./url.js";
@@ -23,12 +28,24 @@ export interface FetchOutcome {
   fetchedUrl?: string;
 }
 
+interface DirectExtractionOutcome {
+  entry: ScrapeCacheEntry | null;
+  attempt: SourceExtractionAttempt;
+}
+
 interface SourceReservation {
   url: string;
   sourceId: string;
 }
 
 export const normalizeFetchUrl = normalizeUrlForSource;
+
+const DIRECT_PDF_MAX_BYTES = 25 * 1024 * 1024;
+const DIRECT_HTML_MAX_BYTES = 5 * 1024 * 1024;
+const DIRECT_HTML_MIN_CHARS = 100;
+const PDF_MAGIC = "%PDF";
+const DIRECT_FETCH_USER_AGENT =
+  "Mozilla/5.0 (compatible; AtlasResearchBot/0.1; +https://github.com/steel-experiments/atlas)";
 
 function totalSourceSlots(ctx: ResearchLoopContext): number {
   return ctx.fetchedSources.length + ctx.sourceReservations.sourceSlots;
@@ -79,23 +96,7 @@ async function scrapeWithCache(
 ): Promise<ScrapeCacheEntry> {
   let scrapePromise = ctx.caches.scrape.get(url);
   if (!scrapePromise) {
-    scrapePromise = runSteelRequest(ctx, () =>
-      ctx.steel.scrape(
-        {
-          url,
-          format: ["markdown"],
-          useProxy: ctx.useProxy,
-        },
-        { signal: ctx.signal },
-      ),
-    ).then((scrape) => {
-      const markdown = scrape.content?.markdown ?? "";
-      return {
-        markdown,
-        title: scrape.metadata?.title ?? null,
-        metadata: extractionMetadataFromSteel(markdown.length),
-      };
-    });
+    scrapePromise = extractSourceWithFallbacks(ctx, url);
     ctx.caches.scrape.set(url, scrapePromise);
   }
 
@@ -105,6 +106,278 @@ async function scrapeWithCache(
     ctx.caches.scrape.delete(url);
     throw err;
   }
+}
+
+async function extractSourceWithFallbacks(
+  ctx: ResearchLoopContext,
+  url: string,
+): Promise<ScrapeCacheEntry> {
+  const attempts: SourceExtractionAttempt[] = [];
+  const direct = await tryDirectExtraction(ctx, url);
+  attempts.push(direct.attempt);
+  if (direct.entry) return direct.entry;
+
+  const steel = await scrapeWithSteel(ctx, url, attempts);
+  return steel;
+}
+
+async function scrapeWithSteel(
+  ctx: ResearchLoopContext,
+  url: string,
+  previousAttempts: SourceExtractionAttempt[],
+): Promise<ScrapeCacheEntry> {
+  const scrape = await runSteelRequest(ctx, () =>
+    ctx.steel.scrape(
+      {
+        url,
+        format: ["markdown"],
+        useProxy: ctx.useProxy,
+      },
+      { signal: ctx.signal },
+    ),
+  );
+  const markdown = scrape.content?.markdown ?? "";
+  const attempts = [
+    ...previousAttempts,
+    {
+      method: "steel_markdown",
+      ok: Boolean(markdown),
+      note: markdown
+        ? `steel_markdown: extracted ${markdown.length} markdown chars`
+        : "empty_markdown: Steel returned empty markdown",
+    },
+  ];
+  return {
+    markdown,
+    title: scrape.metadata?.title ?? null,
+    metadata: extractionMetadataFromSteel(markdown.length, [], attempts),
+  };
+}
+
+async function tryDirectExtraction(
+  ctx: ResearchLoopContext,
+  url: string,
+): Promise<DirectExtractionOutcome> {
+  try {
+    const response = await fetch(url, {
+      signal: ctx.signal,
+      headers: {
+        accept: "application/pdf,*/*;q=0.8",
+        "user-agent": DIRECT_FETCH_USER_AGENT,
+      },
+    });
+    if (!response.ok) {
+      return failedDirectAttempt(
+        "direct_http",
+        `http_error: direct fetch returned HTTP ${response.status}`,
+      );
+    }
+
+    const contentType = response.headers.get("content-type") ?? undefined;
+    const contentLength = readContentLength(response.headers);
+    const maxBytes = isLikelyPdfUrl(url) || isPdfContentType(contentType)
+      ? DIRECT_PDF_MAX_BYTES
+      : DIRECT_HTML_MAX_BYTES;
+    if (contentLength !== undefined && contentLength > maxBytes) {
+      return failedDirectAttempt(
+        "direct_http",
+        `too_large: direct response is too large (${contentLength} bytes)`,
+      );
+    }
+
+    const data = new Uint8Array(await response.arrayBuffer());
+    if (data.byteLength > maxBytes) {
+      return failedDirectAttempt(
+        "direct_http",
+        `too_large: direct response is too large (${data.byteLength} bytes)`,
+      );
+    }
+
+    const finalUrl = response.url || url;
+    if (isPdfBytes(data) || isPdfContentType(contentType)) {
+      return extractDirectPdf(data, { contentType, finalUrl });
+    }
+
+    if (!isHtmlContentType(contentType)) {
+      return failedDirectAttempt(
+        "direct_http",
+        contentType
+          ? `unsupported_content_type: direct response was ${contentType}`
+          : "unsupported_content_type: direct response was not HTML or PDF",
+      );
+    }
+
+    return extractDirectHtml(data, { contentType, finalUrl });
+  } catch (err) {
+    if (ctx.signal?.aborted) throw err;
+    return failedDirectAttempt(
+      "direct_http",
+      `network_error: direct fetch failed: ${errorMessage(err)}`,
+    );
+  }
+}
+
+async function extractDirectPdf(
+  data: Uint8Array,
+  opts: { contentType?: string; finalUrl: string },
+): Promise<DirectExtractionOutcome> {
+  try {
+    const extracted = await extractPdfText(data);
+    const markdown = extracted.text.trim();
+    if (!markdown) {
+      return failedDirectAttempt("pdf_direct", "pdf_no_text: PDF extraction produced no text");
+    }
+    const attempt = {
+      method: "pdf_direct",
+      ok: true,
+      note: `pdf_direct: extracted ${markdown.length} text chars`,
+    };
+    return {
+      entry: {
+        markdown,
+        title: titleFromPdfUrl(opts.finalUrl),
+        metadata: extractionMetadataFromPdf({
+          markdownChars: markdown.length,
+          contentType: opts.contentType,
+          finalUrl: opts.finalUrl,
+          attempts: [attempt],
+        }),
+      },
+      attempt,
+    };
+  } catch (err) {
+    return failedDirectAttempt(
+      "pdf_direct",
+      `pdf_parse_error: PDF extraction failed: ${errorMessage(err)}`,
+    );
+  }
+}
+
+function extractDirectHtml(
+  data: Uint8Array,
+  opts: { contentType?: string; finalUrl: string },
+): DirectExtractionOutcome {
+  const html = new TextDecoder("utf-8", { fatal: false }).decode(data);
+  if (looksBlocked(html)) {
+    return failedDirectAttempt("html_direct", "blocked_or_challenge: direct HTML looked blocked");
+  }
+
+  const extracted = htmlToMarkdown(html, opts.finalUrl);
+  if (extracted.markdown.length < DIRECT_HTML_MIN_CHARS) {
+    return failedDirectAttempt(
+      "html_direct",
+      `thin_content: direct HTML extracted ${extracted.markdown.length} chars`,
+    );
+  }
+
+  const attempt = {
+    method: "html_direct",
+    ok: true,
+    note: `html_direct: extracted ${extracted.markdown.length} text chars`,
+  };
+  return {
+    entry: {
+      markdown: extracted.markdown,
+      title: extracted.title,
+      metadata: extractionMetadataFromHtml({
+        markdownChars: extracted.markdown.length,
+        contentType: opts.contentType,
+        finalUrl: opts.finalUrl,
+        attempts: [attempt],
+      }),
+    },
+    attempt,
+  };
+}
+
+function failedDirectAttempt(
+  method: string,
+  note: string,
+): DirectExtractionOutcome {
+  return {
+    entry: null,
+    attempt: { method, ok: false, note },
+  };
+}
+
+function isLikelyPdfUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    return /\.pdf$/i.test(parsed.pathname);
+  } catch {
+    return /\.pdf(?:$|[?#])/i.test(url);
+  }
+}
+
+function isPdfContentType(contentType: string | undefined): boolean {
+  return /\bapplication\/pdf\b/i.test(contentType ?? "");
+}
+
+function isHtmlContentType(contentType: string | undefined): boolean {
+  if (!contentType) return true;
+  return /\b(?:text\/html|application\/xhtml\+xml)\b/i.test(contentType);
+}
+
+function isPdfBytes(data: Uint8Array): boolean {
+  if (data.byteLength < PDF_MAGIC.length) return false;
+  const prefix = new TextDecoder("ascii").decode(data.slice(0, PDF_MAGIC.length));
+  return prefix === PDF_MAGIC;
+}
+
+function readContentLength(headers: Headers): number | undefined {
+  const raw = headers.get("content-length");
+  if (!raw) return undefined;
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 0 ? n : undefined;
+}
+
+function titleFromPdfUrl(url: string): string {
+  try {
+    const pathname = new URL(url).pathname;
+    const filename = decodeURIComponent(pathname.split("/").filter(Boolean).at(-1) ?? "");
+    return filename || url;
+  } catch {
+    return url;
+  }
+}
+
+function htmlToMarkdown(
+  html: string,
+  url: string,
+): { title: string; markdown: string } {
+  const $ = cheerio.load(html);
+  $("script, style, noscript, svg, canvas, template").remove();
+  const title =
+    $('meta[property="og:title"]').attr("content")?.trim() ||
+    $("title").first().text().trim() ||
+    $("h1").first().text().trim() ||
+    url;
+  const root = $("main").first().length
+    ? $("main").first()
+    : $("article").first().length
+      ? $("article").first()
+      : $("body").first();
+  const blocks: string[] = [];
+  root
+    .find("h1, h2, h3, h4, h5, h6, p, li, blockquote, td, th")
+    .each((_idx, el) => {
+      const tag = el.tagName.toLowerCase();
+      const text = $(el).text().replace(/\s+/g, " ").trim();
+      if (!text) return;
+      if (/^h[1-6]$/.test(tag)) {
+        const depth = Number(tag[1]);
+        blocks.push(`${"#".repeat(depth)} ${text}`);
+      } else if (tag === "li") {
+        blocks.push(`- ${text}`);
+      } else {
+        blocks.push(text);
+      }
+    });
+  const markdown = (blocks.length > 0 ? blocks.join("\n\n") : root.text())
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  return { title, markdown };
 }
 
 function readOffset(args: FetchToolInput): number | string {
@@ -141,10 +414,11 @@ async function fetchSourceDocument(
   const { markdown, title, metadata } = await scrapeWithCache(ctx, url);
   if (!markdown) {
     ctx.caches.scrape.delete(url);
+    const error = sourceErrorFromMetadata(metadata);
     ctx.emit({
       type: "source_error",
       url,
-      error: "Empty markdown",
+      error,
     });
     return null;
   }
@@ -214,7 +488,7 @@ export async function execFetch(
   try {
     const document = await documentPromise;
     if (!document) {
-      return { text: "Empty page (no content fetched)." };
+      return { text: "Fetch failed: no content fetched." };
     }
 
     return {
@@ -231,4 +505,18 @@ export async function execFetch(
     });
     return { text: `Fetch error: ${message}` };
   }
+}
+
+function sourceErrorFromMetadata(metadata: ScrapeCacheEntry["metadata"]): string {
+  const failedAttempts = metadata.attempts?.filter((attempt) => !attempt.ok) ?? [];
+  const priorityAttempt =
+    failedAttempts.find((attempt) => attempt.note.includes("blocked_or_challenge")) ??
+    failedAttempts.at(-1);
+  if (priorityAttempt) {
+    const attempts = failedAttempts
+      .map((attempt) => `${attempt.method}: ${attempt.note}`)
+      .join(" | ");
+    return `${priorityAttempt.note}; attempts: ${attempts}`;
+  }
+  return "empty_markdown: no content fetched";
 }

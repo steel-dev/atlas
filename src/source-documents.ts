@@ -2,6 +2,7 @@ import type { ResearchLoopContext } from "./runtime.js";
 import type {
   SourceChunk,
   SourceDocument,
+  SourceExtractionAttempt,
   SourceExtractionMetadata,
 } from "./sources.js";
 import { normalizeUrlForSource } from "./url.js";
@@ -74,10 +75,52 @@ export function findSourceDocumentById(
 
 export function extractionMetadataFromSteel(
   markdownChars: number,
+  notes: string[] = [],
+  attempts: SourceExtractionAttempt[] = [],
 ): SourceExtractionMetadata {
   return {
     markdownChars,
-    extractionNotes: ["Fetched with browser-rendered markdown."],
+    method: "steel_markdown",
+    ...(attempts.length > 0 ? { attempts } : {}),
+    extractionNotes: ["Fetched with browser-rendered markdown.", ...notes],
+  };
+}
+
+export function extractionMetadataFromPdf(opts: {
+  markdownChars: number;
+  contentType?: string;
+  finalUrl?: string;
+  notes?: string[];
+  attempts?: SourceExtractionAttempt[];
+}): SourceExtractionMetadata {
+  return {
+    markdownChars: opts.markdownChars,
+    method: "pdf_direct",
+    ...(opts.contentType ? { contentType: opts.contentType } : {}),
+    ...(opts.finalUrl ? { finalUrl: opts.finalUrl } : {}),
+    ...(opts.attempts && opts.attempts.length > 0
+      ? { attempts: opts.attempts }
+      : {}),
+    extractionNotes: ["Fetched with direct PDF text extraction.", ...(opts.notes ?? [])],
+  };
+}
+
+export function extractionMetadataFromHtml(opts: {
+  markdownChars: number;
+  contentType?: string;
+  finalUrl?: string;
+  notes?: string[];
+  attempts?: SourceExtractionAttempt[];
+}): SourceExtractionMetadata {
+  return {
+    markdownChars: opts.markdownChars,
+    method: "html_direct",
+    ...(opts.contentType ? { contentType: opts.contentType } : {}),
+    ...(opts.finalUrl ? { finalUrl: opts.finalUrl } : {}),
+    ...(opts.attempts && opts.attempts.length > 0
+      ? { attempts: opts.attempts }
+      : {}),
+    extractionNotes: ["Fetched with direct HTML text extraction.", ...(opts.notes ?? [])],
   };
 }
 
@@ -115,6 +158,25 @@ export function formatFetchResult(
     title: document.title,
     url: document.url,
     canonical_url: document.canonicalUrl,
+    ...(document.metadata.method &&
+    (document.metadata.method !== "steel_markdown" ||
+      (document.metadata.attempts?.length ?? 0) > 0)
+      ? {
+          extraction: {
+            method: document.metadata.method,
+            ...(document.metadata.contentType
+              ? { content_type: document.metadata.contentType }
+              : {}),
+            ...(document.metadata.finalUrl
+              ? { final_url: document.metadata.finalUrl }
+              : {}),
+            ...(document.metadata.attempts && document.metadata.attempts.length > 0
+              ? { attempts: document.metadata.attempts }
+              : {}),
+            notes: document.metadata.extractionNotes,
+          },
+        }
+      : {}),
     chunk: {
       index: chunk.index,
       start: chunk.start,

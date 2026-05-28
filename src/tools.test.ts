@@ -1,5 +1,6 @@
 import type Steel from "steel-sdk";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { extractPdfText } from "./pdf-extract.js";
 import type {
   ModelAdapter,
   ModelAssistantBlock,
@@ -15,6 +16,10 @@ import {
   type ResearchLoopContext,
 } from "./tools.js";
 import type { SourceDocument } from "./sources.js";
+
+vi.mock("./pdf-extract.js", () => ({
+  extractPdfText: vi.fn(),
+}));
 
 function messageWith(content: ModelAssistantBlock[]): { content: ModelAssistantBlock[] } {
   return { content };
@@ -114,7 +119,17 @@ function toolResultText(request: {
     .join("\n");
 }
 
+beforeEach(() => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () => {
+      throw new Error("test direct fetch disabled");
+    }),
+  );
+});
+
 afterEach(() => {
+  vi.mocked(extractPdfText).mockReset();
   vi.unstubAllGlobals();
 });
 
@@ -1040,8 +1055,10 @@ describe("research loop cache integration", () => {
     );
   });
 
-  it("uses Steel for fetched pages", async () => {
-    const fetch = vi.fn();
+  it("falls back to Steel when direct HTML fetch fails", async () => {
+    const fetch = vi.fn(async () => {
+      throw new Error("direct fetch unavailable");
+    });
     vi.stubGlobal("fetch", fetch);
     const scrape = vi.fn(async () => ({
       content: { markdown: "# Steel Fetch\n\nRendered browser content." },
@@ -1068,13 +1085,216 @@ describe("research loop cache integration", () => {
 
     expect(result.finishReason).toBe("final report");
     expect(result.markdown).toContain("# Test Report");
-    expect(fetch).not.toHaveBeenCalled();
+    expect(fetch).toHaveBeenCalledTimes(1);
     expect(scrape).toHaveBeenCalledTimes(1);
     expect(ctx.fetchedSources[0]).toMatchObject({
       url: "https://example.com/js-app",
       title: "Steel Fetch",
     });
     expect(toolResultText(followupRequest)).not.toContain('"extraction_method"');
+    expect(toolResultText(followupRequest)).toContain('"method": "steel_markdown"');
+    expect(toolResultText(followupRequest)).toContain("network_error: direct fetch failed");
+  });
+
+  it("extracts static HTML before using Steel", async () => {
+    const fetch = vi.fn(
+      async () =>
+        new Response(
+          `
+            <html>
+              <head><title>Direct HTML Source</title></head>
+              <body>
+                <main>
+                  <h1>Direct HTML Source</h1>
+                  <p>${"Static evidence from the original HTML page. ".repeat(5)}</p>
+                </main>
+              </body>
+            </html>
+          `,
+          {
+            status: 200,
+            headers: { "content-type": "text/html; charset=utf-8" },
+          },
+        ),
+    );
+    vi.stubGlobal("fetch", fetch);
+    const scrape = vi.fn(async () => ({
+      content: { markdown: "# Steel should not be used" },
+      metadata: { title: "Steel" },
+    }));
+    const messagesCreate = vi
+      .fn()
+      .mockResolvedValueOnce(
+        messageWith([
+          toolUse("fetch_1", "fetch", { url: "https://example.com/static" }),
+        ]),
+      )
+      .mockResolvedValueOnce(finalReport());
+    const ctx = createContext({ messagesCreate, scrape });
+
+    const result = await runResearchLoop({
+      ctx,
+      query: "What is Atlas?",
+      maxToolCalls: 2,
+    });
+    const followupRequest = messagesCreate.mock.calls[1]?.[0] as {
+      messages: Array<{ content: unknown }>;
+    };
+    const toolText = toolResultText(followupRequest);
+
+    expect(result.finishReason).toBe("final report");
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(scrape).not.toHaveBeenCalled();
+    expect(ctx.fetchedSources[0]).toMatchObject({
+      url: "https://example.com/static",
+      title: "Direct HTML Source",
+    });
+    expect(toolText).toContain("Static evidence from the original HTML page.");
+    expect(toolText).toContain('"method": "html_direct"');
+  });
+
+  it("extracts PDF URLs before using Steel", async () => {
+    const fetch = vi.fn(
+      async () =>
+        new Response(Buffer.from("%PDF-1.7\nfake test pdf"), {
+          status: 200,
+          headers: {
+            "content-type": "application/pdf",
+            "content-length": "22",
+          },
+        }),
+    );
+    vi.stubGlobal("fetch", fetch);
+    vi.mocked(extractPdfText).mockResolvedValue({
+      text: "PDF evidence text naming Johan Human.",
+    });
+    const scrape = vi.fn(async () => ({
+      content: { markdown: "# Steel should not be used" },
+      metadata: { title: "Steel" },
+    }));
+    const messagesCreate = vi
+      .fn()
+      .mockResolvedValueOnce(
+        messageWith([
+          toolUse("fetch_1", "fetch", {
+            url: "https://example.com/FULL_TEXT.PDF",
+          }),
+        ]),
+      )
+      .mockResolvedValueOnce(finalReport());
+    const ctx = createContext({ messagesCreate, scrape });
+
+    const result = await runResearchLoop({
+      ctx,
+      query: "What is Atlas?",
+      maxToolCalls: 2,
+    });
+    const followupRequest = messagesCreate.mock.calls[1]?.[0] as {
+      messages: Array<{ content: unknown }>;
+    };
+    const toolText = toolResultText(followupRequest);
+
+    expect(result.finishReason).toBe("final report");
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(extractPdfText).toHaveBeenCalledTimes(1);
+    expect(scrape).not.toHaveBeenCalled();
+    expect(ctx.fetchedSources[0]).toMatchObject({
+      url: "https://example.com/FULL_TEXT.PDF",
+      title: "FULL_TEXT.PDF",
+    });
+    expect(toolText).toContain("PDF evidence text naming Johan Human.");
+    expect(toolText).toContain('"method": "pdf_direct"');
+  });
+
+  it("falls back to Steel when direct PDF extraction fails", async () => {
+    const fetch = vi.fn(
+      async () =>
+        new Response(Buffer.from("%PDF-1.7\nfake test pdf"), {
+          status: 200,
+          headers: { "content-type": "application/pdf" },
+        }),
+    );
+    vi.stubGlobal("fetch", fetch);
+    vi.mocked(extractPdfText).mockRejectedValue(new Error("bad pdf"));
+    const scrape = vi.fn(async () => ({
+      content: { markdown: "# Steel Fetch\n\nRendered fallback content." },
+      metadata: { title: "Steel Fetch" },
+    }));
+    const messagesCreate = vi
+      .fn()
+      .mockResolvedValueOnce(
+        messageWith([
+          toolUse("fetch_1", "fetch", {
+            url: "https://example.com/report.pdf",
+          }),
+        ]),
+      )
+      .mockResolvedValueOnce(finalReport());
+    const ctx = createContext({ messagesCreate, scrape });
+
+    const result = await runResearchLoop({
+      ctx,
+      query: "What is Atlas?",
+      maxToolCalls: 2,
+    });
+
+    expect(result.finishReason).toBe("final report");
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(extractPdfText).toHaveBeenCalledTimes(1);
+    expect(scrape).toHaveBeenCalledTimes(1);
+    expect(ctx.sourceDocuments.get("https://example.com/report.pdf")?.markdown).toContain(
+      "Rendered fallback content.",
+    );
+    expect(
+      ctx.sourceDocuments
+        .get("https://example.com/report.pdf")
+        ?.metadata.attempts?.map((attempt) => attempt.note)
+        .join("\n"),
+    ).toContain("pdf_parse_error: PDF extraction failed: bad pdf");
+  });
+
+  it("reports classified fetch failures when all extraction attempts fail", async () => {
+    const fetch = vi.fn(
+      async () =>
+        new Response("<html><body>Checking your browser before accessing this site</body></html>", {
+          status: 200,
+          headers: { "content-type": "text/html" },
+        }),
+    );
+    vi.stubGlobal("fetch", fetch);
+    const scrape = vi.fn(async () => ({
+      content: { markdown: "" },
+      metadata: { title: "Blocked" },
+    }));
+    const messagesCreate = vi
+      .fn()
+      .mockResolvedValueOnce(
+        messageWith([
+          toolUse("fetch_1", "fetch", { url: "https://example.com/blocked" }),
+        ]),
+      )
+      .mockResolvedValueOnce(finalReport());
+    const ctx = createContext({ messagesCreate, scrape });
+
+    const result = await runResearchLoop({
+      ctx,
+      query: "What is Atlas?",
+      maxToolCalls: 2,
+    });
+    const followupRequest = messagesCreate.mock.calls[1]?.[0] as {
+      messages: Array<{ content: unknown }>;
+    };
+
+    expect(result.finishReason).toBe("final report");
+    expect(ctx.fetchedSources).toEqual([]);
+    expect(ctx.emit).toHaveBeenCalledWith({
+      type: "source_error",
+      url: "https://example.com/blocked",
+      error: expect.stringContaining("blocked_or_challenge: direct HTML looked blocked"),
+    });
+    expect(toolResultText(followupRequest)).toContain(
+      "Fetch failed: no content fetched.",
+    );
   });
 
   it("passes proxy preference to Steel fetches", async () => {
