@@ -187,8 +187,6 @@ export function formatFetchResult(
       ? {
           source_quality: {
             warnings: qualityWarnings,
-            guidance:
-              "This source may be better suited for discovery than decisive evidence.",
           },
         }
       : {}),
@@ -218,8 +216,6 @@ export function formatFetchResult(
       ? {
           discovery: {
             source_kind: "discovery_page",
-            note:
-              "This page appears to aggregate or list other pages rather than serve as a primary source.",
             content_limited_to_chars: effectiveMaxChars,
             links: (document.metadata.discoveredLinks ?? []).slice(
               0,

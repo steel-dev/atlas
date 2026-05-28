@@ -620,10 +620,10 @@ function assessSourceQuality(
   }
 
   if (trimmed.length < THIN_SOURCE_MARKDOWN_CHARS) {
-    warnings.push(`thin_content: extracted ${trimmed.length} chars`);
+    warnings.push("thin_content");
   }
   if (SEARCH_LISTING_TITLE_PATTERN.test(title)) {
-    warnings.push("search_listing_page: title looks like a search/listing page");
+    warnings.push("search_listing_page");
   }
 
   return { warnings };

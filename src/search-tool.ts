@@ -208,12 +208,14 @@ function mergeSearchResults(
 }
 
 export function searchQueryCount(args: SearchToolInput): number {
-  return readSearchQueries(args).length || 1;
+  return readSearchQueries(args).length;
 }
 
 function readSearchQueries(args: SearchToolInput): string[] {
   const rawQueries = Array.isArray(args.queries)
     ? args.queries
+    : typeof args.queries === "string"
+      ? [args.queries]
     : args.query !== undefined
       ? [args.query]
       : [];

@@ -473,6 +473,58 @@ describe("research loop cache integration", () => {
     });
   });
 
+  it("does not reserve search indexes for malformed search calls", async () => {
+    const fetch = vi.fn(async (url: string | URL | Request) => {
+      const href = String(url);
+      if (href.includes("duckduckgo.com")) {
+        return new Response(
+          `
+            <html>
+              <body>
+                <div class="result">
+                  <a class="result__a" href="https://example.com/valid">Valid Result</a>
+                  <a class="result__snippet">Recovered after malformed call.</a>
+                </div>
+              </body>
+            </html>
+          `,
+          { headers: { "content-type": "text/html" } },
+        );
+      }
+      return new Response("<html><body>No matching results.</body></html>", {
+        headers: { "content-type": "text/html" },
+      });
+    });
+    vi.stubGlobal("fetch", fetch);
+    const messagesCreate = vi
+      .fn()
+      .mockResolvedValueOnce(
+        messageWith([
+          toolUse("bad_search", "search", {}),
+          toolUse("good_search", "search", { queries: ["valid query"] }),
+        ]),
+      )
+      .mockResolvedValueOnce(finalReport());
+    const ctx = createContext({ messagesCreate });
+
+    await runResearchLoop({
+      ctx,
+      query: "What is Atlas?",
+      maxToolCalls: 3,
+    });
+
+    expect(ctx.emit).toHaveBeenCalledWith({
+      type: "searching",
+      index: 1,
+      query: "valid query",
+    });
+    expect(ctx.emit).toHaveBeenCalledWith({
+      type: "search_results",
+      index: 1,
+      count: 1,
+    });
+  });
+
   it("merges another engine when the default engine fails", async () => {
     const fetch = vi.fn(async (url: string | URL | Request) => {
       const href = String(url);
@@ -1288,10 +1340,8 @@ describe("research loop cache integration", () => {
     );
     expect(toolText).toContain('"search_listing_page');
     expect(toolText).toContain('"source_quality"');
-    expect(toolText).toContain("better suited for discovery");
     expect(toolText).toContain('"discovery"');
     expect(toolText).toContain('"source_kind": "discovery_page"');
-    expect(toolText).toContain("aggregate or list other pages");
     expect(toolText).toContain("https://example.com/article/123");
     expect(toolText).toContain("Useful Article");
     expect(toolText).not.toContain("TAIL_MARKER");
