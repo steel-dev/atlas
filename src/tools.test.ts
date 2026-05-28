@@ -1168,6 +1168,64 @@ describe("research loop cache integration", () => {
     expect(toolText).toContain('"method": "html_direct"');
   });
 
+  it("treats search result pages as discovery pages with links and capped content", async () => {
+    const longListingText = `${"Search result summary. ".repeat(180)}TAIL_MARKER`;
+    const fetch = vi.fn(
+      async () =>
+        new Response(
+          `
+            <html>
+              <head><title>Example - Search Results</title></head>
+              <body>
+                <main>
+                  <h1>Search Results</h1>
+                  <p>${longListingText}</p>
+                  <a href="/article/123">Useful Article</a>
+                  <a href="https://example.com/article/456">Second Article</a>
+                </main>
+              </body>
+            </html>
+          `,
+          {
+            status: 200,
+            headers: { "content-type": "text/html; charset=utf-8" },
+          },
+        ),
+    );
+    vi.stubGlobal("fetch", fetch);
+    const scrape = vi.fn();
+    const messagesCreate = vi
+      .fn()
+      .mockResolvedValueOnce(
+        messageWith([
+          toolUse("fetch_1", "fetch", { url: "https://example.com/search?q=x" }),
+        ]),
+      )
+      .mockResolvedValueOnce(finalReport());
+    const ctx = createContext({ messagesCreate, scrape });
+
+    await runResearchLoop({
+      ctx,
+      query: "What is Atlas?",
+      maxToolCalls: 2,
+    });
+    const followupRequest = messagesCreate.mock.calls[1]?.[0] as {
+      messages: Array<{ content: unknown }>;
+    };
+    const toolText = toolResultText(followupRequest);
+
+    expect(scrape).not.toHaveBeenCalled();
+    expect(ctx.sourceDocuments.get("https://example.com/search?q=x")?.markdown).toContain(
+      "TAIL_MARKER",
+    );
+    expect(toolText).toContain('"search_listing_page');
+    expect(toolText).toContain('"discovery"');
+    expect(toolText).toContain("fetch individual result pages before citing");
+    expect(toolText).toContain("https://example.com/article/123");
+    expect(toolText).toContain("Useful Article");
+    expect(toolText).not.toContain("TAIL_MARKER");
+  });
+
   it("extracts PDF URLs before using Steel", async () => {
     const fetch = vi.fn(
       async () =>

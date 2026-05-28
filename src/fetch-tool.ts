@@ -1,6 +1,10 @@
 import * as cheerio from "cheerio";
 import type { ResearchLoopContext, ScrapeCacheEntry } from "./runtime.js";
-import type { SourceDocument, SourceExtractionAttempt } from "./sources.js";
+import type {
+  SourceDiscoveredLink,
+  SourceDocument,
+  SourceExtractionAttempt,
+} from "./sources.js";
 import {
   createSourceDocument,
   extractionMetadataFromHtml,
@@ -52,6 +56,7 @@ const ERROR_TITLE_PATTERN =
   /\b(?:404|not found|access denied|forbidden|error report|captcha|just a moment|sorry)\b/i;
 const SEARCH_LISTING_TITLE_PATTERN =
   /\b(?:search results?|advanced search|site search)\b|검색/i;
+const DISCOVERED_LINK_LIMIT = 30;
 
 function totalSourceSlots(ctx: ResearchLoopContext): number {
   return ctx.fetchedSources.length + ctx.sourceReservations.sourceSlots;
@@ -290,6 +295,7 @@ function extractDirectHtml(
         contentType: opts.contentType,
         finalUrl: opts.finalUrl,
         attempts: [attempt],
+        discoveredLinks: extracted.links,
       }),
     },
     attempt,
@@ -350,7 +356,7 @@ function titleFromPdfUrl(url: string): string {
 function htmlToMarkdown(
   html: string,
   url: string,
-): { title: string; markdown: string } {
+): { title: string; markdown: string; links: SourceDiscoveredLink[] } {
   const $ = cheerio.load(html);
   $("script, style, noscript, svg, canvas, template").remove();
   const title =
@@ -383,7 +389,36 @@ function htmlToMarkdown(
     .replace(/[ \t]+\n/g, "\n")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
-  return { title, markdown };
+  return { title, markdown, links: extractLinks($, url) };
+}
+
+function extractLinks(
+  $: cheerio.CheerioAPI,
+  baseUrl: string,
+): SourceDiscoveredLink[] {
+  const links: SourceDiscoveredLink[] = [];
+  const seen = new Set<string>();
+  $("a[href]").each((_idx, el) => {
+    if (links.length >= DISCOVERED_LINK_LIMIT) return false;
+    const href = ($(el).attr("href") ?? "").trim();
+    if (!href || href.startsWith("#") || /^javascript:/i.test(href)) return;
+    let absolute: string;
+    try {
+      absolute = new URL(href, baseUrl).toString();
+    } catch {
+      return;
+    }
+    if (!/^https?:\/\//i.test(absolute)) return;
+    const normalized = normalizeUrlForSource(absolute);
+    if (seen.has(normalized)) return;
+    seen.add(normalized);
+    const title = $(el).text().replace(/\s+/g, " ").trim();
+    links.push({
+      url: absolute,
+      ...(title ? { title: title.slice(0, 200) } : {}),
+    });
+  });
+  return links;
 }
 
 function readOffset(args: FetchToolInput): number | string {

@@ -2,6 +2,7 @@ import type { ResearchLoopContext } from "./runtime.js";
 import type {
   SourceChunk,
   SourceDocument,
+  SourceDiscoveredLink,
   SourceExtractionAttempt,
   SourceExtractionMetadata,
 } from "./sources.js";
@@ -9,6 +10,8 @@ import { normalizeUrlForSource } from "./url.js";
 
 const STORED_MARKDOWN_CAP = 500_000;
 const SOURCE_CHUNK_CHARS = 12_000;
+const DISCOVERY_PAGE_FETCH_CHARS = 2_000;
+const DISCOVERY_LINK_LIMIT = 20;
 
 function fallbackSourceId(url: string): string {
   let hash = 5381;
@@ -95,6 +98,7 @@ export function extractionMetadataFromPdf(opts: {
   notes?: string[];
   attempts?: SourceExtractionAttempt[];
   qualityWarnings?: string[];
+  discoveredLinks?: SourceDiscoveredLink[];
 }): SourceExtractionMetadata {
   return {
     markdownChars: opts.markdownChars,
@@ -118,6 +122,7 @@ export function extractionMetadataFromHtml(opts: {
   notes?: string[];
   attempts?: SourceExtractionAttempt[];
   qualityWarnings?: string[];
+  discoveredLinks?: SourceDiscoveredLink[];
 }): SourceExtractionMetadata {
   return {
     markdownChars: opts.markdownChars,
@@ -129,6 +134,9 @@ export function extractionMetadataFromHtml(opts: {
       : {}),
     ...(opts.qualityWarnings && opts.qualityWarnings.length > 0
       ? { qualityWarnings: opts.qualityWarnings }
+      : {}),
+    ...(opts.discoveredLinks && opts.discoveredLinks.length > 0
+      ? { discoveredLinks: opts.discoveredLinks }
       : {}),
     extractionNotes: ["Fetched with direct HTML text extraction.", ...(opts.notes ?? [])],
   };
@@ -159,7 +167,13 @@ export function formatFetchResult(
   maxChars: number,
 ): string {
   const start = Math.min(offset, document.markdown.length);
-  const end = Math.min(document.markdown.length, start + maxChars);
+  const isDiscoveryPage = document.metadata.qualityWarnings?.some((warning) =>
+    warning.startsWith("search_listing_page"),
+  ) ?? false;
+  const effectiveMaxChars = isDiscoveryPage
+    ? Math.min(maxChars, DISCOVERY_PAGE_FETCH_CHARS)
+    : maxChars;
+  const end = Math.min(document.markdown.length, start + effectiveMaxChars);
   const content = document.markdown.slice(start, end);
   const hasMore = end < document.markdown.length;
   const chunk = chunkForRange(document, start);
@@ -188,6 +202,19 @@ export function formatFetchResult(
               ? { quality_warnings: document.metadata.qualityWarnings }
               : {}),
             notes: document.metadata.extractionNotes,
+          },
+        }
+      : {}),
+    ...(isDiscoveryPage
+      ? {
+          discovery: {
+            note:
+              "This looks like a search or listing page. Use it for discovery only; fetch individual result pages before citing decisive evidence.",
+            content_limited_to_chars: effectiveMaxChars,
+            links: (document.metadata.discoveredLinks ?? []).slice(
+              0,
+              DISCOVERY_LINK_LIMIT,
+            ),
           },
         }
       : {}),

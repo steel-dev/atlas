@@ -20,12 +20,18 @@ export interface SourceExtractionMetadata {
   finalUrl?: string;
   attempts?: SourceExtractionAttempt[];
   qualityWarnings?: string[];
+  discoveredLinks?: SourceDiscoveredLink[];
 }
 
 export interface SourceExtractionAttempt {
   method: string;
   ok: boolean;
   note: string;
+}
+
+export interface SourceDiscoveredLink {
+  url: string;
+  title?: string;
 }
 
 export interface SourceDocument {
