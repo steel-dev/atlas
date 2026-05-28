@@ -96,6 +96,7 @@ interface EvalResult {
   markdown?: string;
   latencyMs: number;
   trace: EvalTraceEvent[];
+  diagnostics?: EvalDiagnostics;
   metrics?: {
     provider: ModelProvider;
     model: string;
@@ -105,6 +106,32 @@ interface EvalResult {
     unverifiedCitations: number;
     inputTokens: number;
     outputTokens: number;
+  };
+}
+
+interface EvalDiagnostics {
+  search: {
+    events: number;
+    possibleBatchedGroups: number;
+    maxQueriesPerGroup: number;
+    stringifiedArrayLikeQueries: number;
+  };
+  fetch: {
+    fetched: number;
+    rejected: number;
+    fetchedByMethod: Record<string, number>;
+    failedAttemptsByMethod: Record<string, number>;
+    qualityWarningsByCode: Record<string, number>;
+    sourceErrorsByCode: Record<string, number>;
+    fetchedHosts: Record<string, number>;
+    rejectedHosts: Record<string, number>;
+    totalFetchedMarkdownChars: number;
+  };
+  cost: {
+    latencyMs: number;
+    toolCalls?: number;
+    inputTokens?: number;
+    outputTokens?: number;
   };
 }
 
@@ -1237,6 +1264,8 @@ async function runCase(
         judgeError = err instanceof Error ? err.message : String(err);
       }
     }
+    const latencyMs = Date.now() - started;
+    const metrics = summarizeRun(result);
     return {
       type: "result",
       id: entry.id,
@@ -1251,12 +1280,14 @@ async function runCase(
       ...(judgeError ? { judgeError } : {}),
       finishReason: result.runs.map((run) => run.finishReason).join("; "),
       markdown: result.markdown,
-      latencyMs: Date.now() - started,
+      latencyMs,
       trace,
-      metrics: summarizeRun(result),
+      diagnostics: buildDiagnostics({ trace, latencyMs, metrics }),
+      metrics,
     };
   } catch (err) {
     clearInterval(heartbeat);
+    const latencyMs = Date.now() - started;
     return {
       type: "result",
       id: entry.id,
@@ -1266,8 +1297,9 @@ async function runCase(
       exactCorrect: false,
       correct: false,
       error: err instanceof Error ? err.message : String(err),
-      latencyMs: Date.now() - started,
+      latencyMs,
       trace,
+      diagnostics: buildDiagnostics({ trace, latencyMs }),
     };
   }
 }
@@ -1308,6 +1340,120 @@ function formatCountMap(counts: Record<string, number>): string {
     : entries.map(([key, value]) => `${key}:${value}`).join(",");
 }
 
+function increment(counts: Record<string, number>, key: string): void {
+  counts[key] = (counts[key] ?? 0) + 1;
+}
+
+function hostFromUrl(url: string | undefined): string {
+  if (!url) return "unknown";
+  try {
+    return new URL(url).hostname.replace(/^www\./, "");
+  } catch {
+    return "invalid";
+  }
+}
+
+function codeFromMessage(message: string | undefined): string {
+  if (!message) return "unknown";
+  const match = message.match(/^([a-z_]+):/i);
+  return match?.[1] ?? "unknown";
+}
+
+function looksLikeStringifiedArrayQuery(query: string): boolean {
+  const trimmed = query.trim();
+  return (
+    /^\[[\s\S]*\]$/.test(trimmed) ||
+    (trimmed.includes('",') && trimmed.includes("[") && trimmed.includes("]"))
+  );
+}
+
+function searchGroups(searchEvents: EvalTraceEvent[]): EvalTraceEvent[][] {
+  const groups: EvalTraceEvent[][] = [];
+  let current: EvalTraceEvent[] = [];
+  for (const event of searchEvents) {
+    const previous = current[current.length - 1];
+    if (!previous || event.atMs - previous.atMs <= 50) {
+      current.push(event);
+      continue;
+    }
+    groups.push(current);
+    current = [event];
+  }
+  if (current.length > 0) groups.push(current);
+  return groups;
+}
+
+function buildDiagnostics(opts: {
+  trace: EvalTraceEvent[];
+  latencyMs: number;
+  metrics?: EvalResult["metrics"];
+}): EvalDiagnostics {
+  const searchEvents = opts.trace.filter((event) => event.event === "searching");
+  const groups = searchGroups(searchEvents);
+  const fetchedByMethod: Record<string, number> = {};
+  const failedAttemptsByMethod: Record<string, number> = {};
+  const qualityWarningsByCode: Record<string, number> = {};
+  const sourceErrorsByCode: Record<string, number> = {};
+  const fetchedHosts: Record<string, number> = {};
+  const rejectedHosts: Record<string, number> = {};
+  let fetched = 0;
+  let rejected = 0;
+  let totalFetchedMarkdownChars = 0;
+
+  for (const event of opts.trace) {
+    if (event.event === "source_fetched") {
+      fetched++;
+      increment(fetchedByMethod, event.method ?? "unknown");
+      increment(fetchedHosts, hostFromUrl(event.url));
+      totalFetchedMarkdownChars += event.markdownChars ?? 0;
+      for (const warning of event.qualityWarnings ?? []) {
+        increment(qualityWarningsByCode, codeFromMessage(warning));
+      }
+      for (const attempt of event.attempts ?? []) {
+        if (!attempt.ok) increment(failedAttemptsByMethod, attempt.method);
+      }
+      continue;
+    }
+    if (event.event === "source_error") {
+      rejected++;
+      increment(rejectedHosts, hostFromUrl(event.url));
+      increment(sourceErrorsByCode, codeFromMessage(event.error));
+    }
+  }
+
+  return {
+    search: {
+      events: searchEvents.length,
+      possibleBatchedGroups: groups.filter((group) => group.length > 1).length,
+      maxQueriesPerGroup: Math.max(0, ...groups.map((group) => group.length)),
+      stringifiedArrayLikeQueries: searchEvents.filter(
+        (event) => event.query && looksLikeStringifiedArrayQuery(event.query),
+      ).length,
+    },
+    fetch: {
+      fetched,
+      rejected,
+      fetchedByMethod,
+      failedAttemptsByMethod,
+      qualityWarningsByCode,
+      sourceErrorsByCode,
+      fetchedHosts,
+      rejectedHosts,
+      totalFetchedMarkdownChars,
+    },
+    cost: {
+      latencyMs: opts.latencyMs,
+      ...(opts.metrics
+        ? {
+            toolCalls: opts.metrics.toolCalls,
+            inputTokens: opts.metrics.inputTokens,
+            outputTokens: opts.metrics.outputTokens,
+          }
+        : {}),
+    },
+  };
+}
+
 function summarizeFetchHealth(results: EvalResult[]) {
   const fetchedByMethod: Record<string, number> = {};
   const failedAttemptsByMethod: Record<string, number> = {};
@@ -1320,14 +1466,12 @@ function summarizeFetchHealth(results: EvalResult[]) {
     for (const event of result.trace) {
       if (event.event === "source_fetched") {
         fetched++;
-        const method = event.method ?? "unknown";
-        fetchedByMethod[method] = (fetchedByMethod[method] ?? 0) + 1;
+        increment(fetchedByMethod, event.method ?? "unknown");
         totalFetchedMarkdownChars += event.markdownChars ?? 0;
         qualityWarnings += event.qualityWarnings?.length ?? 0;
         for (const attempt of event.attempts ?? []) {
           if (!attempt.ok) {
-            failedAttemptsByMethod[attempt.method] =
-              (failedAttemptsByMethod[attempt.method] ?? 0) + 1;
+            increment(failedAttemptsByMethod, attempt.method);
           }
         }
         continue;
@@ -1347,6 +1491,29 @@ function summarizeFetchHealth(results: EvalResult[]) {
     totalFetchedMarkdownChars,
     qualityWarnings,
   };
+}
+
+function summarizeSearchDiagnostics(results: EvalResult[]) {
+  return results.reduce(
+    (summary, result) => {
+      const search = result.diagnostics?.search;
+      if (!search) return summary;
+      summary.events += search.events;
+      summary.possibleBatchedGroups += search.possibleBatchedGroups;
+      summary.maxQueriesPerGroup = Math.max(
+        summary.maxQueriesPerGroup,
+        search.maxQueriesPerGroup,
+      );
+      summary.stringifiedArrayLikeQueries += search.stringifiedArrayLikeQueries;
+      return summary;
+    },
+    {
+      events: 0,
+      possibleBatchedGroups: 0,
+      maxQueriesPerGroup: 0,
+      stringifiedArrayLikeQueries: 0,
+    },
+  );
 }
 
 function summarize(results: EvalResult[]) {
@@ -1386,6 +1553,7 @@ function summarize(results: EvalResult[]) {
       (sum, result) => sum + (result.evidenceValidation?.invalid ?? 0),
       0,
     ),
+    searchDiagnostics: summarizeSearchDiagnostics(results),
     fetchHealth: summarizeFetchHealth(results),
   };
 }
@@ -1474,6 +1642,7 @@ async function main(): Promise<void> {
       `median latency: ${(summary.medianLatencyMs / 1000).toFixed(1)}s`,
       `avg tool calls: ${summary.averageToolCalls.toFixed(1)}`,
       `invalid evidence: ${summary.totalInvalidEvidence}/${summary.totalEvidenceChecked}`,
+      `search diagnostics: events=${summary.searchDiagnostics.events}, batched=${summary.searchDiagnostics.possibleBatchedGroups}, stringified_arrays=${summary.searchDiagnostics.stringifiedArrayLikeQueries}`,
       `fetch health: fetched=${summary.fetchHealth.fetched}, rejected=${summary.fetchHealth.rejected}, methods=${formatCountMap(summary.fetchHealth.fetchedByMethod)}`,
       `results: ${outPath}`,
     ].join("\n") + "\n",

@@ -17,8 +17,7 @@ export const RESEARCH_TOOLS: ModelToolDefinition[] = [
           items: {
             type: "string",
           },
-          description:
-            "One or more related search queries to run in parallel. Prefer batching query variants together.",
+          description: "One or more search queries to run in parallel.",
         },
         limit: {
           type: "integer",
