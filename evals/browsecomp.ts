@@ -861,14 +861,26 @@ function normalizeTextWithOffsets(text: string): {
       offsets.push(pendingWhitespaceOffset);
       pendingWhitespaceOffset = undefined;
     }
-    normalized += char;
+    normalized += normalizeComparableChar(char);
     offsets.push(index);
   }
   return { text: normalized, offsets };
 }
 
 function normalizeWhitespace(text: string): string {
-  return text.replace(/\s+/g, " ").trim();
+  return text
+    .replace(/[‘’]/g, "'")
+    .replace(/[“”]/g, '"')
+    .replace(/[‐‑‒–—―]/g, "-")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function normalizeComparableChar(char: string): string {
+  if (char === "‘" || char === "’") return "'";
+  if (char === "“" || char === "”") return '"';
+  if (/[‐‑‒–—―]/.test(char)) return "-";
+  return char;
 }
 
 function validateStructuredEvidence(
