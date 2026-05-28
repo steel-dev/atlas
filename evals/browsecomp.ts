@@ -116,10 +116,16 @@ type EvalTraceEvent = {
   count?: number;
   url?: string;
   title?: string;
+  method?: string;
   error?: string;
   retryAfterSeconds?: number;
   attempt?: number;
   maxAttempts?: number;
+  attempts?: Array<{
+    method: string;
+    ok: boolean;
+    note: string;
+  }>;
   sourcesFetched?: number;
   markdownChars?: number;
   result?: {
@@ -947,7 +953,7 @@ function progressLine(caseId: string, event: ResearchEvent): string | null {
     case "fetching":
       return `${caseId}: fetch ${event.url}`;
     case "source_fetched":
-      return `${caseId}: fetched ${event.url}`;
+      return `${caseId}: fetched ${event.url}${event.method ? ` (${event.method})` : ""}`;
     case "source_error":
       return `${caseId}: source error ${event.url}: ${event.error}`;
     case "rate_limited":
@@ -983,7 +989,16 @@ function traceEvent(event: ResearchEvent, started: number): EvalTraceEvent {
         maxAttempts: event.maxAttempts,
       };
     case "source_fetched":
-      return { ...base, url: event.url, title: event.title };
+      return {
+        ...base,
+        url: event.url,
+        title: event.title,
+        ...(event.method ? { method: event.method } : {}),
+        ...(event.markdownChars !== undefined
+          ? { markdownChars: event.markdownChars }
+          : {}),
+        ...(event.attempts ? { attempts: event.attempts } : {}),
+      };
     case "source_error":
       return { ...base, url: event.url, error: event.error };
     case "research_finished":

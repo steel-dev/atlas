@@ -1149,6 +1149,20 @@ describe("research loop cache integration", () => {
       url: "https://example.com/static",
       title: "Direct HTML Source",
     });
+    expect(ctx.emit).toHaveBeenCalledWith({
+      type: "source_fetched",
+      url: "https://example.com/static",
+      title: "Direct HTML Source",
+      method: "html_direct",
+      markdownChars: expect.any(Number),
+      attempts: [
+        {
+          method: "html_direct",
+          ok: true,
+          note: expect.stringContaining("html_direct: extracted"),
+        },
+      ],
+    });
     expect(toolText).toContain("Static evidence from the original HTML page.");
     expect(toolText).toContain('"method": "html_direct"');
   });

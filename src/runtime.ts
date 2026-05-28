@@ -4,6 +4,7 @@ import type { Engine, WebSearchOutcome } from "./search.js";
 import type {
   FetchedSource,
   SourceDocument,
+  SourceExtractionAttempt,
   SourceExtractionMetadata,
 } from "./sources.js";
 
@@ -138,6 +139,9 @@ export type ResearchLoopEvent =
       type: "source_fetched";
       url: string;
       title: string;
+      method?: string;
+      markdownChars?: number;
+      attempts?: SourceExtractionAttempt[];
     }
   | { type: "source_error"; url: string; error: string }
   | { type: "research_finished"; sourcesFetched: number };

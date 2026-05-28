@@ -446,6 +446,9 @@ async function fetchSourceDocument(
     type: "source_fetched",
     url,
     title: resolvedTitle,
+    method: document.metadata.method,
+    markdownChars: document.metadata.markdownChars,
+    attempts: document.metadata.attempts,
   });
 
   return document;

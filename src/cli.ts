@@ -112,7 +112,15 @@ function prettyEvent(e: ResearchEvent): string {
         ` waiting ${e.retryAfterSeconds}s (retry ${e.attempt}/${e.maxAttempts - 1})`
       );
     case "source_fetched":
-      return paint(GREEN, `    ✓`) + ` ${e.url}`;
+      return (
+        paint(GREEN, `    ✓`) +
+        ` ${e.url}` +
+        (e.method ? paint(DIM, ` (${e.method}`) : "") +
+        (e.markdownChars !== undefined
+          ? paint(DIM, `${e.method ? ", " : " ("}${e.markdownChars.toLocaleString()} chars`)
+          : "") +
+        (e.method || e.markdownChars !== undefined ? paint(DIM, ")") : "")
+      );
     case "source_error":
       return paint(YELLOW, `    ! ${e.url} — ${e.error}`);
     case "unverified_citations":

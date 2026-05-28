@@ -15,6 +15,7 @@ import {
 } from "./defaults.js";
 import type {
   FetchedSource,
+  SourceExtractionAttempt,
   SourceDocument,
   VerifiedSource,
 } from "./sources.js";
@@ -104,6 +105,9 @@ export type ResearchEvent =
       type: "source_fetched";
       url: string;
       title: string;
+      method?: string;
+      markdownChars?: number;
+      attempts?: SourceExtractionAttempt[];
     }
   | { type: "source_error"; url: string; error: string }
   | { type: "research_finished"; sourcesFetched: number }
