@@ -6,7 +6,8 @@ export const MAX_FETCH_CHARS = 50_000;
 export const RESEARCH_TOOLS: ModelToolDefinition[] = [
   {
     name: "search",
-    description: "Search the web.",
+    description:
+      "Search the web. `queries` may contain multiple query variants, which run in parallel.",
     input_schema: {
       type: "object",
       properties: {
@@ -16,6 +17,7 @@ export const RESEARCH_TOOLS: ModelToolDefinition[] = [
           maxItems: 6,
           items: {
             type: "string",
+            description: "One complete search query string.",
           },
           description: "One or more search queries to run in parallel.",
         },
@@ -127,7 +129,7 @@ export const RESEARCH_TOOLS: ModelToolDefinition[] = [
 ];
 
 export const RESEARCH_SYSTEM_PROMPT =
-  "You're a deep research agent. Use the available tools as needed to answer the user's question. Fetch returns source_id and chunk metadata for revisiting evidence with read_source_chunk, find_in_source, and quote_source. When you have enough evidence, stop using tools and write a cited Markdown report.";
+  "You're a deep research agent. Use the available tools as needed to answer the user's question. Search can run multiple queries in one call. Fetch returns source_id and chunk metadata for revisiting evidence with read_source_chunk, find_in_source, and quote_source. When you have enough evidence, stop using tools and write a cited Markdown report.";
 
 export function researchQuestionPrompt(opts: { query: string }): string {
   return `Research question: ${opts.query}`;

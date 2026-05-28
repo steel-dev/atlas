@@ -76,9 +76,7 @@ async function searchWithCache(
   }
 }
 
-function compactSearchResults(
-  results: MergedSearchResult[],
-): Array<{
+function compactSearchResults(results: MergedSearchResult[]): Array<{
   rank: number;
   title: string;
   url: string;
@@ -215,10 +213,10 @@ function readSearchQueries(args: SearchToolInput): string[] {
   const rawQueries = Array.isArray(args.queries)
     ? args.queries
     : typeof args.queries === "string"
-      ? parseStringifiedQueries(args.queries)
-    : args.query !== undefined
-      ? parseStringifiedQueries(String(args.query))
-      : [];
+      ? (parseStringifiedQueries(args.queries) ?? [])
+      : args.query !== undefined
+        ? [args.query]
+        : [];
   const seen = new Set<string>();
   const queries: string[] = [];
   for (const raw of rawQueries) {
@@ -231,7 +229,7 @@ function readSearchQueries(args: SearchToolInput): string[] {
   return queries;
 }
 
-function parseStringifiedQueries(raw: string): string[] {
+function parseStringifiedQueries(raw: string): string[] | null {
   const trimmed = raw.trim();
   if (!trimmed) return [];
   if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
@@ -243,10 +241,10 @@ function parseStringifiedQueries(raw: string): string[] {
           .filter(Boolean);
       }
     } catch {
-      // Fall through to the single-query form.
+      return null;
     }
   }
-  return [raw];
+  return null;
 }
 
 async function collectSearchResults(opts: {
@@ -336,7 +334,9 @@ export async function execSearch(
   searchIndex: number,
 ): Promise<string> {
   const queries = readSearchQueries(args);
-  if (queries.length === 0) return "Error: search requires non-empty `queries`.";
+  if (queries.length === 0) {
+    return "Error: search requires `queries` to be an array of non-empty strings.";
+  }
 
   const rawLimit = args.limit ?? ctx.defaultSearchLimit ?? 5;
   const limit = Math.min(Math.max(1, Math.floor(Number(rawLimit))), 20);
@@ -376,7 +376,9 @@ export async function execSearch(
   }
 
   const warnings = formatWarnings(collections, queries.length > 1);
-  const sawEmptyResults = collections.some((collection) => collection.sawEmptyResults);
+  const sawEmptyResults = collections.some(
+    (collection) => collection.sawEmptyResults,
+  );
   if (sawEmptyResults) {
     return JSON.stringify(
       {

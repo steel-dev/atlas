@@ -525,6 +525,102 @@ describe("research loop cache integration", () => {
     });
   });
 
+  it("normalizes stringified query arrays from model input", async () => {
+    const fetch = vi.fn(async (url: string | URL | Request) => {
+      const href = String(url);
+      if (href.includes("duckduckgo.com")) {
+        return new Response(
+          `
+            <html>
+              <body>
+                <div class="result">
+                  <a class="result__a" href="https://example.com/normalized">Normalized Result</a>
+                  <a class="result__snippet">Stringified query array worked.</a>
+                </div>
+              </body>
+            </html>
+          `,
+          { headers: { "content-type": "text/html" } },
+        );
+      }
+      return new Response("<html><body>No matching results.</body></html>", {
+        headers: { "content-type": "text/html" },
+      });
+    });
+    vi.stubGlobal("fetch", fetch);
+    const messagesCreate = vi
+      .fn()
+      .mockResolvedValueOnce(
+        messageWith([
+          toolUse("search_1", "search", {
+            queries: '["alpha query","beta query"]',
+          }),
+        ]),
+      )
+      .mockResolvedValueOnce(finalReport());
+    const ctx = createContext({ messagesCreate });
+
+    await runResearchLoop({
+      ctx,
+      query: "What is Atlas?",
+      maxToolCalls: 2,
+    });
+    const followupRequest = messagesCreate.mock.calls[1]?.[0] as {
+      messages: Array<{ content: unknown }>;
+    };
+    const payload = JSON.parse(toolResultText(followupRequest)) as {
+      queries: string[];
+      results: Array<{ queries?: string[] }>;
+    };
+
+    expect(payload.queries).toEqual(["alpha query", "beta query"]);
+    expect(payload.results[0]?.queries).toEqual(["alpha query", "beta query"]);
+    expect(ctx.emit).toHaveBeenCalledWith({
+      type: "searching",
+      index: 1,
+      query: "alpha query",
+    });
+    expect(ctx.emit).toHaveBeenCalledWith({
+      type: "searching",
+      index: 2,
+      query: "beta query",
+    });
+  });
+
+  it("rejects malformed string query arrays without consuming search indexes", async () => {
+    const messagesCreate = vi
+      .fn()
+      .mockResolvedValueOnce(
+        messageWith([
+          toolUse("bad_search", "search", {
+            queries: '["alpha" OR "beta", "gamma"]',
+          }),
+          toolUse("good_search", "search", { queries: ["valid query"] }),
+        ]),
+      )
+      .mockResolvedValueOnce(finalReport());
+    const ctx = createContext({ messagesCreate });
+
+    await runResearchLoop({
+      ctx,
+      query: "What is Atlas?",
+      maxToolCalls: 3,
+    });
+    const followupRequest = messagesCreate.mock.calls[1]?.[0] as {
+      messages: Array<{ content: unknown }>;
+    };
+    const toolText = toolResultText(followupRequest);
+
+    expect(toolText).toContain(
+      "Error: search requires `queries` to be an array of non-empty strings.",
+    );
+    expect(ctx.emit).toHaveBeenCalledWith({
+      type: "searching",
+      index: 1,
+      query: "valid query",
+    });
+  });
+
   it("merges another engine when the default engine fails", async () => {
     const fetch = vi.fn(async (url: string | URL | Request) => {
       const href = String(url);
