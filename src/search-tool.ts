@@ -215,9 +215,9 @@ function readSearchQueries(args: SearchToolInput): string[] {
   const rawQueries = Array.isArray(args.queries)
     ? args.queries
     : typeof args.queries === "string"
-      ? [args.queries]
+      ? parseStringifiedQueries(args.queries)
     : args.query !== undefined
-      ? [args.query]
+      ? parseStringifiedQueries(String(args.query))
       : [];
   const seen = new Set<string>();
   const queries: string[] = [];
@@ -229,6 +229,24 @@ function readSearchQueries(args: SearchToolInput): string[] {
     if (queries.length >= 6) break;
   }
   return queries;
+}
+
+function parseStringifiedQueries(raw: string): string[] {
+  const trimmed = raw.trim();
+  if (!trimmed) return [];
+  if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
+    try {
+      const parsed = JSON.parse(trimmed) as unknown;
+      if (Array.isArray(parsed)) {
+        return parsed
+          .map((entry) => (typeof entry === "string" ? entry : ""))
+          .filter(Boolean);
+      }
+    } catch {
+      // Fall through to the single-query form.
+    }
+  }
+  return [raw];
 }
 
 async function collectSearchResults(opts: {
