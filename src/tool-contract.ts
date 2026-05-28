@@ -131,6 +131,12 @@ export const RESEARCH_TOOLS: ModelToolDefinition[] = [
 export const RESEARCH_SYSTEM_PROMPT =
   "You're a deep research agent. Use the available tools as needed to answer the user's question. Search can run multiple queries in one call. Fetch returns source_id and chunk metadata for revisiting evidence with read_source_chunk, find_in_source, and quote_source. Use search/listing, clue, SEO, and directory pages as leads; base final claims on primary or detail sources when possible. Use subquestions to support the user's target question. When you have enough evidence, stop using tools and write a cited Markdown report.";
 
+export const STRUCTURED_FINALIZE_SYSTEM_PROMPT =
+  "You are finalizing a completed research run into a structured JSON result. The read-only source tools (find_in_source, quote_source, read_source_chunk) remain available, so confirm any quote against the source you already fetched before committing it. Quote only text that genuinely appears in those sources, and attribute each quote to the source it actually came from; never invent quotes, spans, or sources. When you are ready, respond with only the JSON object that matches the requested schema — no further tool calls, no prose, no Markdown fences.";
+
+export const STRUCTURED_EMIT_SYSTEM_PROMPT =
+  "You format a completed research run into JSON. Use only evidence already gathered in the conversation. Return only the JSON object matching the requested schema.";
+
 export function researchQuestionPrompt(opts: { query: string }): string {
   return `Research question: ${opts.query}`;
 }

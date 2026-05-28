@@ -6,8 +6,23 @@ import {
   type ModelMessage,
   type ModelOutputSchema,
   type ModelProvider,
+  type ModelToolCall,
+  type ModelToolResult,
   type UsageSummary,
 } from "./model.js";
+import {
+  execFindInSource,
+  execQuoteSource,
+  execReadSourceChunk,
+  type FindInSourceToolInput,
+  type QuoteSourceToolInput,
+  type ReadSourceChunkToolInput,
+} from "./evidence-tool.js";
+import {
+  RESEARCH_TOOLS,
+  STRUCTURED_EMIT_SYSTEM_PROMPT,
+  STRUCTURED_FINALIZE_SYSTEM_PROMPT,
+} from "./tool-contract.js";
 import {
   DEFAULT_ANTHROPIC_MODEL,
   DEFAULT_OPENAI_MODEL,
@@ -259,6 +274,7 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
     output === undefined
       ? undefined
       : await generateStructuredOutput({
+          ctx,
           model: modelAdapter,
           messages: run.messages,
           output,
@@ -293,7 +309,106 @@ function textFromBlocks(content: ModelAssistantBlock[]): string {
     .trim();
 }
 
+const FINALIZE_TOOL_NAMES = new Set([
+  "read_source_chunk",
+  "find_in_source",
+  "quote_source",
+]);
+const MAX_FINALIZE_STEPS = 6;
+
 async function generateStructuredOutput(opts: {
+  ctx: ResearchLoopContext;
+  model: ModelAdapter;
+  messages: ModelMessage[];
+  output: ResearchOutputOptions;
+  maxTokens: number;
+  effort: ResearchEffort;
+  signal?: AbortSignal;
+}): Promise<unknown> {
+  const finalizeTools = RESEARCH_TOOLS.filter((tool) =>
+    FINALIZE_TOOL_NAMES.has(tool.name),
+  );
+  const messages: ModelMessage[] = [
+    ...opts.messages,
+    { role: "user", content: structuredOutputPrompt(opts.output) },
+  ];
+
+  for (let step = 0; step < MAX_FINALIZE_STEPS; step++) {
+    opts.signal?.throwIfAborted();
+    const resp = await opts.model.step({
+      system: STRUCTURED_FINALIZE_SYSTEM_PROMPT,
+      tools: finalizeTools,
+      messages,
+      maxTokens: opts.maxTokens,
+      effort: opts.effort,
+      signal: opts.signal,
+    });
+    messages.push({ role: "assistant", content: resp.content });
+    const toolUses = resp.content.filter(
+      (block): block is ModelToolCall => block.type === "tool_call",
+    );
+    if (toolUses.length === 0) {
+      const parsed = tryParseJsonOutput(textFromBlocks(resp.content));
+      if (parsed.ok) return parsed.value;
+      break;
+    }
+    messages.push({
+      role: "user",
+      content: toolUses.map((tu) => execFinalizationTool(tu, opts.ctx)),
+    });
+  }
+
+  return emitStructuredJson({
+    model: opts.model,
+    messages,
+    output: opts.output,
+    maxTokens: opts.maxTokens,
+    effort: opts.effort,
+    signal: opts.signal,
+  });
+}
+
+function execFinalizationTool(
+  tu: ModelToolCall,
+  ctx: ResearchLoopContext,
+): ModelToolResult {
+  const run = (): { content: string; isError?: boolean } => {
+    if (tu.name === "read_source_chunk") {
+      return {
+        content: execReadSourceChunk(
+          (tu.input ?? {}) as ReadSourceChunkToolInput,
+          ctx,
+        ),
+      };
+    }
+    if (tu.name === "find_in_source") {
+      return {
+        content: execFindInSource(
+          (tu.input ?? {}) as FindInSourceToolInput,
+          ctx,
+        ),
+      };
+    }
+    if (tu.name === "quote_source") {
+      return {
+        content: execQuoteSource((tu.input ?? {}) as QuoteSourceToolInput, ctx),
+      };
+    }
+    return {
+      content: `Tool ${tu.name} is not available while finalizing. Use find_in_source, quote_source, or read_source_chunk to verify evidence, then return the JSON.`,
+      isError: true,
+    };
+  };
+  const { content, isError } = run();
+  return {
+    type: "tool_result",
+    tool_call_id: tu.id,
+    content,
+    ...(isError ? { is_error: true } : {}),
+  };
+}
+
+async function emitStructuredJson(opts: {
   model: ModelAdapter;
   messages: ModelMessage[];
   output: ResearchOutputOptions;
@@ -302,34 +417,28 @@ async function generateStructuredOutput(opts: {
   signal?: AbortSignal;
 }): Promise<unknown> {
   const schema = modelOutputSchema(opts.output);
-  const prompt = structuredOutputPrompt(opts.output);
+  const messages: ModelMessage[] = [
+    ...opts.messages,
+    { role: "user", content: structuredOutputPrompt(opts.output) },
+  ];
   try {
-    return await runStructuredOutputStep({ ...opts, schema, prompt });
+    return await runStructuredEmitStep({ ...opts, messages, schema });
   } catch {
-    return runStructuredOutputStep({ ...opts, prompt });
+    return runStructuredEmitStep({ ...opts, messages });
   }
 }
 
-async function runStructuredOutputStep(opts: {
+async function runStructuredEmitStep(opts: {
   model: ModelAdapter;
   messages: ModelMessage[];
-  output: ResearchOutputOptions;
   maxTokens: number;
   effort: ResearchEffort;
   signal?: AbortSignal;
   schema?: ModelOutputSchema;
-  prompt: string;
 }): Promise<unknown> {
   const resp = await opts.model.step({
-    system:
-      "You format completed research results. Do not call tools. Return only the requested JSON.",
-    messages: [
-      ...opts.messages,
-      {
-        role: "user",
-        content: opts.prompt,
-      },
-    ],
+    system: STRUCTURED_EMIT_SYSTEM_PROMPT,
+    messages: opts.messages,
     maxTokens: opts.maxTokens,
     effort: opts.effort,
     outputSchema: opts.schema,
@@ -379,6 +488,16 @@ function parseJsonOutput(text: string): unknown {
     }
   }
   throw new Error("structured output was not valid JSON");
+}
+
+function tryParseJsonOutput(
+  text: string,
+): { ok: true; value: unknown } | { ok: false } {
+  try {
+    return { ok: true, value: parseJsonOutput(text) };
+  } catch {
+    return { ok: false };
+  }
 }
 
 function fencedJson(text: string): string | null {
@@ -557,4 +676,5 @@ function timeoutSynthesisReserveMs(
 
 export const __testing = {
   auditCitationsInMarkdown,
+  generateStructuredOutput,
 };

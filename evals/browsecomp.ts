@@ -674,24 +674,13 @@ function browseCompOutput() {
                 description:
                   "source_id returned by fetch for the cited source, such as source_1.",
               },
-              start: {
-                type: "integer",
-                minimum: 0,
-                description:
-                  "Start character offset of the quote in the fetched source markdown.",
-              },
-              end: {
-                type: "integer",
-                minimum: 0,
-                description:
-                  "End character offset of the quote in the fetched source markdown.",
-              },
               quote: {
                 type: "string",
-                description: "Short quote or excerpt from the source.",
+                description:
+                  "Exact text copied verbatim from the cited source. Character offsets are resolved automatically from this quote.",
               },
             },
-            required: ["clue", "source_url", "source_id", "start", "end", "quote"],
+            required: ["clue", "source_url", "source_id", "quote"],
             additionalProperties: false,
           },
         },
