@@ -86,6 +86,35 @@ function shouldAttemptFinalSynthesis(finishReason: string): boolean {
   );
 }
 
+interface StepSignal {
+  signal?: AbortSignal;
+  timedOut: () => boolean;
+}
+
+function researchStepSignal(ctx: ResearchLoopContext): StepSignal {
+  if (ctx.deadlineAt === undefined || ctx.synthesisReserveMs === undefined) {
+    return {
+      signal: ctx.signal,
+      timedOut: () => false,
+    };
+  }
+
+  const remainingMs = ctx.deadlineAt - Date.now();
+  const stepBudgetMs = remainingMs - ctx.synthesisReserveMs;
+  if (stepBudgetMs <= 0) {
+    return {
+      signal: ctx.signal,
+      timedOut: () => false,
+    };
+  }
+
+  const timeoutSignal = AbortSignal.timeout(Math.max(1, Math.floor(stepBudgetMs)));
+  return {
+    signal: ctx.signal ? AbortSignal.any([ctx.signal, timeoutSignal]) : timeoutSignal,
+    timedOut: () => timeoutSignal.aborted && !ctx.signal?.aborted,
+  };
+}
+
 async function mapWithConcurrency<T, R>(
   items: T[],
   limit: number,
@@ -243,6 +272,7 @@ export async function runResearchLoop(opts: {
     }
 
     let resp: { content: ModelAssistantBlock[] };
+    const stepSignal = researchStepSignal(ctx);
     try {
       resp = await ctx.model.step({
         system: RESEARCH_SYSTEM_PROMPT,
@@ -250,10 +280,15 @@ export async function runResearchLoop(opts: {
         messages,
         maxTokens: ctx.maxOutputTokens ?? 2048,
         effort: opts.effort,
-        signal: ctx.signal,
+        signal: stepSignal.signal,
       });
     } catch (err) {
       if (ctx.signal?.aborted) throw err;
+      if (stepSignal.timedOut()) {
+        finishReason =
+          timeoutSynthesisReason(ctx) ?? "timeout approaching (0s remaining)";
+        break;
+      }
       const message = errorMessage(err);
       finishReason = `api error: ${message}`;
       break;
