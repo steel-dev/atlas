@@ -45,7 +45,10 @@ export class BrowserSessionPool {
   private readonly idle: BrowserSessionResource[] = [];
   private readonly active = new Set<BrowserSessionResource>();
   private readonly waiters: Waiter[] = [];
-  private readonly idleTimers = new Map<BrowserSessionResource, NodeJS.Timeout>();
+  private readonly idleTimers = new Map<
+    BrowserSessionResource,
+    NodeJS.Timeout
+  >();
   private creating = 0;
   private learnedCapacity: number | null = null;
   private closed = false;
@@ -69,7 +72,9 @@ export class BrowserSessionPool {
         if (!isSessionLimitError(err)) throw err;
         this.learnedCapacity = this.totalSessions();
         if (this.learnedCapacity === 0) {
-          throw new Error(`Steel session limit reached before acquiring a session: ${errorMessage(err)}`);
+          throw new Error(
+            `Steel session limit reached before acquiring a session: ${errorMessage(err)}`,
+          );
         }
       } finally {
         this.creating = Math.max(0, this.creating - 1);
@@ -89,7 +94,9 @@ export class BrowserSessionPool {
     const resources = [...this.idle, ...this.active];
     this.idle.length = 0;
     this.active.clear();
-    await Promise.allSettled(resources.map((resource) => this.destroy(resource)));
+    await Promise.allSettled(
+      resources.map((resource) => this.destroy(resource)),
+    );
   }
 
   private canCreate(): boolean {
@@ -108,14 +115,19 @@ export class BrowserSessionPool {
 
   private async waitForLease(): Promise<BrowserSessionLease> {
     return new Promise((resolve, reject) => {
-      const timeoutMs = this.opts.acquireTimeoutMs ?? DEFAULT_ACQUIRE_TIMEOUT_MS;
+      const timeoutMs =
+        this.opts.acquireTimeoutMs ?? DEFAULT_ACQUIRE_TIMEOUT_MS;
       const waiter: Waiter = {
         resolve,
         reject,
         timeout: setTimeout(() => {
           const index = this.waiters.indexOf(waiter);
           if (index >= 0) this.waiters.splice(index, 1);
-          reject(new Error(`Timed out waiting for browser session after ${timeoutMs}ms`));
+          reject(
+            new Error(
+              `Timed out waiting for browser session after ${timeoutMs}ms`,
+            ),
+          );
         }, timeoutMs),
       };
       this.waiters.push(waiter);
@@ -153,7 +165,6 @@ export class BrowserSessionPool {
       {
         namespace: this.opts.namespace,
         useProxy: this.opts.useProxy,
-        headless: true,
         timeout: this.sessionTimeoutMs(),
         optimizeBandwidth: {
           blockImages: true,
@@ -180,7 +191,9 @@ export class BrowserSessionPool {
     }
   }
 
-  private async connectToSession(session: SteelSession): Promise<BrowserCdpClient> {
+  private async connectToSession(
+    session: SteelSession,
+  ): Promise<BrowserCdpClient> {
     let lastError: unknown;
     for (let attempt = 1; attempt <= CDP_CONNECT_ATTEMPTS; attempt++) {
       this.opts.signal?.throwIfAborted();
@@ -191,13 +204,18 @@ export class BrowserSessionPool {
         });
       } catch (err) {
         lastError = err;
-        if (!isTransientCdpConnectError(err) || attempt >= CDP_CONNECT_ATTEMPTS) {
+        if (
+          !isTransientCdpConnectError(err) ||
+          attempt >= CDP_CONNECT_ATTEMPTS
+        ) {
           break;
         }
         await delay(CDP_CONNECT_BASE_DELAY_MS * attempt, this.opts.signal);
       }
     }
-    throw lastError instanceof Error ? lastError : new Error(errorMessage(lastError));
+    throw lastError instanceof Error
+      ? lastError
+      : new Error(errorMessage(lastError));
   }
 
   private async websocketUrlForAttempt(
@@ -206,10 +224,15 @@ export class BrowserSessionPool {
   ): Promise<string> {
     if (attempt === 1) return this.withWebsocketApiKey(session.websocketUrl);
     try {
-      const liveDetails = await this.opts.steel.sessions.liveDetails(session.id, {
-        signal: this.opts.signal,
-      });
-      return this.withWebsocketApiKey(liveDetails.wsUrl || session.websocketUrl);
+      const liveDetails = await this.opts.steel.sessions.liveDetails(
+        session.id,
+        {
+          signal: this.opts.signal,
+        },
+      );
+      return this.withWebsocketApiKey(
+        liveDetails.wsUrl || session.websocketUrl,
+      );
     } catch {
       return this.withWebsocketApiKey(session.websocketUrl);
     }
@@ -237,7 +260,10 @@ export class BrowserSessionPool {
     const remaining = Math.max(0, this.opts.deadlineAt - Date.now());
     return Math.max(
       MIN_SESSION_TIMEOUT_MS,
-      Math.min(DEFAULT_SESSION_TIMEOUT_MS, remaining + SESSION_TIMEOUT_SAFETY_MS),
+      Math.min(
+        DEFAULT_SESSION_TIMEOUT_MS,
+        remaining + SESSION_TIMEOUT_SAFETY_MS,
+      ),
     );
   }
 
@@ -269,7 +295,11 @@ export class BrowserSessionPool {
 
   private async releaseSteelSession(sessionId: string): Promise<void> {
     try {
-      await this.opts.steel.sessions.release(sessionId, {}, { signal: this.opts.signal });
+      await this.opts.steel.sessions.release(
+        sessionId,
+        {},
+        { signal: this.opts.signal },
+      );
     } catch {
       // Session timeout/release races are harmless during cleanup.
     }
@@ -283,16 +313,21 @@ export function readBrowserMaxSessionsFromEnv(): number | undefined {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
 }
 
-async function attachToPage(client: BrowserCdpClient): Promise<string | undefined> {
+async function attachToPage(
+  client: BrowserCdpClient,
+): Promise<string | undefined> {
   try {
     const targets = await client.send<{
       targetInfos?: Array<{ targetId: string; type: string; url?: string }>;
     }>("Target.getTargets");
     let page = targets.targetInfos?.find((target) => target.type === "page");
     if (!page) {
-      const created = await client.send<{ targetId: string }>("Target.createTarget", {
-        url: "about:blank",
-      });
+      const created = await client.send<{ targetId: string }>(
+        "Target.createTarget",
+        {
+          url: "about:blank",
+        },
+      );
       page = { targetId: created.targetId, type: "page" };
     }
     const attached = await client.send<{ sessionId: string }>(
