@@ -10,6 +10,7 @@ const SESSION_TIMEOUT_SAFETY_MS = 15_000;
 const CDP_CONNECT_ATTEMPTS = 6;
 const CDP_CONNECT_BASE_DELAY_MS = 500;
 const CDP_HEALTHCHECK_TIMEOUT_MS = 2_000;
+const SESSION_RELEASE_TIMEOUT_MS = 10_000;
 
 type SteelSession = Awaited<ReturnType<Steel["sessions"]["create"]>>;
 
@@ -338,10 +339,14 @@ export class BrowserSessionPool {
 
   private async releaseSteelSession(sessionId: string): Promise<void> {
     try {
+      // Release must run to completion even when the run signal is already
+      // aborted (e.g. Ctrl+C / timeout). Passing the aborted run signal here
+      // would cancel the release request itself, leaving the session alive on
+      // the server until its own timeout. Use a fresh short timeout instead.
       await this.opts.steel.sessions.release(
         sessionId,
         {},
-        { signal: this.opts.signal },
+        { signal: AbortSignal.timeout(SESSION_RELEASE_TIMEOUT_MS) },
       );
     } catch {
       // Session timeout/release races are harmless during cleanup.
