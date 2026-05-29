@@ -1672,6 +1672,56 @@ describe("research loop cache integration", () => {
     );
   });
 
+  it("returns suspicious but non-empty sources with quality warnings", async () => {
+    const markdown =
+      "# CAPTCHA in Practice\n\nThis article explains why a captcha or access denied message can appear in logs while still giving useful operational guidance.";
+    const fetch = vi.fn(
+      async () =>
+        new Response(
+          `<html><head><title>CAPTCHA in Practice</title></head><body><main>${markdown}</main></body></html>`,
+          {
+            status: 200,
+            headers: { "content-type": "text/html" },
+          },
+        ),
+    );
+    vi.stubGlobal("fetch", fetch);
+    const scrape = vi.fn(async () => ({
+      content: { markdown },
+      metadata: { title: "CAPTCHA in Practice" },
+    }));
+    const messagesCreate = vi
+      .fn()
+      .mockResolvedValueOnce(
+        messageWith([
+          toolUse("fetch_1", "fetch", {
+            url: "https://example.com/captcha-article",
+          }),
+        ]),
+      )
+      .mockResolvedValueOnce(finalReport());
+    const ctx = createContext({ messagesCreate, scrape });
+
+    const result = await runResearchLoop({
+      ctx,
+      query: "What is Atlas?",
+      maxToolCalls: 2,
+    });
+    const followupRequest = messagesCreate.mock.calls[1]?.[0] as {
+      messages: Array<{ content: unknown }>;
+    };
+    const toolText = toolResultText(followupRequest);
+
+    expect(result.finishReason).toBe("final report");
+    expect(ctx.fetchedSources).toHaveLength(1);
+    expect(ctx.emit).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: "source_error" }),
+    );
+    expect(toolText).toContain("This article explains why");
+    expect(toolText).toContain("blocked_or_challenge");
+    expect(toolText).toContain('"source_quality"');
+  });
+
   it("rejects tiny error pages instead of storing them as sources", async () => {
     const fetch = vi.fn(
       async () =>

@@ -491,10 +491,7 @@ function assessSourceQuality(
   const warnings: string[] = [];
 
   if (looksBlocked(`${title}\n${trimmed}`)) {
-    return {
-      fatalError: "blocked_or_challenge: fetched content looked blocked",
-      warnings,
-    };
+    warnings.push("blocked_or_challenge: fetched content looked blocked");
   }
 
   if (trimmed.length < MIN_SOURCE_MARKDOWN_CHARS) {
@@ -509,10 +506,7 @@ function assessSourceQuality(
     /^http_error:/.test(attempt.note),
   );
   if (titleLooksLikeError && (trimmed.length < 500 || hadHttpError)) {
-    return {
-      fatalError: `error_page: ${title} (${trimmed.length} chars)`,
-      warnings,
-    };
+    warnings.push(`error_page: ${title} (${trimmed.length} chars)`);
   }
 
   if (trimmed.length < THIN_SOURCE_MARKDOWN_CHARS) {
