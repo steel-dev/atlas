@@ -38,6 +38,7 @@ import type {
 } from "./sources.js";
 import { createSteel } from "./steel.js";
 import {
+  createBudgetLedger,
   createSourceReservations,
   createResearchCaches,
   createSteelConcurrencyGate,
@@ -54,7 +55,9 @@ const DEFAULT_RUNTIME_LIMITS = {
   safetySourceCap: 40,
   safetyMaxToolCalls: 80,
   maxConcurrentTools: 8,
-  maxConcurrentSteelCalls: 4,
+  maxConcurrentSteelCalls: 10,
+  maxDelegationDepth: 1,
+  maxConcurrentSubagents: 3,
   defaultSearchLimit: 8,
   defaultEffort: "high",
   maxOutputTokens: 16_384,
@@ -64,10 +67,19 @@ const DEFAULT_RUNTIME_LIMITS = {
   safetyMaxToolCalls: number;
   maxConcurrentTools: number;
   maxConcurrentSteelCalls: number;
+  maxDelegationDepth: number;
+  maxConcurrentSubagents: number;
   defaultSearchLimit: number;
   defaultEffort: ResearchEffort;
   maxOutputTokens: number;
   timeoutSynthesisReserveMs: number;
+};
+
+const EFFORT_BUDGET_MULTIPLIER: Record<ResearchEffort, number> = {
+  low: 0.5,
+  medium: 0.75,
+  high: 1,
+  max: 2,
 };
 
 export type { ModelProvider, UsageSummary } from "./model.js";
@@ -102,7 +114,7 @@ export interface ResearchOutputOptions {
   name?: string;
 }
 
-export type ResearchEvent =
+export type ResearchEvent = (
   | { type: "research_started" }
   | { type: "searching"; index: number; query: string }
   | {
@@ -133,9 +145,23 @@ export type ResearchEvent =
     }
   | { type: "source_error"; url: string; error: string }
   | { type: "research_finished"; sourcesFetched: number }
+  | { type: "delegation_started"; tasks: string[] }
+  | { type: "subagent_started"; task: string }
+  | {
+      type: "subagent_finished";
+      task: string;
+      sourcesFetched: number;
+      toolCalls: number;
+      finishReason: string;
+    }
   | { type: "unverified_citations"; count: number; urls: string[] }
   | { type: "written"; markdownChars: number }
-  | { type: "completed"; result: ResearchResult };
+  | { type: "completed"; result: ResearchResult }
+) & {
+  /** Set on events emitted by a sub-agent (1 for the first level of
+   *  delegation). Absent/0 for the lead agent. */
+  depth?: number;
+};
 
 export interface ResearchOptions {
   query: string;
@@ -192,8 +218,18 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
   }
 
   const limits = DEFAULT_RUNTIME_LIMITS;
-  const safetySourceCap = limits.safetySourceCap;
-  const safetyMaxToolCalls = limits.safetyMaxToolCalls;
+  const resolvedEffort = effort ?? limits.defaultEffort;
+  const effortBudgetMultiplier = EFFORT_BUDGET_MULTIPLIER[resolvedEffort];
+  const safetySourceCap = Math.round(
+    limits.safetySourceCap * effortBudgetMultiplier,
+  );
+  const safetyMaxToolCalls = Math.round(
+    limits.safetyMaxToolCalls * effortBudgetMultiplier,
+  );
+  const maxDelegationDepth =
+    readIntEnv("ATLAS_MAX_DELEGATION_DEPTH", 0) ?? limits.maxDelegationDepth;
+  const maxConcurrentSubagents =
+    readIntEnv("ATLAS_MAX_SUBAGENTS", 1) ?? limits.maxConcurrentSubagents;
   const timeoutDeadlineAt =
     timeoutMs === undefined ? undefined : Date.now() + Math.floor(timeoutMs);
   const runSignal = combineSignals(signal, timeoutMs);
@@ -272,6 +308,15 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
     browserSessionPool,
     sourceReservations: createSourceReservations(),
     caches: createResearchCaches(),
+    budget: createBudgetLedger(
+      safetyMaxToolCalls,
+      Math.max(safetyMaxToolCalls, safetyMaxToolCalls * 2),
+    ),
+    depth: 0,
+    maxDelegationDepth,
+    maxConcurrentSubagents,
+    subagentGate: createSteelConcurrencyGate(maxConcurrentSubagents),
+    subagentEffort: resolvedEffort,
   };
 
   try {
@@ -279,7 +324,7 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
       ctx,
       query,
       maxToolCalls: safetyMaxToolCalls,
-      effort: effort ?? limits.defaultEffort,
+      effort: resolvedEffort,
     });
     const runs: ResearchRun[] = [
       {
@@ -410,7 +455,14 @@ async function generateStructuredOutput(opts: {
     }
 
     const run = await runResearchLoop({
-      ctx: opts.ctx,
+      ctx: {
+        ...opts.ctx,
+        budget: createBudgetLedger(
+          STRUCTURED_RESEARCH_MAX_TOOL_CALLS,
+          STRUCTURED_RESEARCH_MAX_TOOL_CALLS * 2,
+        ),
+        depth: opts.ctx.maxDelegationDepth ?? 1,
+      },
       query: `Additional research requested while finalizing structured output: ${attempt.query}`,
       maxToolCalls: STRUCTURED_RESEARCH_MAX_TOOL_CALLS,
       effort: opts.effort,
@@ -678,6 +730,13 @@ function readEnv(...keys: string[]): string | undefined {
     if (value?.trim()) return value.trim();
   }
   return undefined;
+}
+
+function readIntEnv(name: string, min: number): number | undefined {
+  const raw = process.env[name];
+  if (!raw?.trim()) return undefined;
+  const n = Math.floor(Number(raw));
+  return Number.isFinite(n) && n >= min ? n : undefined;
 }
 
 function resolveProvider(provider: ModelProvider | undefined): ModelProvider {

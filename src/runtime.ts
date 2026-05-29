@@ -1,5 +1,6 @@
 import type Steel from "steel-sdk";
 import type { ModelAdapter } from "./model.js";
+import type { ResearchEffort } from "./defaults.js";
 import type { Engine, WebSearchOutcome } from "./search.js";
 import type {
   FetchedSource,
@@ -19,6 +20,34 @@ export interface SourceReservations {
   sourceSlots: number;
   nextSourceNumber: number;
   documents: Map<string, Promise<SourceDocument | null>>;
+}
+
+export interface BudgetLedger {
+  remainingActionCalls: number;
+  remainingToolExecutions: number;
+  consume(actionCalls: number, toolExecutions: number): void;
+}
+
+export function createBudgetLedger(
+  maxActionCalls: number,
+  maxToolExecutions: number,
+): BudgetLedger {
+  const clampInit = (n: number) =>
+    Number.isFinite(n) ? Math.max(0, Math.floor(n)) : 0;
+  return {
+    remainingActionCalls: clampInit(maxActionCalls),
+    remainingToolExecutions: clampInit(maxToolExecutions),
+    consume(actionCalls, toolExecutions) {
+      this.remainingActionCalls = Math.max(
+        0,
+        this.remainingActionCalls - Math.max(0, Math.floor(actionCalls)),
+      );
+      this.remainingToolExecutions = Math.max(
+        0,
+        this.remainingToolExecutions - Math.max(0, Math.floor(toolExecutions)),
+      );
+    },
+  };
 }
 
 export interface SourceCacheEntry {
@@ -67,7 +96,9 @@ class Semaphore implements SteelConcurrencyGate {
   }
 }
 
-export function createSteelConcurrencyGate(limit: number): SteelConcurrencyGate {
+export function createSteelConcurrencyGate(
+  limit: number,
+): SteelConcurrencyGate {
   const normalized = Number.isFinite(limit)
     ? Math.max(1, Math.floor(limit))
     : 1;
@@ -117,9 +148,15 @@ export interface ResearchLoopContext {
   browserSessionLease?: BrowserSessionLease;
   sourceReservations: SourceReservations;
   caches: ResearchCaches;
+  budget?: BudgetLedger;
+  depth?: number;
+  maxDelegationDepth?: number;
+  maxConcurrentSubagents?: number;
+  subagentGate?: SteelConcurrencyGate;
+  subagentEffort?: ResearchEffort;
 }
 
-export type ResearchLoopEvent =
+export type ResearchLoopEvent = (
   | { type: "research_started" }
   | {
       type: "searching";
@@ -153,4 +190,16 @@ export type ResearchLoopEvent =
       qualityWarnings?: string[];
     }
   | { type: "source_error"; url: string; error: string }
-  | { type: "research_finished"; sourcesFetched: number };
+  | { type: "research_finished"; sourcesFetched: number }
+  | { type: "delegation_started"; tasks: string[] }
+  | { type: "subagent_started"; task: string }
+  | {
+      type: "subagent_finished";
+      task: string;
+      sourcesFetched: number;
+      toolCalls: number;
+      finishReason: string;
+    }
+) & {
+  depth?: number;
+};

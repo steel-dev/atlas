@@ -18,7 +18,7 @@ A research loop searches, fetches sources, and writes a cited Markdown report.
 Options:
   -o, --out <file>            Write the markdown report to <file> (default: stdout)
       --timeout N             Overall wall-clock budget in seconds (default: none)
-      --effort LEVEL          Research effort: low, medium, high, max (default: high)
+      --effort LEVEL          Reasoning + exploration budget: low, medium, high, max (default: high)
       --provider PROVIDER     Model provider: anthropic, openai (default: auto)
       --model MODEL           Model name (default: provider-specific)
       --summary-model MODEL   Cheap model for per-source summaries (default: haiku on anthropic)
@@ -33,6 +33,8 @@ Environment:
   ATLAS_PROVIDER                                optional (anthropic, openai)
   ATLAS_MODEL                                   optional
   ATLAS_SUMMARY_MODEL                           optional (per-source summary model)
+  ATLAS_MAX_DELEGATION_DEPTH                    optional (0 disables sub-agent delegation)
+  ATLAS_MAX_SUBAGENTS                           optional (max concurrent sub-agents)
   ATLAS_ANTHROPIC_API_KEY or ANTHROPIC_API_KEY  required for provider=anthropic
   ATLAS_OPENAI_API_KEY    or OPENAI_API_KEY     required for provider=openai
   ATLAS_OPENAI_BASE_URL   or OPENAI_BASE_URL    optional (OpenAI-compatible)
@@ -91,7 +93,17 @@ function paint(color: string, text: string): string {
   return colored() ? `${color}${text}${RESET}` : text;
 }
 
+function truncate(text: string, max: number): string {
+  const clean = text.replace(/\s+/g, " ").trim();
+  return clean.length <= max ? clean : `${clean.slice(0, max - 1)}…`;
+}
+
 function prettyEvent(e: ResearchEvent): string {
+  const pad = "  ".repeat(Math.max(0, e.depth ?? 0));
+  return pad + prettyEventBody(e);
+}
+
+function prettyEventBody(e: ResearchEvent): string {
   switch (e.type) {
     case "research_started":
       return paint(DIM, "  →") + " research started";
@@ -99,6 +111,22 @@ function prettyEvent(e: ResearchEvent): string {
       return (
         paint(DIM, "  ✓") +
         ` research done — ${e.sourcesFetched} source${e.sourcesFetched === 1 ? "" : "s"} fetched`
+      );
+    case "delegation_started":
+      return (
+        paint(DIM, "    ⇣") +
+        ` delegating ${e.tasks.length} sub-agent${e.tasks.length === 1 ? "" : "s"}`
+      );
+    case "subagent_started":
+      return paint(DIM, "      ↳ sub-agent:") + ` ${truncate(e.task, 80)}`;
+    case "subagent_finished":
+      return (
+        paint(GREEN, "      ✓ sub-agent:") +
+        ` ${truncate(e.task, 64)}` +
+        paint(
+          DIM,
+          ` (${e.sourcesFetched} source${e.sourcesFetched === 1 ? "" : "s"}, ${e.toolCalls} call${e.toolCalls === 1 ? "" : "s"})`,
+        )
       );
     case "searching":
       return paint(DIM, `    search:`) + ` ${e.query}`;

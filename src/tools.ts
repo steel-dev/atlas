@@ -2,10 +2,12 @@ import type {
   ModelAssistantBlock,
   ModelMessage,
   ModelToolCall,
+  ModelToolDefinition,
   ModelToolResult,
 } from "./model.js";
 import type { ResearchEffort } from "./defaults.js";
-import type { ResearchLoopContext } from "./runtime.js";
+import type { ResearchLoopContext, ResearchLoopEvent } from "./runtime.js";
+import { createSteelConcurrencyGate } from "./runtime.js";
 import { errorMessage } from "./errors.js";
 import { parseRetryAfterSeconds } from "./steel-runtime.js";
 import {
@@ -40,14 +42,17 @@ import {
   RESEARCH_SYSTEM_PROMPT,
   RESEARCH_TOOLS,
   researchQuestionPrompt,
+  SUBAGENT_SYSTEM_PROMPT,
 } from "./tool-contract.js";
 
 export {
+  createBudgetLedger,
   createResearchCaches,
   createSourceReservations,
   createSteelConcurrencyGate,
 } from "./runtime.js";
 export type {
+  BudgetLedger,
   ResearchCaches,
   ResearchLoopContext,
   ResearchLoopEvent,
@@ -57,12 +62,27 @@ export type {
 
 const DEFAULT_MAX_TOOL_CALLS = 12;
 const DEFAULT_MAX_CONCURRENT_TOOLS = 4;
+const DEFAULT_MAX_CONCURRENT_SUBAGENTS = 3;
+const DELEGATE_MAX_TASKS = 4;
+const SUBAGENT_MAX_TOOL_CALLS = 20;
+const DELEGATE_MIN_REMAINING_ACTION_CALLS = 2;
+const SUBAGENT_FINDINGS_MAX_CHARS = 4_000;
 const FREE_TOOL_NAMES = new Set([
   "plan",
   "read_source_chunk",
   "find_in_source",
   "quote_source",
 ]);
+
+/** Delegation is opt-in: the `delegate` tool is only exposed when the context
+ *  allows another level of depth. With maxDelegationDepth unset (the default
+ *  for direct runResearchLoop callers and tests), delegation is off entirely. */
+function toolsForContext(ctx: ResearchLoopContext): ModelToolDefinition[] {
+  if ((ctx.depth ?? 0) >= (ctx.maxDelegationDepth ?? 0)) {
+    return RESEARCH_TOOLS.filter((tool) => tool.name !== "delegate");
+  }
+  return RESEARCH_TOOLS;
+}
 
 export interface ResearchLoopResult {
   fetchedUrls: string[];
@@ -82,6 +102,9 @@ function textFromContent(content: ModelAssistantBlock[]): string {
 interface ToolExecution {
   toolResult: ModelToolResult;
   fetchedUrl?: string;
+  /** Sub-agent-fetched URLs bubbled up by `delegate` so the lead run accounts
+   *  for the whole delegation tree's fetches. */
+  fetchedUrls?: string[];
 }
 
 function timeoutSynthesisReason(ctx: ResearchLoopContext): string | null {
@@ -117,14 +140,12 @@ function budgetStatusMessage(opts: {
   maxTotalToolExecutions: number;
   ctx: ResearchLoopContext;
 }): string {
-  const actionRemaining = Math.max(
-    0,
-    opts.maxActionToolCalls - opts.actionToolCalls,
-  );
-  const totalRemaining = Math.max(
-    0,
-    opts.maxTotalToolExecutions - opts.totalToolExecutions,
-  );
+  const actionRemaining = opts.ctx.budget
+    ? opts.ctx.budget.remainingActionCalls
+    : Math.max(0, opts.maxActionToolCalls - opts.actionToolCalls);
+  const totalRemaining = opts.ctx.budget
+    ? opts.ctx.budget.remainingToolExecutions
+    : Math.max(0, opts.maxTotalToolExecutions - opts.totalToolExecutions);
   const sourcesRemaining = Math.max(
     0,
     opts.ctx.sourceCap - opts.ctx.fetchedSources.length,
@@ -237,7 +258,10 @@ async function executeToolUse(
       toolResult: {
         type: "tool_result",
         tool_call_id: tu.id,
-        content: execFindInSource((tu.input as FindInSourceToolInput) ?? {}, ctx),
+        content: execFindInSource(
+          (tu.input as FindInSourceToolInput) ?? {},
+          ctx,
+        ),
       },
     };
   }
@@ -258,7 +282,10 @@ async function executeToolUse(
         toolResult: {
           type: "tool_result",
           tool_call_id: tu.id,
-          content: await execBrowserOpen((tu.input as BrowserOpenToolInput) ?? {}, ctx),
+          content: await execBrowserOpen(
+            (tu.input as BrowserOpenToolInput) ?? {},
+            ctx,
+          ),
         },
       };
     } catch (err) {
@@ -279,7 +306,10 @@ async function executeToolUse(
         toolResult: {
           type: "tool_result",
           tool_call_id: tu.id,
-          content: await execBrowserCdp((tu.input as BrowserCdpToolInput) ?? {}, ctx),
+          content: await execBrowserCdp(
+            (tu.input as BrowserCdpToolInput) ?? {},
+            ctx,
+          ),
         },
       };
     } catch (err) {
@@ -319,6 +349,35 @@ async function executeToolUse(
     }
   }
 
+  if (tu.name === "delegate") {
+    try {
+      const delegation = await runDelegate(
+        (tu.input as DelegateToolInput) ?? {},
+        ctx,
+      );
+      return {
+        toolResult: {
+          type: "tool_result",
+          tool_call_id: tu.id,
+          content: delegation.content,
+        },
+        ...(delegation.fetchedUrls.length > 0
+          ? { fetchedUrls: delegation.fetchedUrls }
+          : {}),
+      };
+    } catch (err) {
+      ctx.abort();
+      return {
+        toolResult: {
+          type: "tool_result",
+          tool_call_id: tu.id,
+          content: `Tool error: ${err instanceof Error ? err.message : String(err)}`,
+          is_error: true,
+        },
+      };
+    }
+  }
+
   if (tu.name === "plan") {
     return {
       toolResult: {
@@ -336,9 +395,169 @@ async function executeToolUse(
       tool_call_id: tu.id,
       content:
         `Unknown tool: ${tu.name}. Available tools: ` +
-        "search, fetch, read_source_chunk, find_in_source, quote_source, browser_open, browser_cdp, browser_extract, plan.",
+        "search, fetch, read_source_chunk, find_in_source, quote_source, browser_open, browser_cdp, browser_extract, delegate, plan.",
       is_error: true,
     },
+  };
+}
+
+interface DelegateToolInput {
+  tasks?: Array<{ question?: string } | null>;
+}
+
+function readDelegateTasks(input: DelegateToolInput): string[] {
+  const raw = Array.isArray(input?.tasks) ? input.tasks : [];
+  const seen = new Set<string>();
+  const tasks: string[] = [];
+  for (const entry of raw) {
+    const question = String(entry?.question ?? "").trim();
+    if (!question || seen.has(question)) continue;
+    seen.add(question);
+    tasks.push(question);
+    if (tasks.length >= DELEGATE_MAX_TASKS) break;
+  }
+  return tasks;
+}
+
+function tagEventDepth(
+  event: ResearchLoopEvent,
+  depth: number,
+): ResearchLoopEvent {
+  return event.depth === undefined ? { ...event, depth } : event;
+}
+
+function forkContextForSubagent(
+  ctx: ResearchLoopContext,
+  question: string,
+): ResearchLoopContext {
+  const depth = (ctx.depth ?? 0) + 1;
+  return {
+    ...ctx,
+    query: question,
+    depth,
+    browserSessionLease: undefined,
+    emit: (event) => ctx.emit(tagEventDepth(event, depth)),
+  };
+}
+
+function truncateFindings(text: string): string {
+  const trimmed = (text ?? "").trim();
+  if (trimmed.length <= SUBAGENT_FINDINGS_MAX_CHARS) return trimmed;
+  return `${trimmed.slice(0, SUBAGENT_FINDINGS_MAX_CHARS)}\n... [truncated]`;
+}
+
+function subagentSources(
+  ctx: ResearchLoopContext,
+  fetchedUrls: string[],
+): Array<{ source_id?: string; url: string; title?: string }> {
+  const seen = new Set<string>();
+  const sources: Array<{ source_id?: string; url: string; title?: string }> =
+    [];
+  for (const url of fetchedUrls) {
+    const key = normalizeFetchUrl(url);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const document = ctx.sourceDocuments.get(key);
+    sources.push(
+      document
+        ? {
+            source_id: document.sourceId,
+            url: document.url,
+            title: document.title,
+          }
+        : { url },
+    );
+  }
+  return sources;
+}
+
+interface DelegateOutcome {
+  content: string;
+  fetchedUrls: string[];
+}
+
+async function runDelegate(
+  input: DelegateToolInput,
+  ctx: ResearchLoopContext,
+): Promise<DelegateOutcome> {
+  if ((ctx.depth ?? 0) >= (ctx.maxDelegationDepth ?? 0)) {
+    return {
+      content:
+        "Error: delegation is not available here. Research this directly with search/fetch.",
+      fetchedUrls: [],
+    };
+  }
+  const tasks = readDelegateTasks(input);
+  if (tasks.length === 0) {
+    return {
+      content:
+        "Error: delegate requires `tasks` to be a non-empty array of objects with a `question` string.",
+      fetchedUrls: [],
+    };
+  }
+  if (
+    ctx.budget &&
+    ctx.budget.remainingActionCalls < DELEGATE_MIN_REMAINING_ACTION_CALLS
+  ) {
+    return {
+      content:
+        "Error: not enough remaining tool budget to delegate. Investigate the most important angle directly.",
+      fetchedUrls: [],
+    };
+  }
+
+  const maxConcurrent =
+    ctx.maxConcurrentSubagents ?? DEFAULT_MAX_CONCURRENT_SUBAGENTS;
+  const gate = ctx.subagentGate ?? createSteelConcurrencyGate(maxConcurrent);
+  ctx.emit({ type: "delegation_started", tasks });
+  const outcomes = await mapWithConcurrency(tasks, tasks.length, (question) =>
+    gate.run(async () => {
+      ctx.emit({ type: "subagent_started", task: question });
+      try {
+        const run = await runResearchLoop({
+          ctx: forkContextForSubagent(ctx, question),
+          query: question,
+          maxToolCalls: SUBAGENT_MAX_TOOL_CALLS,
+          effort: ctx.subagentEffort,
+          systemPrompt: SUBAGENT_SYSTEM_PROMPT,
+        });
+        const findings = truncateFindings(run.markdown);
+        ctx.emit({
+          type: "subagent_finished",
+          task: question,
+          sourcesFetched: run.fetchedUrls.length,
+          toolCalls: run.toolCalls,
+          finishReason: run.finishReason,
+        });
+        return {
+          summary: {
+            task: question,
+            findings: findings || `(no findings; ${run.finishReason})`,
+            sources: subagentSources(ctx, run.fetchedUrls),
+            tool_calls: run.toolCalls,
+            finish_reason: run.finishReason,
+          },
+          fetchedUrls: run.fetchedUrls,
+        };
+      } catch (err) {
+        ctx.abort();
+        return {
+          summary: {
+            task: question,
+            error: err instanceof Error ? err.message : String(err),
+          },
+          fetchedUrls: [] as string[],
+        };
+      }
+    }),
+  );
+  return {
+    content: JSON.stringify(
+      { delegated: outcomes.map((outcome) => outcome.summary) },
+      null,
+      2,
+    ),
+    fetchedUrls: outcomes.flatMap((outcome) => outcome.fetchedUrls),
   };
 }
 
@@ -347,12 +566,16 @@ export async function runResearchLoop(opts: {
   query: string;
   maxToolCalls?: number;
   effort?: ResearchEffort;
+  systemPrompt?: string;
 }): Promise<ResearchLoopResult> {
   const { ctx, query } = opts;
+  const systemPrompt = opts.systemPrompt ?? RESEARCH_SYSTEM_PROMPT;
+  const tools = toolsForContext(ctx);
+  const isSubagent = (ctx.depth ?? 0) > 0;
   const maxToolCalls = opts.maxToolCalls ?? DEFAULT_MAX_TOOL_CALLS;
   const maxTotalToolExecutions = Math.max(maxToolCalls, maxToolCalls * 2);
 
-  ctx.emit({ type: "research_started" });
+  if (!isSubagent) ctx.emit({ type: "research_started" });
 
   const fetchedUrls: string[] = [];
   let toolCalls = 0;
@@ -368,7 +591,10 @@ export async function runResearchLoop(opts: {
     },
   ];
 
-  while (toolCalls < maxToolCalls && totalToolExecutions < maxTotalToolExecutions) {
+  while (
+    toolCalls < maxToolCalls &&
+    totalToolExecutions < maxTotalToolExecutions
+  ) {
     ctx.abort();
     const preStepTimeoutReason = timeoutSynthesisReason(ctx);
     if (preStepTimeoutReason) {
@@ -379,8 +605,8 @@ export async function runResearchLoop(opts: {
     let resp: { content: ModelAssistantBlock[] };
     try {
       resp = await ctx.model.step({
-        system: RESEARCH_SYSTEM_PROMPT,
-        tools: RESEARCH_TOOLS,
+        system: systemPrompt,
+        tools,
         messages,
         maxTokens: ctx.maxOutputTokens ?? 2048,
         effort: opts.effort,
@@ -412,11 +638,19 @@ export async function runResearchLoop(opts: {
 
     messages.push({ role: "assistant", content: resp.content });
 
-    let remainingActionToolCalls = maxToolCalls - toolCalls;
-    let remainingTotalToolExecutions =
-      maxTotalToolExecutions - totalToolExecutions;
+    let remainingActionToolCalls = Math.min(
+      maxToolCalls - toolCalls,
+      ctx.budget ? ctx.budget.remainingActionCalls : Number.POSITIVE_INFINITY,
+    );
+    let remainingTotalToolExecutions = Math.min(
+      maxTotalToolExecutions - totalToolExecutions,
+      ctx.budget
+        ? ctx.budget.remainingToolExecutions
+        : Number.POSITIVE_INFINITY,
+    );
     const activeToolUses: ModelToolCall[] = [];
-    const skippedToolUses: Array<{ toolUse: ModelToolCall; reason: string }> = [];
+    const skippedToolUses: Array<{ toolUse: ModelToolCall; reason: string }> =
+      [];
     for (const toolUse of toolUses) {
       if (remainingTotalToolExecutions <= 0) {
         skippedToolUses.push({
@@ -442,8 +676,10 @@ export async function runResearchLoop(opts: {
       searchIndex += searchQueryCount((tu.input as SearchToolInput) ?? {});
       return start;
     });
-    toolCalls += actionToolCallCount(activeToolUses);
+    const actionCallsThisStep = actionToolCallCount(activeToolUses);
+    toolCalls += actionCallsThisStep;
     totalToolExecutions += activeToolUses.length;
+    ctx.budget?.consume(actionCallsThisStep, activeToolUses.length);
 
     const executions = await mapWithConcurrency(
       activeToolUses,
@@ -465,6 +701,9 @@ export async function runResearchLoop(opts: {
       if (execution.fetchedUrl !== undefined) {
         fetchedUrls.push(execution.fetchedUrl);
       }
+      if (execution.fetchedUrls) {
+        fetchedUrls.push(...execution.fetchedUrls);
+      }
     }
 
     messages.push({ role: "user", content: toolResults });
@@ -479,12 +718,18 @@ export async function runResearchLoop(opts: {
       }),
     });
 
-    if (totalToolExecutions >= maxTotalToolExecutions) {
+    if (
+      totalToolExecutions >= maxTotalToolExecutions ||
+      (ctx.budget && ctx.budget.remainingToolExecutions <= 0)
+    ) {
       finishReason = "tool execution safety budget exhausted";
       break;
     }
 
-    if (toolCalls >= maxToolCalls) {
+    if (
+      toolCalls >= maxToolCalls ||
+      (ctx.budget && ctx.budget.remainingActionCalls <= 0)
+    ) {
       finishReason = "tool call budget exhausted";
       break;
     }
@@ -499,7 +744,7 @@ export async function runResearchLoop(opts: {
 
     try {
       const resp = await ctx.model.step({
-        system: RESEARCH_SYSTEM_PROMPT,
+        system: systemPrompt,
         messages,
         maxTokens: ctx.maxOutputTokens ?? 2048,
         effort: opts.effort,
@@ -518,10 +763,12 @@ export async function runResearchLoop(opts: {
     }
   }
 
-  ctx.emit({
-    type: "research_finished",
-    sourcesFetched: fetchedUrls.length,
-  });
+  if (!isSubagent) {
+    ctx.emit({
+      type: "research_finished",
+      sourcesFetched: ctx.fetchedSources.length,
+    });
+  }
 
   return {
     fetchedUrls: [...fetchedUrls],

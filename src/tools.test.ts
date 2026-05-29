@@ -9,19 +9,23 @@ import type {
 } from "./model.js";
 import {
   __testing,
+  createBudgetLedger,
   createSourceReservations,
   createResearchCaches,
   createSteelConcurrencyGate,
   runResearchLoop,
   type ResearchLoopContext,
 } from "./tools.js";
+import { SUBAGENT_SYSTEM_PROMPT } from "./tool-contract.js";
 import type { SourceDocument } from "./sources.js";
 
 vi.mock("./pdf-extract.js", () => ({
   extractPdfText: vi.fn(),
 }));
 
-function messageWith(content: ModelAssistantBlock[]): { content: ModelAssistantBlock[] } {
+function messageWith(content: ModelAssistantBlock[]): {
+  content: ModelAssistantBlock[];
+} {
   return { content };
 }
 
@@ -29,8 +33,7 @@ function finalReport(): { content: ModelAssistantBlock[] } {
   return messageWith([
     {
       type: "text",
-      text:
-        "# Test Report\n\nA concise supported finding from [Source](https://example.com/source).\n\n## Sources\n\nSource — https://example.com/source",
+      text: "# Test Report\n\nA concise supported finding from [Source](https://example.com/source).\n\n## Sources\n\nSource — https://example.com/source",
     },
   ]);
 }
@@ -87,47 +90,52 @@ function createContext(opts: {
         lastUsedAt: Date.now(),
         client: {
           waitForEvent: vi.fn(async () => undefined),
-          send: vi.fn(async (method: string, params?: Record<string, unknown>) => {
-            if (method === "Page.navigate") {
-              currentUrl = String(params?.url ?? currentUrl);
-              const rendered = await scrape(
-                {
-                  url: currentUrl,
-                  format: ["markdown"],
-                  useProxy: opts.useProxy ?? false,
-                },
-                { signal: undefined },
-              );
-              const content = (rendered as {
-                content?: { markdown?: string; html?: string };
-                metadata?: { title?: string };
-              })?.content ?? {};
-              currentTitle = String(
-                (rendered as { metadata?: { title?: string } })?.metadata?.title ??
-                  currentUrl,
-              );
-              currentHtml =
-                content.html ??
-                `<html><head><title>${escapeHtml(currentTitle)}</title></head><body><main>${markdownToHtml(content.markdown ?? "")}</main></body></html>`;
-              return {};
-            }
-            if (method === "Runtime.evaluate") {
-              const expression = String(params?.expression ?? "");
-              if (expression.includes("innerText.length")) {
-                return { result: { value: currentHtml.length } };
-              }
-              return {
-                result: {
-                  value: {
+          send: vi.fn(
+            async (method: string, params?: Record<string, unknown>) => {
+              if (method === "Page.navigate") {
+                currentUrl = String(params?.url ?? currentUrl);
+                const rendered = await scrape(
+                  {
                     url: currentUrl,
-                    title: currentTitle,
-                    html: currentHtml,
+                    format: ["markdown"],
+                    useProxy: opts.useProxy ?? false,
                   },
-                },
-              };
-            }
-            return {};
-          }),
+                  { signal: undefined },
+                );
+                const content =
+                  (
+                    rendered as {
+                      content?: { markdown?: string; html?: string };
+                      metadata?: { title?: string };
+                    }
+                  )?.content ?? {};
+                currentTitle = String(
+                  (rendered as { metadata?: { title?: string } })?.metadata
+                    ?.title ?? currentUrl,
+                );
+                currentHtml =
+                  content.html ??
+                  `<html><head><title>${escapeHtml(currentTitle)}</title></head><body><main>${markdownToHtml(content.markdown ?? "")}</main></body></html>`;
+                return {};
+              }
+              if (method === "Runtime.evaluate") {
+                const expression = String(params?.expression ?? "");
+                if (expression.includes("innerText.length")) {
+                  return { result: { value: currentHtml.length } };
+                }
+                return {
+                  result: {
+                    value: {
+                      url: currentUrl,
+                      title: currentTitle,
+                      html: currentHtml,
+                    },
+                  },
+                };
+              }
+              return {};
+            },
+          ),
         },
       },
       release: vi.fn(async () => undefined),
@@ -143,7 +151,9 @@ function createContext(opts: {
         cache_creation_input_tokens: 0,
         cache_read_input_tokens: 0,
       },
-      step: opts.messagesCreate as (input: ModelStepInput) => Promise<{ content: ModelAssistantBlock[] }>,
+      step: opts.messagesCreate as (
+        input: ModelStepInput,
+      ) => Promise<{ content: ModelAssistantBlock[] }>,
     } satisfies ModelAdapter,
     steel: { sessions: {} } as unknown as Steel,
     fetchedSources: opts.fetchedSources ?? [],
@@ -157,7 +167,8 @@ function createContext(opts: {
     deadlineAt: opts.deadlineAt,
     synthesisReserveMs: opts.synthesisReserveMs,
     steelConcurrencyGate: createSteelConcurrencyGate(2),
-    browserSessionPool: browserSessionPool as unknown as ResearchLoopContext["browserSessionPool"],
+    browserSessionPool:
+      browserSessionPool as unknown as ResearchLoopContext["browserSessionPool"],
     sourceReservations: createSourceReservations(),
     caches: createResearchCaches(),
   };
@@ -189,12 +200,15 @@ function toolResultText(request: {
   messages: Array<{ content: unknown }>;
 }): string {
   return request.messages
-    .flatMap((message) => Array.isArray(message.content) ? message.content : [])
-    .filter((block): block is { type: string; content?: unknown } =>
-      typeof block === "object" &&
-      block !== null &&
-      "type" in block &&
-      (block as { type?: unknown }).type === "tool_result",
+    .flatMap((message) =>
+      Array.isArray(message.content) ? message.content : [],
+    )
+    .filter(
+      (block): block is { type: string; content?: unknown } =>
+        typeof block === "object" &&
+        block !== null &&
+        "type" in block &&
+        (block as { type?: unknown }).type === "tool_result",
     )
     .map((block) => String(block.content ?? ""))
     .join("\n");
@@ -234,9 +248,12 @@ describe("tool helpers", () => {
   it("parses Steel retry-after hints from rate limit errors", () => {
     expect(
       __testing.parseRetryAfterSeconds(
-        Object.assign(new Error("Rate limit exceeded. Try again in 11 seconds."), {
-          status: 429,
-        }),
+        Object.assign(
+          new Error("Rate limit exceeded. Try again in 11 seconds."),
+          {
+            status: 429,
+          },
+        ),
       ),
     ).toBe(11);
     expect(
@@ -245,7 +262,9 @@ describe("tool helpers", () => {
         headers: { "retry-after": "7" },
       }),
     ).toBe(7);
-    expect(__testing.parseRetryAfterSeconds(new Error("not rate limited"))).toBeNull();
+    expect(
+      __testing.parseRetryAfterSeconds(new Error("not rate limited")),
+    ).toBeNull();
   });
 });
 
@@ -253,10 +272,11 @@ describe("research loop cache integration", () => {
   it("reuses cached SERPs across repeated search tool calls", async () => {
     vi.stubGlobal(
       "fetch",
-      vi.fn(async () =>
-        new Response("enable javascript and cookies", {
-          headers: { "content-type": "text/html" },
-        }),
+      vi.fn(
+        async () =>
+          new Response("enable javascript and cookies", {
+            headers: { "content-type": "text/html" },
+          }),
       ),
     );
     const ddgHtml = `
@@ -736,7 +756,9 @@ describe("research loop cache integration", () => {
     const messagesCreate = vi
       .fn()
       .mockResolvedValueOnce(
-        messageWith([toolUse("search_1", "search", { query: "fallback query" })]),
+        messageWith([
+          toolUse("search_1", "search", { query: "fallback query" }),
+        ]),
       )
       .mockResolvedValueOnce(finalReport());
     const ctx = createContext({ messagesCreate, scrape });
@@ -891,7 +913,9 @@ describe("research loop cache integration", () => {
       "browser_extract",
       "plan",
     ]);
-    expect(request.tools[0]?.input_schema.properties ?? {}).not.toHaveProperty("engine");
+    expect(request.tools[0]?.input_schema.properties ?? {}).not.toHaveProperty(
+      "engine",
+    );
   });
 
   it("fetches browser-rendered page content into run memory keyed by URL", async () => {
@@ -929,12 +953,22 @@ describe("research loop cache integration", () => {
         canonicalUrl: "https://example.com/source",
       },
     ]);
-    expect(ctx.sourceDocuments.get("https://example.com/source")?.markdown).toContain("Detailed source body");
-    expect(toolResultText(followupRequest)).toContain('"url": "https://example.com/source"');
-    expect(toolResultText(followupRequest)).toContain('"source_id": "source_1"');
-    expect(toolResultText(followupRequest)).toContain('"canonical_url": "https://example.com/source"');
+    expect(
+      ctx.sourceDocuments.get("https://example.com/source")?.markdown,
+    ).toContain("Detailed source body");
+    expect(toolResultText(followupRequest)).toContain(
+      '"url": "https://example.com/source"',
+    );
+    expect(toolResultText(followupRequest)).toContain(
+      '"source_id": "source_1"',
+    );
+    expect(toolResultText(followupRequest)).toContain(
+      '"canonical_url": "https://example.com/source"',
+    );
     expect(toolResultText(followupRequest)).toContain('"chunk"');
-    expect(toolResultText(followupRequest)).not.toContain('"extraction_method"');
+    expect(toolResultText(followupRequest)).not.toContain(
+      '"extraction_method"',
+    );
     expect(toolResultText(followupRequest)).toContain('"content"');
   });
 
@@ -978,7 +1012,9 @@ describe("research loop cache integration", () => {
 
     expect(result.finishReason).toBe("final report");
     expect(scrape).toHaveBeenCalledTimes(1);
-    expect(toolResultText(readRequest)).toContain('"url": "https://example.com/source"');
+    expect(toolResultText(readRequest)).toContain(
+      '"url": "https://example.com/source"',
+    );
     expect(toolResultText(readRequest)).toContain('"offset": 80');
     expect(toolResultText(readRequest)).toContain("Line-readable evidence");
   });
@@ -1052,7 +1088,8 @@ describe("research loop cache integration", () => {
             () =>
               resolve({
                 content: {
-                  markdown: "# Shared Source\n\nEvidence from one browser fetch.",
+                  markdown:
+                    "# Shared Source\n\nEvidence from one browser fetch.",
                 },
                 metadata: { title: "Shared Source" },
               }),
@@ -1080,7 +1117,9 @@ describe("research loop cache integration", () => {
       messages: Array<{ content: unknown }>;
     };
 
-    expect(result.finishReason).toBe("final report after tool call budget exhausted");
+    expect(result.finishReason).toBe(
+      "final report after tool call budget exhausted",
+    );
     expect(scrape).toHaveBeenCalledTimes(1);
     expect(ctx.fetchedSources).toEqual([
       {
@@ -1090,8 +1129,12 @@ describe("research loop cache integration", () => {
         canonicalUrl: "https://example.com/shared",
       },
     ]);
-    expect(toolResultText(followupRequest)).not.toContain("Already being fetched");
-    expect(toolResultText(followupRequest)).toContain("Evidence from one browser fetch");
+    expect(toolResultText(followupRequest)).not.toContain(
+      "Already being fetched",
+    );
+    expect(toolResultText(followupRequest)).toContain(
+      "Evidence from one browser fetch",
+    );
   });
 
   it("switches to final synthesis instead of starting tools near the deadline", async () => {
@@ -1213,7 +1256,9 @@ describe("research loop cache integration", () => {
 
     expect(result.finishReason).toBe("final report");
     expect(result.markdown).toContain("# Test Report");
-    expect(request.messages[0]?.content).toBe("Research question: What is Atlas?");
+    expect(request.messages[0]?.content).toBe(
+      "Research question: What is Atlas?",
+    );
     expect(ctx.emit).toHaveBeenCalledWith({
       type: "research_started",
     });
@@ -1288,16 +1333,14 @@ describe("research loop cache integration", () => {
   });
 
   it("accepts non-empty final text without enforcing a report skeleton", async () => {
-    const messagesCreate = vi
-      .fn()
-      .mockResolvedValueOnce(
-        messageWith([
-          {
-            type: "text",
-            text: "A concise supported answer without a forced heading scaffold.",
-          },
-        ]),
-      );
+    const messagesCreate = vi.fn().mockResolvedValueOnce(
+      messageWith([
+        {
+          type: "text",
+          text: "A concise supported answer without a forced heading scaffold.",
+        },
+      ]),
+    );
     const ctx = createContext({ messagesCreate });
 
     const result = await runResearchLoop({
@@ -1316,7 +1359,8 @@ describe("research loop cache integration", () => {
   it("asks for final synthesis without tools when tool budget is exhausted", async () => {
     const scrape = vi.fn(async () => ({
       content: {
-        markdown: "# Budget Source\n\nUseful evidence gathered before the tool budget was exhausted.",
+        markdown:
+          "# Budget Source\n\nUseful evidence gathered before the tool budget was exhausted.",
       },
       metadata: { title: "Budget Source" },
     }));
@@ -1398,9 +1442,15 @@ describe("research loop cache integration", () => {
       url: "https://example.com/js-app",
       title: "Steel Fetch",
     });
-    expect(toolResultText(followupRequest)).not.toContain('"extraction_method"');
-    expect(toolResultText(followupRequest)).toContain('"method": "browser_cdp"');
-    expect(toolResultText(followupRequest)).toContain("network_error: direct fetch failed");
+    expect(toolResultText(followupRequest)).not.toContain(
+      '"extraction_method"',
+    );
+    expect(toolResultText(followupRequest)).toContain(
+      '"method": "browser_cdp"',
+    );
+    expect(toolResultText(followupRequest)).toContain(
+      "network_error: direct fetch failed",
+    );
   });
 
   it("extracts static HTML before using Steel", async () => {
@@ -1505,7 +1555,9 @@ describe("research loop cache integration", () => {
       .fn()
       .mockResolvedValueOnce(
         messageWith([
-          toolUse("fetch_1", "fetch", { url: "https://example.com/search?q=x" }),
+          toolUse("fetch_1", "fetch", {
+            url: "https://example.com/search?q=x",
+          }),
         ]),
       )
       .mockResolvedValueOnce(finalReport());
@@ -1522,9 +1574,9 @@ describe("research loop cache integration", () => {
     const toolText = toolResultText(followupRequest);
 
     expect(scrape).not.toHaveBeenCalled();
-    expect(ctx.sourceDocuments.get("https://example.com/search?q=x")?.markdown).toContain(
-      "TAIL_MARKER",
-    );
+    expect(
+      ctx.sourceDocuments.get("https://example.com/search?q=x")?.markdown,
+    ).toContain("TAIL_MARKER");
     expect(toolText).toContain('"search_listing_page');
     expect(toolText).toContain('"source_quality"');
     expect(toolText).toContain('"discovery"');
@@ -1623,9 +1675,9 @@ describe("research loop cache integration", () => {
     expect(fetch).toHaveBeenCalledTimes(1);
     expect(extractPdfText).toHaveBeenCalledTimes(1);
     expect(scrape).toHaveBeenCalledTimes(1);
-    expect(ctx.sourceDocuments.get("https://example.com/report.pdf")?.markdown).toContain(
-      "Rendered fallback content.",
-    );
+    expect(
+      ctx.sourceDocuments.get("https://example.com/report.pdf")?.markdown,
+    ).toContain("Rendered fallback content.");
     expect(
       ctx.sourceDocuments
         .get("https://example.com/report.pdf")
@@ -1637,10 +1689,13 @@ describe("research loop cache integration", () => {
   it("reports classified fetch failures when all extraction attempts fail", async () => {
     const fetch = vi.fn(
       async () =>
-        new Response("<html><body>Checking your browser before accessing this site</body></html>", {
-          status: 200,
-          headers: { "content-type": "text/html" },
-        }),
+        new Response(
+          "<html><body>Checking your browser before accessing this site</body></html>",
+          {
+            status: 200,
+            headers: { "content-type": "text/html" },
+          },
+        ),
     );
     vi.stubGlobal("fetch", fetch);
     const scrape = vi.fn(async () => ({
@@ -1671,7 +1726,9 @@ describe("research loop cache integration", () => {
     expect(ctx.emit).toHaveBeenCalledWith({
       type: "source_error",
       url: "https://example.com/blocked",
-      error: expect.stringContaining("blocked_or_challenge: direct HTML looked blocked"),
+      error: expect.stringContaining(
+        "blocked_or_challenge: direct HTML looked blocked",
+      ),
     });
     expect(toolResultText(followupRequest)).toContain(
       "Fetch failed: no content fetched.",
@@ -1863,5 +1920,214 @@ describe("plan tool", () => {
     expect(JSON.stringify(followupRequest.messages)).toContain(
       "plan/read_source_chunk/find_in_source/quote_source do not spend action_tool_calls",
     );
+  });
+});
+
+describe("delegation", () => {
+  it("runs a sub-agent in an isolated context and returns its findings to the lead", async () => {
+    let leadCalls = 0;
+    const messagesCreate = vi.fn(async (input: ModelStepInput) => {
+      if (input.system === SUBAGENT_SYSTEM_PROMPT) {
+        return messageWith([
+          {
+            type: "text",
+            text: "Sub-finding: the local population is 12,345, per https://example.com/census.",
+          },
+        ]);
+      }
+      leadCalls += 1;
+      if (leadCalls === 1) {
+        return messageWith([
+          toolUse("delegate_1", "delegate", {
+            tasks: [{ question: "What is the local population?" }],
+          }),
+        ]);
+      }
+      return finalReport();
+    });
+
+    const ctx = createContext({ messagesCreate });
+    ctx.depth = 0;
+    ctx.maxDelegationDepth = 1;
+    ctx.maxConcurrentSubagents = 2;
+    ctx.subagentGate = createSteelConcurrencyGate(2);
+    ctx.subagentEffort = "low";
+    ctx.budget = createBudgetLedger(20, 40);
+
+    const result = await runResearchLoop({
+      ctx,
+      query: "Profile this town.",
+      maxToolCalls: 20,
+    });
+
+    const calls = messagesCreate.mock.calls.map(
+      ([input]) => input as ModelStepInput,
+    );
+    const leadFirst = calls[0];
+    const subagentCall = calls.find(
+      (call) => call.system === SUBAGENT_SYSTEM_PROMPT,
+    );
+    const leadFinal = calls
+      .filter((call) => call.system !== SUBAGENT_SYSTEM_PROMPT)
+      .at(-1) as ModelStepInput;
+
+    // The lead is offered delegate; the sub-agent is not (depth-gated).
+    expect(leadFirst.tools?.map((tool) => tool.name)).toContain("delegate");
+    expect(subagentCall).toBeDefined();
+    expect(subagentCall?.tools?.map((tool) => tool.name) ?? []).not.toContain(
+      "delegate",
+    );
+
+    // The sub-agent reasons over the sub-question in its own thread, without
+    // the lead's question polluting its context.
+    expect(JSON.stringify(subagentCall?.messages)).toContain(
+      "What is the local population?",
+    );
+    expect(JSON.stringify(subagentCall?.messages)).not.toContain(
+      "Profile this town.",
+    );
+
+    // The lead receives the compressed findings, not the raw sub-agent thread.
+    expect(toolResultText(leadFinal)).toContain(
+      "Sub-finding: the local population is 12,345",
+    );
+    expect(toolResultText(leadFinal)).toContain("delegated");
+
+    // Delegation draws from the shared budget ledger (one action call here).
+    expect(result.finishReason).toBe("final report");
+    expect(ctx.budget?.remainingActionCalls).toBe(19);
+
+    // Delegation lifecycle is observable on the event stream.
+    expect(ctx.emit).toHaveBeenCalledWith({
+      type: "delegation_started",
+      tasks: ["What is the local population?"],
+    });
+    expect(ctx.emit).toHaveBeenCalledWith({
+      type: "subagent_started",
+      task: "What is the local population?",
+    });
+    expect(ctx.emit).toHaveBeenCalledWith({
+      type: "subagent_finished",
+      task: "What is the local population?",
+      sourcesFetched: 0,
+      toolCalls: 0,
+      finishReason: "final report",
+    });
+  });
+
+  it("shares the source store and tags sub-agent fetch events with depth", async () => {
+    // Short page so map-reduce summarization stays off (no extra model call).
+    const scrape = vi.fn(async () => ({
+      content: {
+        markdown:
+          "# Census\n\nThe local population is 12,345 per the 2020 census.",
+      },
+      metadata: { title: "Census" },
+    }));
+    let leadCalls = 0;
+    let subCalls = 0;
+    const messagesCreate = vi.fn(async (input: ModelStepInput) => {
+      if (input.system === SUBAGENT_SYSTEM_PROMPT) {
+        subCalls += 1;
+        if (subCalls === 1) {
+          return messageWith([
+            toolUse("sub_fetch", "fetch", {
+              url: "https://example.com/census",
+            }),
+          ]);
+        }
+        return messageWith([
+          {
+            type: "text",
+            text: "Population is 12,345 per https://example.com/census.",
+          },
+        ]);
+      }
+      leadCalls += 1;
+      if (leadCalls === 1) {
+        return messageWith([
+          toolUse("delegate_1", "delegate", {
+            tasks: [{ question: "What is the local population?" }],
+          }),
+        ]);
+      }
+      return finalReport();
+    });
+
+    const ctx = createContext({ messagesCreate, scrape });
+    ctx.depth = 0;
+    ctx.maxDelegationDepth = 1;
+    ctx.maxConcurrentSubagents = 2;
+    ctx.subagentGate = createSteelConcurrencyGate(2);
+    ctx.subagentEffort = "low";
+    ctx.budget = createBudgetLedger(20, 40);
+
+    const result = await runResearchLoop({
+      ctx,
+      query: "Profile this town.",
+      maxToolCalls: 20,
+    });
+    const leadFinal = messagesCreate.mock.calls
+      .filter(
+        ([call]) => (call as ModelStepInput).system !== SUBAGENT_SYSTEM_PROMPT,
+      )
+      .at(-1)?.[0] as { messages: Array<{ content: unknown }> };
+
+    expect(result.finishReason).toBe("final report");
+    expect(scrape).toHaveBeenCalledTimes(1);
+    // The sub-agent's fetch is attributed to delegation depth on the stream.
+    expect(ctx.emit).toHaveBeenCalledWith({
+      type: "fetching",
+      url: "https://example.com/census",
+      depth: 1,
+    });
+    // The sub-agent's source lands in the shared store, usable by the lead.
+    expect(ctx.fetchedSources).toContainEqual({
+      url: "https://example.com/census",
+      title: "Census",
+      sourceId: "source_1",
+      canonicalUrl: "https://example.com/census",
+    });
+    // The lead receives compressed findings plus the shared source_id.
+    expect(toolResultText(leadFinal)).toContain("source_1");
+    expect(toolResultText(leadFinal)).toContain("Population is 12,345");
+    // Sub-agent fetches bubble into the lead run so accounting is accurate.
+    expect(result.fetchedUrls).toContain("https://example.com/census");
+  });
+
+  it("hides delegate and refuses delegation when depth is exhausted", async () => {
+    const messagesCreate = vi
+      .fn()
+      .mockResolvedValueOnce(
+        messageWith([
+          toolUse("delegate_blocked", "delegate", {
+            tasks: [{ question: "Anything." }],
+          }),
+        ]),
+      )
+      .mockResolvedValueOnce(finalReport());
+    const ctx = createContext({ messagesCreate });
+    // depth already at the limit: the lead behaves like a leaf sub-agent.
+    ctx.depth = 1;
+    ctx.maxDelegationDepth = 1;
+    ctx.budget = createBudgetLedger(20, 40);
+
+    const result = await runResearchLoop({
+      ctx,
+      query: "What is Atlas?",
+      maxToolCalls: 20,
+    });
+    const firstCall = messagesCreate.mock.calls[0]?.[0] as ModelStepInput;
+    const followupRequest = messagesCreate.mock.calls[1]?.[0] as {
+      messages: Array<{ content: unknown }>;
+    };
+
+    expect(firstCall.tools?.map((tool) => tool.name) ?? []).not.toContain(
+      "delegate",
+    );
+    expect(toolResultText(followupRequest)).toContain(
+      "delegation is not available here",
+    );
+    expect(result.finishReason).toBe("final report");
   });
 });

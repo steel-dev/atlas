@@ -196,13 +196,48 @@ export const RESEARCH_TOOLS: ModelToolDefinition[] = [
       required: ["thought"],
     },
   },
+  {
+    name: "delegate",
+    description:
+      "Spawn parallel sub-agents, each investigating ONE focused, self-contained sub-question in its OWN isolated context. Each sub-agent searches and reads on its own and returns a concise cited summary — not raw pages — so your context stays clean. Sub-agents share your fetched-source store: each returned source carries a source_id (a handle for quote_source/read_source_chunk/find_in_source) and a url (what you cite). Use this to fan out genuinely independent sub-questions for breadth; do simple, single-thread lookups yourself with search/fetch. Sub-agents cannot see this conversation, so each question must include all context it needs.",
+    input_schema: {
+      type: "object",
+      properties: {
+        tasks: {
+          type: "array",
+          minItems: 1,
+          maxItems: 4,
+          description: "Independent sub-questions to investigate in parallel.",
+          items: {
+            type: "object",
+            properties: {
+              question: {
+                type: "string",
+                description:
+                  "A self-contained sub-question, including all context the sub-agent needs (it cannot see this conversation).",
+              },
+            },
+            required: ["question"],
+          },
+        },
+      },
+      required: ["tasks"],
+    },
+  },
 ];
 
 export const RESEARCH_SYSTEM_PROMPT =
   "You are a deep research agent. Investigate the user's question with the available tools and answer it with well-supported, cited claims.\n\n" +
   "Ground every conclusion in the content of sources you actually fetched. Search snippets, URLs, and listing/SEO/directory pages are leads to follow, not evidence — follow them to a primary or detailed source and cite that instead. Verify a claim before you rely on it, and if the evidence contradicts your current hypothesis, revise it rather than forcing an answer.\n\n" +
   "How you search and what you read is up to you. For interactive sites, internal site search, pagination, or pages where search/fetch is not enough, use browser_open and browser_cdp to inspect and navigate directly. When a browser page contains evidence you may cite, call browser_extract to store it as a source before relying on it in the final answer.\n\n" +
-  "To think, take stock, or re-plan without searching or fetching yet, call `plan` and keep going — it does not end the run. A turn with no tool calls is treated as your final answer, so only stop calling tools when you are ready to write the report. When you have enough evidence, write a cited Markdown report; if the evidence is incomplete, say so and explain the gaps.";
+  "When the question splits into independent sub-questions that can be investigated separately, call `delegate` to run them as parallel sub-agents. Each sub-agent works in its own isolated context and returns a concise cited summary plus the source_id and url of each source it fetched — so prefer delegating breadth over reading many long pages yourself, and reuse those source_ids with quote_source when you need exact wording. Investigate simple, single-thread questions directly.\n\n" +
+  "To think, take stock, or re-plan without searching or fetching yet, call `plan` and keep going — it does not end the run. A turn with no tool calls is treated as your final answer, so only stop calling tools when you are ready to write the report. When you have enough evidence, write a cited Markdown report; if the evidence is incomplete, say so and explain the gaps. Cite every claim with the source's URL — as a Markdown link `[title](https://…)` or a bare https URL — so each citation is independently verifiable. Never cite an internal source_id (such as `source_6`) in the report; source_id values are only handles for the read/quote tools, not citations.";
+
+export const SUBAGENT_SYSTEM_PROMPT =
+  "You are a focused research sub-agent working on behalf of a lead researcher. You are investigating ONE specific sub-question. You cannot see the lead's conversation, so rely only on the sub-question text and what you fetch.\n\n" +
+  "Ground every claim in the content of sources you actually fetched. Search snippets, URLs, and listing/SEO/directory pages are leads to follow, not evidence — follow them to a primary or detailed source. Verify before you rely on a claim, and revise your hypothesis if the evidence contradicts it. Use search and fetch, and browser_open/browser_cdp/browser_extract for interactive sites, as needed.\n\n" +
+  "Always investigate before answering: run at least one search and fetch at least one relevant source before writing your findings. Do not answer from prior knowledge alone — if you cannot find supporting sources, say so explicitly.\n\n" +
+  "A turn with no tool calls is treated as your final answer. When you are done, write a concise findings summary — a few short paragraphs or bullet points, not a full report — and cite every claim with the source's full https URL inline. If the evidence is incomplete, state the gap plainly. Keep it tight: the lead only needs your findings and the source URLs, not a polished write-up.";
 
 export const STRUCTURED_FINALIZE_SYSTEM_PROMPT =
   "You are finalizing a completed research run into a structured JSON result. The read-only source tools (find_in_source, quote_source, read_source_chunk) remain available, so confirm any quote against the source you already fetched before committing it. If one concrete missing fact prevents a correct JSON result, call request_more_research with the focused gap; otherwise do not search again. Quote only text that genuinely appears in those sources, and attribute each quote to the source it actually came from; never invent quotes, spans, or sources. When you are ready, respond with only the JSON object that matches the requested schema — no further tool calls, no prose, no Markdown fences.";
