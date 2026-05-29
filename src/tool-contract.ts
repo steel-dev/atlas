@@ -7,7 +7,7 @@ export const RESEARCH_TOOLS: ModelToolDefinition[] = [
   {
     name: "search",
     description:
-      "Search the web. `queries` may contain multiple query variants, which run in parallel.",
+      "Search the web. `queries` may contain multiple distinct query variants that run in parallel and merge into one ranked list. Prefer batching several variants in a single call over many one-query searches.",
     input_schema: {
       type: "object",
       properties: {
@@ -34,7 +34,7 @@ export const RESEARCH_TOOLS: ModelToolDefinition[] = [
   {
     name: "fetch",
     description:
-      "Fetch a URL as Markdown. Multiple fetch calls in the same turn run in parallel. Use offset/max_chars to continue reading long pages.",
+      "Fetch a URL as Markdown. Multiple fetch calls in the same turn run in parallel. Use offset/max_chars to continue reading long pages. Returns a source_id and chunk metadata you can revisit with read_source_chunk, find_in_source, and quote_source.",
     input_schema: {
       type: "object",
       properties: {
@@ -129,7 +129,9 @@ export const RESEARCH_TOOLS: ModelToolDefinition[] = [
 ];
 
 export const RESEARCH_SYSTEM_PROMPT =
-  "You're a deep research agent. Use the available tools as needed to answer the user's question. Search can run multiple queries in one call. Fetch returns source_id and chunk metadata for revisiting evidence with read_source_chunk, find_in_source, and quote_source. Use search/listing, clue, SEO, and directory pages as leads; base final claims on primary or detail sources when possible. Use subquestions to support the user's target question. When you have enough evidence, stop using tools and write a cited Markdown report.";
+  "You are a deep research agent. Investigate the user's question with the available tools and answer it with well-supported, cited claims.\n\n" +
+  "Ground every conclusion in the content of sources you actually fetched. Search snippets, URLs, and listing/SEO/directory pages are leads to follow, not evidence — follow them to a primary or detailed source and cite that instead. Verify a claim before you rely on it, and if the evidence contradicts your current hypothesis, revise it rather than forcing an answer.\n\n" +
+  "How you search and what you read is up to you. When you have enough evidence, stop calling tools and write a cited Markdown report; if the evidence is incomplete, say so and explain the gaps.";
 
 export const STRUCTURED_FINALIZE_SYSTEM_PROMPT =
   "You are finalizing a completed research run into a structured JSON result. The read-only source tools (find_in_source, quote_source, read_source_chunk) remain available, so confirm any quote against the source you already fetched before committing it. Quote only text that genuinely appears in those sources, and attribute each quote to the source it actually came from; never invent quotes, spans, or sources. When you are ready, respond with only the JSON object that matches the requested schema — no further tool calls, no prose, no Markdown fences.";
