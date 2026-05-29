@@ -57,6 +57,12 @@ export type {
 
 const DEFAULT_MAX_TOOL_CALLS = 12;
 const DEFAULT_MAX_CONCURRENT_TOOLS = 4;
+const FREE_TOOL_NAMES = new Set([
+  "plan",
+  "read_source_chunk",
+  "find_in_source",
+  "quote_source",
+]);
 
 export interface ResearchLoopResult {
   fetchedUrls: string[];
@@ -91,8 +97,47 @@ function timeoutSynthesisReason(ctx: ResearchLoopContext): string | null {
 function shouldAttemptFinalSynthesis(finishReason: string): boolean {
   return (
     finishReason === "tool call budget exhausted" ||
+    finishReason === "tool execution safety budget exhausted" ||
     finishReason.startsWith("timeout approaching")
   );
+}
+
+function spendsActionBudget(tu: ModelToolCall): boolean {
+  return !FREE_TOOL_NAMES.has(tu.name);
+}
+
+function actionToolCallCount(toolUses: ModelToolCall[]): number {
+  return toolUses.filter(spendsActionBudget).length;
+}
+
+function budgetStatusMessage(opts: {
+  actionToolCalls: number;
+  maxActionToolCalls: number;
+  totalToolExecutions: number;
+  maxTotalToolExecutions: number;
+  ctx: ResearchLoopContext;
+}): string {
+  const actionRemaining = Math.max(
+    0,
+    opts.maxActionToolCalls - opts.actionToolCalls,
+  );
+  const totalRemaining = Math.max(
+    0,
+    opts.maxTotalToolExecutions - opts.totalToolExecutions,
+  );
+  const sourcesRemaining = Math.max(
+    0,
+    opts.ctx.sourceCap - opts.ctx.fetchedSources.length,
+  );
+  return [
+    "Budget status:",
+    `action_tool_calls=${opts.actionToolCalls}/${opts.maxActionToolCalls}`,
+    `action_tool_calls_remaining=${actionRemaining}`,
+    `tool_execution_safety_remaining=${totalRemaining}`,
+    `sources=${opts.ctx.fetchedSources.length}/${opts.ctx.sourceCap}`,
+    `sources_remaining=${sourcesRemaining}`,
+    "plan/read_source_chunk/find_in_source/quote_source do not spend action_tool_calls.",
+  ].join(" ");
 }
 
 interface StepSignal {
@@ -334,11 +379,13 @@ export async function runResearchLoop(opts: {
 }): Promise<ResearchLoopResult> {
   const { ctx, query } = opts;
   const maxToolCalls = opts.maxToolCalls ?? DEFAULT_MAX_TOOL_CALLS;
+  const maxTotalToolExecutions = Math.max(maxToolCalls, maxToolCalls * 2);
 
   ctx.emit({ type: "research_started" });
 
   const fetchedUrls: string[] = [];
   let toolCalls = 0;
+  let totalToolExecutions = 0;
   let finishReason = "tool call budget exhausted";
   let markdown = "";
   let searchIndex = 0;
@@ -350,7 +397,7 @@ export async function runResearchLoop(opts: {
     },
   ];
 
-  while (toolCalls < maxToolCalls) {
+  while (toolCalls < maxToolCalls && totalToolExecutions < maxTotalToolExecutions) {
     ctx.abort();
     const preStepTimeoutReason = timeoutSynthesisReason(ctx);
     if (preStepTimeoutReason) {
@@ -400,16 +447,38 @@ export async function runResearchLoop(opts: {
 
     messages.push({ role: "assistant", content: resp.content });
 
-    const remainingToolCalls = maxToolCalls - toolCalls;
-    const activeToolUses = toolUses.slice(0, remainingToolCalls);
-    const skippedToolUses = toolUses.slice(remainingToolCalls);
+    let remainingActionToolCalls = maxToolCalls - toolCalls;
+    let remainingTotalToolExecutions =
+      maxTotalToolExecutions - totalToolExecutions;
+    const activeToolUses: ModelToolCall[] = [];
+    const skippedToolUses: Array<{ toolUse: ModelToolCall; reason: string }> = [];
+    for (const toolUse of toolUses) {
+      if (remainingTotalToolExecutions <= 0) {
+        skippedToolUses.push({
+          toolUse,
+          reason: "tool execution safety budget exhausted",
+        });
+        continue;
+      }
+      if (spendsActionBudget(toolUse) && remainingActionToolCalls <= 0) {
+        skippedToolUses.push({
+          toolUse,
+          reason: "action tool call budget exhausted",
+        });
+        continue;
+      }
+      activeToolUses.push(toolUse);
+      remainingTotalToolExecutions--;
+      if (spendsActionBudget(toolUse)) remainingActionToolCalls--;
+    }
     const searchIndexes = activeToolUses.map((tu) => {
       if (tu.name !== "search") return undefined;
       const start = searchIndex + 1;
       searchIndex += searchQueryCount((tu.input as SearchToolInput) ?? {});
       return start;
     });
-    toolCalls += activeToolUses.length;
+    toolCalls += actionToolCallCount(activeToolUses);
+    totalToolExecutions += activeToolUses.length;
 
     const executions = await mapWithConcurrency(
       activeToolUses,
@@ -419,10 +488,10 @@ export async function runResearchLoop(opts: {
     const toolResults = [
       ...executions.map((e) => e.toolResult),
       ...skippedToolUses.map(
-        (tu): ModelToolResult => ({
+        ({ toolUse, reason }): ModelToolResult => ({
           type: "tool_result",
-          tool_call_id: tu.id,
-          content: "Tool not run: tool call budget exhausted.",
+          tool_call_id: toolUse.id,
+          content: `Tool not run: ${reason}.`,
           is_error: true,
         }),
       ),
@@ -434,6 +503,21 @@ export async function runResearchLoop(opts: {
     }
 
     messages.push({ role: "user", content: toolResults });
+    messages.push({
+      role: "user",
+      content: budgetStatusMessage({
+        actionToolCalls: toolCalls,
+        maxActionToolCalls: maxToolCalls,
+        totalToolExecutions,
+        maxTotalToolExecutions,
+        ctx,
+      }),
+    });
+
+    if (totalToolExecutions >= maxTotalToolExecutions) {
+      finishReason = "tool execution safety budget exhausted";
+      break;
+    }
 
     if (toolCalls >= maxToolCalls) {
       finishReason = "tool call budget exhausted";
