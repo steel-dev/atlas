@@ -1134,11 +1134,8 @@ describe("research loop cache integration", () => {
     );
   });
 
-  it("preserves synthesis reserve when a research model step times out", async () => {
-    const timeoutController = new AbortController();
-    const timeoutSpy = vi
-      .spyOn(AbortSignal, "timeout")
-      .mockReturnValue(timeoutController.signal);
+  it("does not interrupt an in-flight research step for the synthesis reserve", async () => {
+    const timeoutSpy = vi.spyOn(AbortSignal, "timeout");
     const scrape = vi.fn();
     const messagesCreate = vi.fn();
     const ctx = createContext({
@@ -1150,10 +1147,11 @@ describe("research loop cache integration", () => {
     messagesCreate
       .mockImplementationOnce(async (input: ModelStepInput) => {
         expect(input.tools).toBeDefined();
-        expect(input.signal).toBe(timeoutController.signal);
-        ctx.deadlineAt = Date.now() + 10_000;
-        timeoutController.abort();
-        throw new DOMException("Research step timed out", "AbortError");
+        expect(input.signal).toBeUndefined();
+        ctx.deadlineAt = Date.now() + 5_000;
+        return messageWith([
+          toolUse("search_1", "search", { query: "expensive follow-up" }),
+        ]);
       })
       .mockResolvedValueOnce(finalReport());
 
@@ -1168,13 +1166,14 @@ describe("research loop cache integration", () => {
     };
 
     expect(result.finishReason).toBe(
-      "final report after timeout approaching (10s remaining)",
+      "final report after timeout approaching (5s remaining)",
     );
     expect(result.markdown).toContain("# Test Report");
     expect(result.toolCalls).toBe(0);
     expect(scrape).not.toHaveBeenCalled();
     expect(messagesCreate).toHaveBeenCalledTimes(2);
-    expect(timeoutSpy).toHaveBeenCalledWith(expect.any(Number));
+    expect(timeoutSpy).not.toHaveBeenCalled();
+    timeoutSpy.mockRestore();
     expect(synthesisRequest.tools).toBeUndefined();
     expect(JSON.stringify(synthesisRequest.messages)).toContain(
       "timeout approaching",
