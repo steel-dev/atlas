@@ -3,12 +3,13 @@ import { BrowserCdpClient } from "./browser-cdp.js";
 import { errorMessage } from "./errors.js";
 
 const DEFAULT_ACQUIRE_TIMEOUT_MS = 30_000;
-const DEFAULT_IDLE_TTL_MS = 45_000;
+const DEFAULT_IDLE_TTL_MS = 2 * 60_000;
 const DEFAULT_SESSION_TIMEOUT_MS = 5 * 60_000;
 const MIN_SESSION_TIMEOUT_MS = 60_000;
 const SESSION_TIMEOUT_SAFETY_MS = 15_000;
 const CDP_CONNECT_ATTEMPTS = 6;
 const CDP_CONNECT_BASE_DELAY_MS = 500;
+const CDP_HEALTHCHECK_TIMEOUT_MS = 2_000;
 
 type SteelSession = Awaited<ReturnType<Steel["sessions"]["create"]>>;
 
@@ -37,7 +38,8 @@ export interface BrowserSessionPoolOptions {
   signal?: AbortSignal;
   deadlineAt?: number;
   maxSessions?: number;
-  idleTtlMs?: number;
+  /** When null or <= 0, idle sessions stay open until closeAll(). */
+  idleTtlMs?: number | null;
   acquireTimeoutMs?: number;
 }
 
@@ -57,10 +59,14 @@ export class BrowserSessionPool {
 
   async acquire(): Promise<BrowserSessionLease> {
     if (this.closed) throw new Error("Browser session pool is closed");
-    const idle = this.idle.pop();
-    if (idle) {
+    while (this.idle.length > 0) {
+      const idle = this.idle.pop();
+      if (!idle) break;
       this.clearIdleTimer(idle);
-      return this.lease(idle);
+      if (await this.isHealthy(idle)) {
+        return this.lease(idle);
+      }
+      await this.destroy(idle);
     }
 
     if (this.canCreate()) {
@@ -151,11 +157,11 @@ export class BrowserSessionPool {
         const waiter = this.waiters.shift();
         if (waiter) {
           clearTimeout(waiter.timeout);
-          waiter.resolve(this.lease(resource));
+          await this.resolveWaiterWithResource(waiter, resource);
           return;
         }
         this.idle.push(resource);
-        this.setIdleTimer(resource);
+        this.maybeSetIdleTimer(resource);
       },
     };
   }
@@ -171,7 +177,7 @@ export class BrowserSessionPool {
           blockMedia: true,
         },
         debugConfig: {
-          interactive: false,
+          interactive: true,
         },
       },
       { signal: this.opts.signal },
@@ -188,6 +194,42 @@ export class BrowserSessionPool {
     } catch (err) {
       await this.releaseSteelSession(session.id);
       throw err;
+    }
+  }
+
+  private async isHealthy(resource: BrowserSessionResource): Promise<boolean> {
+    if (!resource.client.isOpen()) return false;
+    try {
+      await resource.client.send(
+        "Runtime.evaluate",
+        { expression: "1", returnByValue: true },
+        {
+          ...(resource.cdpSessionId ? { sessionId: resource.cdpSessionId } : {}),
+          timeoutMs: CDP_HEALTHCHECK_TIMEOUT_MS,
+        },
+      );
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  private async resolveWaiterWithResource(
+    waiter: Waiter,
+    resource: BrowserSessionResource,
+  ): Promise<void> {
+    if (await this.isHealthy(resource)) {
+      waiter.resolve(this.lease(resource));
+      return;
+    }
+    await this.destroy(resource);
+    try {
+      this.creating++;
+      waiter.resolve(this.lease(await this.createResource()));
+    } catch (err) {
+      waiter.reject(err instanceof Error ? err : new Error(errorMessage(err)));
+    } finally {
+      this.creating = Math.max(0, this.creating - 1);
     }
   }
 
@@ -267,8 +309,9 @@ export class BrowserSessionPool {
     );
   }
 
-  private setIdleTimer(resource: BrowserSessionResource): void {
+  private maybeSetIdleTimer(resource: BrowserSessionResource): void {
     const ttl = this.opts.idleTtlMs ?? DEFAULT_IDLE_TTL_MS;
+    if (ttl <= 0) return;
     this.clearIdleTimer(resource);
     this.idleTimers.set(
       resource,
@@ -311,6 +354,14 @@ export function readBrowserMaxSessionsFromEnv(): number | undefined {
   if (!raw) return undefined;
   const parsed = Math.floor(Number(raw));
   return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+}
+
+export function readBrowserIdleTtlMsFromEnv(): number | null | undefined {
+  const raw = process.env.ATLAS_BROWSER_IDLE_TTL_MS;
+  if (!raw) return undefined;
+  const parsed = Math.floor(Number(raw));
+  if (!Number.isFinite(parsed)) return undefined;
+  return parsed <= 0 ? null : parsed;
 }
 
 async function attachToPage(

@@ -35,6 +35,7 @@ Environment:
   ATLAS_SUMMARY_MODEL                           optional (source digest model)
   ATLAS_MAX_DELEGATION_DEPTH                    optional (0 disables sub-agent delegation)
   ATLAS_MAX_SUBAGENTS                           optional (max concurrent sub-agents)
+  ATLAS_BROWSER_IDLE_TTL_MS                     optional (default 120000; <=0 disables)
   ATLAS_ANTHROPIC_API_KEY or ANTHROPIC_API_KEY  required for provider=anthropic
   ATLAS_OPENAI_API_KEY    or OPENAI_API_KEY     required for provider=openai
   ATLAS_OPENAI_BASE_URL   or OPENAI_BASE_URL    optional (OpenAI-compatible)

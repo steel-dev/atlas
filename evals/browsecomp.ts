@@ -138,9 +138,12 @@ interface EvalDiagnostics {
 type EvalTraceEvent = {
   atMs: number;
   event: ResearchEvent["type"];
+  depth?: number;
   index?: number;
   query?: string;
   count?: number;
+  tasks?: string[];
+  task?: string;
   url?: string;
   title?: string;
   method?: string;
@@ -155,6 +158,8 @@ type EvalTraceEvent = {
   }>;
   qualityWarnings?: string[];
   sourcesFetched?: number;
+  toolCalls?: number;
+  finishReason?: string;
   markdownChars?: number;
   result?: {
     verifiedSources: number;
@@ -1127,6 +1132,12 @@ function progressLine(caseId: string, event: ResearchEvent): string | null {
       return `${caseId}: rate limited, waiting ${event.retryAfterSeconds}s`;
     case "research_finished":
       return `${caseId}: research finished with ${event.sourcesFetched} source(s)`;
+    case "delegation_started":
+      return `${caseId}: delegating ${event.tasks.length} sub-agent(s)`;
+    case "subagent_started":
+      return `${caseId}: sub-agent started: ${event.task.slice(0, 80)}`;
+    case "subagent_finished":
+      return `${caseId}: sub-agent finished: ${event.sourcesFetched} source(s), ${event.toolCalls} tool call(s), ${event.finishReason}`;
     case "unverified_citations":
       return `${caseId}: ${event.count} unverified citation(s)`;
     case "written":
@@ -1138,7 +1149,11 @@ function progressLine(caseId: string, event: ResearchEvent): string | null {
 }
 
 function traceEvent(event: ResearchEvent, started: number): EvalTraceEvent {
-  const base = { atMs: Date.now() - started, event: event.type };
+  const base = {
+    atMs: Date.now() - started,
+    event: event.type,
+    ...(event.depth !== undefined ? { depth: event.depth } : {}),
+  };
   switch (event.type) {
     case "searching":
       return { ...base, index: event.index, query: event.query };
@@ -1173,6 +1188,18 @@ function traceEvent(event: ResearchEvent, started: number): EvalTraceEvent {
       return { ...base, url: event.url, error: event.error };
     case "research_finished":
       return { ...base, sourcesFetched: event.sourcesFetched };
+    case "delegation_started":
+      return { ...base, tasks: event.tasks };
+    case "subagent_started":
+      return { ...base, task: event.task };
+    case "subagent_finished":
+      return {
+        ...base,
+        task: event.task,
+        sourcesFetched: event.sourcesFetched,
+        toolCalls: event.toolCalls,
+        finishReason: event.finishReason,
+      };
     case "unverified_citations":
       return { ...base, count: event.count };
     case "written":

@@ -168,6 +168,33 @@ export function extractionMetadataFromPdf(opts: {
   };
 }
 
+export function extractionMetadataFromText(opts: {
+  markdownChars: number;
+  method: "json_direct" | "text_direct" | "xml_direct";
+  contentType?: string;
+  finalUrl?: string;
+  notes?: string[];
+  attempts?: SourceExtractionAttempt[];
+  qualityWarnings?: string[];
+}): SourceExtractionMetadata {
+  return {
+    markdownChars: opts.markdownChars,
+    method: opts.method,
+    ...(opts.contentType ? { contentType: opts.contentType } : {}),
+    ...(opts.finalUrl ? { finalUrl: opts.finalUrl } : {}),
+    ...(opts.attempts && opts.attempts.length > 0
+      ? { attempts: opts.attempts }
+      : {}),
+    ...(opts.qualityWarnings && opts.qualityWarnings.length > 0
+      ? { qualityWarnings: opts.qualityWarnings }
+      : {}),
+    extractionNotes: [
+      "Fetched with direct text extraction.",
+      ...(opts.notes ?? []),
+    ],
+  };
+}
+
 export function extractionMetadataFromHtml(opts: {
   markdownChars: number;
   contentType?: string;

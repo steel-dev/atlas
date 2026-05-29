@@ -1648,6 +1648,109 @@ describe("research loop cache integration", () => {
     expect(toolText).toContain('"method": "html_direct"');
   });
 
+  it("extracts JSON responses directly before using Steel", async () => {
+    const fetch = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            esearchresult: {
+              idlist: ["12345", "67890"],
+              querytranslation:
+                "MRC-5 bleomycin glutathione Free Radic Biol Med",
+            },
+          }),
+          {
+            status: 200,
+            headers: { "content-type": "application/json; charset=utf-8" },
+          },
+        ),
+    );
+    vi.stubGlobal("fetch", fetch);
+    const scrape = vi.fn(async () => ({
+      content: { markdown: "# Steel should not be used" },
+      metadata: { title: "Steel" },
+    }));
+    const messagesCreate = vi
+      .fn()
+      .mockResolvedValueOnce(
+        messageWith([
+          toolUse("fetch_1", "fetch", {
+            url: "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi?db=pubmed&retmode=json",
+          }),
+        ]),
+      )
+      .mockResolvedValueOnce(finalReport());
+    const ctx = createContext({ messagesCreate, scrape });
+
+    await runResearchLoop({
+      ctx,
+      query: "What is Atlas?",
+      maxToolCalls: 2,
+    });
+    const followupRequest = messagesCreate.mock.calls[1]?.[0] as {
+      messages: Array<{ content: unknown }>;
+    };
+    const toolText = toolResultText(followupRequest);
+
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(scrape).not.toHaveBeenCalled();
+    expect(ctx.fetchedSources[0]).toMatchObject({
+      url: "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi?db=pubmed&retmode=json",
+      title: "esearch.fcgi",
+    });
+    expect(toolText).toContain('"method": "json_direct"');
+    expect(toolText).toContain("MRC-5 bleomycin glutathione");
+  });
+
+  it("extracts plain text responses directly before using Steel", async () => {
+    const text = [
+      "PMID- 12345",
+      "TI  - A direct text abstract about MRC-5 bleomycin glutathione and fibrosis.",
+      "AB  - This abstract is long enough to be stored without browser fallback. ".repeat(
+        3,
+      ),
+    ].join("\n");
+    const fetch = vi.fn(
+      async () =>
+        new Response(text, {
+          status: 200,
+          headers: { "content-type": "text/plain; charset=utf-8" },
+        }),
+    );
+    vi.stubGlobal("fetch", fetch);
+    const scrape = vi.fn(async () => ({
+      content: { markdown: "# Steel should not be used" },
+      metadata: { title: "Steel" },
+    }));
+    const messagesCreate = vi
+      .fn()
+      .mockResolvedValueOnce(
+        messageWith([
+          toolUse("fetch_1", "fetch", {
+            url: "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi?retmode=text&rettype=abstract",
+          }),
+        ]),
+      )
+      .mockResolvedValueOnce(finalReport());
+    const ctx = createContext({ messagesCreate, scrape });
+
+    await runResearchLoop({
+      ctx,
+      query: "What is Atlas?",
+      maxToolCalls: 2,
+    });
+    const followupRequest = messagesCreate.mock.calls[1]?.[0] as {
+      messages: Array<{ content: unknown }>;
+    };
+    const toolText = toolResultText(followupRequest);
+
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(scrape).not.toHaveBeenCalled();
+    expect(toolText).toContain('"method": "text_direct"');
+    expect(toolText).toContain("PMID- 12345");
+    expect(toolText).toContain("MRC-5 bleomycin glutathione");
+  });
+
   it("treats search result pages as discovery pages without capping content", async () => {
     const longListingText = `${"Search result summary. ".repeat(180)}TAIL_MARKER`;
     const fetch = vi.fn(
@@ -2058,6 +2161,59 @@ describe("plan tool", () => {
 });
 
 describe("delegation", () => {
+  it("refuses delegation when finalization reserve would be consumed", async () => {
+    let leadCalls = 0;
+    const messagesCreate = vi.fn(async (input: ModelStepInput) => {
+      if (input.system === SUBAGENT_SYSTEM_PROMPT) {
+        return messageWith([
+          {
+            type: "text",
+            text: "This sub-agent should not run.",
+          },
+        ]);
+      }
+      leadCalls += 1;
+      if (leadCalls === 1) {
+        return messageWith([
+          toolUse("delegate_1", "delegate", {
+            tasks: [{ question: "What is the local population?" }],
+          }),
+        ]);
+      }
+      return finalReport();
+    });
+
+    const ctx = createContext({
+      messagesCreate,
+      deadlineAt: Date.now() + 20_000,
+      synthesisReserveMs: 10_000,
+    });
+    ctx.depth = 0;
+    ctx.maxDelegationDepth = 1;
+    ctx.budget = createBudgetLedger(20, 40);
+
+    const result = await runResearchLoop({
+      ctx,
+      query: "Profile this town.",
+      maxToolCalls: 20,
+    });
+    const calls = messagesCreate.mock.calls.map(
+      ([input]) => input as ModelStepInput,
+    );
+    const leadFinal = calls.at(-1) as ModelStepInput;
+
+    expect(result.finishReason).toBe("final report");
+    expect(calls.some((call) => call.system === SUBAGENT_SYSTEM_PROMPT)).toBe(
+      false,
+    );
+    expect(toolResultText(leadFinal)).toContain(
+      "not enough remaining time to delegate",
+    );
+    expect(ctx.emit).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: "delegation_started" }),
+    );
+  });
+
   it("runs a sub-agent in an isolated context and returns its findings to the lead", async () => {
     let leadCalls = 0;
     const messagesCreate = vi.fn(async (input: ModelStepInput) => {

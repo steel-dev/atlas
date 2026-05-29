@@ -72,6 +72,8 @@ const DEFAULT_MAX_CONCURRENT_SUBAGENTS = 3;
 const DELEGATE_MAX_TASKS = 4;
 const SUBAGENT_MAX_TOOL_CALLS = 20;
 const DELEGATE_MIN_REMAINING_ACTION_CALLS = 2;
+const DELEGATE_MIN_RUNTIME_MS = 30_000;
+const SUBAGENT_SYNTHESIS_RESERVE_MS = 45_000;
 const SUBAGENT_FINDINGS_MAX_CHARS = 4_000;
 const FREE_TOOL_NAMES = new Set([
   "plan",
@@ -500,14 +502,50 @@ function tagEventDepth(
 function forkContextForSubagent(
   ctx: ResearchLoopContext,
   question: string,
+  timing: SubagentTiming,
 ): ResearchLoopContext {
   const depth = (ctx.depth ?? 0) + 1;
   return {
     ...ctx,
     query: question,
     depth,
+    ...(timing.deadlineAt !== undefined ? { deadlineAt: timing.deadlineAt } : {}),
+    ...(timing.synthesisReserveMs !== undefined
+      ? { synthesisReserveMs: timing.synthesisReserveMs }
+      : {}),
     browserSessionLease: undefined,
     emit: (event) => ctx.emit(tagEventDepth(event, depth)),
+  };
+}
+
+interface SubagentTiming {
+  deadlineAt?: number;
+  synthesisReserveMs?: number;
+}
+
+function subagentTiming(ctx: ResearchLoopContext): SubagentTiming | string {
+  if (ctx.deadlineAt === undefined || ctx.synthesisReserveMs === undefined) {
+    return {};
+  }
+
+  const now = Date.now();
+  const leadDeadlineAt = ctx.deadlineAt;
+  const leadReserveMs = Math.max(0, ctx.synthesisReserveMs);
+  const subagentDeadlineAt = leadDeadlineAt - leadReserveMs;
+  const subagentReserveMs = Math.min(
+    leadReserveMs,
+    SUBAGENT_SYNTHESIS_RESERVE_MS,
+  );
+  const usableMs = subagentDeadlineAt - now - subagentReserveMs;
+  if (usableMs < DELEGATE_MIN_RUNTIME_MS) {
+    const remainingSeconds = Math.max(0, Math.ceil((leadDeadlineAt - now) / 1000));
+    const reserveSeconds = Math.ceil(leadReserveMs / 1000);
+    return `Error: not enough remaining time to delegate (${remainingSeconds}s left; ${reserveSeconds}s reserved for lead finalization). Investigate or finalize directly.`;
+  }
+
+  return {
+    deadlineAt: subagentDeadlineAt,
+    synthesisReserveMs: subagentReserveMs,
   };
 }
 
@@ -576,6 +614,13 @@ async function runDelegate(
       fetchedUrls: [],
     };
   }
+  const timing = subagentTiming(ctx);
+  if (typeof timing === "string") {
+    return {
+      content: timing,
+      fetchedUrls: [],
+    };
+  }
 
   const maxConcurrent =
     ctx.maxConcurrentSubagents ?? DEFAULT_MAX_CONCURRENT_SUBAGENTS;
@@ -586,7 +631,7 @@ async function runDelegate(
       ctx.emit({ type: "subagent_started", task: question });
       try {
         const run = await runResearchLoop({
-          ctx: forkContextForSubagent(ctx, question),
+          ctx: forkContextForSubagent(ctx, question, timing),
           query: question,
           maxToolCalls: SUBAGENT_MAX_TOOL_CALLS,
           effort: ctx.subagentEffort,

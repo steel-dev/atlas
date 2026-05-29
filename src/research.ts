@@ -47,6 +47,7 @@ import {
 } from "./tools.js";
 import {
   BrowserSessionPool,
+  readBrowserIdleTtlMsFromEnv,
   readBrowserMaxSessionsFromEnv,
 } from "./browser-session-pool.js";
 import { normalizeUrlForSource } from "./url.js";
@@ -276,6 +277,7 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
     signal: runSignal,
     deadlineAt: timeoutDeadlineAt,
     maxSessions: readBrowserMaxSessionsFromEnv(),
+    idleTtlMs: readBrowserIdleTtlMsFromEnv(),
   });
 
   const ctx: ResearchLoopContext = {

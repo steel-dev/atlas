@@ -7,6 +7,7 @@ import {
   createSourceDocument,
   extractionMetadataFromHtml,
   extractionMetadataFromPdf,
+  extractionMetadataFromText,
   findSourceDocumentByUrl,
   formatSourceCard,
   storeMarkdown,
@@ -183,16 +184,24 @@ async function tryDirectExtraction(
       return extractDirectPdf(data, { contentType, finalUrl });
     }
 
-    if (!isHtmlContentType(contentType)) {
-      return failedDirectAttempt(
-        "direct_http",
-        contentType
-          ? `unsupported_content_type: direct response was ${contentType}`
-          : "unsupported_content_type: direct response was not HTML or PDF",
-      );
+    if (!contentType && looksLikeDirectText(data)) {
+      return extractDirectText(data, { contentType, finalUrl });
     }
 
-    return extractDirectHtml(data, { contentType, finalUrl });
+    if (isHtmlContentType(contentType)) {
+      return extractDirectHtml(data, { contentType, finalUrl });
+    }
+
+    if (isDirectTextContentType(contentType) || looksLikeDirectText(data)) {
+      return extractDirectText(data, { contentType, finalUrl });
+    }
+
+    return failedDirectAttempt(
+      "direct_http",
+      contentType
+        ? `unsupported_content_type: direct response was ${contentType}`
+        : "unsupported_content_type: direct response was not HTML, PDF, JSON, XML, or text",
+    );
   } catch (err) {
     if (ctx.signal?.aborted) throw err;
     return failedDirectAttempt(
@@ -200,6 +209,48 @@ async function tryDirectExtraction(
       `network_error: direct fetch failed: ${errorMessage(err)}`,
     );
   }
+}
+
+function extractDirectText(
+  data: Uint8Array,
+  opts: { contentType?: string; finalUrl: string },
+): DirectExtractionOutcome {
+  const decoded = new TextDecoder("utf-8", { fatal: false }).decode(data);
+  if (looksBlocked(decoded)) {
+    return failedDirectAttempt(
+      "text_direct",
+      "blocked_or_challenge: direct text looked blocked",
+    );
+  }
+
+  const parsed = normalizeDirectText(decoded, opts.contentType);
+  const markdown = parsed.markdown.trim();
+  if (markdown.length < DIRECT_HTML_MIN_CHARS) {
+    return failedDirectAttempt(
+      parsed.method,
+      `thin_content: direct text extracted ${markdown.length} chars`,
+    );
+  }
+
+  const attempt = {
+    method: parsed.method,
+    ok: true,
+    note: `${parsed.method}: extracted ${markdown.length} text chars`,
+  };
+  return {
+    entry: {
+      markdown,
+      title: titleFromTextUrl(opts.finalUrl),
+      metadata: extractionMetadataFromText({
+        markdownChars: markdown.length,
+        method: parsed.method,
+        contentType: opts.contentType,
+        finalUrl: opts.finalUrl,
+        attempts: [attempt],
+      }),
+    },
+    attempt,
+  };
 }
 
 async function extractDirectPdf(
@@ -305,6 +356,68 @@ function isHtmlContentType(contentType: string | undefined): boolean {
   return /\b(?:text\/html|application\/xhtml\+xml)\b/i.test(contentType);
 }
 
+function isJsonContentType(contentType: string | undefined): boolean {
+  return /\b(?:application|text)\/(?:[\w.+-]+\+)?json\b/i.test(
+    contentType ?? "",
+  );
+}
+
+function isXmlContentType(contentType: string | undefined): boolean {
+  return /\b(?:application|text)\/(?:[\w.+-]+\+)?xml\b/i.test(
+    contentType ?? "",
+  );
+}
+
+function isPlainTextContentType(contentType: string | undefined): boolean {
+  return /\btext\/(?:plain|csv|tab-separated-values|markdown)\b/i.test(
+    contentType ?? "",
+  );
+}
+
+function isDirectTextContentType(contentType: string | undefined): boolean {
+  return (
+    isJsonContentType(contentType) ||
+    isXmlContentType(contentType) ||
+    isPlainTextContentType(contentType)
+  );
+}
+
+function looksLikeDirectText(data: Uint8Array): boolean {
+  const prefix = new TextDecoder("utf-8", { fatal: false })
+    .decode(data.slice(0, 512))
+    .trimStart();
+  return (
+    prefix.startsWith("{") ||
+    prefix.startsWith("[") ||
+    prefix.startsWith("<?xml") ||
+    /^PMID-|\b[A-Z]{2,}-\s/.test(prefix)
+  );
+}
+
+function normalizeDirectText(
+  text: string,
+  contentType: string | undefined,
+): {
+  markdown: string;
+  method: "json_direct" | "text_direct" | "xml_direct";
+} {
+  const trimmed = text.trim();
+  if (isJsonContentType(contentType) || /^[\[{]/.test(trimmed)) {
+    try {
+      return {
+        markdown: JSON.stringify(JSON.parse(trimmed), null, 2),
+        method: "json_direct",
+      };
+    } catch {
+      return { markdown: trimmed, method: "text_direct" };
+    }
+  }
+  if (isXmlContentType(contentType) || /^<\??xml\b/i.test(trimmed)) {
+    return { markdown: trimmed, method: "xml_direct" };
+  }
+  return { markdown: trimmed, method: "text_direct" };
+}
+
 function isPdfBytes(data: Uint8Array): boolean {
   if (data.byteLength < PDF_MAGIC.length) return false;
   const prefix = new TextDecoder("ascii").decode(data.slice(0, PDF_MAGIC.length));
@@ -323,6 +436,18 @@ function titleFromPdfUrl(url: string): string {
     const pathname = new URL(url).pathname;
     const filename = decodeURIComponent(pathname.split("/").filter(Boolean).at(-1) ?? "");
     return filename || url;
+  } catch {
+    return url;
+  }
+}
+
+function titleFromTextUrl(url: string): string {
+  try {
+    const parsed = new URL(url);
+    const filename = decodeURIComponent(
+      parsed.pathname.split("/").filter(Boolean).at(-1) ?? "",
+    );
+    return filename || parsed.hostname || url;
   } catch {
     return url;
   }

@@ -142,6 +142,10 @@ export class BrowserCdpClient {
     });
   }
 
+  isOpen(): boolean {
+    return !this.closed && this.ws.readyState === WebSocket.OPEN;
+  }
+
   close(): void {
     if (this.closed) return;
     this.ws.close();
