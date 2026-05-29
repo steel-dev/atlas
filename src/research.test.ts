@@ -37,6 +37,19 @@ function singleSourceContext(document: SourceDocument): ResearchLoopContext {
   return { sourceDocuments } as unknown as ResearchLoopContext;
 }
 
+function followupResearchContext(model: ModelAdapter): ResearchLoopContext {
+  return {
+    model,
+    fetchedSources: [],
+    sourceDocuments: new Map(),
+    emit: () => undefined,
+    abort: () => undefined,
+    defaultEngine: "ddg",
+    useProxy: false,
+    sourceCap: 10,
+  } as unknown as ResearchLoopContext;
+}
+
 function sourceDocument(markdown: string): SourceDocument {
   return {
     sourceId: "source_1",
@@ -114,7 +127,7 @@ describe("structured output finalization", () => {
     },
   };
 
-  it("keeps the read-only source tools available while finalizing", async () => {
+  it("keeps source tools and a follow-up research request available while finalizing", async () => {
     const ctx = singleSourceContext(
       sourceDocument("Nicholas Munene Mutuma is a Kenyan actor."),
     );
@@ -141,7 +154,54 @@ describe("structured output finalization", () => {
       "find_in_source",
       "quote_source",
       "read_source_chunk",
+      "request_more_research",
     ]);
+  });
+
+  it("runs one focused research pass when finalization requests missing evidence", async () => {
+    const { adapter, calls } = fakeModel([
+      [
+        {
+          type: "tool_call",
+          id: "more_1",
+          name: "request_more_research",
+          input: { question: "Find the missing date." },
+        },
+      ],
+      [
+        {
+          type: "text",
+          text: "# Extra Report\n\nMissing date is 2020.",
+        },
+      ],
+      [
+        {
+          type: "text",
+          text: JSON.stringify({ final_answer: "2020", evidence: [] }),
+        },
+      ],
+    ]);
+    const result = await __testing.generateStructuredOutputWithRuns({
+      ctx: followupResearchContext(adapter),
+      model: adapter,
+      messages: [{ role: "user", content: "transcript" }],
+      output,
+      maxTokens: 1024,
+      effort: "low",
+    });
+
+    expect(result.value).toEqual({ final_answer: "2020", evidence: [] });
+    expect(result.additionalRuns).toEqual([
+      {
+        fetchedUrls: [],
+        toolCalls: 0,
+        finishReason: "structured follow-up: final report",
+      },
+    ]);
+    expect(JSON.stringify(calls[1]?.messages)).toContain(
+      "Find the missing date.",
+    );
+    expect(JSON.stringify(calls[2]?.messages)).toContain("Missing date is 2020");
   });
 
   it("executes a quote_source call and returns the verified JSON", async () => {

@@ -6,6 +6,7 @@ import {
   type ModelMessage,
   type ModelOutputSchema,
   type ModelProvider,
+  type ModelToolDefinition,
   type ModelToolCall,
   type ModelToolResult,
   type UsageSummary,
@@ -284,18 +285,20 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
       });
     }
     emit({ type: "written", markdownChars: markdown.length });
-    const structured =
-      output === undefined
-        ? undefined
-        : await generateStructuredOutput({
-            ctx,
-            model: modelAdapter,
-            messages: run.messages,
-            output,
-            maxTokens: limits.maxOutputTokens,
-            effort: effort ?? limits.defaultEffort,
-            signal: runSignal,
-          });
+    let structured: unknown;
+    if (output !== undefined) {
+      const structuredResult = await generateStructuredOutput({
+        ctx,
+        model: modelAdapter,
+        messages: run.messages,
+        output,
+        maxTokens: limits.maxOutputTokens,
+        effort: effort ?? limits.defaultEffort,
+        signal: runSignal,
+      });
+      structured = structuredResult.value;
+      runs.push(...structuredResult.additionalRuns);
+    }
 
     const result: ResearchResult = {
       query,
@@ -332,6 +335,34 @@ const FINALIZE_TOOL_NAMES = new Set([
   "quote_source",
 ]);
 const MAX_FINALIZE_STEPS = 6;
+const MAX_STRUCTURED_RESEARCH_RETRIES = 1;
+const STRUCTURED_RESEARCH_MAX_TOOL_CALLS = 8;
+
+const REQUEST_MORE_RESEARCH_TOOL: ModelToolDefinition = {
+  name: "request_more_research",
+  description:
+    "Request one focused additional research pass when required evidence is missing from the completed transcript. Use only for a concrete gap that prevents correct JSON.",
+  input_schema: {
+    type: "object",
+    properties: {
+      question: {
+        type: "string",
+        description:
+          "The focused fact, source, or verification gap that needs one more research pass.",
+      },
+    },
+    required: ["question"],
+  },
+};
+
+interface StructuredOutputResult {
+  value: unknown;
+  additionalRuns: ResearchRun[];
+}
+
+type StructuredFinalizeAttempt =
+  | { kind: "value"; value: unknown }
+  | { kind: "more_research"; query: string };
 
 async function generateStructuredOutput(opts: {
   ctx: ResearchLoopContext;
@@ -341,10 +372,72 @@ async function generateStructuredOutput(opts: {
   maxTokens: number;
   effort: ResearchEffort;
   signal?: AbortSignal;
-}): Promise<unknown> {
+}): Promise<StructuredOutputResult> {
+  let messages = opts.messages;
+  const additionalRuns: ResearchRun[] = [];
+
+  for (let retry = 0; retry <= MAX_STRUCTURED_RESEARCH_RETRIES; retry++) {
+    const attempt = await runStructuredFinalizeAttempt({
+      ...opts,
+      messages,
+      allowMoreResearch: retry < MAX_STRUCTURED_RESEARCH_RETRIES,
+    });
+    if (attempt.kind === "value") {
+      return { value: attempt.value, additionalRuns };
+    }
+
+    const run = await runResearchLoop({
+      ctx: opts.ctx,
+      query: `Additional research requested while finalizing structured output: ${attempt.query}`,
+      maxToolCalls: STRUCTURED_RESEARCH_MAX_TOOL_CALLS,
+      effort: opts.effort,
+    });
+    additionalRuns.push({
+      fetchedUrls: run.fetchedUrls,
+      toolCalls: run.toolCalls,
+      finishReason: `structured follow-up: ${run.finishReason}`,
+    });
+    messages = [
+      ...messages,
+      {
+        role: "user",
+        content: `Structured finalization requested additional research: ${attempt.query}`,
+      },
+      ...run.messages,
+      {
+        role: "user",
+        content: `Additional structured-output research finished (${run.finishReason}). Retry the JSON using the expanded transcript.`,
+      },
+    ];
+  }
+
+  const value = await emitStructuredJson({
+    model: opts.model,
+    messages,
+    output: opts.output,
+    maxTokens: opts.maxTokens,
+    effort: opts.effort,
+    signal: opts.signal,
+  });
+  return { value, additionalRuns };
+}
+
+async function runStructuredFinalizeAttempt(opts: {
+  ctx: ResearchLoopContext;
+  model: ModelAdapter;
+  messages: ModelMessage[];
+  output: ResearchOutputOptions;
+  maxTokens: number;
+  effort: ResearchEffort;
+  signal?: AbortSignal;
+  allowMoreResearch: boolean;
+}): Promise<StructuredFinalizeAttempt> {
   const finalizeTools = RESEARCH_TOOLS.filter((tool) =>
     FINALIZE_TOOL_NAMES.has(tool.name),
   );
+  if (opts.allowMoreResearch) {
+    finalizeTools.push(REQUEST_MORE_RESEARCH_TOOL);
+  }
   const messages: ModelMessage[] = [
     ...opts.messages,
     { role: "user", content: structuredOutputPrompt(opts.output) },
@@ -366,8 +459,17 @@ async function generateStructuredOutput(opts: {
     );
     if (toolUses.length === 0) {
       const parsed = tryParseJsonOutput(textFromBlocks(resp.content));
-      if (parsed.ok) return parsed.value;
+      if (parsed.ok) return { kind: "value", value: parsed.value };
       break;
+    }
+    const moreResearch = toolUses.find(
+      (tu) => tu.name === REQUEST_MORE_RESEARCH_TOOL.name,
+    );
+    if (moreResearch) {
+      return {
+        kind: "more_research",
+        query: readMoreResearchQuestion(moreResearch.input),
+      };
     }
     messages.push({
       role: "user",
@@ -375,7 +477,7 @@ async function generateStructuredOutput(opts: {
     });
   }
 
-  return emitStructuredJson({
+  const value = await emitStructuredJson({
     model: opts.model,
     messages,
     output: opts.output,
@@ -383,6 +485,20 @@ async function generateStructuredOutput(opts: {
     effort: opts.effort,
     signal: opts.signal,
   });
+  return { kind: "value", value };
+}
+
+function readMoreResearchQuestion(input: unknown): string {
+  if (
+    input &&
+    typeof input === "object" &&
+    "question" in input &&
+    typeof input.question === "string" &&
+    input.question.trim()
+  ) {
+    return input.question.trim();
+  }
+  return "Verify the missing facts needed for the structured JSON output.";
 }
 
 function execFinalizationTool(
@@ -693,5 +809,8 @@ function timeoutSynthesisReserveMs(
 
 export const __testing = {
   auditCitationsInMarkdown,
-  generateStructuredOutput,
+  generateStructuredOutput: async (
+    opts: Parameters<typeof generateStructuredOutput>[0],
+  ) => (await generateStructuredOutput(opts)).value,
+  generateStructuredOutputWithRuns: generateStructuredOutput,
 };
