@@ -1469,7 +1469,7 @@ describe("research loop cache integration", () => {
     expect(toolText).toContain('"method": "html_direct"');
   });
 
-  it("treats search result pages as discovery pages with links and capped content", async () => {
+  it("treats search result pages as discovery pages without capping content", async () => {
     const longListingText = `${"Search result summary. ".repeat(180)}TAIL_MARKER`;
     const fetch = vi.fn(
       async () =>
@@ -1525,7 +1525,7 @@ describe("research loop cache integration", () => {
     expect(toolText).toContain('"source_kind": "discovery_page"');
     expect(toolText).toContain("https://example.com/article/123");
     expect(toolText).toContain("Useful Article");
-    expect(toolText).not.toContain("TAIL_MARKER");
+    expect(toolText).toContain("TAIL_MARKER");
   });
 
   it("extracts PDF URLs before using Steel", async () => {

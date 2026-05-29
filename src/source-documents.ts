@@ -11,7 +11,6 @@ import { normalizeUrlForSource } from "./url.js";
 
 const STORED_MARKDOWN_CAP = 500_000;
 const SOURCE_CHUNK_CHARS = 12_000;
-const DISCOVERY_PAGE_FETCH_CHARS = 2_000;
 const DISCOVERY_LINK_LIMIT = 20;
 
 function fallbackSourceId(url: string): string {
@@ -245,10 +244,7 @@ export function formatFetchResult(
   const isDiscoveryPage = document.metadata.qualityWarnings?.some((warning) =>
     warning.startsWith("search_listing_page"),
   ) ?? false;
-  const effectiveMaxChars = isDiscoveryPage
-    ? Math.min(maxChars, DISCOVERY_PAGE_FETCH_CHARS)
-    : maxChars;
-  const end = Math.min(document.markdown.length, start + effectiveMaxChars);
+  const end = Math.min(document.markdown.length, start + maxChars);
   const content = document.markdown.slice(start, end);
   const hasMore = end < document.markdown.length;
   const chunk = chunkForRange(document, start);
@@ -291,7 +287,6 @@ export function formatFetchResult(
       ? {
           discovery: {
             source_kind: "discovery_page",
-            content_limited_to_chars: effectiveMaxChars,
             links: (document.metadata.discoveredLinks ?? []).slice(
               0,
               DISCOVERY_LINK_LIMIT,
