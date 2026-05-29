@@ -227,6 +227,7 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
   const ctx: ResearchLoopContext = {
     model: modelAdapter,
     steel,
+    query,
     fetchedSources,
     sourceDocuments,
     emit,

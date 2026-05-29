@@ -30,6 +30,7 @@ export interface SourceCacheEntry {
 export interface ResearchCaches {
   serp: Map<string, Promise<WebSearchOutcome>>;
   sources: Map<string, Promise<SourceCacheEntry>>;
+  summaries: Map<string, Promise<string>>;
 }
 
 class Semaphore implements SteelConcurrencyGate {
@@ -77,6 +78,7 @@ export function createResearchCaches(): ResearchCaches {
   return {
     serp: new Map<string, Promise<WebSearchOutcome>>(),
     sources: new Map<string, Promise<SourceCacheEntry>>(),
+    summaries: new Map<string, Promise<string>>(),
   };
 }
 
@@ -92,6 +94,7 @@ export function createSourceReservations(): SourceReservations {
 export interface ResearchLoopContext {
   model: ModelAdapter;
   steel: Steel;
+  query?: string;
   fetchedSources: FetchedSource[];
   sourceDocuments: Map<string, SourceDocument>;
   emit: (e: ResearchLoopEvent) => void;
