@@ -36,8 +36,6 @@ atlas "..." --provider openai --base-url https://your-openai-compatible-endpoint
 atlas "..." --proxy
 ```
 
-Progress goes to stderr. The report goes to stdout, so it pipes cleanly into files, scripts, or your next prompt.
-
 Run `atlas --help` for the full option list.
 
 ## TypeScript
@@ -55,43 +53,6 @@ const result = await research({
 console.log(result.markdown);
 console.log(result.verifiedSources); // URLs Atlas fetched and the report cited
 console.log(result.unverifiedCitations); // cited URLs Atlas did not fetch
-```
-
-Atlas can also return a structured payload after the research is complete:
-
-```ts
-const result = await research({
-  query: "Which company matches these clues?",
-  output: {
-    schema: {
-      type: "object",
-      properties: {
-        final_answer: {
-          type: "string",
-          description: "Concise exact answer.",
-        },
-        evidence: {
-          type: "array",
-          description: "Fetched-source evidence supporting the answer.",
-          items: {
-            type: "object",
-            properties: {
-              clue: { type: "string" },
-              source_url: { type: "string" },
-              quote: { type: "string" },
-            },
-            required: ["clue", "source_url", "quote"],
-            additionalProperties: false,
-          },
-        },
-      },
-      required: ["final_answer", "evidence"],
-      additionalProperties: false,
-    },
-  },
-});
-
-console.log(result.structured);
 ```
 
 Atlas supports Anthropic and OpenAI-compatible chat completions through a thin internal model adapter. The research loop stays the same: models can call `search` and `fetch`, then Atlas applies runtime limits, source tracking, and citation auditing.
