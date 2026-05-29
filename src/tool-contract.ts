@@ -34,7 +34,7 @@ export const RESEARCH_TOOLS: ModelToolDefinition[] = [
   {
     name: "fetch",
     description:
-      "Fetch a URL as Markdown. Multiple fetch calls in the same turn run in parallel. Use offset/max_chars to continue reading long pages. Returns a source_id and chunk metadata you can revisit with read_source_chunk, find_in_source, and quote_source.",
+      "Fetch a URL and get a concise, question-focused summary of the page plus a source_id. The full page is stored: read exact text with read_source_chunk, find_in_source, and quote_source, or fetch the same URL again (optionally with offset) to read raw Markdown. Multiple fetch calls in the same turn run in parallel.",
     input_schema: {
       type: "object",
       properties: {
@@ -219,4 +219,21 @@ export function finalSynthesisPrompt(reason: string): string {
     `Runtime limit reached: ${reason}.\n\n` +
     "Do not call any more tools. Using only the evidence already gathered in this conversation, write the best possible cited Markdown report. If the evidence is incomplete, state the uncertainty and gaps clearly."
   );
+}
+
+export const FETCH_SUMMARY_SYSTEM_PROMPT =
+  "You compress one fetched web page for a research agent. Given the research question and the page text, return only what is relevant to the question: the key facts, figures, names, and dates, plus up to three short verbatim quotes copied exactly from the text. Be strictly faithful — never add, infer, or guess anything that is not present. If the page is not relevant to the question, say so in one sentence. Keep the whole response under about 120 words, as plain text with no headings or preamble.";
+
+export function fetchSummaryPrompt(opts: {
+  query: string;
+  title: string;
+  url: string;
+  content: string;
+}): string {
+  return [
+    `Research question: ${opts.query}`,
+    `Source: ${opts.title} (${opts.url})`,
+    "Page text:",
+    opts.content,
+  ].join("\n\n");
 }

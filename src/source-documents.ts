@@ -308,6 +308,29 @@ export function formatFetchResult(
   return JSON.stringify(result, null, 2);
 }
 
+export function formatSourceSummary(
+  document: SourceDocument,
+  summary: string,
+): string {
+  const qualityWarnings = document.metadata.qualityWarnings ?? [];
+  const result = {
+    source_id: document.sourceId,
+    title: document.title,
+    url: document.url,
+    canonical_url: document.canonicalUrl,
+    ...(qualityWarnings.length > 0
+      ? { source_quality: { warnings: qualityWarnings } }
+      : {}),
+    summary,
+    source_length_chars: document.markdown.length,
+    chunk_count: document.chunks.length,
+    next_chunk: document.chunks.length > 1 ? 1 : null,
+    raw_access:
+      "Condensed, question-focused summary. For exact wording use quote_source or find_in_source; read full text with read_source_chunk; or fetch this URL again (optionally with offset) for raw Markdown.",
+  };
+  return JSON.stringify(result, null, 2);
+}
+
 function chunkForRange(
   document: SourceDocument,
   start: number,
