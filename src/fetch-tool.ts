@@ -1,4 +1,5 @@
 import type { ResearchLoopContext, SourceCacheEntry } from "./runtime.js";
+import type { ModelAssistantBlock } from "./model.js";
 import type {
   SourceDocument,
   SourceExtractionAttempt,
@@ -9,13 +10,19 @@ import {
   extractionMetadataFromPdf,
   findSourceDocumentByUrl,
   formatFetchResult,
+  formatSourceSummary,
   storeMarkdown,
 } from "./source-documents.js";
 import { extractSourceWithBrowser } from "./browser-extract.js";
 import { errorMessage } from "./errors.js";
 import { extractPdfText } from "./pdf-extract.js";
 import { looksBlocked } from "./steel.js";
-import { DEFAULT_FETCH_CHARS, MAX_FETCH_CHARS } from "./tool-contract.js";
+import {
+  DEFAULT_FETCH_CHARS,
+  FETCH_SUMMARY_SYSTEM_PROMPT,
+  MAX_FETCH_CHARS,
+  fetchSummaryPrompt,
+} from "./tool-contract.js";
 import { htmlToMarkdown } from "./html-extract.js";
 import { normalizeUrlForSource } from "./url.js";
 
@@ -54,6 +61,9 @@ const ERROR_TITLE_PATTERN =
   /\b(?:404|not found|access denied|forbidden|error report|captcha|just a moment|sorry)\b/i;
 const SEARCH_LISTING_TITLE_PATTERN =
   /\b(?:search results?|advanced search|site search)\b|검색/i;
+const SUMMARY_INPUT_CHARS = 24_000;
+const SUMMARY_MAX_TOKENS = 512;
+const SUMMARY_MIN_SOURCE_CHARS = 1_200;
 
 function totalSourceSlots(ctx: ResearchLoopContext): number {
   return ctx.fetchedSources.length + ctx.sourceReservations.sourceSlots;
@@ -412,6 +422,91 @@ async function fetchSourceDocument(
   return document;
 }
 
+function summaryText(content: ModelAssistantBlock[]): string {
+  return content
+    .map((block) => (block.type === "text" ? block.text : ""))
+    .join("")
+    .trim();
+}
+
+function shouldSummarizeSource(
+  ctx: ResearchLoopContext,
+  document: SourceDocument,
+  offset: number,
+): boolean {
+  if (offset > 0) return false;
+  if (!ctx.query?.trim()) return false;
+  if (document.markdown.length <= SUMMARY_MIN_SOURCE_CHARS) return false;
+  const isDiscoveryPage =
+    document.metadata.qualityWarnings?.some((warning) =>
+      warning.startsWith("search_listing_page"),
+    ) ?? false;
+  return !isDiscoveryPage;
+}
+
+async function computeSourceSummary(
+  ctx: ResearchLoopContext,
+  document: SourceDocument,
+  query: string,
+): Promise<string> {
+  const resp = await ctx.model.step({
+    system: FETCH_SUMMARY_SYSTEM_PROMPT,
+    messages: [
+      {
+        role: "user",
+        content: fetchSummaryPrompt({
+          query,
+          title: document.title,
+          url: document.url,
+          content: document.markdown.slice(0, SUMMARY_INPUT_CHARS),
+        }),
+      },
+    ],
+    maxTokens: SUMMARY_MAX_TOKENS,
+    signal: ctx.signal,
+  });
+  return summaryText(resp.content);
+}
+
+async function getSourceSummary(
+  ctx: ResearchLoopContext,
+  document: SourceDocument,
+  query: string,
+): Promise<string | null> {
+  const key = `${query}\u0000${document.canonicalUrl}`;
+  let summaryPromise = ctx.caches.summaries.get(key);
+  if (!summaryPromise) {
+    summaryPromise = computeSourceSummary(ctx, document, query);
+    ctx.caches.summaries.set(key, summaryPromise);
+  }
+  try {
+    const summary = await summaryPromise;
+    if (!summary) {
+      ctx.caches.summaries.delete(key);
+      return null;
+    }
+    return summary;
+  } catch {
+    ctx.caches.summaries.delete(key);
+    return null;
+  }
+}
+
+async function renderFetchOutput(
+  ctx: ResearchLoopContext,
+  document: SourceDocument,
+  offset: number,
+  maxChars: number,
+): Promise<string> {
+  const query = ctx.query?.trim();
+  if (!query || !shouldSummarizeSource(ctx, document, offset)) {
+    return formatFetchResult(document, offset, maxChars);
+  }
+  const summary = await getSourceSummary(ctx, document, query);
+  if (summary === null) return formatFetchResult(document, offset, maxChars);
+  return formatSourceSummary(document, summary);
+}
+
 export async function execFetch(
   args: FetchToolInput,
   ctx: ResearchLoopContext,
@@ -454,7 +549,7 @@ export async function execFetch(
 
     return {
       fetchedUrl: fetchedThisCall ? document.url : undefined,
-      text: formatFetchResult(document, offset, maxChars),
+      text: await renderFetchOutput(ctx, document, offset, maxChars),
     };
   } catch (err) {
     ctx.caches.sources.delete(normalizedUrl);
