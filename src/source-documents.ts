@@ -6,6 +6,7 @@ import type {
   SourceExtractionAttempt,
   SourceExtractionMetadata,
 } from "./sources.js";
+import type { HtmlPageMetadata } from "./html-extract.js";
 import { normalizeUrlForSource } from "./url.js";
 
 const STORED_MARKDOWN_CAP = 500_000;
@@ -91,6 +92,57 @@ export function extractionMetadataFromSteel(
   };
 }
 
+export function extractionMetadataFromBrowser(opts: {
+  markdownChars: number;
+  finalUrl?: string;
+  notes?: string[];
+  attempts?: SourceExtractionAttempt[];
+  qualityWarnings?: string[];
+  discoveredLinks?: SourceDiscoveredLink[];
+  pageMetadata?: HtmlPageMetadata;
+}): SourceExtractionMetadata {
+  return {
+    markdownChars: opts.markdownChars,
+    method: "browser_cdp",
+    ...(opts.finalUrl ? { finalUrl: opts.finalUrl } : {}),
+    ...(opts.attempts && opts.attempts.length > 0
+      ? { attempts: opts.attempts }
+      : {}),
+    ...(opts.qualityWarnings && opts.qualityWarnings.length > 0
+      ? { qualityWarnings: opts.qualityWarnings }
+      : {}),
+    ...(opts.discoveredLinks && opts.discoveredLinks.length > 0
+      ? { discoveredLinks: opts.discoveredLinks }
+      : {}),
+    ...(opts.pageMetadata?.canonical
+      ? { canonical: opts.pageMetadata.canonical }
+      : {}),
+    ...(opts.pageMetadata?.author ? { author: opts.pageMetadata.author } : {}),
+    ...(opts.pageMetadata?.articleAuthor
+      ? { articleAuthor: opts.pageMetadata.articleAuthor }
+      : {}),
+    ...(opts.pageMetadata?.publishedTime
+      ? { publishedTime: opts.pageMetadata.publishedTime }
+      : {}),
+    ...(opts.pageMetadata?.modifiedTime
+      ? { modifiedTime: opts.pageMetadata.modifiedTime }
+      : {}),
+    ...(opts.pageMetadata?.description
+      ? { description: opts.pageMetadata.description }
+      : {}),
+    ...(opts.pageMetadata?.language
+      ? { language: opts.pageMetadata.language }
+      : {}),
+    ...(opts.pageMetadata?.jsonLd !== undefined
+      ? { jsonLd: opts.pageMetadata.jsonLd }
+      : {}),
+    extractionNotes: [
+      "Fetched with browser session via Chrome DevTools Protocol.",
+      ...(opts.notes ?? []),
+    ],
+  };
+}
+
 export function extractionMetadataFromPdf(opts: {
   markdownChars: number;
   contentType?: string;
@@ -123,6 +175,7 @@ export function extractionMetadataFromHtml(opts: {
   attempts?: SourceExtractionAttempt[];
   qualityWarnings?: string[];
   discoveredLinks?: SourceDiscoveredLink[];
+  pageMetadata?: HtmlPageMetadata;
 }): SourceExtractionMetadata {
   return {
     markdownChars: opts.markdownChars,
@@ -137,6 +190,28 @@ export function extractionMetadataFromHtml(opts: {
       : {}),
     ...(opts.discoveredLinks && opts.discoveredLinks.length > 0
       ? { discoveredLinks: opts.discoveredLinks }
+      : {}),
+    ...(opts.pageMetadata?.canonical
+      ? { canonical: opts.pageMetadata.canonical }
+      : {}),
+    ...(opts.pageMetadata?.author ? { author: opts.pageMetadata.author } : {}),
+    ...(opts.pageMetadata?.articleAuthor
+      ? { articleAuthor: opts.pageMetadata.articleAuthor }
+      : {}),
+    ...(opts.pageMetadata?.publishedTime
+      ? { publishedTime: opts.pageMetadata.publishedTime }
+      : {}),
+    ...(opts.pageMetadata?.modifiedTime
+      ? { modifiedTime: opts.pageMetadata.modifiedTime }
+      : {}),
+    ...(opts.pageMetadata?.description
+      ? { description: opts.pageMetadata.description }
+      : {}),
+    ...(opts.pageMetadata?.language
+      ? { language: opts.pageMetadata.language }
+      : {}),
+    ...(opts.pageMetadata?.jsonLd !== undefined
+      ? { jsonLd: opts.pageMetadata.jsonLd }
       : {}),
     extractionNotes: ["Fetched with direct HTML text extraction.", ...(opts.notes ?? [])],
   };

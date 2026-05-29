@@ -1,7 +1,5 @@
-import * as cheerio from "cheerio";
-import type { ResearchLoopContext, ScrapeCacheEntry } from "./runtime.js";
+import type { ResearchLoopContext, SourceCacheEntry } from "./runtime.js";
 import type {
-  SourceDiscoveredLink,
   SourceDocument,
   SourceExtractionAttempt,
 } from "./sources.js";
@@ -9,16 +7,16 @@ import {
   createSourceDocument,
   extractionMetadataFromHtml,
   extractionMetadataFromPdf,
-  extractionMetadataFromSteel,
   findSourceDocumentByUrl,
   formatFetchResult,
   storeMarkdown,
 } from "./source-documents.js";
+import { extractSourceWithBrowser } from "./browser-extract.js";
 import { errorMessage } from "./errors.js";
 import { extractPdfText } from "./pdf-extract.js";
 import { looksBlocked } from "./steel.js";
-import { runSteelRequest } from "./steel-runtime.js";
 import { DEFAULT_FETCH_CHARS, MAX_FETCH_CHARS } from "./tool-contract.js";
+import { htmlToMarkdown } from "./html-extract.js";
 import { normalizeUrlForSource } from "./url.js";
 
 export interface FetchToolInput {
@@ -33,7 +31,7 @@ export interface FetchOutcome {
 }
 
 interface DirectExtractionOutcome {
-  entry: ScrapeCacheEntry | null;
+  entry: SourceCacheEntry | null;
   attempt: SourceExtractionAttempt;
 }
 
@@ -56,7 +54,6 @@ const ERROR_TITLE_PATTERN =
   /\b(?:404|not found|access denied|forbidden|error report|captcha|just a moment|sorry)\b/i;
 const SEARCH_LISTING_TITLE_PATTERN =
   /\b(?:search results?|advanced search|site search)\b|검색/i;
-const DISCOVERED_LINK_LIMIT = 30;
 
 function totalSourceSlots(ctx: ResearchLoopContext): number {
   return ctx.fetchedSources.length + ctx.sourceReservations.sourceSlots;
@@ -101,20 +98,20 @@ function validateHttpUrl(url: string): string | null {
   return null;
 }
 
-async function scrapeWithCache(
+async function sourceWithCache(
   ctx: ResearchLoopContext,
   url: string,
-): Promise<ScrapeCacheEntry> {
-  let scrapePromise = ctx.caches.scrape.get(url);
-  if (!scrapePromise) {
-    scrapePromise = extractSourceWithFallbacks(ctx, url);
-    ctx.caches.scrape.set(url, scrapePromise);
+): Promise<SourceCacheEntry> {
+  let sourcePromise = ctx.caches.sources.get(url);
+  if (!sourcePromise) {
+    sourcePromise = extractSourceWithFallbacks(ctx, url);
+    ctx.caches.sources.set(url, sourcePromise);
   }
 
   try {
-    return await scrapePromise;
+    return await sourcePromise;
   } catch (err) {
-    ctx.caches.scrape.delete(url);
+    ctx.caches.sources.delete(url);
     throw err;
   }
 }
@@ -122,47 +119,13 @@ async function scrapeWithCache(
 async function extractSourceWithFallbacks(
   ctx: ResearchLoopContext,
   url: string,
-): Promise<ScrapeCacheEntry> {
+): Promise<SourceCacheEntry> {
   const attempts: SourceExtractionAttempt[] = [];
   const direct = await tryDirectExtraction(ctx, url);
   attempts.push(direct.attempt);
   if (direct.entry) return direct.entry;
 
-  const steel = await scrapeWithSteel(ctx, url, attempts);
-  return steel;
-}
-
-async function scrapeWithSteel(
-  ctx: ResearchLoopContext,
-  url: string,
-  previousAttempts: SourceExtractionAttempt[],
-): Promise<ScrapeCacheEntry> {
-  const scrape = await runSteelRequest(ctx, () =>
-    ctx.steel.scrape(
-      {
-        url,
-        format: ["markdown"],
-        useProxy: ctx.useProxy,
-      },
-      { signal: ctx.signal },
-    ),
-  );
-  const markdown = scrape.content?.markdown ?? "";
-  const attempts = [
-    ...previousAttempts,
-    {
-      method: "steel_markdown",
-      ok: Boolean(markdown),
-      note: markdown
-        ? `steel_markdown: extracted ${markdown.length} markdown chars`
-        : "empty_markdown: Steel returned empty markdown",
-    },
-  ];
-  return {
-    markdown,
-    title: scrape.metadata?.title ?? null,
-    metadata: extractionMetadataFromSteel(markdown.length, [], attempts),
-  };
+  return extractSourceWithBrowser(ctx, url, attempts);
 }
 
 async function tryDirectExtraction(
@@ -296,6 +259,7 @@ function extractDirectHtml(
         finalUrl: opts.finalUrl,
         attempts: [attempt],
         discoveredLinks: extracted.links,
+        pageMetadata: extracted.metadata,
       }),
     },
     attempt,
@@ -353,74 +317,6 @@ function titleFromPdfUrl(url: string): string {
   }
 }
 
-function htmlToMarkdown(
-  html: string,
-  url: string,
-): { title: string; markdown: string; links: SourceDiscoveredLink[] } {
-  const $ = cheerio.load(html);
-  $("script, style, noscript, svg, canvas, template").remove();
-  const title =
-    $('meta[property="og:title"]').attr("content")?.trim() ||
-    $("title").first().text().trim() ||
-    $("h1").first().text().trim() ||
-    url;
-  const root = $("main").first().length
-    ? $("main").first()
-    : $("article").first().length
-      ? $("article").first()
-      : $("body").first();
-  const blocks: string[] = [];
-  root
-    .find("h1, h2, h3, h4, h5, h6, p, li, blockquote, td, th")
-    .each((_idx, el) => {
-      const tag = el.tagName.toLowerCase();
-      const text = $(el).text().replace(/\s+/g, " ").trim();
-      if (!text) return;
-      if (/^h[1-6]$/.test(tag)) {
-        const depth = Number(tag[1]);
-        blocks.push(`${"#".repeat(depth)} ${text}`);
-      } else if (tag === "li") {
-        blocks.push(`- ${text}`);
-      } else {
-        blocks.push(text);
-      }
-    });
-  const markdown = (blocks.length > 0 ? blocks.join("\n\n") : root.text())
-    .replace(/[ \t]+\n/g, "\n")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
-  return { title, markdown, links: extractLinks($, url) };
-}
-
-function extractLinks(
-  $: cheerio.CheerioAPI,
-  baseUrl: string,
-): SourceDiscoveredLink[] {
-  const links: SourceDiscoveredLink[] = [];
-  const seen = new Set<string>();
-  $("a[href]").each((_idx, el) => {
-    if (links.length >= DISCOVERED_LINK_LIMIT) return false;
-    const href = ($(el).attr("href") ?? "").trim();
-    if (!href || href.startsWith("#") || /^javascript:/i.test(href)) return;
-    let absolute: string;
-    try {
-      absolute = new URL(href, baseUrl).toString();
-    } catch {
-      return;
-    }
-    if (!/^https?:\/\//i.test(absolute)) return;
-    const normalized = normalizeUrlForSource(absolute);
-    if (seen.has(normalized)) return;
-    seen.add(normalized);
-    const title = $(el).text().replace(/\s+/g, " ").trim();
-    links.push({
-      url: absolute,
-      ...(title ? { title: title.slice(0, 200) } : {}),
-    });
-  });
-  return links;
-}
-
 function readOffset(args: FetchToolInput): number | string {
   const raw = args.offset ?? 0;
   const offset = Math.floor(Number(raw));
@@ -452,9 +348,9 @@ async function fetchSourceDocument(
 ): Promise<SourceDocument | null> {
   ctx.emit({ type: "fetching", url });
 
-  const { markdown, title, metadata } = await scrapeWithCache(ctx, url);
+  const { markdown, title, metadata } = await sourceWithCache(ctx, url);
   if (!markdown) {
-    ctx.caches.scrape.delete(url);
+    ctx.caches.sources.delete(url);
     const error = sourceErrorFromMetadata(metadata);
     ctx.emit({
       type: "source_error",
@@ -467,7 +363,7 @@ async function fetchSourceDocument(
   const resolvedTitle = title ?? url;
   const quality = assessSourceQuality(markdown, resolvedTitle, metadata);
   if (quality.fatalError) {
-    ctx.caches.scrape.delete(url);
+    ctx.caches.sources.delete(url);
     ctx.emit({
       type: "source_error",
       url,
@@ -561,7 +457,7 @@ export async function execFetch(
       text: formatFetchResult(document, offset, maxChars),
     };
   } catch (err) {
-    ctx.caches.scrape.delete(normalizedUrl);
+    ctx.caches.sources.delete(normalizedUrl);
     const message = errorMessage(err);
     ctx.emit({
       type: "source_error",
@@ -572,7 +468,7 @@ export async function execFetch(
   }
 }
 
-function sourceErrorFromMetadata(metadata: ScrapeCacheEntry["metadata"]): string {
+function sourceErrorFromMetadata(metadata: SourceCacheEntry["metadata"]): string {
   const failedAttempts = metadata.attempts?.filter((attempt) => !attempt.ok) ?? [];
   const priorityAttempt =
     failedAttempts.find((attempt) => attempt.note.includes("blocked_or_challenge")) ??
@@ -589,7 +485,7 @@ function sourceErrorFromMetadata(metadata: ScrapeCacheEntry["metadata"]): string
 function assessSourceQuality(
   markdown: string,
   title: string,
-  metadata: ScrapeCacheEntry["metadata"],
+  metadata: SourceCacheEntry["metadata"],
 ): { fatalError?: string; warnings: string[] } {
   const trimmed = markdown.trim();
   const warnings: string[] = [];

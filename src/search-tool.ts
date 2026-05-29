@@ -5,9 +5,9 @@ import {
   type SearchResult,
   type WebSearchOutcome,
 } from "./search.js";
+import { extractHtmlWithBrowser } from "./browser-extract.js";
 import { errorMessage } from "./errors.js";
 import type { ResearchLoopContext } from "./runtime.js";
-import { runSteelRequest } from "./steel-runtime.js";
 import { normalizeUrlForSource } from "./url.js";
 
 const SEARCH_SNIPPET_CHARS = 500;
@@ -55,16 +55,14 @@ async function searchWithCache(
   });
   let outcomePromise = ctx.caches.serp.get(cacheKey);
   if (!outcomePromise) {
-    outcomePromise = runSteelRequest(ctx, () =>
-      webSearch({
-        steel: ctx.steel,
-        query: opts.query,
-        engine: opts.engine,
-        useProxy: ctx.useProxy,
-        limit: opts.limit,
-        signal: ctx.signal,
-      }),
-    );
+    outcomePromise = webSearch({
+      query: opts.query,
+      engine: opts.engine,
+      useProxy: ctx.useProxy,
+      limit: opts.limit,
+      signal: ctx.signal,
+      renderPage: (url) => extractHtmlWithBrowser(ctx, url),
+    });
     ctx.caches.serp.set(cacheKey, outcomePromise);
   }
 

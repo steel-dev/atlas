@@ -75,6 +75,64 @@ function createContext(opts: {
   deadlineAt?: number;
   synthesisReserveMs?: number;
 }): ResearchLoopContext {
+  const scrape = (opts.scrape ?? vi.fn()) as ReturnType<typeof vi.fn>;
+  let currentUrl = "about:blank";
+  let currentTitle = "";
+  let currentHtml = "<html><head><title></title></head><body></body></html>";
+  const browserSessionPool = {
+    acquire: vi.fn(async () => ({
+      resource: {
+        session: { id: "session_test" },
+        cdpSessionId: "cdp_session_test",
+        lastUsedAt: Date.now(),
+        client: {
+          waitForEvent: vi.fn(async () => undefined),
+          send: vi.fn(async (method: string, params?: Record<string, unknown>) => {
+            if (method === "Page.navigate") {
+              currentUrl = String(params?.url ?? currentUrl);
+              const rendered = await scrape(
+                {
+                  url: currentUrl,
+                  format: ["markdown"],
+                  useProxy: opts.useProxy ?? false,
+                },
+                { signal: undefined },
+              );
+              const content = (rendered as {
+                content?: { markdown?: string; html?: string };
+                metadata?: { title?: string };
+              })?.content ?? {};
+              currentTitle = String(
+                (rendered as { metadata?: { title?: string } })?.metadata?.title ??
+                  currentUrl,
+              );
+              currentHtml =
+                content.html ??
+                `<html><head><title>${escapeHtml(currentTitle)}</title></head><body><main>${markdownToHtml(content.markdown ?? "")}</main></body></html>`;
+              return {};
+            }
+            if (method === "Runtime.evaluate") {
+              const expression = String(params?.expression ?? "");
+              if (expression.includes("innerText.length")) {
+                return { result: { value: currentHtml.length } };
+              }
+              return {
+                result: {
+                  value: {
+                    url: currentUrl,
+                    title: currentTitle,
+                    html: currentHtml,
+                  },
+                },
+              };
+            }
+            return {};
+          }),
+        },
+      },
+      release: vi.fn(async () => undefined),
+    })),
+  };
   return {
     model: {
       provider: "anthropic",
@@ -87,7 +145,7 @@ function createContext(opts: {
       },
       step: opts.messagesCreate as (input: ModelStepInput) => Promise<{ content: ModelAssistantBlock[] }>,
     } satisfies ModelAdapter,
-    steel: { scrape: opts.scrape ?? vi.fn() } as unknown as Steel,
+    steel: { sessions: {} } as unknown as Steel,
     fetchedSources: opts.fetchedSources ?? [],
     sourceDocuments: opts.sourceDocuments ?? new Map(),
     emit: vi.fn(),
@@ -99,9 +157,32 @@ function createContext(opts: {
     deadlineAt: opts.deadlineAt,
     synthesisReserveMs: opts.synthesisReserveMs,
     steelConcurrencyGate: createSteelConcurrencyGate(2),
+    browserSessionPool: browserSessionPool as unknown as ResearchLoopContext["browserSessionPool"],
     sourceReservations: createSourceReservations(),
     caches: createResearchCaches(),
   };
+}
+
+function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function markdownToHtml(markdown: string): string {
+  return markdown
+    .split(/\n{2,}/)
+    .map((block) => {
+      const trimmed = block.trim();
+      if (!trimmed) return "";
+      if (trimmed.startsWith("# ")) {
+        return `<h1>${escapeHtml(trimmed.slice(2))}</h1>`;
+      }
+      return `<p>${escapeHtml(trimmed)}</p>`;
+    })
+    .join("");
 }
 
 function toolResultText(request: {
@@ -805,6 +886,9 @@ describe("research loop cache integration", () => {
       "read_source_chunk",
       "find_in_source",
       "quote_source",
+      "browser_open",
+      "browser_cdp",
+      "browser_extract",
       "plan",
     ]);
     expect(request.tools[0]?.input_schema.properties ?? {}).not.toHaveProperty("engine");
@@ -1309,7 +1393,7 @@ describe("research loop cache integration", () => {
       title: "Steel Fetch",
     });
     expect(toolResultText(followupRequest)).not.toContain('"extraction_method"');
-    expect(toolResultText(followupRequest)).toContain('"method": "steel_markdown"');
+    expect(toolResultText(followupRequest)).toContain('"method": "browser_cdp"');
     expect(toolResultText(followupRequest)).toContain("network_error: direct fetch failed");
   });
 

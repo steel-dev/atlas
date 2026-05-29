@@ -22,6 +22,14 @@ import {
   type ReadSourceChunkToolInput,
 } from "./evidence-tool.js";
 import {
+  execBrowserCdp,
+  execBrowserExtract,
+  execBrowserOpen,
+  type BrowserCdpToolInput,
+  type BrowserExtractToolInput,
+  type BrowserOpenToolInput,
+} from "./browser-tool.js";
+import {
   execSearch,
   searchQueryCount,
   searchEnginesInFallbackOrder,
@@ -228,6 +236,73 @@ async function executeToolUse(
     };
   }
 
+  if (tu.name === "browser_open") {
+    try {
+      return {
+        toolResult: {
+          type: "tool_result",
+          tool_call_id: tu.id,
+          content: await execBrowserOpen((tu.input as BrowserOpenToolInput) ?? {}, ctx),
+        },
+      };
+    } catch (err) {
+      return {
+        toolResult: {
+          type: "tool_result",
+          tool_call_id: tu.id,
+          content: `Tool error: ${err instanceof Error ? err.message : String(err)}`,
+          is_error: true,
+        },
+      };
+    }
+  }
+
+  if (tu.name === "browser_cdp") {
+    try {
+      return {
+        toolResult: {
+          type: "tool_result",
+          tool_call_id: tu.id,
+          content: await execBrowserCdp((tu.input as BrowserCdpToolInput) ?? {}, ctx),
+        },
+      };
+    } catch (err) {
+      return {
+        toolResult: {
+          type: "tool_result",
+          tool_call_id: tu.id,
+          content: `Tool error: ${err instanceof Error ? err.message : String(err)}`,
+          is_error: true,
+        },
+      };
+    }
+  }
+
+  if (tu.name === "browser_extract") {
+    try {
+      const content = await execBrowserExtract(
+        (tu.input as BrowserExtractToolInput) ?? {},
+        ctx,
+      );
+      return {
+        toolResult: {
+          type: "tool_result",
+          tool_call_id: tu.id,
+          content,
+        },
+      };
+    } catch (err) {
+      return {
+        toolResult: {
+          type: "tool_result",
+          tool_call_id: tu.id,
+          content: `Tool error: ${err instanceof Error ? err.message : String(err)}`,
+          is_error: true,
+        },
+      };
+    }
+  }
+
   if (tu.name === "plan") {
     return {
       toolResult: {
@@ -245,7 +320,7 @@ async function executeToolUse(
       tool_call_id: tu.id,
       content:
         `Unknown tool: ${tu.name}. Available tools: ` +
-        "search, fetch, read_source_chunk, find_in_source, quote_source, plan.",
+        "search, fetch, read_source_chunk, find_in_source, quote_source, browser_open, browser_cdp, browser_extract, plan.",
       is_error: true,
     },
   };

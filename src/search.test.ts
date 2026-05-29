@@ -1,4 +1,3 @@
-import type Steel from "steel-sdk";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { __testing, safeDomain, webSearch } from "./search.js";
 
@@ -94,10 +93,8 @@ describe("SERP parsing", () => {
       }),
     );
     vi.stubGlobal("fetch", fetch);
-    const scrape = vi.fn();
 
     const outcome = await webSearch({
-      steel: { scrape } as unknown as Steel,
       query: "plain query",
       engine: "ddg",
     });
@@ -114,70 +111,63 @@ describe("SERP parsing", () => {
         },
       ],
     });
-    expect(scrape).not.toHaveBeenCalled();
   });
 
-  it("falls back to Steel when plain SERP fetch is blocked", async () => {
+  it("falls back to browser rendering when plain SERP fetch is blocked", async () => {
     const fetch = vi.fn(async () =>
       new Response("enable javascript and cookies", {
         headers: { "content-type": "text/html" },
       }),
     );
     vi.stubGlobal("fetch", fetch);
-    const scrape = vi.fn(async () => ({
-      content: {
-        html: `
+    const renderPage = vi.fn(async () => ({
+      html: `
           <div class="result">
             <a class="result__a" href="https://example.com/steel">Steel Result</a>
             <a class="result__snippet">Steel snippet.</a>
           </div>
         `,
-      },
-      metadata: {},
     }));
 
     const outcome = await webSearch({
-      steel: { scrape } as unknown as Steel,
       query: "blocked query",
       engine: "ddg",
+      renderPage,
     });
 
     expect(outcome.ok).toBe(true);
     if (outcome.ok) {
       expect(outcome.results[0]?.url).toBe("https://example.com/steel");
     }
-    expect(scrape).toHaveBeenCalledTimes(1);
+    expect(renderPage).toHaveBeenCalledTimes(1);
   });
 
-  it("falls back to Steel when plain SERP parsing returns no results", async () => {
+  it("falls back to browser rendering when plain SERP parsing returns no results", async () => {
     const fetch = vi.fn(async () =>
       new Response("<html><body>No parsed rows.</body></html>", {
         headers: { "content-type": "text/html" },
       }),
     );
     vi.stubGlobal("fetch", fetch);
-    const scrape = vi.fn(async () => ({
-      content: {
-        html: `
+    const renderPage = vi.fn(async () => ({
+      html: `
           <div class="result">
             <a class="result__a" href="https://example.com/browser">Browser Result</a>
             <a class="result__snippet">Recovered with browser rendering.</a>
           </div>
         `,
-      },
-      metadata: {},
     }));
 
     const outcome = await webSearch({
-      steel: { scrape } as unknown as Steel,
       query: "zero parse query",
       engine: "ddg",
+      renderPage,
     });
 
     expect(outcome.ok).toBe(true);
     if (outcome.ok) {
       expect(outcome.results[0]?.url).toBe("https://example.com/browser");
     }
-    expect(scrape).toHaveBeenCalledTimes(1);
+    expect(renderPage).toHaveBeenCalledTimes(1);
   });
 });

@@ -7,6 +7,8 @@ import type {
   SourceExtractionAttempt,
   SourceExtractionMetadata,
 } from "./sources.js";
+import type { BrowserSessionPool } from "./browser-session-pool.js";
+import type { BrowserSessionLease } from "./browser-session-pool.js";
 
 export interface SteelConcurrencyGate {
   run<T>(fn: () => Promise<T>): Promise<T>;
@@ -19,7 +21,7 @@ export interface SourceReservations {
   documents: Map<string, Promise<SourceDocument | null>>;
 }
 
-export interface ScrapeCacheEntry {
+export interface SourceCacheEntry {
   markdown: string;
   title: string | null;
   metadata: SourceExtractionMetadata;
@@ -27,7 +29,7 @@ export interface ScrapeCacheEntry {
 
 export interface ResearchCaches {
   serp: Map<string, Promise<WebSearchOutcome>>;
-  scrape: Map<string, Promise<ScrapeCacheEntry>>;
+  sources: Map<string, Promise<SourceCacheEntry>>;
 }
 
 class Semaphore implements SteelConcurrencyGate {
@@ -74,7 +76,7 @@ export function createSteelConcurrencyGate(limit: number): SteelConcurrencyGate 
 export function createResearchCaches(): ResearchCaches {
   return {
     serp: new Map<string, Promise<WebSearchOutcome>>(),
-    scrape: new Map<string, Promise<ScrapeCacheEntry>>(),
+    sources: new Map<string, Promise<SourceCacheEntry>>(),
   };
 }
 
@@ -107,6 +109,8 @@ export interface ResearchLoopContext {
   deadlineAt?: number;
   synthesisReserveMs?: number;
   steelConcurrencyGate: SteelConcurrencyGate;
+  browserSessionPool?: BrowserSessionPool;
+  browserSessionLease?: BrowserSessionLease;
   sourceReservations: SourceReservations;
   caches: ResearchCaches;
 }

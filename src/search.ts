@@ -1,5 +1,4 @@
 import * as cheerio from "cheerio";
-import type Steel from "steel-sdk";
 import { looksBlocked } from "./steel.js";
 
 export const ENGINES = ["ddg", "bing", "google"] as const;
@@ -25,7 +24,6 @@ export type WebSearchOutcome =
   | { ok: false; error: WebSearchError };
 
 export async function webSearch(opts: {
-  steel: Steel;
   query: string;
   limit?: number;
   engine?: Engine;
@@ -33,6 +31,7 @@ export async function webSearch(opts: {
   lang?: string;
   useProxy?: boolean;
   signal?: AbortSignal;
+  renderPage?: (url: string) => Promise<{ html: string; finalUrl?: string; title?: string }>;
 }): Promise<WebSearchOutcome> {
   const limit = opts.limit ?? 10;
   const engine = opts.engine ?? "ddg";
@@ -58,21 +57,20 @@ export async function webSearch(opts: {
   }
 
   try {
-    const result = await opts.steel.scrape(
-      {
-        url: serpUrl,
-        format: ["html"],
-        useProxy,
-      },
-      { signal: opts.signal },
-    );
-    html = result.content?.html ?? "";
+    if (!opts.renderPage) {
+      const message = plainFailure
+        ? `plain fetch failed (${plainFailure}); browser rendering is unavailable`
+        : "browser rendering is unavailable";
+      return { ok: false, error: { code: "E_STEEL_UNAVAILABLE", message } };
+    }
+    const result = await opts.renderPage(serpUrl);
+    html = result.html;
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     const status = (err as { status?: number })?.status;
     if (status === 429) throw err;
     const combinedMessage = plainFailure
-      ? `plain fetch failed (${plainFailure}); Steel scrape failed: ${message}`
+      ? `plain fetch failed (${plainFailure}); browser rendering failed: ${message}`
       : message;
     if (status === 408 || /timeout/i.test(message)) {
       return { ok: false, error: { code: "E_STEEL_TIMEOUT", message: combinedMessage } };

@@ -21,6 +21,14 @@ export interface SourceExtractionMetadata {
   attempts?: SourceExtractionAttempt[];
   qualityWarnings?: string[];
   discoveredLinks?: SourceDiscoveredLink[];
+  canonical?: string;
+  author?: string;
+  articleAuthor?: string;
+  publishedTime?: string;
+  modifiedTime?: string;
+  description?: string;
+  language?: string;
+  jsonLd?: unknown;
 }
 
 export interface SourceExtractionAttempt {

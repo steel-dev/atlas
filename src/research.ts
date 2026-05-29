@@ -42,6 +42,10 @@ import {
   runResearchLoop,
   type ResearchLoopContext,
 } from "./tools.js";
+import {
+  BrowserSessionPool,
+  readBrowserMaxSessionsFromEnv,
+} from "./browser-session-pool.js";
 import { normalizeUrlForSource } from "./url.js";
 
 const DEFAULT_RUNTIME_LIMITS = {
@@ -210,6 +214,14 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
 
   const fetchedSources: FetchedSource[] = [];
   const sourceDocuments = new Map<string, SourceDocument>();
+  const browserSessionPool = new BrowserSessionPool({
+    steel,
+    useProxy,
+    namespace: `atlas-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+    signal: runSignal,
+    deadlineAt: timeoutDeadlineAt,
+    maxSessions: readBrowserMaxSessionsFromEnv(),
+  });
 
   const ctx: ResearchLoopContext = {
     model: modelAdapter,
@@ -236,70 +248,75 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
     steelConcurrencyGate: createSteelConcurrencyGate(
       limits.maxConcurrentSteelCalls,
     ),
+    browserSessionPool,
     sourceReservations: createSourceReservations(),
     caches: createResearchCaches(),
   };
 
-  const run = await runResearchLoop({
-    ctx,
-    query,
-    maxToolCalls: safetyMaxToolCalls,
-    effort: effort ?? limits.defaultEffort,
-  });
-  const runs: ResearchRun[] = [
-    {
-      fetchedUrls: run.fetchedUrls,
-      toolCalls: run.toolCalls,
-      finishReason: run.finishReason,
-    },
-  ];
-
-  abort();
-  const markdown = run.markdown.trim();
-  if (!markdown) {
-    throw new Error(
-      `research: loop did not produce a final report (${run.finishReason})`,
-    );
-  }
-  const citationAudit = auditCitationsInMarkdown(markdown, fetchedSources);
-  if (citationAudit.unverifiedCitations.length > 0) {
-    emit({
-      type: "unverified_citations",
-      count: citationAudit.unverifiedCitations.length,
-      urls: citationAudit.unverifiedCitations,
+  try {
+    const run = await runResearchLoop({
+      ctx,
+      query,
+      maxToolCalls: safetyMaxToolCalls,
+      effort: effort ?? limits.defaultEffort,
     });
+    const runs: ResearchRun[] = [
+      {
+        fetchedUrls: run.fetchedUrls,
+        toolCalls: run.toolCalls,
+        finishReason: run.finishReason,
+      },
+    ];
+
+    abort();
+    const markdown = run.markdown.trim();
+    if (!markdown) {
+      throw new Error(
+        `research: loop did not produce a final report (${run.finishReason})`,
+      );
+    }
+    const citationAudit = auditCitationsInMarkdown(markdown, fetchedSources);
+    if (citationAudit.unverifiedCitations.length > 0) {
+      emit({
+        type: "unverified_citations",
+        count: citationAudit.unverifiedCitations.length,
+        urls: citationAudit.unverifiedCitations,
+      });
+    }
+    emit({ type: "written", markdownChars: markdown.length });
+    const structured =
+      output === undefined
+        ? undefined
+        : await generateStructuredOutput({
+            ctx,
+            model: modelAdapter,
+            messages: run.messages,
+            output,
+            maxTokens: limits.maxOutputTokens,
+            effort: effort ?? limits.defaultEffort,
+            signal: runSignal,
+          });
+
+    const result: ResearchResult = {
+      query,
+      provider,
+      model,
+      runs,
+      verifiedSources: citationAudit.verifiedSources,
+      unverifiedCitations: citationAudit.unverifiedCitations,
+      markdown,
+      ...(structured !== undefined ? { structured } : {}),
+      ...(includeSourceDocuments
+        ? { sourceDocuments: [...sourceDocuments.values()] }
+        : {}),
+      usage: { ...modelAdapter.usage },
+    };
+
+    emit({ type: "completed", result });
+    return result;
+  } finally {
+    await browserSessionPool.closeAll();
   }
-  emit({ type: "written", markdownChars: markdown.length });
-  const structured =
-    output === undefined
-      ? undefined
-      : await generateStructuredOutput({
-          ctx,
-          model: modelAdapter,
-          messages: run.messages,
-          output,
-          maxTokens: limits.maxOutputTokens,
-          effort: effort ?? limits.defaultEffort,
-          signal: runSignal,
-        });
-
-  const result: ResearchResult = {
-    query,
-    provider,
-    model,
-    runs,
-    verifiedSources: citationAudit.verifiedSources,
-    unverifiedCitations: citationAudit.unverifiedCitations,
-    markdown,
-    ...(structured !== undefined ? { structured } : {}),
-    ...(includeSourceDocuments
-      ? { sourceDocuments: [...sourceDocuments.values()] }
-      : {}),
-    usage: { ...modelAdapter.usage },
-  };
-
-  emit({ type: "completed", result });
-  return result;
 }
 
 function textFromBlocks(content: ModelAssistantBlock[]): string {

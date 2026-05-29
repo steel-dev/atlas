@@ -35,10 +35,12 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.92.0",
+    "@types/ws": "^8.18.1",
     "cheerio": "^1.0.0",
     "openai": "^6.39.0",
     "pdf-parse": "^2.4.5",
-    "steel-sdk": "^0.18.0"
+    "steel-sdk": "^0.18.0",
+    "ws": "^8.21.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

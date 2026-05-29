@@ -127,6 +127,60 @@ export const RESEARCH_TOOLS: ModelToolDefinition[] = [
     },
   },
   {
+    name: "browser_open",
+    description:
+      "Open a persistent browser session, optionally navigating to an absolute URL. Use this when a task needs interactive browsing beyond search/fetch.",
+    input_schema: {
+      type: "object",
+      properties: {
+        url: {
+          type: "string",
+          description: "Optional absolute http(s) URL to open.",
+        },
+      },
+    },
+  },
+  {
+    name: "browser_cdp",
+    description:
+      "Send an allowlisted Chrome DevTools Protocol command to the open browser session. Use Runtime.evaluate, DOM, Accessibility, Network, Page, and Target commands to inspect and interact with pages directly.",
+    input_schema: {
+      type: "object",
+      properties: {
+        method: {
+          type: "string",
+          description: "CDP method name, such as Runtime.evaluate or Page.navigate.",
+        },
+        params: {
+          type: "object",
+          description: "CDP command parameters.",
+        },
+        timeout_ms: {
+          type: "integer",
+          minimum: 1,
+          description: "Optional per-command timeout in milliseconds.",
+        },
+      },
+      required: ["method"],
+    },
+  },
+  {
+    name: "browser_extract",
+    description:
+      "Store the current browser page as a fetched source and return source_id/chunk metadata. Use before citing evidence found through browser_cdp.",
+    input_schema: {
+      type: "object",
+      properties: {
+        max_chars: {
+          type: "integer",
+          minimum: 1,
+          maximum: MAX_FETCH_CHARS,
+          description: `Maximum source content characters to return. Default ${DEFAULT_FETCH_CHARS}.`,
+        },
+      },
+    },
+  },
+  {
     name: "plan",
     description:
       "Record a short plan, hypothesis, or next steps and keep going. Use this when you want to think, take stock, or re-plan before searching or fetching — it does not end the run. Only a turn with no tool calls ends the run, so reserve that for your final report.",
@@ -147,7 +201,8 @@ export const RESEARCH_TOOLS: ModelToolDefinition[] = [
 export const RESEARCH_SYSTEM_PROMPT =
   "You are a deep research agent. Investigate the user's question with the available tools and answer it with well-supported, cited claims.\n\n" +
   "Ground every conclusion in the content of sources you actually fetched. Search snippets, URLs, and listing/SEO/directory pages are leads to follow, not evidence — follow them to a primary or detailed source and cite that instead. Verify a claim before you rely on it, and if the evidence contradicts your current hypothesis, revise it rather than forcing an answer.\n\n" +
-  "How you search and what you read is up to you. To think, take stock, or re-plan without searching or fetching yet, call `plan` and keep going — it does not end the run. A turn with no tool calls is treated as your final answer, so only stop calling tools when you are ready to write the report. When you have enough evidence, write a cited Markdown report; if the evidence is incomplete, say so and explain the gaps.";
+  "How you search and what you read is up to you. For interactive sites, internal site search, pagination, or pages where search/fetch is not enough, use browser_open and browser_cdp to inspect and navigate directly. When a browser page contains evidence you may cite, call browser_extract to store it as a source before relying on it in the final answer.\n\n" +
+  "To think, take stock, or re-plan without searching or fetching yet, call `plan` and keep going — it does not end the run. A turn with no tool calls is treated as your final answer, so only stop calling tools when you are ready to write the report. When you have enough evidence, write a cited Markdown report; if the evidence is incomplete, say so and explain the gaps.";
 
 export const STRUCTURED_FINALIZE_SYSTEM_PROMPT =
   "You are finalizing a completed research run into a structured JSON result. The read-only source tools (find_in_source, quote_source, read_source_chunk) remain available, so confirm any quote against the source you already fetched before committing it. Quote only text that genuinely appears in those sources, and attribute each quote to the source it actually came from; never invent quotes, spans, or sources. When you are ready, respond with only the JSON object that matches the requested schema — no further tool calls, no prose, no Markdown fences.";
