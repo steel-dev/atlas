@@ -42,7 +42,24 @@ export interface ModelToolResult {
   is_error?: boolean;
 }
 
-export type ModelAssistantBlock = ModelTextBlock | ModelToolCall;
+/** Extended-thinking block. Preserved verbatim (with its signature) so the
+ *  model's reasoning carries across turns during tool use. */
+export interface ModelThinkingBlock {
+  type: "thinking";
+  thinking: string;
+  signature: string;
+}
+
+export interface ModelRedactedThinkingBlock {
+  type: "redacted_thinking";
+  data: string;
+}
+
+export type ModelAssistantBlock =
+  | ModelTextBlock
+  | ModelToolCall
+  | ModelThinkingBlock
+  | ModelRedactedThinkingBlock;
 
 export type ModelMessage =
   | { role: "user"; content: string | ModelToolResult[] }
@@ -170,17 +187,32 @@ function toAnthropicMessage(message: ModelMessage): Anthropic.MessageParam {
 
   return {
     role: "assistant",
-    content: message.content.map((block) =>
-      block.type === "text"
-        ? ({ type: "text", text: block.text } satisfies Anthropic.TextBlockParam)
-        : ({
-            type: "tool_use",
-            id: block.id,
-            name: block.name,
-            input: block.input,
-          } satisfies Anthropic.ToolUseBlockParam),
-    ),
+    content: message.content.map(toAnthropicAssistantBlock),
   };
+}
+
+function toAnthropicAssistantBlock(
+  block: ModelAssistantBlock,
+): Anthropic.ContentBlockParam {
+  switch (block.type) {
+    case "text":
+      return { type: "text", text: block.text };
+    case "thinking":
+      return {
+        type: "thinking",
+        thinking: block.thinking,
+        signature: block.signature,
+      };
+    case "redacted_thinking":
+      return { type: "redacted_thinking", data: block.data };
+    case "tool_call":
+      return {
+        type: "tool_use",
+        id: block.id,
+        name: block.name,
+        input: block.input,
+      };
+  }
 }
 
 function fromAnthropicBlock(
@@ -196,6 +228,18 @@ function fromAnthropicBlock(
         input: block.input,
       },
     ];
+  }
+  if (block.type === "thinking") {
+    return [
+      {
+        type: "thinking",
+        thinking: block.thinking,
+        signature: block.signature,
+      },
+    ];
+  }
+  if (block.type === "redacted_thinking") {
+    return [{ type: "redacted_thinking", data: block.data }];
   }
   return [];
 }
@@ -345,4 +389,6 @@ function parseOpenAIArguments(raw: string): unknown {
 export const __testing = {
   toOpenAIMessages,
   fromOpenAIMessage,
+  fromAnthropicBlock,
+  toAnthropicMessage,
 };

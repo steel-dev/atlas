@@ -81,3 +81,69 @@ describe("model adapter message mapping", () => {
     ]);
   });
 });
+
+describe("anthropic extended-thinking preservation", () => {
+  it("keeps thinking and redacted_thinking blocks when reading a response", () => {
+    expect(
+      __testing.fromAnthropicBlock({
+        type: "thinking",
+        thinking: "Weigh the candidates before committing.",
+        signature: "sig-abc",
+      }),
+    ).toEqual([
+      {
+        type: "thinking",
+        thinking: "Weigh the candidates before committing.",
+        signature: "sig-abc",
+      },
+    ]);
+
+    expect(
+      __testing.fromAnthropicBlock({
+        type: "redacted_thinking",
+        data: "redacted-xyz",
+      }),
+    ).toEqual([{ type: "redacted_thinking", data: "redacted-xyz" }]);
+  });
+
+  it("passes thinking blocks back to Anthropic so reasoning carries across turns", () => {
+    const message: ModelMessage = {
+      role: "assistant",
+      content: [
+        { type: "thinking", thinking: "Outline the clues first.", signature: "sig-1" },
+        { type: "tool_call", id: "call_1", name: "search", input: { queries: ["clue"] } },
+      ],
+    };
+
+    expect(__testing.toAnthropicMessage(message)).toEqual({
+      role: "assistant",
+      content: [
+        { type: "thinking", thinking: "Outline the clues first.", signature: "sig-1" },
+        { type: "tool_use", id: "call_1", name: "search", input: { queries: ["clue"] } },
+      ],
+    });
+  });
+
+  it("omits thinking blocks from OpenAI chat messages", () => {
+    const messages: ModelMessage[] = [
+      {
+        role: "assistant",
+        content: [
+          { type: "thinking", thinking: "internal reasoning", signature: "sig" },
+          { type: "text", text: "visible answer" },
+          { type: "tool_call", id: "call_1", name: "search", input: { queries: ["x"] } },
+        ],
+      },
+    ];
+
+    const out = __testing.toOpenAIMessages("system prompt", messages);
+    const assistant = out.find((m) => m.role === "assistant") as {
+      content: unknown;
+      tool_calls?: unknown[];
+    };
+
+    expect(assistant.content).toBe("visible answer");
+    expect(assistant.tool_calls).toHaveLength(1);
+    expect(JSON.stringify(out)).not.toContain("internal reasoning");
+  });
+});
