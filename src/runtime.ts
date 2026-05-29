@@ -93,6 +93,7 @@ export function createSourceReservations(): SourceReservations {
 
 export interface ResearchLoopContext {
   model: ModelAdapter;
+  summaryModel?: ModelAdapter;
   steel: Steel;
   query?: string;
   fetchedSources: FetchedSource[];

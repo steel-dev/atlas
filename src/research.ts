@@ -26,6 +26,7 @@ import {
 } from "./tool-contract.js";
 import {
   DEFAULT_ANTHROPIC_MODEL,
+  DEFAULT_ANTHROPIC_SUMMARY_MODEL,
   DEFAULT_OPENAI_MODEL,
   type ResearchEffort,
 } from "./defaults.js";
@@ -140,6 +141,7 @@ export interface ResearchOptions {
   query: string;
   provider?: ModelProvider;
   model?: string;
+  summaryModel?: string;
   anthropicApiKey?: string;
   openaiApiKey?: string;
   openaiBaseUrl?: string;
@@ -159,6 +161,7 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
     query,
     provider: providerOverride,
     model: modelOverride,
+    summaryModel: summaryModelOverride,
     anthropicApiKey: anthropicApiKeyOverride,
     openaiApiKey: openaiApiKeyOverride,
     openaiBaseUrl: openaiBaseUrlOverride,
@@ -211,6 +214,21 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
     openaiApiKey: openaiApiKeyOverride,
     openaiBaseUrl: openaiBaseUrlOverride,
   });
+  const summaryModelName = resolveSummaryModel(
+    provider,
+    summaryModelOverride,
+    model,
+  );
+  const summaryAdapter =
+    summaryModelName === model
+      ? modelAdapter
+      : createModelAdapter({
+          provider,
+          model: summaryModelName,
+          anthropicApiKey: anthropicApiKeyOverride,
+          openaiApiKey: openaiApiKeyOverride,
+          openaiBaseUrl: openaiBaseUrlOverride,
+        });
   const steel = createSteel({ apiKey: steelApiKey, baseUrl: steelBaseUrl });
 
   const fetchedSources: FetchedSource[] = [];
@@ -226,6 +244,7 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
 
   const ctx: ResearchLoopContext = {
     model: modelAdapter,
+    summaryModel: summaryAdapter,
     steel,
     query,
     fetchedSources,
@@ -313,7 +332,10 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
       ...(includeSourceDocuments
         ? { sourceDocuments: [...sourceDocuments.values()] }
         : {}),
-      usage: { ...modelAdapter.usage },
+      usage:
+        summaryAdapter === modelAdapter
+          ? { ...modelAdapter.usage }
+          : sumUsage(modelAdapter.usage, summaryAdapter.usage),
     };
 
     emit({ type: "completed", result });
@@ -687,6 +709,27 @@ function resolveModel(
   return provider === "anthropic"
     ? DEFAULT_ANTHROPIC_MODEL
     : DEFAULT_OPENAI_MODEL;
+}
+
+function resolveSummaryModel(
+  provider: ModelProvider,
+  summaryModel: string | undefined,
+  mainModel: string,
+): string {
+  const raw = summaryModel ?? readEnv("ATLAS_SUMMARY_MODEL");
+  if (raw?.trim()) return raw.trim();
+  return provider === "anthropic" ? DEFAULT_ANTHROPIC_SUMMARY_MODEL : mainModel;
+}
+
+function sumUsage(a: UsageSummary, b: UsageSummary): UsageSummary {
+  return {
+    input_tokens: a.input_tokens + b.input_tokens,
+    output_tokens: a.output_tokens + b.output_tokens,
+    cache_creation_input_tokens:
+      a.cache_creation_input_tokens + b.cache_creation_input_tokens,
+    cache_read_input_tokens:
+      a.cache_read_input_tokens + b.cache_read_input_tokens,
+  };
 }
 
 function createModelAdapter(opts: {

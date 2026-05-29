@@ -21,6 +21,7 @@ Options:
       --effort LEVEL          Research effort: low, medium, high, max (default: high)
       --provider PROVIDER     Model provider: anthropic, openai (default: auto)
       --model MODEL           Model name (default: provider-specific)
+      --summary-model MODEL   Cheap model for per-source summaries (default: haiku on anthropic)
       --base-url URL          OpenAI-compatible base URL (provider=openai)
       --proxy                 Route Steel search and fetch requests through proxy
       --json                  Emit one JSON event per line on stderr
@@ -31,6 +32,7 @@ Options:
 Environment:
   ATLAS_PROVIDER                                optional (anthropic, openai)
   ATLAS_MODEL                                   optional
+  ATLAS_SUMMARY_MODEL                           optional (per-source summary model)
   ATLAS_ANTHROPIC_API_KEY or ANTHROPIC_API_KEY  required for provider=anthropic
   ATLAS_OPENAI_API_KEY    or OPENAI_API_KEY     required for provider=openai
   ATLAS_OPENAI_BASE_URL   or OPENAI_BASE_URL    optional (OpenAI-compatible)
@@ -175,6 +177,7 @@ async function main(): Promise<void> {
           effort: { type: "string" },
           provider: { type: "string" },
           model: { type: "string" },
+          "summary-model": { type: "string" },
           "base-url": { type: "string" },
           proxy: { type: "boolean" },
           json: { type: "boolean" },
@@ -249,6 +252,7 @@ async function main(): Promise<void> {
       query,
       provider,
       model: values.model,
+      summaryModel: values["summary-model"],
       openaiBaseUrl: values["base-url"],
       effort,
       useProxy,

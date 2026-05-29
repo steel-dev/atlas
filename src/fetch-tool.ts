@@ -449,7 +449,8 @@ async function computeSourceSummary(
   document: SourceDocument,
   query: string,
 ): Promise<string> {
-  const resp = await ctx.model.step({
+  const model = ctx.summaryModel ?? ctx.model;
+  const resp = await model.step({
     system: FETCH_SUMMARY_SYSTEM_PROMPT,
     messages: [
       {
