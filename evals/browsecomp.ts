@@ -100,7 +100,12 @@ interface EvalResult {
   metrics?: {
     provider: ModelProvider;
     model: string;
+    /** Total action tool calls, including lead, sub-agents, and structured follow-ups. */
     toolCalls: number;
+    leadToolCalls: number;
+    subagentToolCalls: number;
+    totalToolCalls: number;
+    subagents: SubagentMetrics[];
     fetchedUrls: string[];
     verifiedSources: number;
     unverifiedCitations: number;
@@ -120,6 +125,7 @@ interface EvalDiagnostics {
     fetched: number;
     rejected: number;
     fetchedByMethod: Record<string, number>;
+    fetchedByDepthAndMethod: Record<string, Record<string, number>>;
     failedAttemptsByMethod: Record<string, number>;
     qualityWarningsByCode: Record<string, number>;
     sourceErrorsByCode: Record<string, number>;
@@ -130,9 +136,41 @@ interface EvalDiagnostics {
   cost: {
     latencyMs: number;
     toolCalls?: number;
+    leadToolCalls?: number;
+    subagentToolCalls?: number;
+    totalToolCalls?: number;
     inputTokens?: number;
     outputTokens?: number;
   };
+  depth: Record<string, DepthDiagnostics>;
+  choke: ChokeDiagnostics;
+}
+
+interface SubagentMetrics {
+  task: string;
+  startedAtMs?: number;
+  finishedAtMs: number;
+  durationMs?: number;
+  sourcesFetched: number;
+  toolCalls: number;
+  finishReason: string;
+}
+
+interface DepthDiagnostics {
+  searches: number;
+  fetches: number;
+  sourcesFetched: number;
+  sourceErrors: number;
+  qualityWarnings: number;
+}
+
+interface ChokeDiagnostics {
+  budgetExhaustedSubagents: number;
+  timeoutSubagents: number;
+  sourceErrors: number;
+  blockedOrThinSources: number;
+  blockedOrThinByHost: Record<string, number>;
+  subagentFinishReasons: Record<string, number>;
 }
 
 type EvalTraceEvent = {
@@ -1098,11 +1136,58 @@ async function judgeResponse(opts: {
   };
 }
 
-function summarizeRun(result: ResearchResult): EvalResult["metrics"] {
+function summarizeSubagents(trace: EvalTraceEvent[]): SubagentMetrics[] {
+  const startsByTask = new Map<string, number[]>();
+  const subagents: SubagentMetrics[] = [];
+
+  for (const event of trace) {
+    if (event.event === "subagent_started" && event.task) {
+      const starts = startsByTask.get(event.task) ?? [];
+      starts.push(event.atMs);
+      startsByTask.set(event.task, starts);
+      continue;
+    }
+
+    if (event.event !== "subagent_finished" || !event.task) continue;
+    const starts = startsByTask.get(event.task) ?? [];
+    const startedAtMs = starts.shift();
+    if (starts.length === 0) startsByTask.delete(event.task);
+    const finishedAtMs = event.atMs;
+    subagents.push({
+      task: event.task,
+      ...(startedAtMs !== undefined ? { startedAtMs } : {}),
+      finishedAtMs,
+      ...(startedAtMs !== undefined
+        ? { durationMs: Math.max(0, finishedAtMs - startedAtMs) }
+        : {}),
+      sourcesFetched: event.sourcesFetched ?? 0,
+      toolCalls: event.toolCalls ?? 0,
+      finishReason: event.finishReason ?? "unknown",
+    });
+  }
+
+  return subagents;
+}
+
+function summarizeRun(
+  result: ResearchResult,
+  trace: EvalTraceEvent[],
+): EvalResult["metrics"] {
+  const leadToolCalls = result.runs.reduce((sum, run) => sum + run.toolCalls, 0);
+  const subagents = summarizeSubagents(trace);
+  const subagentToolCalls = subagents.reduce(
+    (sum, subagent) => sum + subagent.toolCalls,
+    0,
+  );
+  const totalToolCalls = leadToolCalls + subagentToolCalls;
   return {
     provider: result.provider,
     model: result.model,
-    toolCalls: result.runs.reduce((sum, run) => sum + run.toolCalls, 0),
+    toolCalls: totalToolCalls,
+    leadToolCalls,
+    subagentToolCalls,
+    totalToolCalls,
+    subagents,
     fetchedUrls: result.runs.flatMap((run) => run.fetchedUrls),
     verifiedSources: result.verifiedSources.length,
     unverifiedCitations: result.unverifiedCitations.length,
@@ -1281,7 +1366,7 @@ async function runCase(
       }
     }
     const latencyMs = Date.now() - started;
-    const metrics = summarizeRun(result);
+    const metrics = summarizeRun(result, trace);
     return {
       type: "result",
       id: entry.id,
@@ -1399,6 +1484,52 @@ function searchGroups(searchEvents: EvalTraceEvent[]): EvalTraceEvent[][] {
   return groups;
 }
 
+function depthKey(event: EvalTraceEvent): string {
+  return String(event.depth ?? 0);
+}
+
+function ensureDepthDiagnostics(
+  depths: Record<string, DepthDiagnostics>,
+  key: string,
+): DepthDiagnostics {
+  const existing = depths[key];
+  if (existing) return existing;
+  const created = {
+    searches: 0,
+    fetches: 0,
+    sourcesFetched: 0,
+    sourceErrors: 0,
+    qualityWarnings: 0,
+  };
+  depths[key] = created;
+  return created;
+}
+
+function incrementNested(
+  counts: Record<string, Record<string, number>>,
+  outer: string,
+  inner: string,
+): void {
+  counts[outer] ??= {};
+  counts[outer][inner] = (counts[outer][inner] ?? 0) + 1;
+}
+
+function isBudgetExhausted(reason: string | undefined): boolean {
+  return /\btool call budget exhausted\b|\btool execution safety budget exhausted\b/i.test(
+    reason ?? "",
+  );
+}
+
+function isTimeoutFinish(reason: string | undefined): boolean {
+  return /\btimeout approaching\b/i.test(reason ?? "");
+}
+
+function isBlockedOrThin(warnings: string[] | undefined): boolean {
+  return (warnings ?? []).some((warning) =>
+    /\b(?:blocked_or_challenge|thin_content|error_page)\b/i.test(warning),
+  );
+}
+
 function buildDiagnostics(opts: {
   trace: EvalTraceEvent[];
   latencyMs: number;
@@ -1407,22 +1538,47 @@ function buildDiagnostics(opts: {
   const searchEvents = opts.trace.filter((event) => event.event === "searching");
   const groups = searchGroups(searchEvents);
   const fetchedByMethod: Record<string, number> = {};
+  const fetchedByDepthAndMethod: Record<string, Record<string, number>> = {};
   const failedAttemptsByMethod: Record<string, number> = {};
   const qualityWarningsByCode: Record<string, number> = {};
   const sourceErrorsByCode: Record<string, number> = {};
   const fetchedHosts: Record<string, number> = {};
   const rejectedHosts: Record<string, number> = {};
+  const depth: Record<string, DepthDiagnostics> = {};
+  const blockedOrThinByHost: Record<string, number> = {};
+  const subagentFinishReasons: Record<string, number> = {};
+  let blockedOrThinSources = 0;
   let fetched = 0;
   let rejected = 0;
   let totalFetchedMarkdownChars = 0;
 
   for (const event of opts.trace) {
+    const depthStats = ensureDepthDiagnostics(depth, depthKey(event));
+    if (event.event === "searching") {
+      depthStats.searches++;
+      continue;
+    }
+    if (event.event === "fetching") {
+      depthStats.fetches++;
+      continue;
+    }
     if (event.event === "source_fetched") {
       fetched++;
+      depthStats.sourcesFetched++;
       increment(fetchedByMethod, event.method ?? "unknown");
+      incrementNested(
+        fetchedByDepthAndMethod,
+        depthKey(event),
+        event.method ?? "unknown",
+      );
       increment(fetchedHosts, hostFromUrl(event.url));
       totalFetchedMarkdownChars += event.markdownChars ?? 0;
+      if (isBlockedOrThin(event.qualityWarnings)) {
+        blockedOrThinSources++;
+        increment(blockedOrThinByHost, hostFromUrl(event.url));
+      }
       for (const warning of event.qualityWarnings ?? []) {
+        depthStats.qualityWarnings++;
         increment(qualityWarningsByCode, codeFromMessage(warning));
       }
       for (const attempt of event.attempts ?? []) {
@@ -1432,10 +1588,16 @@ function buildDiagnostics(opts: {
     }
     if (event.event === "source_error") {
       rejected++;
+      depthStats.sourceErrors++;
       increment(rejectedHosts, hostFromUrl(event.url));
       increment(sourceErrorsByCode, codeFromMessage(event.error));
+      continue;
+    }
+    if (event.event === "subagent_finished") {
+      increment(subagentFinishReasons, event.finishReason ?? "unknown");
     }
   }
+  const subagents = opts.metrics?.subagents ?? summarizeSubagents(opts.trace);
 
   return {
     search: {
@@ -1450,6 +1612,7 @@ function buildDiagnostics(opts: {
       fetched,
       rejected,
       fetchedByMethod,
+      fetchedByDepthAndMethod,
       failedAttemptsByMethod,
       qualityWarningsByCode,
       sourceErrorsByCode,
@@ -1462,10 +1625,26 @@ function buildDiagnostics(opts: {
       ...(opts.metrics
         ? {
             toolCalls: opts.metrics.toolCalls,
+            leadToolCalls: opts.metrics.leadToolCalls,
+            subagentToolCalls: opts.metrics.subagentToolCalls,
+            totalToolCalls: opts.metrics.totalToolCalls,
             inputTokens: opts.metrics.inputTokens,
             outputTokens: opts.metrics.outputTokens,
           }
         : {}),
+    },
+    depth,
+    choke: {
+      budgetExhaustedSubagents: subagents.filter((subagent) =>
+        isBudgetExhausted(subagent.finishReason),
+      ).length,
+      timeoutSubagents: subagents.filter((subagent) =>
+        isTimeoutFinish(subagent.finishReason),
+      ).length,
+      sourceErrors: rejected,
+      blockedOrThinSources,
+      blockedOrThinByHost,
+      subagentFinishReasons,
     },
   };
 }
@@ -1532,14 +1711,52 @@ function summarizeSearchDiagnostics(results: EvalResult[]) {
   );
 }
 
+function summarizeChokeDiagnostics(results: EvalResult[]) {
+  return results.reduce(
+    (summary, result) => {
+      const choke = result.diagnostics?.choke;
+      if (!choke) return summary;
+      summary.budgetExhaustedSubagents += choke.budgetExhaustedSubagents;
+      summary.timeoutSubagents += choke.timeoutSubagents;
+      summary.sourceErrors += choke.sourceErrors;
+      summary.blockedOrThinSources += choke.blockedOrThinSources;
+      for (const [host, count] of Object.entries(choke.blockedOrThinByHost)) {
+        summary.blockedOrThinByHost[host] =
+          (summary.blockedOrThinByHost[host] ?? 0) + count;
+      }
+      for (const [reason, count] of Object.entries(choke.subagentFinishReasons)) {
+        summary.subagentFinishReasons[reason] =
+          (summary.subagentFinishReasons[reason] ?? 0) + count;
+      }
+      return summary;
+    },
+    {
+      budgetExhaustedSubagents: 0,
+      timeoutSubagents: 0,
+      sourceErrors: 0,
+      blockedOrThinSources: 0,
+      blockedOrThinByHost: {} as Record<string, number>,
+      subagentFinishReasons: {} as Record<string, number>,
+    },
+  );
+}
+
 function summarize(results: EvalResult[]) {
   const completed = results.filter((result) => !result.error);
   const correct = results.filter((result) => result.correct).length;
   const exactCorrect = results.filter((result) => result.exactCorrect).length;
   const judged = results.filter((result) => result.judge !== undefined);
   const judgeCorrect = judged.filter((result) => result.judge?.correct).length;
+  const totalLeadToolCalls = completed.reduce(
+    (sum, result) => sum + (result.metrics?.leadToolCalls ?? 0),
+    0,
+  );
+  const totalSubagentToolCalls = completed.reduce(
+    (sum, result) => sum + (result.metrics?.subagentToolCalls ?? 0),
+    0,
+  );
   const totalToolCalls = completed.reduce(
-    (sum, result) => sum + (result.metrics?.toolCalls ?? 0),
+    (sum, result) => sum + (result.metrics?.totalToolCalls ?? 0),
     0,
   );
   return {
@@ -1557,6 +1774,13 @@ function summarize(results: EvalResult[]) {
     medianLatencyMs: median(completed.map((result) => result.latencyMs)),
     averageToolCalls:
       completed.length === 0 ? 0 : totalToolCalls / completed.length,
+    averageLeadToolCalls:
+      completed.length === 0 ? 0 : totalLeadToolCalls / completed.length,
+    averageSubagentToolCalls:
+      completed.length === 0 ? 0 : totalSubagentToolCalls / completed.length,
+    totalToolCalls,
+    totalLeadToolCalls,
+    totalSubagentToolCalls,
     totalUnverifiedCitations: completed.reduce(
       (sum, result) => sum + (result.metrics?.unverifiedCitations ?? 0),
       0,
@@ -1571,6 +1795,7 @@ function summarize(results: EvalResult[]) {
     ),
     searchDiagnostics: summarizeSearchDiagnostics(results),
     fetchHealth: summarizeFetchHealth(results),
+    chokeDiagnostics: summarizeChokeDiagnostics(results),
   };
 }
 
@@ -1656,9 +1881,10 @@ async function main(): Promise<void> {
         : `judge accuracy: ${(summary.judgeAccuracy * 100).toFixed(1)}% (${summary.judgeCorrect}/${summary.judged})`,
       `errors: ${summary.errors}`,
       `median latency: ${(summary.medianLatencyMs / 1000).toFixed(1)}s`,
-      `avg tool calls: ${summary.averageToolCalls.toFixed(1)}`,
+      `avg tool calls: ${summary.averageToolCalls.toFixed(1)} (lead ${summary.averageLeadToolCalls.toFixed(1)}, subagent ${summary.averageSubagentToolCalls.toFixed(1)})`,
       `invalid evidence: ${summary.totalInvalidEvidence}/${summary.totalEvidenceChecked}`,
       `search diagnostics: events=${summary.searchDiagnostics.events}, batched=${summary.searchDiagnostics.possibleBatchedGroups}, stringified_arrays=${summary.searchDiagnostics.stringifiedArrayLikeQueries}`,
+      `choke diagnostics: budget_subagents=${summary.chokeDiagnostics.budgetExhaustedSubagents}, timeout_subagents=${summary.chokeDiagnostics.timeoutSubagents}, source_errors=${summary.chokeDiagnostics.sourceErrors}, blocked_or_thin=${summary.chokeDiagnostics.blockedOrThinSources}`,
       `fetch health: fetched=${summary.fetchHealth.fetched}, rejected=${summary.fetchHealth.rejected}, methods=${formatCountMap(summary.fetchHealth.fetchedByMethod)}`,
       `results: ${outPath}`,
     ].join("\n") + "\n",
