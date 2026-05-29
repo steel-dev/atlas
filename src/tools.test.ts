@@ -1079,8 +1079,8 @@ describe("research loop cache integration", () => {
     expect(text).toContain('"chunk":');
     expect(text).toContain('"matches":');
     expect(text).toContain('"quote": "methods and controls"');
-    expect(JSON.stringify(finalRequest.messages)).toContain(
-      "action_tool_calls_remaining",
+    expect(JSON.stringify(finalRequest.messages)).not.toContain(
+      "Budget status:",
     );
   });
 
@@ -1523,6 +1523,9 @@ describe("research loop cache integration", () => {
     );
     expect(JSON.stringify(synthesisRequest.messages)).toContain(
       "Tool not run: action tool call budget exhausted.",
+    );
+    expect(JSON.stringify(synthesisRequest.messages)).toContain(
+      "Budget status:",
     );
     expect(JSON.stringify(synthesisRequest.messages)).toContain(
       "action_tool_calls=1/1",
@@ -2154,8 +2157,8 @@ describe("plan tool", () => {
       "Outline the distinctive clues",
     );
     expect(toolResultText(followupRequest)).toContain("Plan recorded");
-    expect(JSON.stringify(followupRequest.messages)).toContain(
-      "plan/read_source_chunk/search_sources/digest_source/find_in_source/quote_source do not spend action_tool_calls",
+    expect(JSON.stringify(followupRequest.messages)).not.toContain(
+      "Budget status:",
     );
   });
 });

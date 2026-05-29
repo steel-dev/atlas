@@ -75,6 +75,7 @@ const DELEGATE_MIN_REMAINING_ACTION_CALLS = 2;
 const DELEGATE_MIN_RUNTIME_MS = 30_000;
 const SUBAGENT_SYNTHESIS_RESERVE_MS = 45_000;
 const SUBAGENT_FINDINGS_MAX_CHARS = 4_000;
+const BUDGET_STATUS_REMAINING_RATIO = 0.3;
 const FREE_TOOL_NAMES = new Set([
   "plan",
   "read_source_chunk",
@@ -149,7 +150,7 @@ function budgetStatusMessage(opts: {
   totalToolExecutions: number;
   maxTotalToolExecutions: number;
   ctx: ResearchLoopContext;
-}): string {
+}): string | null {
   const actionRemaining = opts.ctx.budget
     ? opts.ctx.budget.remainingActionCalls
     : Math.max(0, opts.maxActionToolCalls - opts.actionToolCalls);
@@ -160,6 +161,20 @@ function budgetStatusMessage(opts: {
     0,
     opts.ctx.sourceCap - opts.ctx.fetchedSources.length,
   );
+  const actionRatio =
+    opts.maxActionToolCalls > 0
+      ? actionRemaining / opts.maxActionToolCalls
+      : Number.POSITIVE_INFINITY;
+  const totalRatio =
+    opts.maxTotalToolExecutions > 0
+      ? totalRemaining / opts.maxTotalToolExecutions
+      : Number.POSITIVE_INFINITY;
+  const shouldShow =
+    actionRatio <= BUDGET_STATUS_REMAINING_RATIO ||
+    totalRatio <= BUDGET_STATUS_REMAINING_RATIO;
+
+  if (!shouldShow) return null;
+
   return [
     "Budget status:",
     `action_tool_calls=${opts.actionToolCalls}/${opts.maxActionToolCalls}`,
@@ -823,16 +838,19 @@ export async function runResearchLoop(opts: {
     }
 
     messages.push({ role: "user", content: toolResults });
-    messages.push({
-      role: "user",
-      content: budgetStatusMessage({
-        actionToolCalls: toolCalls,
-        maxActionToolCalls: maxToolCalls,
-        totalToolExecutions,
-        maxTotalToolExecutions,
-        ctx,
-      }),
+    const budgetStatus = budgetStatusMessage({
+      actionToolCalls: toolCalls,
+      maxActionToolCalls: maxToolCalls,
+      totalToolExecutions,
+      maxTotalToolExecutions,
+      ctx,
     });
+    if (budgetStatus) {
+      messages.push({
+        role: "user",
+        content: budgetStatus,
+      });
+    }
 
     if (
       totalToolExecutions >= maxTotalToolExecutions ||
