@@ -149,6 +149,13 @@ export interface ResearchLoopContext {
   sourceReservations: SourceReservations;
   caches: ResearchCaches;
   budget?: BudgetLedger;
+  /** When the estimated transcript exceeds this many tokens, older turns are
+   *  folded into a compact progress note before the next model step. Unset or
+   *  <= 0 disables compaction. */
+  compactionTriggerTokens?: number;
+  /** Approximate size of the most recent turns kept verbatim after a
+   *  compaction. Defaults to half the trigger. */
+  compactionKeepTokens?: number;
   depth?: number;
   maxDelegationDepth?: number;
   maxConcurrentSubagents?: number;
@@ -191,6 +198,12 @@ export type ResearchLoopEvent = (
     }
   | { type: "source_error"; url: string; error: string }
   | { type: "research_finished"; sourcesFetched: number }
+  | {
+      type: "context_compacted";
+      tokensBefore: number;
+      tokensAfter: number;
+      foldedMessages: number;
+    }
   | { type: "delegation_started"; tasks: string[] }
   | { type: "subagent_started"; task: string }
   | {

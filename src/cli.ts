@@ -113,6 +113,11 @@ function prettyEventBody(e: ResearchEvent): string {
         paint(DIM, "  ✓") +
         ` research done — ${e.sourcesFetched} source${e.sourcesFetched === 1 ? "" : "s"} fetched`
       );
+    case "context_compacted":
+      return paint(
+        DIM,
+        `    ⤵ context compacted — ~${Math.round(e.tokensBefore / 1000)}k → ~${Math.round(e.tokensAfter / 1000)}k tok`,
+      );
     case "delegation_started":
       return (
         paint(DIM, "    ⇣") +

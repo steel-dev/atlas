@@ -199,6 +199,9 @@ type EvalTraceEvent = {
   toolCalls?: number;
   finishReason?: string;
   markdownChars?: number;
+  tokensBefore?: number;
+  tokensAfter?: number;
+  foldedMessages?: number;
   result?: {
     verifiedSources: number;
     unverifiedCitations: number;
@@ -1217,6 +1220,8 @@ function progressLine(caseId: string, event: ResearchEvent): string | null {
       return `${caseId}: rate limited, waiting ${event.retryAfterSeconds}s`;
     case "research_finished":
       return `${caseId}: research finished with ${event.sourcesFetched} source(s)`;
+    case "context_compacted":
+      return `${caseId}: context compacted ${event.tokensBefore} -> ${event.tokensAfter} tok (${event.foldedMessages} message(s) folded)`;
     case "delegation_started":
       return `${caseId}: delegating ${event.tasks.length} sub-agent(s)`;
     case "subagent_started":
@@ -1273,6 +1278,13 @@ function traceEvent(event: ResearchEvent, started: number): EvalTraceEvent {
       return { ...base, url: event.url, error: event.error };
     case "research_finished":
       return { ...base, sourcesFetched: event.sourcesFetched };
+    case "context_compacted":
+      return {
+        ...base,
+        tokensBefore: event.tokensBefore,
+        tokensAfter: event.tokensAfter,
+        foldedMessages: event.foldedMessages,
+      };
     case "delegation_started":
       return { ...base, tasks: event.tasks };
     case "subagent_started":

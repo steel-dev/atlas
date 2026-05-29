@@ -63,6 +63,8 @@ const DEFAULT_RUNTIME_LIMITS = {
   defaultEffort: "high",
   maxOutputTokens: 16_384,
   timeoutSynthesisReserveMs: 180_000,
+  compactionTriggerTokens: 200_000,
+  compactionKeepTokens: 100_000,
 } satisfies {
   safetySourceCap: number;
   safetyMaxToolCalls: number;
@@ -74,6 +76,8 @@ const DEFAULT_RUNTIME_LIMITS = {
   defaultEffort: ResearchEffort;
   maxOutputTokens: number;
   timeoutSynthesisReserveMs: number;
+  compactionTriggerTokens: number;
+  compactionKeepTokens: number;
 };
 
 const EFFORT_BUDGET_MULTIPLIER: Record<ResearchEffort, number> = {
@@ -146,6 +150,12 @@ export type ResearchEvent = (
     }
   | { type: "source_error"; url: string; error: string }
   | { type: "research_finished"; sourcesFetched: number }
+  | {
+      type: "context_compacted";
+      tokensBefore: number;
+      tokensAfter: number;
+      foldedMessages: number;
+    }
   | { type: "delegation_started"; tasks: string[] }
   | { type: "subagent_started"; task: string }
   | {
@@ -231,6 +241,14 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
     readIntEnv("ATLAS_MAX_DELEGATION_DEPTH", 0) ?? limits.maxDelegationDepth;
   const maxConcurrentSubagents =
     readIntEnv("ATLAS_MAX_SUBAGENTS", 1) ?? limits.maxConcurrentSubagents;
+  // Set ATLAS_COMPACTION_TRIGGER_TOKENS=0 to disable compaction. Lower it for
+  // models with a sub-1M context window.
+  const compactionTriggerTokens =
+    readIntEnv("ATLAS_COMPACTION_TRIGGER_TOKENS", 0) ??
+    limits.compactionTriggerTokens;
+  const compactionKeepTokens =
+    readIntEnv("ATLAS_COMPACTION_KEEP_TOKENS", 0) ??
+    limits.compactionKeepTokens;
   const timeoutDeadlineAt =
     timeoutMs === undefined ? undefined : Date.now() + Math.floor(timeoutMs);
   const runSignal = combineSignals(signal, timeoutMs);
@@ -314,6 +332,8 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
       safetyMaxToolCalls,
       Math.max(safetyMaxToolCalls, safetyMaxToolCalls * 2),
     ),
+    compactionTriggerTokens,
+    compactionKeepTokens,
     depth: 0,
     maxDelegationDepth,
     maxConcurrentSubagents,

@@ -8,6 +8,7 @@ import type {
 import type { ResearchEffort } from "./defaults.js";
 import type { ResearchLoopContext, ResearchLoopEvent } from "./runtime.js";
 import { createSteelConcurrencyGate } from "./runtime.js";
+import { maybeCompactResearchContext } from "./compaction.js";
 import { errorMessage } from "./errors.js";
 import { parseRetryAfterSeconds } from "./steel-runtime.js";
 import {
@@ -732,6 +733,8 @@ export async function runResearchLoop(opts: {
       finishReason = preStepTimeoutReason;
       break;
     }
+
+    await maybeCompactResearchContext({ ctx, messages });
 
     let resp: { content: ModelAssistantBlock[] };
     try {

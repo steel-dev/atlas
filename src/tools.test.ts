@@ -2163,6 +2163,113 @@ describe("plan tool", () => {
   });
 });
 
+describe("context compaction", () => {
+  function compactionModel(text: string) {
+    const step = vi.fn().mockResolvedValue(
+      messageWith([{ type: "text", text }]),
+    );
+    const adapter = {
+      provider: "anthropic",
+      model: "summary-model",
+      usage: {
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: 0,
+      },
+      step: step as (
+        input: ModelStepInput,
+      ) => Promise<{ content: ModelAssistantBlock[] }>,
+    } satisfies ModelAdapter;
+    return { adapter, step };
+  }
+
+  function twoBigPlanTurns() {
+    return vi
+      .fn()
+      .mockResolvedValueOnce(
+        messageWith([
+          { type: "text", text: `BIG1_MARKER ${"x".repeat(16_000)}` },
+          toolUse("plan_1", "plan", { thought: "decompose the question" }),
+        ]),
+      )
+      .mockResolvedValueOnce(
+        messageWith([
+          { type: "text", text: `BIG2_MARKER ${"y".repeat(16_000)}` },
+          toolUse("plan_2", "plan", { thought: "keep going" }),
+        ]),
+      )
+      .mockResolvedValueOnce(finalReport());
+  }
+
+  it("folds older turns into a progress note once the context exceeds the trigger", async () => {
+    const messagesCreate = twoBigPlanTurns();
+    const { adapter, step: compactionStep } = compactionModel(
+      "COMPACTED_NOTE: the established facts so far.",
+    );
+    const ctx = createContext({ messagesCreate });
+    ctx.summaryModel = adapter;
+    ctx.compactionTriggerTokens = 200;
+    ctx.compactionKeepTokens = 50;
+
+    const result = await runResearchLoop({
+      ctx,
+      query: "What is Atlas?",
+      maxToolCalls: 10,
+    });
+    const finalRequest = messagesCreate.mock.calls[2]?.[0] as {
+      messages: Array<{ role: string; content: unknown }>;
+    };
+    const serialized = JSON.stringify(finalRequest.messages);
+
+    expect(result.finishReason).toBe("final report");
+    expect(compactionStep).toHaveBeenCalledTimes(1);
+    expect(ctx.emit).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "context_compacted" }),
+    );
+    // Question preserved; compaction note inserted; tail kept verbatim.
+    expect(finalRequest.messages[0]?.content).toBe(
+      "Research question: What is Atlas?",
+    );
+    expect(finalRequest.messages[1]?.role).toBe("user");
+    expect(String(finalRequest.messages[1]?.content)).toContain(
+      "[Context compaction]",
+    );
+    expect(String(finalRequest.messages[1]?.content)).toContain(
+      "COMPACTED_NOTE",
+    );
+    // Tail starts at an assistant message, so no tool_result is orphaned.
+    expect(finalRequest.messages[2]?.role).toBe("assistant");
+    // The older turn is folded away; the most recent turn survives verbatim.
+    expect(serialized).not.toContain("BIG1_MARKER");
+    expect(serialized).toContain("BIG2_MARKER");
+  });
+
+  it("leaves the transcript untouched when compaction is disabled", async () => {
+    const messagesCreate = twoBigPlanTurns();
+    const { adapter, step: compactionStep } = compactionModel("unused");
+    const ctx = createContext({ messagesCreate });
+    ctx.summaryModel = adapter;
+    // No compactionTriggerTokens configured -> compaction is off.
+
+    const result = await runResearchLoop({
+      ctx,
+      query: "What is Atlas?",
+      maxToolCalls: 10,
+    });
+    const finalRequest = messagesCreate.mock.calls[2]?.[0] as {
+      messages: Array<{ role: string; content: unknown }>;
+    };
+
+    expect(result.finishReason).toBe("final report");
+    expect(compactionStep).not.toHaveBeenCalled();
+    expect(ctx.emit).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: "context_compacted" }),
+    );
+    expect(JSON.stringify(finalRequest.messages)).toContain("BIG1_MARKER");
+  });
+});
+
 describe("delegation", () => {
   it("refuses delegation when finalization reserve would be consumed", async () => {
     let leadCalls = 0;
