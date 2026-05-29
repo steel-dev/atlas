@@ -90,8 +90,8 @@ escape it with the `'\''` dance: `it'\''s great`.
 
 | Hint                         | Append flag(s)              |
 | ---------------------------- | --------------------------- |
-| "go deeper" / "be thorough"  | `--effort max`              |
-| "be quick" / "fast"          | `--effort low`              |
+| "go deeper" / "be thorough"  | `--token-limit 5000000`     |
+| "be quick" / "fast"          | `--token-limit 500000`      |
 | explicit time limit          | `--timeout <seconds>`       |
 
 If atlas exits non-zero, the user-facing message is the last `atlas: ...` line in `$ATLAS_LOG`.

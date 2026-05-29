@@ -156,6 +156,15 @@ export interface ResearchLoopContext {
   /** Approximate size of the most recent turns kept verbatim after a
    *  compaction. Defaults to half the trigger. */
   compactionKeepTokens?: number;
+  /** Compaction trigger applied to sub-agents (lower than the lead's, per the
+   *  multi-agent system-card setting). Inherited by forked sub-agent contexts. */
+  subagentCompactionTriggerTokens?: number;
+  /** Verbatim tail size kept after a sub-agent compaction. */
+  subagentCompactionKeepTokens?: number;
+  /** Total token budget (test-time compute limit) shared across the lead and
+   *  every sub-agent, metered against the shared model adapter usage. The loop
+   *  stops starting new steps once this is exceeded. Unset or <= 0 = unlimited. */
+  tokenLimit?: number;
   depth?: number;
   maxDelegationDepth?: number;
   maxConcurrentSubagents?: number;

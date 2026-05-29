@@ -302,6 +302,7 @@ export const RESEARCH_SYSTEM_PROMPT =
   "Fetch broadly when needed: fetch and fetch_many store full source documents without forcing summaries into your context. Use search_sources to search across stored documents, digest_source only as an optional navigation aid for a specific current goal, and quote_source for exact wording.\n\n" +
   "How you search and what you read is up to you. For interactive sites, internal site search, pagination, or pages where search/fetch is not enough, use browser_open and browser_cdp to inspect and navigate directly. When a browser page contains evidence you may cite, call browser_extract to store it as a source before relying on it in the final answer.\n\n" +
   "When the question splits into independent sub-questions that can be investigated separately, call `delegate` to run them as parallel sub-agents. Each sub-agent works in its own isolated context and returns a concise cited summary plus the source_id and url of each source it fetched — so prefer delegating breadth over reading many long pages yourself, and reuse those source_ids with quote_source when you need exact wording. Investigate simple, single-thread questions directly.\n\n" +
+  "Orchestrate in rounds: after sub-agents return, review their findings, decide what is still missing, ambiguous, or unverified, and either run another focused `delegate` round on the remaining gaps or verify the key evidence yourself with quote_source. Do not finalize after a single delegation while important gaps remain; only write the report once the open questions are resolved or you can clearly state why they cannot be.\n\n" +
   "To think, take stock, or re-plan without searching or fetching yet, call `plan` and keep going — it does not end the run. A turn with no tool calls is treated as your final answer, so only stop calling tools when you are ready to write the report. When you have enough evidence, write a cited Markdown report; if the evidence is incomplete, say so and explain the gaps. Cite every claim with the source's URL — as a Markdown link `[title](https://…)` or a bare https URL — so each citation is independently verifiable. Never cite an internal source_id (such as `source_6`) in the report; source_id values are only handles for the read/quote tools, not citations.";
 
 export const SUBAGENT_SYSTEM_PROMPT =
@@ -309,6 +310,42 @@ export const SUBAGENT_SYSTEM_PROMPT =
   "Ground every claim in the raw content of sources you actually fetched. Search snippets, source cards, source digests, URLs, and listing/SEO/directory pages are leads to follow, not evidence — follow them to a primary or detailed source and verify with read_source_chunk or quote_source before relying on a claim. Use search/fetch/fetch_many/search_sources, and browser_open/browser_cdp/browser_extract for interactive sites, as needed.\n\n" +
   "Always investigate before answering: run at least one search and fetch at least one relevant source before writing your findings. Do not answer from prior knowledge alone — if you cannot find supporting sources, say so explicitly.\n\n" +
   "A turn with no tool calls is treated as your final answer. When you are done, write a concise findings summary — a few short paragraphs or bullet points, not a full report — and cite every claim with the source's full https URL inline. If the evidence is incomplete, state the gap plainly. Keep it tight: the lead only needs your findings and the source URLs, not a polished write-up.";
+
+export const FIXED_TEAM_PLAN_SYSTEM_PROMPT =
+  "You are the planner for a fixed team of research agents that will work in parallel on one question. Split the question into independent, self-contained sub-questions that together cover everything needed to answer it. Each sub-question must be investigable on its own by an agent that cannot see the others or this conversation, so include all the context it needs. Prefer genuinely separable angles over redundant restatements of the whole question. If the question is atomic and cannot be meaningfully split, return fewer sub-questions (even one). Respond with ONLY a JSON object: {\"subtasks\": [\"...\", \"...\"]}.";
+
+export function fixedTeamPlanPrompt(opts: {
+  query: string;
+  teamSize: number;
+}): string {
+  return [
+    `Question: ${opts.query}`,
+    `Split this into at most ${opts.teamSize} independent, self-contained sub-questions for ${opts.teamSize} parallel agents.`,
+    `Respond with only JSON: {"subtasks": ["...", "..."]} containing at most ${opts.teamSize} items.`,
+  ].join("\n\n");
+}
+
+export function fixedTeamMergePrompt(opts: {
+  outcomes: Array<{
+    task: string;
+    findings?: string;
+    error?: string;
+    sources?: Array<{ source_id?: string; url: string; title?: string }>;
+  }>;
+}): string {
+  const blocks = opts.outcomes.map((outcome, index) => {
+    const body = outcome.findings ?? outcome.error ?? "(no findings)";
+    const sources = (outcome.sources ?? [])
+      .map((source) => `${source.source_id ? `${source.source_id} ` : ""}${source.url}`)
+      .join("; ");
+    return `### Agent ${index + 1}: ${outcome.task}\n${body}${sources ? `\nSources: ${sources}` : ""}`;
+  });
+  return [
+    "A fixed team of sub-agents investigated this question in parallel. Using only their findings and the shared fetched sources, write one cohesive, cited Markdown report that answers the question. Reconcile any disagreements between agents, state remaining gaps plainly, and cite every claim with the source's URL. Do not call any tools — write the final report now.",
+    "Team findings:",
+    blocks.join("\n\n"),
+  ].join("\n\n");
+}
 
 export const STRUCTURED_FINALIZE_SYSTEM_PROMPT =
   "You are finalizing a completed research run into a structured JSON result. The read-only source tools (find_in_source, quote_source, read_source_chunk) remain available, so confirm any quote against the source you already fetched before committing it. If one concrete missing fact prevents a correct JSON result, call request_more_research with the focused gap; otherwise do not search again. Quote only text that genuinely appears in those sources, and attribute each quote to the source it actually came from; never invent quotes, spans, or sources. When you are ready, respond with only the JSON object that matches the requested schema — no further tool calls, no prose, no Markdown fences.";

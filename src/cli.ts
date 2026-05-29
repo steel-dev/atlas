@@ -4,7 +4,6 @@ import { parseArgs } from "node:util";
 import {
   research,
   type ModelProvider,
-  type ResearchEffort,
   type ResearchEvent,
 } from "./research.js";
 
@@ -18,7 +17,8 @@ A research loop searches, fetches sources, and writes a cited Markdown report.
 Options:
   -o, --out <file>            Write the markdown report to <file> (default: stdout)
       --timeout N             Overall wall-clock budget in seconds (default: none)
-      --effort LEVEL          Reasoning + exploration budget: low, medium, high, max (default: high)
+      --token-limit N         Total token budget for the run (default: 2000000; 0 = unlimited)
+      --team N                Run as a fixed team of N parallel agents (default: 1 = single agent)
       --provider PROVIDER     Model provider: anthropic, openai (default: auto)
       --model MODEL           Model name (default: provider-specific)
       --summary-model MODEL   Model for optional source digests (default: haiku on anthropic)
@@ -32,7 +32,11 @@ Options:
 Environment:
   ATLAS_PROVIDER                                optional (anthropic, openai)
   ATLAS_MODEL                                   optional
-  ATLAS_SUMMARY_MODEL                           optional (source digest model)
+  ATLAS_SUMMARY_MODEL                           optional (source digest + compaction model)
+  ATLAS_TOKEN_LIMIT                             optional (total token budget; 0 = unlimited)
+  ATLAS_TEAM_SIZE                               optional (fixed-team agent count; default 1)
+  ATLAS_THINKING_EFFORT                         optional (low, medium, high, max; default high)
+  ATLAS_COMPACTION_TRIGGER_TOKENS               optional (compact context above N tokens; 0 disables)
   ATLAS_MAX_DELEGATION_DEPTH                    optional (0 disables sub-agent delegation)
   ATLAS_MAX_SUBAGENTS                           optional (max concurrent sub-agents)
   ATLAS_BROWSER_IDLE_TTL_MS                     optional (default 120000; <=0 disables)
@@ -45,7 +49,7 @@ Environment:
 Examples:
   atlas "What changed when Cloudflare DO added SQLite?"
   atlas "..." --out report.md
-  atlas "..." --effort max
+  atlas "..." --token-limit 5000000
   atlas "..." --provider openai --model gpt-4.1
   atlas "..." --proxy
   atlas "..." --timeout 300
@@ -66,13 +70,24 @@ function parseNumber(raw: string | undefined, name: string): number | undefined 
   return n;
 }
 
-const RESEARCH_EFFORTS = new Set<ResearchEffort>(["low", "medium", "high", "max"]);
 const MODEL_PROVIDERS = new Set<ModelProvider>(["anthropic", "openai"]);
 
-function parseEffort(raw: string | undefined): ResearchEffort | undefined {
-  if (raw === undefined) return undefined;
-  if (RESEARCH_EFFORTS.has(raw as ResearchEffort)) return raw as ResearchEffort;
-  fail(`--effort must be one of: low, medium, high, max (got "${raw}")`);
+function parseTokenLimit(raw: string | undefined): number | undefined {
+  const n = parseNumber(raw, "--token-limit");
+  if (n === undefined) return undefined;
+  if (!Number.isInteger(n) || n < 0) {
+    fail(`--token-limit must be a non-negative integer (got "${raw}")`);
+  }
+  return n;
+}
+
+function parseTeam(raw: string | undefined): number | undefined {
+  const n = parseNumber(raw, "--team");
+  if (n === undefined) return undefined;
+  if (!Number.isInteger(n) || n < 1) {
+    fail(`--team must be an integer >= 1 (got "${raw}")`);
+  }
+  return n;
 }
 
 function parseProvider(raw: string | undefined): ModelProvider | undefined {
@@ -208,7 +223,8 @@ async function main(): Promise<void> {
         options: {
           out: { type: "string", short: "o" },
           timeout: { type: "string" },
-          effort: { type: "string" },
+          "token-limit": { type: "string" },
+          team: { type: "string" },
           provider: { type: "string" },
           model: { type: "string" },
           "summary-model": { type: "string" },
@@ -253,7 +269,8 @@ async function main(): Promise<void> {
   if (timeoutSeconds !== undefined && timeoutSeconds <= 0) {
     fail(`--timeout must be > 0 (got ${timeoutSeconds})`);
   }
-  const effort = parseEffort(values.effort);
+  const tokenLimit = parseTokenLimit(values["token-limit"]);
+  const teamSize = parseTeam(values.team);
   const provider = parseProvider(values.provider);
   const signal =
     timeoutSeconds !== undefined
@@ -288,7 +305,8 @@ async function main(): Promise<void> {
       model: values.model,
       summaryModel: values["summary-model"],
       openaiBaseUrl: values["base-url"],
-      effort,
+      tokenLimit,
+      teamSize,
       useProxy,
       onEvent,
       signal,

@@ -1,5 +1,22 @@
 import { describe, expect, it } from "vitest";
-import { __testing, type ModelMessage } from "./model.js";
+import {
+  __testing,
+  totalUsageTokens,
+  type ModelMessage,
+} from "./model.js";
+
+describe("totalUsageTokens", () => {
+  it("sums fresh input, output, and both cache legs", () => {
+    expect(
+      totalUsageTokens({
+        input_tokens: 100,
+        output_tokens: 20,
+        cache_creation_input_tokens: 5,
+        cache_read_input_tokens: 1000,
+      }),
+    ).toBe(1125);
+  });
+});
 
 describe("model adapter message mapping", () => {
   it("maps Atlas tool-call transcripts to OpenAI chat messages", () => {

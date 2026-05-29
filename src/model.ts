@@ -95,6 +95,17 @@ export function emptyUsageSummary(): UsageSummary {
   };
 }
 
+/** Total billed tokens across a run: fresh input, output, and both cache
+ *  legs. Used as the meter for the token budget (test-time compute limit). */
+export function totalUsageTokens(usage: UsageSummary): number {
+  return (
+    usage.input_tokens +
+    usage.output_tokens +
+    usage.cache_creation_input_tokens +
+    usage.cache_read_input_tokens
+  );
+}
+
 function addUsage(
   target: UsageSummary,
   usage: Partial<UsageSummary> | undefined,

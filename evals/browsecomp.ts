@@ -13,7 +13,6 @@ import {
 import {
   research,
   type ModelProvider,
-  type ResearchEffort,
   type ResearchEvent,
   type ResearchResult,
 } from "../src/research.js";
@@ -34,7 +33,8 @@ interface EvalOptions {
   caseIds: Set<string>;
   outPath?: string;
   timeoutMs?: number;
-  effort?: ResearchEffort;
+  tokenLimit?: number;
+  teamSize?: number;
   provider?: ModelProvider;
   model?: string;
   openaiBaseUrl?: string;
@@ -226,7 +226,8 @@ Options:
       --case-id ID         Run one case ID; repeat or comma-separate
       --out <file>         Write manifest/results/summary JSONL
       --timeout N          Per-case timeout in seconds (default: 300)
-      --effort LEVEL       Research effort: low, medium, high, max
+      --token-limit N      Total token budget per case (e.g. 1000000, 3000000, 10000000)
+      --team N             Run each case as a fixed team of N parallel agents (default: 1)
       --provider NAME      Model provider: anthropic, openai
       --model NAME         Model name
       --base-url URL       OpenAI-compatible base URL
@@ -275,11 +276,12 @@ function readPositiveNumber(raw: string, name: string): number {
   return n;
 }
 
-function readEffort(raw: string): ResearchEffort {
-  if (raw === "low" || raw === "medium" || raw === "high" || raw === "max") {
-    return raw;
+function readNonNegativeInt(raw: string, name: string): number {
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < 0) {
+    fail(`${name} must be a non-negative integer (got "${raw}")`);
   }
-  fail(`--effort must be one of: low, medium, high, max (got "${raw}")`);
+  return n;
 }
 
 function readProvider(raw: string): ModelProvider {
@@ -340,8 +342,13 @@ function parseArgs(argv: string[]): EvalOptions {
       i++;
       continue;
     }
-    if (arg === "--effort") {
-      opts.effort = readEffort(readValue(argv, i, arg));
+    if (arg === "--token-limit") {
+      opts.tokenLimit = readNonNegativeInt(readValue(argv, i, arg), arg);
+      i++;
+      continue;
+    }
+    if (arg === "--team") {
+      opts.teamSize = readPositiveInt(readValue(argv, i, arg), arg);
       i++;
       continue;
     }
@@ -1337,7 +1344,8 @@ async function runCase(
       model: opts.model,
       openaiBaseUrl: opts.openaiBaseUrl,
       timeoutMs: opts.timeoutMs,
-      effort: opts.effort,
+      tokenLimit: opts.tokenLimit,
+      teamSize: opts.teamSize,
       output: browseCompOutput(),
       includeSourceDocuments: true,
       useProxy: opts.useProxy,
@@ -1844,7 +1852,8 @@ async function main(): Promise<void> {
     seed: opts.seed,
     sample: opts.sample ?? null,
     timeoutMs: opts.timeoutMs ?? null,
-    effort: opts.effort ?? null,
+    tokenLimit: opts.tokenLimit ?? null,
+    teamSize: opts.teamSize ?? null,
     judge: opts.judge,
     judgeProvider: opts.judge
       ? resolveEvalProvider(opts.judgeProvider ?? opts.provider)

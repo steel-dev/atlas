@@ -13,10 +13,15 @@ import {
   createSourceReservations,
   createResearchCaches,
   createSteelConcurrencyGate,
+  runFixedTeamResearch,
   runResearchLoop,
   type ResearchLoopContext,
 } from "./tools.js";
-import { SUBAGENT_SYSTEM_PROMPT } from "./tool-contract.js";
+import {
+  FIXED_TEAM_PLAN_SYSTEM_PROMPT,
+  RESEARCH_SYSTEM_PROMPT,
+  SUBAGENT_SYSTEM_PROMPT,
+} from "./tool-contract.js";
 import type { SourceDocument } from "./sources.js";
 
 vi.mock("./pdf-extract.js", () => ({
@@ -2270,6 +2275,67 @@ describe("context compaction", () => {
   });
 });
 
+describe("token budget", () => {
+  it("stops starting new steps once the token budget is exhausted and finalizes", async () => {
+    let ctx: ResearchLoopContext;
+    const messagesCreate = vi.fn(async (input: ModelStepInput) => {
+      // The final-synthesis call is made without tools.
+      if (!input.tools) return finalReport();
+      ctx.model.usage.output_tokens += 5_000;
+      return messageWith([
+        toolUse(`plan_${ctx.model.usage.output_tokens}`, "plan", {
+          thought: "keep going",
+        }),
+      ]);
+    });
+    ctx = createContext({ messagesCreate });
+    ctx.tokenLimit = 8_000;
+
+    const result = await runResearchLoop({
+      ctx,
+      query: "What is Atlas?",
+      maxToolCalls: 50,
+    });
+    const synthesisRequest = messagesCreate.mock.calls.at(-1)?.[0] as {
+      tools?: unknown;
+      messages: Array<{ content: unknown }>;
+    };
+
+    // Two tool-bearing steps push usage to 10k (>= 8k); the third iteration
+    // stops on the budget before calling the model again.
+    expect(result.finishReason).toBe(
+      "final report after token budget exhausted",
+    );
+    expect(result.markdown).toContain("# Test Report");
+    expect(result.toolCalls).toBe(0); // plan is free
+    expect(messagesCreate).toHaveBeenCalledTimes(3);
+    expect(synthesisRequest.tools).toBeUndefined();
+    expect(JSON.stringify(synthesisRequest.messages)).toContain("tokens_used=");
+  });
+
+  it("does not enforce a token budget when tokenLimit is unset", async () => {
+    let calls = 0;
+    const messagesCreate = vi.fn(async (input: ModelStepInput) => {
+      calls++;
+      if (!input.tools || calls > 1) return finalReport();
+      return messageWith([toolUse("plan_1", "plan", { thought: "one step" })]);
+    });
+    const ctx = createContext({ messagesCreate });
+    // No ctx.tokenLimit configured.
+
+    const result = await runResearchLoop({
+      ctx,
+      query: "What is Atlas?",
+      maxToolCalls: 50,
+    });
+
+    expect(result.finishReason).toBe("final report");
+    expect(
+      JSON.stringify(messagesCreate.mock.calls).includes("tokens_used="),
+    ).toBe(false);
+  });
+});
+
 describe("delegation", () => {
   it("refuses delegation when finalization reserve would be consumed", async () => {
     let leadCalls = 0;
@@ -2529,5 +2595,165 @@ describe("delegation", () => {
       "delegation is not available here",
     );
     expect(result.finishReason).toBe("final report");
+  });
+
+  it("compacts a sub-agent's context at the sub-agent trigger while the lead's stays off", async () => {
+    let subCalls = 0;
+    let leadCalls = 0;
+    const messagesCreate = vi.fn(async (input: ModelStepInput) => {
+      if (input.system === SUBAGENT_SYSTEM_PROMPT) {
+        subCalls++;
+        if (subCalls <= 2) {
+          return messageWith([
+            { type: "text", text: `SUB_BIG${subCalls} ${"z".repeat(16_000)}` },
+            toolUse(`sub_plan_${subCalls}`, "plan", { thought: "investigate" }),
+          ]);
+        }
+        return messageWith([
+          {
+            type: "text",
+            text: "Findings: the answer is 42, per https://example.com/a.",
+          },
+        ]);
+      }
+      leadCalls++;
+      if (leadCalls === 1) {
+        return messageWith([
+          toolUse("delegate_1", "delegate", {
+            tasks: [{ question: "What is the answer?" }],
+          }),
+        ]);
+      }
+      return finalReport();
+    });
+    const compactionStep = vi
+      .fn()
+      .mockResolvedValue(messageWith([{ type: "text", text: "SUB_NOTE: progress." }]));
+    const ctx = createContext({ messagesCreate });
+    ctx.summaryModel = {
+      provider: "anthropic",
+      model: "summary-model",
+      usage: {
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: 0,
+      },
+      step: compactionStep as (
+        input: ModelStepInput,
+      ) => Promise<{ content: ModelAssistantBlock[] }>,
+    } satisfies ModelAdapter;
+    ctx.depth = 0;
+    ctx.maxDelegationDepth = 1;
+    ctx.maxConcurrentSubagents = 1;
+    ctx.subagentGate = createSteelConcurrencyGate(1);
+    ctx.subagentEffort = "low";
+    ctx.budget = createBudgetLedger(20, 40);
+    // Lead compaction off; sub-agent compaction on at a tiny trigger.
+    ctx.compactionTriggerTokens = undefined;
+    ctx.subagentCompactionTriggerTokens = 200;
+    ctx.subagentCompactionKeepTokens = 50;
+
+    const result = await runResearchLoop({
+      ctx,
+      query: "Solve it.",
+      maxToolCalls: 20,
+    });
+
+    expect(result.finishReason).toBe("final report");
+    expect(compactionStep).toHaveBeenCalledTimes(1);
+    expect(ctx.emit).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "context_compacted", depth: 1 }),
+    );
+  });
+});
+
+describe("fixed-team research", () => {
+  it("plans subtasks, fans out in parallel, and merges a final report", async () => {
+    const messagesCreate = vi.fn(async (input: ModelStepInput) => {
+      if (input.system === FIXED_TEAM_PLAN_SYSTEM_PROMPT) {
+        return messageWith([
+          {
+            type: "text",
+            text: JSON.stringify({ subtasks: ["Sub A?", "Sub B?"] }),
+          },
+        ]);
+      }
+      if (input.system === SUBAGENT_SYSTEM_PROMPT) {
+        return messageWith([
+          {
+            type: "text",
+            text: "Finding from agent, per https://example.com/x.",
+          },
+        ]);
+      }
+      // Merge call: RESEARCH_SYSTEM_PROMPT with no tools.
+      return finalReport();
+    });
+    const ctx = createContext({ messagesCreate });
+    ctx.depth = 0;
+    ctx.maxDelegationDepth = 1;
+    ctx.maxConcurrentSubagents = 2;
+    ctx.subagentGate = createSteelConcurrencyGate(2);
+    ctx.subagentEffort = "low";
+    ctx.budget = createBudgetLedger(40, 80);
+
+    const result = await runFixedTeamResearch({
+      ctx,
+      query: "Big question?",
+      teamSize: 2,
+      maxToolCalls: 20,
+      perAgentMaxToolCalls: 20,
+      effort: "low",
+    });
+    const mergeCall = messagesCreate.mock.calls.find(([input]) => {
+      const step = input as ModelStepInput;
+      return step.system === RESEARCH_SYSTEM_PROMPT && !step.tools;
+    });
+
+    expect(result.finishReason).toBe("fixed-team report");
+    expect(result.markdown).toContain("# Test Report");
+    expect(ctx.emit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "delegation_started",
+        tasks: ["Sub A?", "Sub B?"],
+      }),
+    );
+    expect(ctx.emit).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "subagent_started", task: "Sub A?" }),
+    );
+    expect(ctx.emit).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "subagent_started", task: "Sub B?" }),
+    );
+    // The merge transcript carries the agents' findings.
+    expect(JSON.stringify(mergeCall?.[0])).toContain("Finding from agent");
+  });
+
+  it("falls back to a single agent when the question is not splittable", async () => {
+    const messagesCreate = vi.fn(async (input: ModelStepInput) => {
+      if (input.system === FIXED_TEAM_PLAN_SYSTEM_PROMPT) {
+        return messageWith([
+          { type: "text", text: JSON.stringify({ subtasks: ["only one"] }) },
+        ]);
+      }
+      return finalReport();
+    });
+    const ctx = createContext({ messagesCreate });
+    ctx.depth = 0;
+    ctx.maxDelegationDepth = 1;
+    ctx.budget = createBudgetLedger(20, 40);
+
+    const result = await runFixedTeamResearch({
+      ctx,
+      query: "Atomic question?",
+      teamSize: 3,
+      maxToolCalls: 5,
+      effort: "low",
+    });
+
+    expect(result.finishReason).toBe("final report");
+    expect(ctx.emit).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: "delegation_started" }),
+    );
   });
 });

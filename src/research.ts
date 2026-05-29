@@ -42,6 +42,7 @@ import {
   createSourceReservations,
   createResearchCaches,
   createSteelConcurrencyGate,
+  runFixedTeamResearch,
   runResearchLoop,
   type ResearchLoopContext,
 } from "./tools.js";
@@ -53,39 +54,43 @@ import {
 import { normalizeUrlForSource } from "./url.js";
 
 const DEFAULT_RUNTIME_LIMITS = {
-  safetySourceCap: 200,
-  safetyMaxToolCalls: 80,
   maxConcurrentTools: 8,
   maxConcurrentSteelCalls: 10,
   maxDelegationDepth: 1,
   maxConcurrentSubagents: 3,
   defaultSearchLimit: 8,
-  defaultEffort: "high",
   maxOutputTokens: 16_384,
   timeoutSynthesisReserveMs: 180_000,
   compactionTriggerTokens: 200_000,
   compactionKeepTokens: 100_000,
+  subagentCompactionTriggerTokens: 100_000,
+  subagentCompactionKeepTokens: 50_000,
 } satisfies {
-  safetySourceCap: number;
-  safetyMaxToolCalls: number;
   maxConcurrentTools: number;
   maxConcurrentSteelCalls: number;
   maxDelegationDepth: number;
   maxConcurrentSubagents: number;
   defaultSearchLimit: number;
-  defaultEffort: ResearchEffort;
   maxOutputTokens: number;
   timeoutSynthesisReserveMs: number;
   compactionTriggerTokens: number;
   compactionKeepTokens: number;
+  subagentCompactionTriggerTokens: number;
+  subagentCompactionKeepTokens: number;
 };
 
-const EFFORT_BUDGET_MULTIPLIER: Record<ResearchEffort, number> = {
-  low: 0.5,
-  medium: 0.75,
-  high: 1,
-  max: 2,
-};
+// Total token budget = the single test-time compute knob. Tool-call and source
+// safety caps are derived from it (and floored) so the token budget — not a
+// hand-tuned effort multiplier — is what governs how far a run scales.
+const DEFAULT_TOKEN_LIMIT = 2_000_000;
+const TOKENS_PER_TOOL_CALL = 8_000;
+const TOKENS_PER_SOURCE = 20_000;
+const MIN_SAFETY_TOOL_CALLS = 40;
+const MIN_SAFETY_SOURCE_CAP = 80;
+// Thinking stays always-on adaptive; this is only the per-step effort hint.
+// Override with ATLAS_THINKING_EFFORT (e.g. =max for system-card parity).
+const DEFAULT_THINKING_EFFORT: ResearchEffort = "high";
+const MAX_TEAM_SIZE = 8;
 
 export type { ModelProvider, UsageSummary } from "./model.js";
 export type { ResearchEffort } from "./defaults.js";
@@ -186,7 +191,13 @@ export interface ResearchOptions {
   steelBaseUrl?: string;
   useProxy?: boolean;
   timeoutMs?: number;
-  effort?: ResearchEffort;
+  /** Total token budget for the run (test-time compute limit), shared across
+   *  the lead and all sub-agents. Omit to use the default; set to 0 for
+   *  unlimited. Per-step thinking is controlled by ATLAS_THINKING_EFFORT. */
+  tokenLimit?: number;
+  /** Run as a fixed team of N parallel agents (plan -> fan-out -> merge) instead
+   *  of a single agent. >= 2 enables the team; 1 (default) is single-agent. */
+  teamSize?: number;
   output?: ResearchOutputOptions;
   includeSourceDocuments?: boolean;
   onEvent?: (event: ResearchEvent) => void;
@@ -206,7 +217,8 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
     steelBaseUrl: steelBaseUrlOverride,
     useProxy = false,
     timeoutMs,
-    effort,
+    tokenLimit: tokenLimitOverride,
+    teamSize: teamSizeOverride,
     output,
     includeSourceDocuments = false,
     onEvent,
@@ -229,13 +241,21 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
   }
 
   const limits = DEFAULT_RUNTIME_LIMITS;
-  const resolvedEffort = effort ?? limits.defaultEffort;
-  const effortBudgetMultiplier = EFFORT_BUDGET_MULTIPLIER[resolvedEffort];
-  const safetySourceCap = Math.round(
-    limits.safetySourceCap * effortBudgetMultiplier,
+  const thinkingEffort = resolveThinkingEffort();
+  const tokenLimit =
+    tokenLimitOverride ??
+    readIntEnv("ATLAS_TOKEN_LIMIT", 0) ??
+    DEFAULT_TOKEN_LIMIT;
+  // Caps are derived from the budget (unlimited tokens fall back to the default
+  // budget for sizing) so the token limit binds before these safety backstops.
+  const effectiveLimitForCaps = tokenLimit > 0 ? tokenLimit : DEFAULT_TOKEN_LIMIT;
+  const safetyMaxToolCalls = Math.max(
+    MIN_SAFETY_TOOL_CALLS,
+    Math.ceil(effectiveLimitForCaps / TOKENS_PER_TOOL_CALL),
   );
-  const safetyMaxToolCalls = Math.round(
-    limits.safetyMaxToolCalls * effortBudgetMultiplier,
+  const safetySourceCap = Math.max(
+    MIN_SAFETY_SOURCE_CAP,
+    Math.ceil(effectiveLimitForCaps / TOKENS_PER_SOURCE),
   );
   const maxDelegationDepth =
     readIntEnv("ATLAS_MAX_DELEGATION_DEPTH", 0) ?? limits.maxDelegationDepth;
@@ -249,6 +269,10 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
   const compactionKeepTokens =
     readIntEnv("ATLAS_COMPACTION_KEEP_TOKENS", 0) ??
     limits.compactionKeepTokens;
+  const teamSize = Math.min(
+    MAX_TEAM_SIZE,
+    Math.max(1, teamSizeOverride ?? readIntEnv("ATLAS_TEAM_SIZE", 1) ?? 1),
+  );
   const timeoutDeadlineAt =
     timeoutMs === undefined ? undefined : Date.now() + Math.floor(timeoutMs);
   const runSignal = combineSignals(signal, timeoutMs);
@@ -334,20 +358,33 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
     ),
     compactionTriggerTokens,
     compactionKeepTokens,
+    subagentCompactionTriggerTokens: limits.subagentCompactionTriggerTokens,
+    subagentCompactionKeepTokens: limits.subagentCompactionKeepTokens,
+    tokenLimit,
     depth: 0,
     maxDelegationDepth,
     maxConcurrentSubagents,
     subagentGate: createSteelConcurrencyGate(maxConcurrentSubagents),
-    subagentEffort: resolvedEffort,
+    subagentEffort: thinkingEffort,
   };
 
   try {
-    const run = await runResearchLoop({
-      ctx,
-      query,
-      maxToolCalls: safetyMaxToolCalls,
-      effort: resolvedEffort,
-    });
+    const run =
+      teamSize >= 2
+        ? await runFixedTeamResearch({
+            ctx,
+            query,
+            teamSize,
+            maxToolCalls: safetyMaxToolCalls,
+            perAgentMaxToolCalls: safetyMaxToolCalls,
+            effort: thinkingEffort,
+          })
+        : await runResearchLoop({
+            ctx,
+            query,
+            maxToolCalls: safetyMaxToolCalls,
+            effort: thinkingEffort,
+          });
     const runs: ResearchRun[] = [
       {
         fetchedUrls: run.fetchedUrls,
@@ -380,7 +417,7 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
         messages: run.messages,
         output,
         maxTokens: limits.maxOutputTokens,
-        effort: effort ?? limits.defaultEffort,
+        effort: thinkingEffort,
         signal: runSignal,
       });
       structured = structuredResult.value;
@@ -759,6 +796,19 @@ function readIntEnv(name: string, min: number): number | undefined {
   if (!raw?.trim()) return undefined;
   const n = Math.floor(Number(raw));
   return Number.isFinite(n) && n >= min ? n : undefined;
+}
+
+function resolveThinkingEffort(): ResearchEffort {
+  const raw = readEnv("ATLAS_THINKING_EFFORT");
+  if (raw === "low" || raw === "medium" || raw === "high" || raw === "max") {
+    return raw;
+  }
+  if (raw) {
+    throw new Error(
+      `research: ATLAS_THINKING_EFFORT must be one of: low, medium, high, max (got "${raw}")`,
+    );
+  }
+  return DEFAULT_THINKING_EFFORT;
 }
 
 function resolveProvider(provider: ModelProvider | undefined): ModelProvider {
