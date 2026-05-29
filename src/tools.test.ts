@@ -905,7 +905,10 @@ describe("research loop cache integration", () => {
     expect(request.tools.map((tool) => tool.name)).toEqual([
       "search",
       "fetch",
+      "fetch_many",
       "read_source_chunk",
+      "search_sources",
+      "digest_source",
       "find_in_source",
       "quote_source",
       "browser_open",
@@ -965,14 +968,15 @@ describe("research loop cache integration", () => {
     expect(toolResultText(followupRequest)).toContain(
       '"canonical_url": "https://example.com/source"',
     );
-    expect(toolResultText(followupRequest)).toContain('"chunk"');
+    expect(toolResultText(followupRequest)).toContain('"chunks"');
     expect(toolResultText(followupRequest)).not.toContain(
       '"extraction_method"',
     );
-    expect(toolResultText(followupRequest)).toContain('"content"');
+    expect(toolResultText(followupRequest)).toContain('"preview"');
+    expect(toolResultText(followupRequest)).toContain('"raw_access"');
   });
 
-  it("continues reading a fetched source by URL and offset", async () => {
+  it("continues reading a fetched source by source id and chunk", async () => {
     const scrape = vi.fn(async () => ({
       content: {
         markdown: `# Primary Source\n\n${"Line-readable evidence about methods and controls. ".repeat(30)}`,
@@ -991,10 +995,9 @@ describe("research loop cache integration", () => {
       )
       .mockResolvedValueOnce(
         messageWith([
-          toolUse("fetch_2", "fetch", {
-            url: "https://example.com/source",
-            offset: 80,
-            max_chars: 400,
+          toolUse("read_1", "read_source_chunk", {
+            source_id: "source_1",
+            chunk_index: 0,
           }),
         ]),
       )
@@ -1015,7 +1018,8 @@ describe("research loop cache integration", () => {
     expect(toolResultText(readRequest)).toContain(
       '"url": "https://example.com/source"',
     );
-    expect(toolResultText(readRequest)).toContain('"offset": 80');
+    expect(toolResultText(readRequest)).toContain('"chunk"');
+    expect(toolResultText(readRequest)).toContain('"content"');
     expect(toolResultText(readRequest)).toContain("Line-readable evidence");
   });
 
@@ -1077,6 +1081,125 @@ describe("research loop cache integration", () => {
     expect(text).toContain('"quote": "methods and controls"');
     expect(JSON.stringify(finalRequest.messages)).toContain(
       "action_tool_calls_remaining",
+    );
+  });
+
+  it("fetches many sources then searches the stored source set", async () => {
+    const scrape = vi.fn(async (request: { url?: string }) => ({
+      content: {
+        markdown: request.url?.endsWith("/two")
+          ? "# Second Source\n\nThe second clue is only in the second source."
+          : "# First Source\n\nThe first source has background.",
+      },
+      metadata: {
+        title: request.url?.endsWith("/two") ? "Second Source" : "First Source",
+      },
+    }));
+    const messagesCreate = vi
+      .fn()
+      .mockResolvedValueOnce(
+        messageWith([
+          toolUse("fetch_many_1", "fetch_many", {
+            urls: ["https://example.com/one", "https://example.com/two"],
+            preview_chars: 40,
+          }),
+        ]),
+      )
+      .mockResolvedValueOnce(
+        messageWith([
+          toolUse("search_sources_1", "search_sources", {
+            query: "second clue",
+          }),
+        ]),
+      )
+      .mockResolvedValueOnce(finalReport());
+    const ctx = createContext({ messagesCreate, scrape });
+
+    const result = await runResearchLoop({
+      ctx,
+      query: "What is Atlas?",
+      maxToolCalls: 3,
+    });
+    const fetchRequest = messagesCreate.mock.calls[1]?.[0] as {
+      messages: Array<{ content: unknown }>;
+    };
+    const searchRequest = messagesCreate.mock.calls[2]?.[0] as {
+      messages: Array<{ content: unknown }>;
+    };
+
+    expect(result.finishReason).toBe("final report");
+    expect(result.toolCalls).toBe(1);
+    expect(scrape).toHaveBeenCalledTimes(2);
+    expect(ctx.fetchedSources).toHaveLength(2);
+    expect(toolResultText(fetchRequest)).toContain('"source_id": "source_1"');
+    expect(toolResultText(fetchRequest)).toContain('"source_id": "source_2"');
+    expect(toolResultText(searchRequest)).toContain("second clue");
+    expect(toolResultText(searchRequest)).toContain('"source_id": "source_2"');
+  });
+
+  it("digests a stored source without using digest text as evidence", async () => {
+    const scrape = vi.fn(async () => ({
+      content: {
+        markdown:
+          "# Digest Source\n\nAlpha Beta appears in a paragraph that may guide later verification.",
+      },
+      metadata: { title: "Digest Source" },
+    }));
+    const digestCreate = vi.fn().mockResolvedValueOnce(
+      messageWith([
+        {
+          type: "text",
+          text: "Inspect the paragraph containing Alpha Beta, then verify it with raw source tools.",
+        },
+      ]),
+    );
+    const messagesCreate = vi
+      .fn()
+      .mockResolvedValueOnce(
+        messageWith([
+          toolUse("fetch_1", "fetch", { url: "https://example.com/digest" }),
+        ]),
+      )
+      .mockResolvedValueOnce(
+        messageWith([
+          toolUse("digest_1", "digest_source", {
+            source_id: "source_1",
+            goal: "Find promising verification points.",
+          }),
+        ]),
+      )
+      .mockResolvedValueOnce(finalReport());
+    const ctx = createContext({ messagesCreate, scrape });
+    ctx.summaryModel = {
+      provider: "anthropic",
+      model: "digest-model",
+      usage: {
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: 0,
+      },
+      step: digestCreate as (
+        input: ModelStepInput,
+      ) => Promise<{ content: ModelAssistantBlock[] }>,
+    } satisfies ModelAdapter;
+
+    const result = await runResearchLoop({
+      ctx,
+      query: "What is Atlas?",
+      maxToolCalls: 3,
+    });
+    const digestRequest = messagesCreate.mock.calls[2]?.[0] as {
+      messages: Array<{ content: unknown }>;
+    };
+
+    expect(result.finishReason).toBe("final report");
+    expect(result.toolCalls).toBe(1);
+    expect(digestCreate).toHaveBeenCalledTimes(1);
+    expect(toolResultText(digestRequest)).toContain('"goal"');
+    expect(toolResultText(digestRequest)).toContain("Alpha Beta");
+    expect(toolResultText(digestRequest)).toContain(
+      "Digest is only a navigation aid",
     );
   });
 
@@ -1560,6 +1683,13 @@ describe("research loop cache integration", () => {
           }),
         ]),
       )
+      .mockResolvedValueOnce(
+        messageWith([
+          toolUse("search_sources_1", "search_sources", {
+            query: "TAIL_MARKER",
+          }),
+        ]),
+      )
       .mockResolvedValueOnce(finalReport());
     const ctx = createContext({ messagesCreate, scrape });
 
@@ -1571,7 +1701,11 @@ describe("research loop cache integration", () => {
     const followupRequest = messagesCreate.mock.calls[1]?.[0] as {
       messages: Array<{ content: unknown }>;
     };
+    const searchRequest = messagesCreate.mock.calls[2]?.[0] as {
+      messages: Array<{ content: unknown }>;
+    };
     const toolText = toolResultText(followupRequest);
+    const searchText = toolResultText(searchRequest);
 
     expect(scrape).not.toHaveBeenCalled();
     expect(
@@ -1583,7 +1717,7 @@ describe("research loop cache integration", () => {
     expect(toolText).toContain('"source_kind": "discovery_page"');
     expect(toolText).toContain("https://example.com/article/123");
     expect(toolText).toContain("Useful Article");
-    expect(toolText).toContain("TAIL_MARKER");
+    expect(searchText).toContain("TAIL_MARKER");
   });
 
   it("extracts PDF URLs before using Steel", async () => {
@@ -1918,7 +2052,7 @@ describe("plan tool", () => {
     );
     expect(toolResultText(followupRequest)).toContain("Plan recorded");
     expect(JSON.stringify(followupRequest.messages)).toContain(
-      "plan/read_source_chunk/find_in_source/quote_source do not spend action_tool_calls",
+      "plan/read_source_chunk/search_sources/digest_source/find_in_source/quote_source do not spend action_tool_calls",
     );
   });
 });

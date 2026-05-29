@@ -4,11 +4,14 @@ import {
   createSourceDocument,
   extractionMetadataFromBrowser,
   findSourceDocumentByUrl,
-  formatFetchResult,
+  formatSourceCard,
   storeMarkdown,
 } from "./source-documents.js";
 import { htmlToMarkdown } from "./html-extract.js";
-import { DEFAULT_FETCH_CHARS } from "./tool-contract.js";
+import {
+  DEFAULT_FETCH_PREVIEW_CHARS,
+  MAX_FETCH_PREVIEW_CHARS,
+} from "./tool-contract.js";
 import { normalizeFetchUrl } from "./fetch-tool.js";
 
 const BROWSER_CDP_OUTPUT_CHARS = 60_000;
@@ -103,9 +106,9 @@ export async function execBrowserExtract(
   const snapshot = await extractCurrentPage(ctx.browserSessionLease.resource);
   const normalizedUrl = normalizeFetchUrl(snapshot.url);
   const existing = findSourceDocumentByUrl(ctx, normalizedUrl);
-  if (existing) return formatFetchResult(existing, 0, maxChars);
+  if (existing) return formatSourceCard(existing, maxChars);
   if (ctx.fetchedSources.length >= ctx.sourceCap) {
-    return `Fetched source cap reached (${ctx.sourceCap}). Continue reading fetched URLs or write the report.`;
+    return `Fetched source cap reached (${ctx.sourceCap}). Search or read stored sources, or write the report.`;
   }
 
   const extracted = htmlToMarkdown(snapshot.html, snapshot.url);
@@ -148,7 +151,7 @@ export async function execBrowserExtract(
     attempts: document.metadata.attempts,
     qualityWarnings: document.metadata.qualityWarnings,
   });
-  return formatFetchResult(document, 0, maxChars);
+  return formatSourceCard(document, maxChars);
 }
 
 export async function closeBrowserLease(ctx: ResearchLoopContext): Promise<void> {
@@ -195,8 +198,11 @@ function readMaxChars(
   args: BrowserExtractToolInput,
   ctx: ResearchLoopContext,
 ): number | string {
-  const raw = args.max_chars ?? ctx.fetchSnippetChars ?? DEFAULT_FETCH_CHARS;
-  const maxChars = Math.max(1, Math.floor(Number(raw)));
+  const raw = args.max_chars ?? ctx.fetchSnippetChars ?? DEFAULT_FETCH_PREVIEW_CHARS;
+  const maxChars = Math.min(
+    MAX_FETCH_PREVIEW_CHARS,
+    Math.max(1, Math.floor(Number(raw))),
+  );
   if (!Number.isFinite(maxChars)) {
     return "Error: max_chars must be a number.";
   }

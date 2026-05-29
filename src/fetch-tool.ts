@@ -1,5 +1,4 @@
 import type { ResearchLoopContext, SourceCacheEntry } from "./runtime.js";
-import type { ModelAssistantBlock } from "./model.js";
 import type {
   SourceDocument,
   SourceExtractionAttempt,
@@ -9,8 +8,7 @@ import {
   extractionMetadataFromHtml,
   extractionMetadataFromPdf,
   findSourceDocumentByUrl,
-  formatFetchResult,
-  formatSourceSummary,
+  formatSourceCard,
   storeMarkdown,
 } from "./source-documents.js";
 import { extractSourceWithBrowser } from "./browser-extract.js";
@@ -18,23 +16,28 @@ import { errorMessage } from "./errors.js";
 import { extractPdfText } from "./pdf-extract.js";
 import { looksBlocked } from "./steel.js";
 import {
-  DEFAULT_FETCH_CHARS,
-  FETCH_SUMMARY_SYSTEM_PROMPT,
-  MAX_FETCH_CHARS,
-  fetchSummaryPrompt,
+  DEFAULT_FETCH_PREVIEW_CHARS,
+  MAX_FETCH_PREVIEW_CHARS,
 } from "./tool-contract.js";
 import { htmlToMarkdown } from "./html-extract.js";
 import { normalizeUrlForSource } from "./url.js";
 
 export interface FetchToolInput {
   url?: string;
-  offset?: number;
+  preview_chars?: number;
+  max_chars?: number;
+}
+
+export interface FetchManyToolInput {
+  urls?: string[];
+  preview_chars?: number;
   max_chars?: number;
 }
 
 export interface FetchOutcome {
   text: string;
   fetchedUrl?: string;
+  fetchedUrls?: string[];
 }
 
 interface DirectExtractionOutcome {
@@ -61,9 +64,7 @@ const ERROR_TITLE_PATTERN =
   /\b(?:404|not found|access denied|forbidden|error report|captcha|just a moment|sorry)\b/i;
 const SEARCH_LISTING_TITLE_PATTERN =
   /\b(?:search results?|advanced search|site search)\b|검색/i;
-const SUMMARY_INPUT_CHARS = 24_000;
-const SUMMARY_MAX_TOKENS = 512;
-const SUMMARY_MIN_SOURCE_CHARS = 1_200;
+const FETCH_MANY_MAX_URLS = 12;
 
 function totalSourceSlots(ctx: ResearchLoopContext): number {
   return ctx.fetchedSources.length + ctx.sourceReservations.sourceSlots;
@@ -78,7 +79,7 @@ function reserveSource(
     return `Already being fetched: ${url}. Try another source or continue after this fetch completes.`;
   }
   if (totalSourceSlots(ctx) >= ctx.sourceCap) {
-    return `Fetched source cap reached (${ctx.sourceCap}). Continue reading fetched URLs with offset/max_chars or write the report.`;
+    return `Fetched source cap reached (${ctx.sourceCap}). Search or read stored sources, or write the report.`;
   }
 
   ctx.sourceReservations.urls.add(normalizedUrl);
@@ -327,28 +328,23 @@ function titleFromPdfUrl(url: string): string {
   }
 }
 
-function readOffset(args: FetchToolInput): number | string {
-  const raw = args.offset ?? 0;
-  const offset = Math.floor(Number(raw));
-  if (!Number.isFinite(offset) || offset < 0) {
-    return "Error: fetch offset must be a non-negative integer.";
-  }
-  return offset;
-}
-
-function readMaxChars(
-  args: FetchToolInput,
+function readPreviewChars(
+  args: FetchToolInput | FetchManyToolInput,
   ctx: ResearchLoopContext,
 ): number | string {
-  const raw = args.max_chars ?? ctx.fetchSnippetChars ?? DEFAULT_FETCH_CHARS;
-  const maxChars = Math.min(
-    MAX_FETCH_CHARS,
+  const raw =
+    args.preview_chars ??
+    args.max_chars ??
+    ctx.fetchSnippetChars ??
+    DEFAULT_FETCH_PREVIEW_CHARS;
+  const previewChars = Math.min(
+    MAX_FETCH_PREVIEW_CHARS,
     Math.max(1, Math.floor(Number(raw))),
   );
-  if (!Number.isFinite(maxChars)) {
-    return "Error: fetch max_chars must be a number.";
+  if (!Number.isFinite(previewChars)) {
+    return "Error: preview_chars must be a number.";
   }
-  return maxChars;
+  return previewChars;
 }
 
 async function fetchSourceDocument(
@@ -422,100 +418,12 @@ async function fetchSourceDocument(
   return document;
 }
 
-function summaryText(content: ModelAssistantBlock[]): string {
-  return content
-    .map((block) => (block.type === "text" ? block.text : ""))
-    .join("")
-    .trim();
-}
-
-function shouldSummarizeSource(
-  ctx: ResearchLoopContext,
-  document: SourceDocument,
-  offset: number,
-): boolean {
-  if (offset > 0) return false;
-  if (!ctx.query?.trim()) return false;
-  if (document.markdown.length <= SUMMARY_MIN_SOURCE_CHARS) return false;
-  const isDiscoveryPage =
-    document.metadata.qualityWarnings?.some((warning) =>
-      warning.startsWith("search_listing_page"),
-    ) ?? false;
-  return !isDiscoveryPage;
-}
-
-async function computeSourceSummary(
-  ctx: ResearchLoopContext,
-  document: SourceDocument,
-  query: string,
-): Promise<string> {
-  const model = ctx.summaryModel ?? ctx.model;
-  const resp = await model.step({
-    system: FETCH_SUMMARY_SYSTEM_PROMPT,
-    messages: [
-      {
-        role: "user",
-        content: fetchSummaryPrompt({
-          query,
-          title: document.title,
-          url: document.url,
-          content: document.markdown.slice(0, SUMMARY_INPUT_CHARS),
-        }),
-      },
-    ],
-    maxTokens: SUMMARY_MAX_TOKENS,
-    signal: ctx.signal,
-  });
-  return summaryText(resp.content);
-}
-
-async function getSourceSummary(
-  ctx: ResearchLoopContext,
-  document: SourceDocument,
-  query: string,
-): Promise<string | null> {
-  const key = `${query}\u0000${document.canonicalUrl}`;
-  let summaryPromise = ctx.caches.summaries.get(key);
-  if (!summaryPromise) {
-    summaryPromise = computeSourceSummary(ctx, document, query);
-    ctx.caches.summaries.set(key, summaryPromise);
-  }
-  try {
-    const summary = await summaryPromise;
-    if (!summary) {
-      ctx.caches.summaries.delete(key);
-      return null;
-    }
-    return summary;
-  } catch {
-    ctx.caches.summaries.delete(key);
-    return null;
-  }
-}
-
-async function renderFetchOutput(
-  ctx: ResearchLoopContext,
-  document: SourceDocument,
-  offset: number,
-  maxChars: number,
-): Promise<string> {
-  const query = ctx.query?.trim();
-  if (!query || !shouldSummarizeSource(ctx, document, offset)) {
-    return formatFetchResult(document, offset, maxChars);
-  }
-  const summary = await getSourceSummary(ctx, document, query);
-  if (summary === null) return formatFetchResult(document, offset, maxChars);
-  return formatSourceSummary(document, summary);
-}
-
 export async function execFetch(
   args: FetchToolInput,
   ctx: ResearchLoopContext,
 ): Promise<FetchOutcome> {
-  const offset = readOffset(args);
-  if (typeof offset === "string") return { text: offset };
-  const maxChars = readMaxChars(args, ctx);
-  if (typeof maxChars === "string") return { text: maxChars };
+  const previewChars = readPreviewChars(args, ctx);
+  if (typeof previewChars === "string") return { text: previewChars };
 
   const requestedUrl = String(args.url ?? "").trim();
   const validationError = validateHttpUrl(requestedUrl);
@@ -523,7 +431,7 @@ export async function execFetch(
   const normalizedUrl = normalizeFetchUrl(requestedUrl);
   const existing = findSourceDocumentByUrl(ctx, normalizedUrl);
   if (existing) {
-    return { text: formatFetchResult(existing, offset, maxChars) };
+    return { text: formatSourceCard(existing, previewChars) };
   }
 
   ctx.abort();
@@ -550,7 +458,7 @@ export async function execFetch(
 
     return {
       fetchedUrl: fetchedThisCall ? document.url : undefined,
-      text: await renderFetchOutput(ctx, document, offset, maxChars),
+      text: formatSourceCard(document, previewChars),
     };
   } catch (err) {
     ctx.caches.sources.delete(normalizedUrl);
@@ -561,6 +469,59 @@ export async function execFetch(
       error: message,
     });
     return { text: `Fetch error: ${message}` };
+  }
+}
+
+export async function execFetchMany(
+  args: FetchManyToolInput,
+  ctx: ResearchLoopContext,
+): Promise<FetchOutcome> {
+  const previewChars = readPreviewChars(args, ctx);
+  if (typeof previewChars === "string") return { text: previewChars };
+
+  const urls = Array.isArray(args.urls)
+    ? [...new Set(args.urls.map((url) => String(url ?? "").trim()).filter(Boolean))]
+    : [];
+  if (urls.length === 0) {
+    return { text: "Error: fetch_many requires a non-empty `urls` array." };
+  }
+  if (urls.length > FETCH_MANY_MAX_URLS) {
+    return {
+      text: `Error: fetch_many accepts at most ${FETCH_MANY_MAX_URLS} URLs per call.`,
+    };
+  }
+
+  const outcomes = await Promise.all(
+    urls.map(async (url) => {
+      const validationError = validateHttpUrl(url);
+      if (validationError) return { url, error: validationError };
+      const out = await execFetch({ url, preview_chars: previewChars }, ctx);
+      const parsed = parseJsonResult(out.text);
+      if (!parsed.ok) return { url, error: out.text };
+      return {
+        url,
+        ...(out.fetchedUrl ? { fetched_url: out.fetchedUrl } : {}),
+        result: parsed.value,
+      };
+    }),
+  );
+  const fetchedUrls = outcomes
+    .map((outcome) =>
+      "fetched_url" in outcome ? String(outcome.fetched_url) : undefined,
+    )
+    .filter((url): url is string => Boolean(url));
+
+  return {
+    fetchedUrls,
+    text: JSON.stringify({ sources: outcomes }, null, 2),
+  };
+}
+
+function parseJsonResult(text: string): { ok: true; value: unknown } | { ok: false } {
+  try {
+    return { ok: true, value: JSON.parse(text) as unknown };
+  } catch {
+    return { ok: false };
   }
 }
 

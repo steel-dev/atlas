@@ -21,7 +21,7 @@ Options:
       --effort LEVEL          Reasoning + exploration budget: low, medium, high, max (default: high)
       --provider PROVIDER     Model provider: anthropic, openai (default: auto)
       --model MODEL           Model name (default: provider-specific)
-      --summary-model MODEL   Cheap model for per-source summaries (default: haiku on anthropic)
+      --summary-model MODEL   Model for optional source digests (default: haiku on anthropic)
       --base-url URL          OpenAI-compatible base URL (provider=openai)
       --proxy                 Route Steel search and fetch requests through proxy
       --json                  Emit one JSON event per line on stderr
@@ -32,7 +32,7 @@ Options:
 Environment:
   ATLAS_PROVIDER                                optional (anthropic, openai)
   ATLAS_MODEL                                   optional
-  ATLAS_SUMMARY_MODEL                           optional (per-source summary model)
+  ATLAS_SUMMARY_MODEL                           optional (source digest model)
   ATLAS_MAX_DELEGATION_DEPTH                    optional (0 disables sub-agent delegation)
   ATLAS_MAX_SUBAGENTS                           optional (max concurrent sub-agents)
   ATLAS_ANTHROPIC_API_KEY or ANTHROPIC_API_KEY  required for provider=anthropic

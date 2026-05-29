@@ -12,6 +12,8 @@ import { normalizeUrlForSource } from "./url.js";
 const STORED_MARKDOWN_CAP = 500_000;
 const SOURCE_CHUNK_CHARS = 12_000;
 const DISCOVERY_LINK_LIMIT = 20;
+const SOURCE_CARD_PREVIEW_CHARS = 700;
+const SOURCE_SEARCH_CONTEXT_CHARS = 180;
 
 function fallbackSourceId(url: string): string {
   let hash = 5381;
@@ -308,11 +310,18 @@ export function formatFetchResult(
   return JSON.stringify(result, null, 2);
 }
 
-export function formatSourceSummary(
+export function formatSourceCard(
   document: SourceDocument,
-  summary: string,
+  previewChars = SOURCE_CARD_PREVIEW_CHARS,
 ): string {
   const qualityWarnings = document.metadata.qualityWarnings ?? [];
+  const isDiscoveryPage = document.metadata.qualityWarnings?.some((warning) =>
+    warning.startsWith("search_listing_page"),
+  ) ?? false;
+  const previewEnd = Math.min(
+    document.markdown.length,
+    Math.max(0, Math.floor(previewChars)),
+  );
   const result = {
     source_id: document.sourceId,
     title: document.title,
@@ -321,12 +330,52 @@ export function formatSourceSummary(
     ...(qualityWarnings.length > 0
       ? { source_quality: { warnings: qualityWarnings } }
       : {}),
-    summary,
+    ...(document.metadata.method &&
+    (document.metadata.method !== "steel_markdown" ||
+      (document.metadata.attempts?.length ?? 0) > 0)
+      ? {
+          extraction: {
+            method: document.metadata.method,
+            ...(document.metadata.contentType
+              ? { content_type: document.metadata.contentType }
+              : {}),
+            ...(document.metadata.finalUrl
+              ? { final_url: document.metadata.finalUrl }
+              : {}),
+            ...(document.metadata.attempts && document.metadata.attempts.length > 0
+              ? { attempts: document.metadata.attempts }
+              : {}),
+            ...(qualityWarnings.length > 0
+              ? { quality_warnings: qualityWarnings }
+              : {}),
+            notes: document.metadata.extractionNotes,
+          },
+        }
+      : {}),
+    ...(isDiscoveryPage
+      ? {
+          discovery: {
+            source_kind: "discovery_page",
+            links: (document.metadata.discoveredLinks ?? []).slice(
+              0,
+              DISCOVERY_LINK_LIMIT,
+            ),
+          },
+        }
+      : {}),
     source_length_chars: document.markdown.length,
+    stored_chars: document.storedChars,
+    original_chars: document.originalChars,
+    truncated: document.truncated,
     chunk_count: document.chunks.length,
-    next_chunk: document.chunks.length > 1 ? 1 : null,
+    chunks: document.chunks.map((chunk) => ({
+      index: chunk.index,
+      start: chunk.start,
+      end: chunk.end,
+    })),
+    ...(previewEnd > 0 ? { preview: document.markdown.slice(0, previewEnd) } : {}),
     raw_access:
-      "Condensed, question-focused summary. For exact wording use quote_source or find_in_source; read full text with read_source_chunk; or fetch this URL again (optionally with offset) for raw Markdown.",
+      "Stored as a source document. Use search_sources to search across stored sources, read_source_chunk for raw text, digest_source for an optional goal-focused map, or quote_source for exact evidence.",
   };
   return JSON.stringify(result, null, 2);
 }
@@ -414,6 +463,99 @@ export function findInSource(
     null,
     2,
   );
+}
+
+export function searchSourceDocuments(
+  documents: SourceDocument[],
+  query: string,
+  maxResults: number,
+): string {
+  const terms = searchTerms(query);
+  if (terms.length === 0) {
+    return "Error: search_sources requires a non-empty `query`.";
+  }
+
+  const results: Array<{
+    source_id: string;
+    title: string;
+    url: string;
+    canonical_url: string;
+    chunk_index: number;
+    start: number;
+    end: number;
+    score: number;
+    snippet: string;
+  }> = [];
+
+  for (const document of documents) {
+    for (const chunk of document.chunks) {
+      const chunkText = document.markdown.slice(chunk.start, chunk.end);
+      const chunkLower = chunkText.toLowerCase();
+      let score = 0;
+      let firstMatch = -1;
+      let lastMatch = -1;
+      for (const term of terms) {
+        const relative = chunkLower.indexOf(term);
+        if (relative === -1) continue;
+        const absolute = chunk.start + relative;
+        const count = countOccurrences(chunkLower, term);
+        score += count * Math.max(1, term.length);
+        firstMatch = firstMatch === -1 ? absolute : Math.min(firstMatch, absolute);
+        lastMatch = Math.max(lastMatch, absolute + term.length);
+      }
+      if (score === 0 || firstMatch === -1 || lastMatch === -1) continue;
+      const snippetStart = Math.max(0, firstMatch - SOURCE_SEARCH_CONTEXT_CHARS);
+      const snippetEnd = Math.min(
+        document.markdown.length,
+        lastMatch + SOURCE_SEARCH_CONTEXT_CHARS,
+      );
+      results.push({
+        source_id: document.sourceId,
+        title: document.title,
+        url: document.url,
+        canonical_url: document.canonicalUrl,
+        chunk_index: chunk.index,
+        start: snippetStart,
+        end: snippetEnd,
+        score,
+        snippet: document.markdown.slice(snippetStart, snippetEnd),
+      });
+    }
+  }
+
+  results.sort((a, b) => b.score - a.score || a.source_id.localeCompare(b.source_id));
+  return JSON.stringify(
+    {
+      query,
+      result_count: Math.min(results.length, maxResults),
+      matches: results.slice(0, maxResults),
+    },
+    null,
+    2,
+  );
+}
+
+function searchTerms(query: string): string[] {
+  const quoted = Array.from(query.matchAll(/"([^"]+)"/g))
+    .map((match) => match[1]?.trim().toLowerCase())
+    .filter((term): term is string => Boolean(term));
+  const unquoted = query
+    .replace(/"[^"]+"/g, " ")
+    .split(/[^\p{L}\p{N}_-]+/u)
+    .map((term) => term.trim().toLowerCase())
+    .filter((term) => term.length >= 2);
+  return [...new Set([...quoted, ...unquoted])];
+}
+
+function countOccurrences(haystack: string, needle: string): number {
+  let count = 0;
+  let fromIndex = 0;
+  while (true) {
+    const found = haystack.indexOf(needle, fromIndex);
+    if (found === -1) return count;
+    count++;
+    fromIndex = found + needle.length;
+  }
 }
 
 export function quoteSource(
