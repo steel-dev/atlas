@@ -126,12 +126,28 @@ export const RESEARCH_TOOLS: ModelToolDefinition[] = [
       required: ["source_id", "start", "end"],
     },
   },
+  {
+    name: "plan",
+    description:
+      "Record a short plan, hypothesis, or next steps and keep going. Use this when you want to think, take stock, or re-plan before searching or fetching — it does not end the run. Only a turn with no tool calls ends the run, so reserve that for your final report.",
+    input_schema: {
+      type: "object",
+      properties: {
+        thought: {
+          type: "string",
+          description:
+            "Your plan, hypothesis, or next steps. Stays in the transcript so you can build on it.",
+        },
+      },
+      required: ["thought"],
+    },
+  },
 ];
 
 export const RESEARCH_SYSTEM_PROMPT =
   "You are a deep research agent. Investigate the user's question with the available tools and answer it with well-supported, cited claims.\n\n" +
   "Ground every conclusion in the content of sources you actually fetched. Search snippets, URLs, and listing/SEO/directory pages are leads to follow, not evidence — follow them to a primary or detailed source and cite that instead. Verify a claim before you rely on it, and if the evidence contradicts your current hypothesis, revise it rather than forcing an answer.\n\n" +
-  "How you search and what you read is up to you. When you have enough evidence, stop calling tools and write a cited Markdown report; if the evidence is incomplete, say so and explain the gaps.";
+  "How you search and what you read is up to you. To think, take stock, or re-plan without searching or fetching yet, call `plan` and keep going — it does not end the run. A turn with no tool calls is treated as your final answer, so only stop calling tools when you are ready to write the report. When you have enough evidence, write a cited Markdown report; if the evidence is incomplete, say so and explain the gaps.";
 
 export const STRUCTURED_FINALIZE_SYSTEM_PROMPT =
   "You are finalizing a completed research run into a structured JSON result. The read-only source tools (find_in_source, quote_source, read_source_chunk) remain available, so confirm any quote against the source you already fetched before committing it. Quote only text that genuinely appears in those sources, and attribute each quote to the source it actually came from; never invent quotes, spans, or sources. When you are ready, respond with only the JSON object that matches the requested schema — no further tool calls, no prose, no Markdown fences.";

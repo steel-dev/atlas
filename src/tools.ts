@@ -228,13 +228,24 @@ async function executeToolUse(
     };
   }
 
+  if (tu.name === "plan") {
+    return {
+      toolResult: {
+        type: "tool_result",
+        tool_call_id: tu.id,
+        content:
+          "Plan recorded. Continue with search/fetch, or write your final report when you have enough evidence.",
+      },
+    };
+  }
+
   return {
     toolResult: {
       type: "tool_result",
       tool_call_id: tu.id,
       content:
         `Unknown tool: ${tu.name}. Available tools: ` +
-        "search, fetch, read_source_chunk, find_in_source, quote_source.",
+        "search, fetch, read_source_chunk, find_in_source, quote_source, plan.",
       is_error: true,
     },
   };

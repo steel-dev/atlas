@@ -805,6 +805,7 @@ describe("research loop cache integration", () => {
       "read_source_chunk",
       "find_in_source",
       "quote_source",
+      "plan",
     ]);
     expect(request.tools[0]?.input_schema.properties ?? {}).not.toHaveProperty("engine");
   });
@@ -1685,5 +1686,39 @@ describe("research loop cache integration", () => {
 
     expect(result.finishReason).toBe("final report");
     expect(ctx.fetchedSources).toEqual([]);
+  });
+});
+
+describe("plan tool", () => {
+  it("treats a plan tool call as a continuation, not the final answer", async () => {
+    const messagesCreate = vi
+      .fn()
+      .mockResolvedValueOnce(
+        messageWith([
+          toolUse("plan_1", "plan", {
+            thought:
+              "Outline the distinctive clues, then search each in parallel.",
+          }),
+        ]),
+      )
+      .mockResolvedValueOnce(finalReport());
+    const ctx = createContext({ messagesCreate });
+
+    const result = await runResearchLoop({
+      ctx,
+      query: "What is Atlas?",
+      maxToolCalls: 5,
+    });
+    const followupRequest = messagesCreate.mock.calls[1]?.[0] as {
+      messages: Array<{ role: string; content: unknown }>;
+    };
+
+    expect(messagesCreate).toHaveBeenCalledTimes(2);
+    expect(result.toolCalls).toBe(1);
+    expect(result.finishReason).toBe("final report");
+    expect(JSON.stringify(followupRequest.messages)).toContain(
+      "Outline the distinctive clues",
+    );
+    expect(toolResultText(followupRequest)).toContain("Plan recorded");
   });
 });
