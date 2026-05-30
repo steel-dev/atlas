@@ -57,6 +57,46 @@ console.log(result.unverifiedCitations); // cited URLs Atlas did not fetch
 
 Atlas supports Anthropic and OpenAI-compatible chat completions through a thin internal model adapter. The research loop stays the same: models can call `search` and `fetch`, then Atlas applies runtime limits, source tracking, and citation auditing.
 
+## Search backends
+
+The search tool runs behind a pluggable `SearchProvider`. The default (`web`) scrapes DuckDuckGo/Bing/Google through Steel Browser; `exa` and `brave` use those search APIs directly.
+
+```bash
+atlas "..." --search-provider exa     # ATLAS_EXA_API_KEY or EXA_API_KEY
+atlas "..." --search-provider brave   # ATLAS_BRAVE_API_KEY or BRAVE_API_KEY
+# or: export ATLAS_SEARCH_PROVIDER=exa
+```
+
+Bring your own backend by passing a `SearchProvider` instance — give a query, return ranked results, and Atlas handles batching, RRF merging, caching, and citation auditing:
+
+```ts
+import {
+  research,
+  createExaSearchProvider,
+  type SearchProvider,
+} from "@steel-dev/atlas";
+
+await research({
+  query: "What's changing in browser automation for AI agents?",
+  searchProvider: createExaSearchProvider({ apiKey: process.env.EXA_API_KEY! }),
+});
+
+const custom: SearchProvider = {
+  name: "internal-index",
+  async searchQuery({ query, limit, signal }) {
+    const hits = await myIndex.search(query, { limit, signal });
+    return {
+      query,
+      sources: [{ source: "internal-index", order: 0, results: hits }],
+      attempted: ["internal-index"],
+      warnings: [],
+      sawEmptyResults: hits.length === 0,
+    };
+  },
+};
+await research({ query: "...", searchProvider: custom });
+```
+
 ## Development
 
 ```bash

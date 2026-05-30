@@ -20,6 +20,7 @@ Options:
       --token-limit N         Total token budget for the run (default: 2000000; 0 = unlimited)
       --team N                Run as a fixed team of N parallel agents (default: 1 = single agent)
       --provider PROVIDER     Model provider: anthropic, openai (default: auto)
+      --search-provider NAME  Search backend: web, exa, brave (default: web)
       --model MODEL           Model name (default: provider-specific)
       --summary-model MODEL   Model for optional source digests (default: haiku on anthropic)
       --base-url URL          OpenAI-compatible base URL (provider=openai)
@@ -31,6 +32,9 @@ Options:
 
 Environment:
   ATLAS_PROVIDER                                optional (anthropic, openai)
+  ATLAS_SEARCH_PROVIDER                         optional (web, exa, brave; default web)
+  ATLAS_EXA_API_KEY       or EXA_API_KEY        required for --search-provider exa
+  ATLAS_BRAVE_API_KEY     or BRAVE_API_KEY      required for --search-provider brave
   ATLAS_MODEL                                   optional
   ATLAS_SUMMARY_MODEL                           optional (source digest + compaction model)
   ATLAS_TOKEN_LIMIT                             optional (total token budget; 0 = unlimited)
@@ -226,6 +230,7 @@ async function main(): Promise<void> {
           "token-limit": { type: "string" },
           team: { type: "string" },
           provider: { type: "string" },
+          "search-provider": { type: "string" },
           model: { type: "string" },
           "summary-model": { type: "string" },
           "base-url": { type: "string" },
@@ -302,6 +307,7 @@ async function main(): Promise<void> {
     const result = await research({
       query,
       provider,
+      searchProvider: values["search-provider"],
       model: values.model,
       summaryModel: values["summary-model"],
       openaiBaseUrl: values["base-url"],

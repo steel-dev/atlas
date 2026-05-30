@@ -10,3 +10,16 @@ export type {
   UsageSummary,
   VerifiedSource,
 } from "./research.js";
+export {
+  createExaSearchProvider,
+  createBraveSearchProvider,
+} from "./search-provider.js";
+export type {
+  SearchProvider,
+  SearchProviderQuery,
+  SearchQueryOutcome,
+  SearchSourceResults,
+  ExaSearchProviderOptions,
+  BraveSearchProviderOptions,
+} from "./search-provider.js";
+export type { SearchResult } from "./search.js";

@@ -38,6 +38,10 @@ import type {
 } from "./sources.js";
 import { createSteel } from "./steel.js";
 import {
+  resolveSearchProvider,
+  type SearchProvider,
+} from "./search-provider.js";
+import {
   createBudgetLedger,
   createSourceReservations,
   createResearchCaches,
@@ -189,6 +193,14 @@ export interface ResearchOptions {
   openaiBaseUrl?: string;
   steelApiKey?: string;
   steelBaseUrl?: string;
+  /** Search backend: a custom SearchProvider instance, or a built-in name
+   *  ("web" = SERP scraping via Steel (default), "exa", "brave"). Defaults from
+   *  ATLAS_SEARCH_PROVIDER, else "web". */
+  searchProvider?: SearchProvider | string;
+  /** API key for the built-in Exa provider. Env: ATLAS_EXA_API_KEY / EXA_API_KEY. */
+  exaApiKey?: string;
+  /** API key for the built-in Brave provider. Env: ATLAS_BRAVE_API_KEY / BRAVE_API_KEY. */
+  braveApiKey?: string;
   useProxy?: boolean;
   timeoutMs?: number;
   /** Total token budget for the run (test-time compute limit), shared across
@@ -215,6 +227,9 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
     openaiBaseUrl: openaiBaseUrlOverride,
     steelApiKey: steelApiKeyOverride,
     steelBaseUrl: steelBaseUrlOverride,
+    searchProvider: searchProviderOverride,
+    exaApiKey: exaApiKeyOverride,
+    braveApiKey: braveApiKeyOverride,
     useProxy = false,
     timeoutMs,
     tokenLimit: tokenLimitOverride,
@@ -248,7 +263,8 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
     DEFAULT_TOKEN_LIMIT;
   // Caps are derived from the budget (unlimited tokens fall back to the default
   // budget for sizing) so the token limit binds before these safety backstops.
-  const effectiveLimitForCaps = tokenLimit > 0 ? tokenLimit : DEFAULT_TOKEN_LIMIT;
+  const effectiveLimitForCaps =
+    tokenLimit > 0 ? tokenLimit : DEFAULT_TOKEN_LIMIT;
   const safetyMaxToolCalls = Math.max(
     MIN_SAFETY_TOOL_CALLS,
     Math.ceil(effectiveLimitForCaps / TOKENS_PER_TOOL_CALL),
@@ -369,6 +385,21 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
   };
 
   try {
+    ctx.searchProvider = resolveSearchProvider(ctx, {
+      instance:
+        searchProviderOverride && typeof searchProviderOverride !== "string"
+          ? searchProviderOverride
+          : undefined,
+      kind:
+        (typeof searchProviderOverride === "string"
+          ? searchProviderOverride
+          : undefined) ?? readEnv("ATLAS_SEARCH_PROVIDER"),
+      exaApiKey:
+        exaApiKeyOverride ?? readEnv("ATLAS_EXA_API_KEY", "EXA_API_KEY"),
+      braveApiKey:
+        braveApiKeyOverride ?? readEnv("ATLAS_BRAVE_API_KEY", "BRAVE_API_KEY"),
+    });
+
     const run =
       teamSize >= 2
         ? await runFixedTeamResearch({

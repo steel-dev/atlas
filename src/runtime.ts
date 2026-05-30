@@ -2,6 +2,7 @@ import type Steel from "steel-sdk";
 import type { ModelAdapter } from "./model.js";
 import type { ResearchEffort } from "./defaults.js";
 import type { Engine, WebSearchOutcome } from "./search.js";
+import type { SearchProvider } from "./search-provider.js";
 import type {
   FetchedSource,
   SourceDocument,
@@ -134,6 +135,10 @@ export interface ResearchLoopContext {
   /** Forwarded to every model / Steel / HTTP call so cancellation
    *  interrupts in-flight requests, not just step boundaries. */
   signal?: AbortSignal;
+  /** Pluggable search backend. When unset, the search tool falls back to the
+   *  scraping provider built from this context (SERP scraping via Steel). */
+  searchProvider?: SearchProvider;
+  /** Default search engine for the scraping provider's fallback order. */
   defaultEngine: Engine;
   useProxy: boolean;
   sourceCap: number;

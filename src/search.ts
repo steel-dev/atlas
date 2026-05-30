@@ -1,5 +1,6 @@
 import * as cheerio from "cheerio";
 import { looksBlocked } from "./steel.js";
+import { normalizeUrlForSource } from "./url.js";
 
 export const ENGINES = ["ddg", "bing", "google"] as const;
 export type Engine = (typeof ENGINES)[number];
@@ -31,7 +32,9 @@ export async function webSearch(opts: {
   lang?: string;
   useProxy?: boolean;
   signal?: AbortSignal;
-  renderPage?: (url: string) => Promise<{ html: string; finalUrl?: string; title?: string }>;
+  renderPage?: (
+    url: string,
+  ) => Promise<{ html: string; finalUrl?: string; title?: string }>;
 }): Promise<WebSearchOutcome> {
   const limit = opts.limit ?? 10;
   const engine = opts.engine ?? "ddg";
@@ -73,9 +76,15 @@ export async function webSearch(opts: {
       ? `plain fetch failed (${plainFailure}); browser rendering failed: ${message}`
       : message;
     if (status === 408 || /timeout/i.test(message)) {
-      return { ok: false, error: { code: "E_STEEL_TIMEOUT", message: combinedMessage } };
+      return {
+        ok: false,
+        error: { code: "E_STEEL_TIMEOUT", message: combinedMessage },
+      };
     }
-    return { ok: false, error: { code: "E_STEEL_UNAVAILABLE", message: combinedMessage } };
+    return {
+      ok: false,
+      error: { code: "E_STEEL_UNAVAILABLE", message: combinedMessage },
+    };
   }
 
   if (!html || looksBlocked(html)) {
@@ -108,12 +117,14 @@ async function fetchPlainSerpHtml(
       signal,
       headers: {
         "user-agent": SEARCH_USER_AGENT,
-        accept:
-          "text/html,application/xhtml+xml,text/plain;q=0.8,*/*;q=0.5",
+        accept: "text/html,application/xhtml+xml,text/plain;q=0.8,*/*;q=0.5",
       },
     });
   } catch (err) {
-    return { ok: false, reason: err instanceof Error ? err.message : String(err) };
+    return {
+      ok: false,
+      reason: err instanceof Error ? err.message : String(err),
+    };
   }
 
   if (!response.ok) return { ok: false, reason: `HTTP ${response.status}` };
@@ -125,7 +136,8 @@ async function fetchPlainSerpHtml(
 
   const html = await response.text();
   if (!html.trim()) return { ok: false, reason: "Empty body" };
-  if (looksBlocked(html)) return { ok: false, reason: "Blocked or challenge page" };
+  if (looksBlocked(html))
+    return { ok: false, reason: "Blocked or challenge page" };
 
   return { ok: true, html };
 }
@@ -166,7 +178,11 @@ function buildSerpUrl(
   }
 }
 
-function parseSerp(engine: Engine, html: string, limit: number): SearchResult[] {
+function parseSerp(
+  engine: Engine,
+  html: string,
+  limit: number,
+): SearchResult[] {
   switch (engine) {
     case "ddg":
       return parseDdg(html, limit);
@@ -194,7 +210,11 @@ function parseDdg(html: string, limit: number): SearchResult[] {
     if (!url || seen.has(url)) return;
     seen.add(url);
 
-    const snippet = $el.find("a.result__snippet, .result__snippet").first().text().trim();
+    const snippet = $el
+      .find("a.result__snippet, .result__snippet")
+      .first()
+      .text()
+      .trim();
 
     results.push({
       position: results.length + 1,
@@ -263,11 +283,21 @@ function parseGoogle(html: string, limit: number): SearchResult[] {
       if (!title) return;
 
       const $a = $h3.closest("a");
-      const href = ($a.attr("href") ?? $el.find('a[href^="http"]').first().attr("href") ?? "").trim();
+      const href = (
+        $a.attr("href") ??
+        $el.find('a[href^="http"]').first().attr("href") ??
+        ""
+      ).trim();
       if (!href) return;
 
       const url = normalizeGoogleHref(href);
-      if (!url || !/^https?:\/\//i.test(url) || isGoogleInternal(url) || seen.has(url)) return;
+      if (
+        !url ||
+        !/^https?:\/\//i.test(url) ||
+        isGoogleInternal(url) ||
+        seen.has(url)
+      )
+        return;
       seen.add(url);
 
       const snippet =
@@ -321,7 +351,9 @@ function normalizeGoogleHref(href: string): string | null {
 function isGoogleInternal(url: string): boolean {
   try {
     const host = new URL(url).hostname;
-    return /(^|\.)google\.[a-z.]+$/i.test(host) || host === "accounts.google.com";
+    return (
+      /(^|\.)google\.[a-z.]+$/i.test(host) || host === "accounts.google.com"
+    );
   } catch {
     return true;
   }
@@ -333,6 +365,32 @@ export function safeDomain(url: string): string {
   } catch {
     return "";
   }
+}
+
+export function searchEnginesInFallbackOrder(defaultEngine: Engine): Engine[] {
+  return [
+    defaultEngine,
+    ...ENGINES.filter((engine) => engine !== defaultEngine),
+  ];
+}
+
+export function dedupeSearchResults(
+  results: SearchResult[],
+  limit: number,
+): SearchResult[] {
+  const seen = new Set<string>();
+  const deduped: SearchResult[] = [];
+  for (const result of results) {
+    const key = normalizeUrlForSource(result.url);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push({
+      ...result,
+      position: deduped.length + 1,
+    });
+    if (deduped.length >= limit) break;
+  }
+  return deduped;
 }
 
 export const __testing = {

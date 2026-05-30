@@ -1,11 +1,14 @@
 import {
-  ENGINES,
-  webSearch,
-  type Engine,
+  dedupeSearchResults,
+  searchEnginesInFallbackOrder,
   type SearchResult,
-  type WebSearchOutcome,
 } from "./search.js";
-import { extractHtmlWithBrowser } from "./browser-extract.js";
+import {
+  createScrapingSearchProvider,
+  type SearchProvider,
+  type SearchQueryOutcome,
+  type SearchSourceResults,
+} from "./search-provider.js";
 import { errorMessage } from "./errors.js";
 import type { ResearchLoopContext } from "./runtime.js";
 import { normalizeUrlForSource } from "./url.js";
@@ -21,67 +24,17 @@ export interface SearchToolInput {
 
 const normalizeFetchUrl = normalizeUrlForSource;
 
-function searchCacheKey(opts: {
-  query: string;
-  limit: number;
-  engine: Engine;
-  useProxy: boolean;
-}): string {
-  return [
-    "web",
-    opts.engine,
-    opts.useProxy ? "proxy" : "direct",
-    opts.limit,
-    opts.query,
-  ].join("\0");
-}
-
-export function searchEnginesInFallbackOrder(defaultEngine: Engine): Engine[] {
-  return [
-    defaultEngine,
-    ...ENGINES.filter((engine) => engine !== defaultEngine),
-  ];
-}
-
-async function searchWithCache(
-  ctx: ResearchLoopContext,
-  opts: { query: string; limit: number; engine: Engine },
-): Promise<WebSearchOutcome> {
-  const cacheKey = searchCacheKey({
-    query: opts.query,
-    limit: opts.limit,
-    engine: opts.engine,
-    useProxy: ctx.useProxy,
-  });
-  let outcomePromise = ctx.caches.serp.get(cacheKey);
-  if (!outcomePromise) {
-    outcomePromise = webSearch({
-      query: opts.query,
-      engine: opts.engine,
-      useProxy: ctx.useProxy,
-      limit: opts.limit,
-      signal: ctx.signal,
-      renderPage: (url) => extractHtmlWithBrowser(ctx, url),
-    });
-    ctx.caches.serp.set(cacheKey, outcomePromise);
-  }
-
-  try {
-    return await outcomePromise;
-  } catch (err) {
-    ctx.caches.serp.delete(cacheKey);
-    throw err;
-  }
-}
+// Re-exported for tools.ts __testing surface and tests.
+export { searchEnginesInFallbackOrder };
 
 function compactSearchResults(results: MergedSearchResult[]): Array<{
   rank: number;
   title: string;
   url: string;
   snippet?: string;
-  engine: Engine;
+  engine: string;
   engine_rank: number;
-  engines: Engine[];
+  engines: string[];
   queries?: string[];
 }> {
   return results.map((result, index) => ({
@@ -98,39 +51,20 @@ function compactSearchResults(results: MergedSearchResult[]): Array<{
   }));
 }
 
-function dedupeSearchResults(
-  results: SearchResult[],
-  limit: number,
-): SearchResult[] {
-  const seen = new Set<string>();
-  const deduped: SearchResult[] = [];
-  for (const result of results) {
-    const key = normalizeFetchUrl(result.url);
-    if (seen.has(key)) continue;
-    seen.add(key);
-    deduped.push({
-      ...result,
-      position: deduped.length + 1,
-    });
-    if (deduped.length >= limit) break;
-  }
-  return deduped;
-}
-
-interface EngineSearchResults {
+interface SourceResultList {
   query: string;
-  engine: Engine;
+  source: string;
+  order: number;
   results: SearchResult[];
-  engineOrder: number;
 }
 
 interface MergedSearchResult {
   title: string;
   url: string;
   snippet: string;
-  engine: Engine;
+  engine: string;
   engineRank: number;
-  engines: Engine[];
+  engines: string[];
   queries: string[];
   score: number;
   engineOrder: number;
@@ -138,21 +72,20 @@ interface MergedSearchResult {
 
 interface SearchCollection {
   query: string;
-  engines: Engine[];
-  searchedEngines: Engine[];
-  successfulSearches: EngineSearchResults[];
+  sources: SearchSourceResults[];
+  searchedSources: string[];
   warnings: string[];
   sawEmptyResults: boolean;
 }
 
 function mergeSearchResults(
-  successfulSearches: EngineSearchResults[],
+  lists: SourceResultList[],
   limit: number,
 ): MergedSearchResult[] {
   const byUrl = new Map<string, MergedSearchResult>();
 
-  for (const search of successfulSearches) {
-    const results = dedupeSearchResults(search.results, limit);
+  for (const list of lists) {
+    const results = dedupeSearchResults(list.results, limit);
     for (const result of results) {
       const key = normalizeFetchUrl(result.url);
       const score = 1 / (RRF_K + result.position);
@@ -162,34 +95,34 @@ function mergeSearchResults(
           title: result.title,
           url: result.url,
           snippet: result.snippet,
-          engine: search.engine,
+          engine: list.source,
           engineRank: result.position,
-          engines: [search.engine],
-          queries: [search.query],
+          engines: [list.source],
+          queries: [list.query],
           score,
-          engineOrder: search.engineOrder,
+          engineOrder: list.order,
         });
         continue;
       }
 
       existing.score += score;
-      if (!existing.engines.includes(search.engine)) {
-        existing.engines.push(search.engine);
+      if (!existing.engines.includes(list.source)) {
+        existing.engines.push(list.source);
       }
-      if (!existing.queries.includes(search.query)) {
-        existing.queries.push(search.query);
+      if (!existing.queries.includes(list.query)) {
+        existing.queries.push(list.query);
       }
       const isBetterDisplayResult =
         result.position < existing.engineRank ||
         (result.position === existing.engineRank &&
-          search.engineOrder < existing.engineOrder);
+          list.order < existing.engineOrder);
       if (isBetterDisplayResult) {
         existing.title = result.title;
         existing.url = result.url;
         existing.snippet = result.snippet;
-        existing.engine = search.engine;
+        existing.engine = list.source;
         existing.engineRank = result.position;
-        existing.engineOrder = search.engineOrder;
+        existing.engineOrder = list.order;
       }
     }
   }
@@ -250,79 +183,49 @@ async function collectSearchResults(opts: {
   limit: number;
   index: number;
   ctx: ResearchLoopContext;
+  provider: SearchProvider;
 }): Promise<SearchCollection> {
-  const { query, limit, index, ctx } = opts;
+  const { query, limit, index, ctx, provider } = opts;
   ctx.emit({
     type: "searching",
     index,
     query,
   });
 
-  const failures: string[] = [];
-  let sawEmptyResults = false;
-  const engines = searchEnginesInFallbackOrder(ctx.defaultEngine);
-  const successfulSearches: EngineSearchResults[] = [];
-
-  const engineOutcomes = await Promise.all(
-    engines.map(async (engine, engineOrder) => {
-      try {
-        return {
-          engine,
-          engineOrder,
-          outcome: await searchWithCache(ctx, { query, limit, engine }),
-        };
-      } catch (err) {
-        return {
-          engine,
-          engineOrder,
-          error: errorMessage(err),
-        };
-      }
-    }),
-  );
-
-  for (const engineOutcome of engineOutcomes) {
-    const { engine } = engineOutcome;
-    let outcome: WebSearchOutcome;
-    if ("error" in engineOutcome) {
-      failures.push(`${engine}: ${engineOutcome.error}`);
-      continue;
-    }
-    outcome = engineOutcome.outcome;
-
-    if (!outcome.ok) {
-      failures.push(`${engine}: ${outcome.error.message}`);
-      continue;
-    }
-
-    const results = dedupeSearchResults(outcome.results, limit);
-    if (results.length === 0) {
-      sawEmptyResults = true;
-      failures.push(`${engine}: no results`);
-      continue;
-    }
-
-    successfulSearches.push({
+  let outcome: SearchQueryOutcome;
+  try {
+    outcome = await provider.searchQuery({ query, limit, signal: ctx.signal });
+  } catch (err) {
+    ctx.emit({ type: "search_results", index, count: 0 });
+    return {
       query,
-      engine,
-      engineOrder: engineOutcome.engineOrder,
-      results,
-    });
+      sources: [],
+      searchedSources: [provider.name],
+      warnings: [`${provider.name}: ${errorMessage(err)}`],
+      sawEmptyResults: false,
+    };
   }
 
-  const results = mergeSearchResults(successfulSearches, limit);
+  const merged = mergeSearchResults(
+    outcome.sources.map((source) => ({
+      query,
+      source: source.source,
+      order: source.order,
+      results: source.results,
+    })),
+    limit,
+  );
   ctx.emit({
     type: "search_results",
     index,
-    count: results.length,
+    count: merged.length,
   });
   return {
     query,
-    engines: successfulSearches.map((search) => search.engine),
-    searchedEngines: engines,
-    successfulSearches,
-    warnings: failures,
-    sawEmptyResults,
+    sources: outcome.sources,
+    searchedSources: outcome.attempted,
+    warnings: outcome.warnings,
+    sawEmptyResults: outcome.sawEmptyResults,
   };
 }
 
@@ -338,6 +241,7 @@ export async function execSearch(
 
   const rawLimit = args.limit ?? ctx.defaultSearchLimit ?? 5;
   const limit = Math.min(Math.max(1, Math.floor(Number(rawLimit))), 20);
+  const provider = ctx.searchProvider ?? createScrapingSearchProvider(ctx);
   const collections = await Promise.all(
     queries.map((query, offset) =>
       collectSearchResults({
@@ -345,24 +249,31 @@ export async function execSearch(
         limit,
         index: searchIndex + offset,
         ctx,
+        provider,
       }),
     ),
   );
-  const successfulSearches = collections.flatMap(
-    (collection) => collection.successfulSearches,
+  const sourceLists: SourceResultList[] = collections.flatMap((collection) =>
+    collection.sources.map((source) => ({
+      query: collection.query,
+      source: source.source,
+      order: source.order,
+      results: source.results,
+    })),
   );
-  const results = mergeSearchResults(successfulSearches, limit);
+  const results = mergeSearchResults(sourceLists, limit);
   if (results.length > 0) {
     const successfulEngines = unique(
-      successfulSearches.map((search) => search.engine),
+      sourceLists.map((source) => source.source),
     );
     const searchedEngines = unique(
-      collections.flatMap((collection) => collection.searchedEngines),
+      collections.flatMap((collection) => collection.searchedSources),
     );
     const warnings = formatWarnings(collections, queries.length > 1);
     return JSON.stringify(
       {
         ...(queries.length === 1 ? { query: queries[0] } : { queries }),
+        provider: provider.name,
         engines: successfulEngines,
         searched_engines: searchedEngines,
         results: compactSearchResults(results),
@@ -381,6 +292,7 @@ export async function execSearch(
     return JSON.stringify(
       {
         ...(queries.length === 1 ? { query: queries[0] } : { queries }),
+        provider: provider.name,
         results: [],
         warnings: warnings.length > 0 ? warnings : undefined,
       },
@@ -388,7 +300,7 @@ export async function execSearch(
       2,
     );
   }
-  const error = warnings.join("; ") || "all engines failed";
+  const error = warnings.join("; ") || "all sources failed";
   ctx.emit({
     type: "search_failed",
     index: searchIndex,
