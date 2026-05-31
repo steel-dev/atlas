@@ -18,7 +18,7 @@ Options:
   -o, --out <file>            Write the markdown report to <file> (default: stdout)
       --timeout N             Overall wall-clock budget in seconds (default: none)
       --token-limit N         Total token budget for the run (default: 2000000; 0 = unlimited)
-      --team N                Run as a fixed team of N parallel agents (default: 1 = single agent)
+      --team N                Suggest the lead may spawn up to N parallel sub-agents (default: 1 = no hint)
       --provider PROVIDER     Model provider: anthropic, openai (default: auto)
       --search-provider NAME  Search backend: web, exa, brave (default: web)
       --model MODEL           Model name (default: provider-specific)
@@ -38,7 +38,7 @@ Environment:
   ATLAS_MODEL                                   optional
   ATLAS_SUMMARY_MODEL                           optional (source digest + compaction model)
   ATLAS_TOKEN_LIMIT                             optional (total token budget; 0 = unlimited)
-  ATLAS_TEAM_SIZE                               optional (fixed-team agent count; default 1)
+  ATLAS_TEAM_SIZE                               optional (suggested max parallel sub-agents; default 1 = no hint)
   ATLAS_THINKING_EFFORT                         optional (low, medium, high, max; default high)
   ATLAS_COMPACTION_TRIGGER_TOKENS               optional (compact context above N tokens; 0 disables)
   ATLAS_MAX_DELEGATION_DEPTH                    optional (0 disables sub-agent delegation)

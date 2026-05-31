@@ -1,6 +1,7 @@
 import {
   createAnthropicModelAdapter,
   createOpenAIModelAdapter,
+  wrapModelAdapterWithConcurrency,
   type ModelAdapter,
   type ModelAssistantBlock,
   type ModelMessage,
@@ -46,7 +47,6 @@ import {
   createSourceReservations,
   createResearchCaches,
   createSteelConcurrencyGate,
-  runFixedTeamResearch,
   runResearchLoop,
   type ResearchLoopContext,
 } from "./tools.js";
@@ -82,6 +82,13 @@ const DEFAULT_RUNTIME_LIMITS = {
   subagentCompactionTriggerTokens: number;
   subagentCompactionKeepTokens: number;
 };
+
+// Caps total in-flight model connections across the lead, every sub-agent, and
+// their compaction/digest calls — the spawn/join tree runs concurrently, so this
+// bounds it to the provider's concurrent-connection limit. Derived from the
+// sub-agent fan-out width (lead + sub-agents) unless ATLAS_MAX_CONCURRENT_MODEL_CALLS
+// overrides it.
+const MODEL_CALL_HEADROOM = 1;
 
 // Total token budget = the single test-time compute knob. Tool-call and source
 // safety caps are derived from it (and floored) so the token budget — not a
@@ -271,8 +278,17 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
   );
   const maxDelegationDepth =
     readIntEnv("ATLAS_MAX_DELEGATION_DEPTH", 0) ?? limits.maxDelegationDepth;
-  const maxConcurrentSubagents =
-    readIntEnv("ATLAS_MAX_SUBAGENTS", 1) ?? limits.maxConcurrentSubagents;
+  const teamSize = Math.min(
+    MAX_TEAM_SIZE,
+    Math.max(1, teamSizeOverride ?? readIntEnv("ATLAS_TEAM_SIZE", 1) ?? 1),
+  );
+  const maxConcurrentSubagents = Math.max(
+    readIntEnv("ATLAS_MAX_SUBAGENTS", 1) ?? limits.maxConcurrentSubagents,
+    teamSize,
+  );
+  const maxConcurrentModelCalls =
+    readIntEnv("ATLAS_MAX_CONCURRENT_MODEL_CALLS", 1) ??
+    maxConcurrentSubagents + MODEL_CALL_HEADROOM;
   // Set ATLAS_COMPACTION_TRIGGER_TOKENS=0 to disable compaction. Lower it for
   // models with a sub-1M context window.
   const compactionTriggerTokens =
@@ -281,10 +297,6 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
   const compactionKeepTokens =
     readIntEnv("ATLAS_COMPACTION_KEEP_TOKENS", 0) ??
     limits.compactionKeepTokens;
-  const teamSize = Math.min(
-    MAX_TEAM_SIZE,
-    Math.max(1, teamSizeOverride ?? readIntEnv("ATLAS_TEAM_SIZE", 1) ?? 1),
-  );
   const timeoutDeadlineAt =
     timeoutMs === undefined ? undefined : Date.now() + Math.floor(timeoutMs);
   const runSignal = combineSignals(signal, timeoutMs);
@@ -298,13 +310,17 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
   };
   const abort = () => runSignal?.throwIfAborted();
 
-  const modelAdapter = createModelAdapter({
-    provider,
-    model,
-    anthropicApiKey: anthropicApiKeyOverride,
-    openaiApiKey: openaiApiKeyOverride,
-    openaiBaseUrl: openaiBaseUrlOverride,
-  });
+  const modelCallGate = createSteelConcurrencyGate(maxConcurrentModelCalls);
+  const modelAdapter = wrapModelAdapterWithConcurrency(
+    createModelAdapter({
+      provider,
+      model,
+      anthropicApiKey: anthropicApiKeyOverride,
+      openaiApiKey: openaiApiKeyOverride,
+      openaiBaseUrl: openaiBaseUrlOverride,
+    }),
+    modelCallGate,
+  );
   const summaryModelName = resolveSummaryModel(
     provider,
     summaryModelOverride,
@@ -313,13 +329,16 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
   const summaryAdapter =
     summaryModelName === model
       ? modelAdapter
-      : createModelAdapter({
-          provider,
-          model: summaryModelName,
-          anthropicApiKey: anthropicApiKeyOverride,
-          openaiApiKey: openaiApiKeyOverride,
-          openaiBaseUrl: openaiBaseUrlOverride,
-        });
+      : wrapModelAdapterWithConcurrency(
+          createModelAdapter({
+            provider,
+            model: summaryModelName,
+            anthropicApiKey: anthropicApiKeyOverride,
+            openaiApiKey: openaiApiKeyOverride,
+            openaiBaseUrl: openaiBaseUrlOverride,
+          }),
+          modelCallGate,
+        );
   const steel = createSteel({ apiKey: steelApiKey, baseUrl: steelBaseUrl });
 
   const fetchedSources: FetchedSource[] = [];
@@ -396,22 +415,13 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
         braveApiKeyOverride ?? readEnv("ATLAS_BRAVE_API_KEY", "BRAVE_API_KEY"),
     });
 
-    const run =
-      teamSize >= 2
-        ? await runFixedTeamResearch({
-            ctx,
-            query,
-            teamSize,
-            maxToolCalls: safetyMaxToolCalls,
-            perAgentMaxToolCalls: safetyMaxToolCalls,
-            effort: thinkingEffort,
-          })
-        : await runResearchLoop({
-            ctx,
-            query,
-            maxToolCalls: safetyMaxToolCalls,
-            effort: thinkingEffort,
-          });
+    const run = await runResearchLoop({
+      ctx,
+      query,
+      maxToolCalls: safetyMaxToolCalls,
+      effort: thinkingEffort,
+      suggestedParallelism: teamSize >= 2 ? teamSize : undefined,
+    });
     const runs: ResearchRun[] = [
       {
         fetchedUrls: run.fetchedUrls,

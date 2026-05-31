@@ -13,15 +13,10 @@ import {
   createSourceReservations,
   createResearchCaches,
   createSteelConcurrencyGate,
-  runFixedTeamResearch,
   runResearchLoop,
   type ResearchLoopContext,
 } from "./tools.js";
-import {
-  FIXED_TEAM_PLAN_SYSTEM_PROMPT,
-  RESEARCH_SYSTEM_PROMPT,
-  SUBAGENT_SYSTEM_PROMPT,
-} from "./tool-contract.js";
+import { SUBAGENT_SYSTEM_PROMPT } from "./tool-contract.js";
 import type { SourceDocument } from "./sources.js";
 
 vi.mock("./pdf-extract.js", () => ({
@@ -2170,9 +2165,9 @@ describe("plan tool", () => {
 
 describe("context compaction", () => {
   function compactionModel(text: string) {
-    const step = vi.fn().mockResolvedValue(
-      messageWith([{ type: "text", text }]),
-    );
+    const step = vi
+      .fn()
+      .mockResolvedValue(messageWith([{ type: "text", text }]));
     const adapter = {
       provider: "anthropic",
       model: "summary-model",
@@ -2336,8 +2331,8 @@ describe("token budget", () => {
   });
 });
 
-describe("delegation", () => {
-  it("refuses delegation when finalization reserve would be consumed", async () => {
+describe("spawn/join fan-out", () => {
+  it("refuses spawn when finalization reserve would be consumed", async () => {
     let leadCalls = 0;
     const messagesCreate = vi.fn(async (input: ModelStepInput) => {
       if (input.system === SUBAGENT_SYSTEM_PROMPT) {
@@ -2351,8 +2346,8 @@ describe("delegation", () => {
       leadCalls += 1;
       if (leadCalls === 1) {
         return messageWith([
-          toolUse("delegate_1", "delegate", {
-            tasks: [{ question: "What is the local population?" }],
+          toolUse("spawn_1", "spawn", {
+            tasks: ["What is the local population?"],
           }),
         ]);
       }
@@ -2383,14 +2378,14 @@ describe("delegation", () => {
       false,
     );
     expect(toolResultText(leadFinal)).toContain(
-      "not enough remaining time to delegate",
+      "not enough remaining time to spawn sub-agents",
     );
     expect(ctx.emit).not.toHaveBeenCalledWith(
       expect.objectContaining({ type: "delegation_started" }),
     );
   });
 
-  it("runs a sub-agent in an isolated context and returns its findings to the lead", async () => {
+  it("spawns a sub-agent, joins it, and returns its findings to the lead", async () => {
     let leadCalls = 0;
     const messagesCreate = vi.fn(async (input: ModelStepInput) => {
       if (input.system === SUBAGENT_SYSTEM_PROMPT) {
@@ -2404,10 +2399,13 @@ describe("delegation", () => {
       leadCalls += 1;
       if (leadCalls === 1) {
         return messageWith([
-          toolUse("delegate_1", "delegate", {
-            tasks: [{ question: "What is the local population?" }],
+          toolUse("spawn_1", "spawn", {
+            tasks: ["What is the local population?"],
           }),
         ]);
+      }
+      if (leadCalls === 2) {
+        return messageWith([toolUse("join_1", "join", {})]);
       }
       return finalReport();
     });
@@ -2437,15 +2435,16 @@ describe("delegation", () => {
       .filter((call) => call.system !== SUBAGENT_SYSTEM_PROMPT)
       .at(-1) as ModelStepInput;
 
-    // The lead is offered delegate; the sub-agent is not (depth-gated).
-    expect(leadFirst.tools?.map((tool) => tool.name)).toContain("delegate");
+    expect(leadFirst.tools?.map((tool) => tool.name)).toContain("spawn");
+    expect(leadFirst.tools?.map((tool) => tool.name)).toContain("join");
     expect(subagentCall).toBeDefined();
     expect(subagentCall?.tools?.map((tool) => tool.name) ?? []).not.toContain(
-      "delegate",
+      "spawn",
+    );
+    expect(subagentCall?.tools?.map((tool) => tool.name) ?? []).not.toContain(
+      "join",
     );
 
-    // The sub-agent reasons over the sub-question in its own thread, without
-    // the lead's question polluting its context.
     expect(JSON.stringify(subagentCall?.messages)).toContain(
       "What is the local population?",
     );
@@ -2453,17 +2452,14 @@ describe("delegation", () => {
       "Profile this town.",
     );
 
-    // The lead receives the compressed findings, not the raw sub-agent thread.
     expect(toolResultText(leadFinal)).toContain(
       "Sub-finding: the local population is 12,345",
     );
-    expect(toolResultText(leadFinal)).toContain("delegated");
+    expect(toolResultText(leadFinal)).toContain("joined");
 
-    // Delegation draws from the shared budget ledger (one action call here).
     expect(result.finishReason).toBe("final report");
     expect(ctx.budget?.remainingActionCalls).toBe(19);
 
-    // Delegation lifecycle is observable on the event stream.
     expect(ctx.emit).toHaveBeenCalledWith({
       type: "delegation_started",
       tasks: ["What is the local population?"],
@@ -2482,7 +2478,6 @@ describe("delegation", () => {
   });
 
   it("shares the source store and tags sub-agent fetch events with depth", async () => {
-    // Short page so map-reduce summarization stays off (no extra model call).
     const scrape = vi.fn(async () => ({
       content: {
         markdown:
@@ -2512,10 +2507,13 @@ describe("delegation", () => {
       leadCalls += 1;
       if (leadCalls === 1) {
         return messageWith([
-          toolUse("delegate_1", "delegate", {
-            tasks: [{ question: "What is the local population?" }],
+          toolUse("spawn_1", "spawn", {
+            tasks: ["What is the local population?"],
           }),
         ]);
+      }
+      if (leadCalls === 2) {
+        return messageWith([toolUse("join_1", "join", {})]);
       }
       return finalReport();
     });
@@ -2541,39 +2539,34 @@ describe("delegation", () => {
 
     expect(result.finishReason).toBe("final report");
     expect(scrape).toHaveBeenCalledTimes(1);
-    // The sub-agent's fetch is attributed to delegation depth on the stream.
     expect(ctx.emit).toHaveBeenCalledWith({
       type: "fetching",
       url: "https://example.com/census",
       depth: 1,
     });
-    // The sub-agent's source lands in the shared store, usable by the lead.
     expect(ctx.fetchedSources).toContainEqual({
       url: "https://example.com/census",
       title: "Census",
       sourceId: "source_1",
       canonicalUrl: "https://example.com/census",
     });
-    // The lead receives compressed findings plus the shared source_id.
     expect(toolResultText(leadFinal)).toContain("source_1");
     expect(toolResultText(leadFinal)).toContain("Population is 12,345");
-    // Sub-agent fetches bubble into the lead run so accounting is accurate.
     expect(result.fetchedUrls).toContain("https://example.com/census");
   });
 
-  it("hides delegate and refuses delegation when depth is exhausted", async () => {
+  it("hides spawn/join and refuses spawn when depth is exhausted", async () => {
     const messagesCreate = vi
       .fn()
       .mockResolvedValueOnce(
         messageWith([
-          toolUse("delegate_blocked", "delegate", {
-            tasks: [{ question: "Anything." }],
+          toolUse("spawn_blocked", "spawn", {
+            tasks: ["Anything."],
           }),
         ]),
       )
       .mockResolvedValueOnce(finalReport());
     const ctx = createContext({ messagesCreate });
-    // depth already at the limit: the lead behaves like a leaf sub-agent.
     ctx.depth = 1;
     ctx.maxDelegationDepth = 1;
     ctx.budget = createBudgetLedger(20, 40);
@@ -2589,10 +2582,13 @@ describe("delegation", () => {
     };
 
     expect(firstCall.tools?.map((tool) => tool.name) ?? []).not.toContain(
-      "delegate",
+      "spawn",
+    );
+    expect(firstCall.tools?.map((tool) => tool.name) ?? []).not.toContain(
+      "join",
     );
     expect(toolResultText(followupRequest)).toContain(
-      "delegation is not available here",
+      "spawn is not available at this depth",
     );
     expect(result.finishReason).toBe("final report");
   });
@@ -2619,16 +2615,21 @@ describe("delegation", () => {
       leadCalls++;
       if (leadCalls === 1) {
         return messageWith([
-          toolUse("delegate_1", "delegate", {
-            tasks: [{ question: "What is the answer?" }],
+          toolUse("spawn_1", "spawn", {
+            tasks: ["What is the answer?"],
           }),
         ]);
+      }
+      if (leadCalls === 2) {
+        return messageWith([toolUse("join_1", "join", {})]);
       }
       return finalReport();
     });
     const compactionStep = vi
       .fn()
-      .mockResolvedValue(messageWith([{ type: "text", text: "SUB_NOTE: progress." }]));
+      .mockResolvedValue(
+        messageWith([{ type: "text", text: "SUB_NOTE: progress." }]),
+      );
     const ctx = createContext({ messagesCreate });
     ctx.summaryModel = {
       provider: "anthropic",
@@ -2649,7 +2650,6 @@ describe("delegation", () => {
     ctx.subagentGate = createSteelConcurrencyGate(1);
     ctx.subagentEffort = "low";
     ctx.budget = createBudgetLedger(20, 40);
-    // Lead compaction off; sub-agent compaction on at a tiny trigger.
     ctx.compactionTriggerTokens = undefined;
     ctx.subagentCompactionTriggerTokens = 200;
     ctx.subagentCompactionKeepTokens = 50;
@@ -2668,17 +2668,10 @@ describe("delegation", () => {
   });
 });
 
-describe("fixed-team research", () => {
-  it("plans subtasks, fans out in parallel, and merges a final report", async () => {
+describe("emergent team via spawn/join", () => {
+  it("spawns breadth in one turn, joins all, and merges a report", async () => {
+    let leadCalls = 0;
     const messagesCreate = vi.fn(async (input: ModelStepInput) => {
-      if (input.system === FIXED_TEAM_PLAN_SYSTEM_PROMPT) {
-        return messageWith([
-          {
-            type: "text",
-            text: JSON.stringify({ subtasks: ["Sub A?", "Sub B?"] }),
-          },
-        ]);
-      }
       if (input.system === SUBAGENT_SYSTEM_PROMPT) {
         return messageWith([
           {
@@ -2687,7 +2680,15 @@ describe("fixed-team research", () => {
           },
         ]);
       }
-      // Merge call: RESEARCH_SYSTEM_PROMPT with no tools.
+      leadCalls += 1;
+      if (leadCalls === 1) {
+        return messageWith([
+          toolUse("spawn_1", "spawn", { tasks: ["Sub A?", "Sub B?"] }),
+        ]);
+      }
+      if (leadCalls === 2) {
+        return messageWith([toolUse("join_1", "join", {})]);
+      }
       return finalReport();
     });
     const ctx = createContext({ messagesCreate });
@@ -2698,20 +2699,18 @@ describe("fixed-team research", () => {
     ctx.subagentEffort = "low";
     ctx.budget = createBudgetLedger(40, 80);
 
-    const result = await runFixedTeamResearch({
+    const result = await runResearchLoop({
       ctx,
       query: "Big question?",
-      teamSize: 2,
       maxToolCalls: 20,
-      perAgentMaxToolCalls: 20,
-      effort: "low",
+      suggestedParallelism: 2,
     });
-    const mergeCall = messagesCreate.mock.calls.find(([input]) => {
-      const step = input as ModelStepInput;
-      return step.system === RESEARCH_SYSTEM_PROMPT && !step.tools;
-    });
+    const leadFinal = messagesCreate.mock.calls
+      .map(([input]) => input as ModelStepInput)
+      .filter((call) => call.system !== SUBAGENT_SYSTEM_PROMPT)
+      .at(-1) as ModelStepInput;
 
-    expect(result.finishReason).toBe("fixed-team report");
+    expect(result.finishReason).toBe("final report");
     expect(result.markdown).toContain("# Test Report");
     expect(ctx.emit).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -2725,35 +2724,93 @@ describe("fixed-team research", () => {
     expect(ctx.emit).toHaveBeenCalledWith(
       expect.objectContaining({ type: "subagent_started", task: "Sub B?" }),
     );
-    // The merge transcript carries the agents' findings.
-    expect(JSON.stringify(mergeCall?.[0])).toContain("Finding from agent");
+    expect(toolResultText(leadFinal)).toContain("Finding from agent");
   });
 
-  it("falls back to a single agent when the question is not splittable", async () => {
-    const messagesCreate = vi.fn(async (input: ModelStepInput) => {
-      if (input.system === FIXED_TEAM_PLAN_SYSTEM_PROMPT) {
-        return messageWith([
-          { type: "text", text: JSON.stringify({ subtasks: ["only one"] }) },
-        ]);
-      }
-      return finalReport();
-    });
+  it("behaves as a single agent when the lead never spawns", async () => {
+    const messagesCreate = vi.fn(async (_input: ModelStepInput) =>
+      finalReport(),
+    );
     const ctx = createContext({ messagesCreate });
     ctx.depth = 0;
     ctx.maxDelegationDepth = 1;
     ctx.budget = createBudgetLedger(20, 40);
 
-    const result = await runFixedTeamResearch({
+    const result = await runResearchLoop({
       ctx,
       query: "Atomic question?",
-      teamSize: 3,
       maxToolCalls: 5,
-      effort: "low",
     });
 
     expect(result.finishReason).toBe("final report");
     expect(ctx.emit).not.toHaveBeenCalledWith(
       expect.objectContaining({ type: "delegation_started" }),
     );
+    expect(
+      messagesCreate.mock.calls.some(
+        ([input]) =>
+          (input as ModelStepInput).system === SUBAGENT_SYSTEM_PROMPT,
+      ),
+    ).toBe(false);
+  });
+});
+
+describe("api error recovery", () => {
+  it("salvages a report from gathered evidence after a mid-loop api error", async () => {
+    const scrape = vi.fn(async () => ({
+      content: { markdown: "# Doc\n\nThe answer is 42." },
+      metadata: { title: "Doc" },
+    }));
+    let calls = 0;
+    const messagesCreate = vi.fn(async (_input: ModelStepInput) => {
+      calls += 1;
+      if (calls === 1) {
+        return messageWith([
+          toolUse("f1", "fetch", { url: "https://example.com/a" }),
+        ]);
+      }
+      if (calls === 2) {
+        throw new Error("429 rate_limit_error");
+      }
+      return messageWith([
+        {
+          type: "text",
+          text: "# Report\n\nThe answer is 42, per https://example.com/a.",
+        },
+      ]);
+    });
+    const ctx = createContext({ messagesCreate, scrape });
+    ctx.budget = createBudgetLedger(20, 40);
+
+    const result = await runResearchLoop({
+      ctx,
+      query: "What is the answer?",
+      maxToolCalls: 20,
+    });
+
+    const steps = messagesCreate.mock.calls.map(
+      ([input]) => input as ModelStepInput,
+    );
+    expect(result.markdown).toContain("# Report");
+    expect(result.finishReason).toContain("final report after api error");
+    expect(steps.at(-1)?.tools).toBeUndefined();
+  });
+
+  it("does not attempt synthesis after an api error when no evidence was gathered", async () => {
+    const messagesCreate = vi.fn(async (_input: ModelStepInput) => {
+      throw new Error("429 rate_limit_error");
+    });
+    const ctx = createContext({ messagesCreate });
+    ctx.budget = createBudgetLedger(20, 40);
+
+    const result = await runResearchLoop({
+      ctx,
+      query: "What is the answer?",
+      maxToolCalls: 20,
+    });
+
+    expect(result.markdown).toBe("");
+    expect(result.finishReason).toBe("api error: 429 rate_limit_error");
+    expect(messagesCreate).toHaveBeenCalledTimes(1);
   });
 });

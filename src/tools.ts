@@ -7,11 +7,7 @@ import {
   type ModelToolResult,
 } from "./model.js";
 import type { ResearchEffort } from "./defaults.js";
-import type {
-  ResearchLoopContext,
-  ResearchLoopEvent,
-  SteelConcurrencyGate,
-} from "./runtime.js";
+import type { ResearchLoopContext, ResearchLoopEvent } from "./runtime.js";
 import { createSteelConcurrencyGate } from "./runtime.js";
 import { maybeCompactResearchContext } from "./compaction.js";
 import { errorMessage } from "./errors.js";
@@ -51,9 +47,6 @@ import {
 } from "./search-tool.js";
 import {
   finalSynthesisPrompt,
-  FIXED_TEAM_PLAN_SYSTEM_PROMPT,
-  fixedTeamMergePrompt,
-  fixedTeamPlanPrompt,
   RESEARCH_SYSTEM_PROMPT,
   RESEARCH_TOOLS,
   researchQuestionPrompt,
@@ -78,28 +71,27 @@ export type {
 const DEFAULT_MAX_TOOL_CALLS = 12;
 const DEFAULT_MAX_CONCURRENT_TOOLS = 4;
 const DEFAULT_MAX_CONCURRENT_SUBAGENTS = 3;
-const DELEGATE_MAX_TASKS = 4;
+const SPAWN_MAX_TASKS = 4;
 const SUBAGENT_MAX_TOOL_CALLS = 20;
-const DELEGATE_MIN_REMAINING_ACTION_CALLS = 2;
-const DELEGATE_MIN_RUNTIME_MS = 30_000;
+const SPAWN_MIN_REMAINING_ACTION_CALLS = 2;
+const SUBAGENT_MIN_RUNTIME_MS = 30_000;
 const SUBAGENT_SYNTHESIS_RESERVE_MS = 45_000;
 const SUBAGENT_FINDINGS_MAX_CHARS = 4_000;
 const BUDGET_STATUS_REMAINING_RATIO = 0.3;
 const FREE_TOOL_NAMES = new Set([
   "plan",
+  "join",
   "read_source_chunk",
   "search_sources",
   "digest_source",
   "find_in_source",
   "quote_source",
 ]);
+const SUBAGENT_TOOL_NAMES = new Set(["spawn", "join"]);
 
-/** Delegation is opt-in: the `delegate` tool is only exposed when the context
- *  allows another level of depth. With maxDelegationDepth unset (the default
- *  for direct runResearchLoop callers and tests), delegation is off entirely. */
 function toolsForContext(ctx: ResearchLoopContext): ModelToolDefinition[] {
   if ((ctx.depth ?? 0) >= (ctx.maxDelegationDepth ?? 0)) {
-    return RESEARCH_TOOLS.filter((tool) => tool.name !== "delegate");
+    return RESEARCH_TOOLS.filter((tool) => !SUBAGENT_TOOL_NAMES.has(tool.name));
   }
   return RESEARCH_TOOLS;
 }
@@ -122,8 +114,6 @@ function textFromContent(content: ModelAssistantBlock[]): string {
 interface ToolExecution {
   toolResult: ModelToolResult;
   fetchedUrl?: string;
-  /** Sub-agent-fetched URLs bubbled up by `delegate` so the lead run accounts
-   *  for the whole delegation tree's fetches. */
   fetchedUrls?: string[];
 }
 
@@ -146,8 +136,6 @@ function shouldAttemptFinalSynthesis(finishReason: string): boolean {
   );
 }
 
-/** Token budget (test-time compute limit) is metered against the shared model
- *  adapter usage, so the cap covers the whole lead + sub-agent tree. */
 function tokenBudgetExhaustedReason(ctx: ResearchLoopContext): string | null {
   if (!ctx.tokenLimit || ctx.tokenLimit <= 0) return null;
   if (totalUsageTokens(ctx.model.usage) < ctx.tokenLimit) return null;
@@ -208,9 +196,7 @@ function budgetStatusMessage(opts: {
     `tool_execution_safety_remaining=${totalRemaining}`,
     `sources=${opts.ctx.fetchedSources.length}/${opts.ctx.sourceCap}`,
     `sources_remaining=${sourcesRemaining}`,
-    ...(tokenLimit > 0
-      ? [`tokens_used=${tokensUsed}/${tokenLimit}`]
-      : []),
+    ...(tokenLimit > 0 ? [`tokens_used=${tokensUsed}/${tokenLimit}`] : []),
     "plan/read_source_chunk/search_sources/digest_source/find_in_source/quote_source do not spend action_tool_calls.",
   ].join(" ");
 }
@@ -241,6 +227,7 @@ async function mapWithConcurrency<T, R>(
 async function executeToolUse(
   tu: ModelToolCall,
   ctx: ResearchLoopContext,
+  scope: SubagentScope,
   searchIndex?: number,
 ): Promise<ToolExecution> {
   if (tu.name === "search") {
@@ -297,7 +284,10 @@ async function executeToolUse(
 
   if (tu.name === "fetch_many") {
     try {
-      const out = await execFetchMany((tu.input as FetchManyToolInput) ?? {}, ctx);
+      const out = await execFetchMany(
+        (tu.input as FetchManyToolInput) ?? {},
+        ctx,
+      );
       return {
         fetchedUrl: out.fetchedUrl,
         fetchedUrls: out.fetchedUrls,
@@ -466,33 +456,42 @@ async function executeToolUse(
     }
   }
 
-  if (tu.name === "delegate") {
-    try {
-      const delegation = await runDelegate(
-        (tu.input as DelegateToolInput) ?? {},
-        ctx,
+  if (tu.name === "spawn") {
+    const tasks = readSpawnTasks(tu.input);
+    if (tasks.length === 0) {
+      return textResult(
+        tu.id,
+        "spawn requires a non-empty `tasks` array of self-contained sub-questions.",
       );
-      return {
-        toolResult: {
-          type: "tool_result",
-          tool_call_id: tu.id,
-          content: delegation.content,
-        },
-        ...(delegation.fetchedUrls.length > 0
-          ? { fetchedUrls: delegation.fetchedUrls }
-          : {}),
-      };
-    } catch (err) {
-      ctx.abort();
-      return {
-        toolResult: {
-          type: "tool_result",
-          tool_call_id: tu.id,
-          content: `Tool error: ${err instanceof Error ? err.message : String(err)}`,
-          is_error: true,
-        },
-      };
     }
+    const { handles, error } = scope.spawn(tasks);
+    if (error) return textResult(tu.id, error);
+    return textResult(
+      tu.id,
+      JSON.stringify(
+        {
+          spawned: handles,
+          note: "Sub-agents are running in the background. Call join (with these handles, or no arguments to collect all) to receive their cited findings before you finalize.",
+        },
+        null,
+        2,
+      ),
+    );
+  }
+
+  if (tu.name === "join") {
+    const { summaries, fetchedUrls, error } = await scope.join(
+      readJoinHandles(tu.input),
+    );
+    if (error) return textResult(tu.id, error);
+    return {
+      toolResult: {
+        type: "tool_result",
+        tool_call_id: tu.id,
+        content: JSON.stringify({ joined: summaries }, null, 2),
+      },
+      ...(fetchedUrls.length > 0 ? { fetchedUrls } : {}),
+    };
   }
 
   if (tu.name === "plan") {
@@ -512,28 +511,52 @@ async function executeToolUse(
       tool_call_id: tu.id,
       content:
         `Unknown tool: ${tu.name}. Available tools: ` +
-        "search, fetch, fetch_many, read_source_chunk, search_sources, digest_source, find_in_source, quote_source, browser_open, browser_cdp, browser_extract, delegate, plan.",
+        "search, fetch, fetch_many, read_source_chunk, search_sources, digest_source, find_in_source, quote_source, browser_open, browser_cdp, browser_extract, spawn, join, plan.",
       is_error: true,
     },
   };
 }
 
-interface DelegateToolInput {
-  tasks?: Array<{ question?: string } | null>;
+function textResult(id: string, content: string): ToolExecution {
+  return {
+    toolResult: { type: "tool_result", tool_call_id: id, content },
+  };
 }
 
-function readDelegateTasks(input: DelegateToolInput): string[] {
-  const raw = Array.isArray(input?.tasks) ? input.tasks : [];
+function readSpawnTasks(input: unknown): string[] {
+  const raw =
+    input &&
+    typeof input === "object" &&
+    Array.isArray((input as { tasks?: unknown }).tasks)
+      ? (input as { tasks: unknown[] }).tasks
+      : [];
   const seen = new Set<string>();
   const tasks: string[] = [];
   for (const entry of raw) {
-    const question = String(entry?.question ?? "").trim();
+    const question =
+      typeof entry === "string"
+        ? entry.trim()
+        : entry &&
+            typeof entry === "object" &&
+            typeof (entry as { question?: unknown }).question === "string"
+          ? (entry as { question: string }).question.trim()
+          : "";
     if (!question || seen.has(question)) continue;
     seen.add(question);
     tasks.push(question);
-    if (tasks.length >= DELEGATE_MAX_TASKS) break;
+    if (tasks.length >= SPAWN_MAX_TASKS) break;
   }
   return tasks;
+}
+
+function readJoinHandles(input: unknown): string[] | undefined {
+  if (!input || typeof input !== "object") return undefined;
+  const raw = (input as { handles?: unknown }).handles;
+  if (!Array.isArray(raw)) return undefined;
+  const handles = raw
+    .map((handle) => (typeof handle === "string" ? handle.trim() : ""))
+    .filter((handle) => handle.length > 0);
+  return handles.length > 0 ? handles : undefined;
 }
 
 function tagEventDepth(
@@ -553,12 +576,12 @@ function forkContextForSubagent(
     ...ctx,
     query: question,
     depth,
-    ...(timing.deadlineAt !== undefined ? { deadlineAt: timing.deadlineAt } : {}),
+    ...(timing.deadlineAt !== undefined
+      ? { deadlineAt: timing.deadlineAt }
+      : {}),
     ...(timing.synthesisReserveMs !== undefined
       ? { synthesisReserveMs: timing.synthesisReserveMs }
       : {}),
-    // Sub-agents compact at their own (lower) threshold so several parallel
-    // contexts don't each grow to the lead's trigger.
     ...(ctx.subagentCompactionTriggerTokens !== undefined
       ? { compactionTriggerTokens: ctx.subagentCompactionTriggerTokens }
       : {}),
@@ -589,10 +612,13 @@ function subagentTiming(ctx: ResearchLoopContext): SubagentTiming | string {
     SUBAGENT_SYNTHESIS_RESERVE_MS,
   );
   const usableMs = subagentDeadlineAt - now - subagentReserveMs;
-  if (usableMs < DELEGATE_MIN_RUNTIME_MS) {
-    const remainingSeconds = Math.max(0, Math.ceil((leadDeadlineAt - now) / 1000));
+  if (usableMs < SUBAGENT_MIN_RUNTIME_MS) {
+    const remainingSeconds = Math.max(
+      0,
+      Math.ceil((leadDeadlineAt - now) / 1000),
+    );
     const reserveSeconds = Math.ceil(leadReserveMs / 1000);
-    return `Error: not enough remaining time to delegate (${remainingSeconds}s left; ${reserveSeconds}s reserved for lead finalization). Investigate or finalize directly.`;
+    return `Error: not enough remaining time to spawn sub-agents (${remainingSeconds}s left; ${reserveSeconds}s reserved for finalization). Investigate or finalize directly.`;
   }
 
   return {
@@ -632,11 +658,6 @@ function subagentSources(
   return sources;
 }
 
-interface DelegateOutcome {
-  content: string;
-  fetchedUrls: string[];
-}
-
 interface SubagentSummary {
   task: string;
   findings?: string;
@@ -651,115 +672,198 @@ interface SubagentOutcome {
   fetchedUrls: string[];
 }
 
-/** Shared fan-out core used by both the `delegate` tool (lead-driven) and the
- *  fixed-team harness (plan-driven). Runs each task as an isolated sub-agent on
- *  the shared source store and returns concise per-task summaries. */
-async function fanOutSubagents(opts: {
-  ctx: ResearchLoopContext;
-  tasks: string[];
-  timing: SubagentTiming;
-  perAgentMaxToolCalls: number;
-  gate: SteelConcurrencyGate;
-}): Promise<SubagentOutcome[]> {
-  const { ctx, tasks, timing, perAgentMaxToolCalls, gate } = opts;
-  ctx.emit({ type: "delegation_started", tasks });
-  return mapWithConcurrency(tasks, tasks.length, (question) =>
-    gate.run(async () => {
-      ctx.emit({ type: "subagent_started", task: question });
-      try {
-        const run = await runResearchLoop({
-          ctx: forkContextForSubagent(ctx, question, timing),
-          query: question,
-          maxToolCalls: perAgentMaxToolCalls,
-          effort: ctx.subagentEffort,
-          systemPrompt: SUBAGENT_SYSTEM_PROMPT,
-        });
-        const findings = truncateFindings(run.markdown);
-        ctx.emit({
-          type: "subagent_finished",
-          task: question,
-          sourcesFetched: run.fetchedUrls.length,
-          toolCalls: run.toolCalls,
-          finishReason: run.finishReason,
-        });
-        return {
-          summary: {
-            task: question,
-            findings: findings || `(no findings; ${run.finishReason})`,
-            sources: subagentSources(ctx, run.fetchedUrls),
-            tool_calls: run.toolCalls,
-            finish_reason: run.finishReason,
-          },
-          fetchedUrls: run.fetchedUrls,
-        };
-      } catch (err) {
-        ctx.abort();
-        return {
-          summary: {
-            task: question,
-            error: err instanceof Error ? err.message : String(err),
-          },
-          fetchedUrls: [] as string[],
-        };
-      }
-    }),
-  );
+async function runSubagentTask(
+  ctx: ResearchLoopContext,
+  question: string,
+  timing: SubagentTiming,
+  perAgentMaxToolCalls: number,
+): Promise<SubagentOutcome> {
+  try {
+    const run = await runResearchLoop({
+      ctx: forkContextForSubagent(ctx, question, timing),
+      query: question,
+      maxToolCalls: perAgentMaxToolCalls,
+      effort: ctx.subagentEffort,
+      systemPrompt: SUBAGENT_SYSTEM_PROMPT,
+    });
+    const findings = truncateFindings(run.markdown);
+    ctx.emit({
+      type: "subagent_finished",
+      task: question,
+      sourcesFetched: run.fetchedUrls.length,
+      toolCalls: run.toolCalls,
+      finishReason: run.finishReason,
+    });
+    return {
+      summary: {
+        task: question,
+        findings: findings || `(no findings; ${run.finishReason})`,
+        sources: subagentSources(ctx, run.fetchedUrls),
+        tool_calls: run.toolCalls,
+        finish_reason: run.finishReason,
+      },
+      fetchedUrls: run.fetchedUrls,
+    };
+  } catch (err) {
+    ctx.abort();
+    return {
+      summary: {
+        task: question,
+        error: err instanceof Error ? err.message : String(err),
+      },
+      fetchedUrls: [],
+    };
+  }
 }
 
-async function runDelegate(
-  input: DelegateToolInput,
+interface SubagentEntry {
+  handle: string;
+  task: string;
+  status: "running" | "done" | "error";
+  collected: boolean;
+  promise: Promise<SubagentOutcome>;
+}
+
+interface SpawnResult {
+  handles: Array<{ handle: string; task: string }>;
+  error?: string;
+}
+
+interface JoinResult {
+  summaries: SubagentSummary[];
+  fetchedUrls: string[];
+  error?: string;
+}
+
+interface SubagentScope {
+  spawn(tasks: string[]): SpawnResult;
+  join(handles: string[] | undefined): Promise<JoinResult>;
+  settle(): Promise<string[]>;
+}
+
+function createSubagentScope(
   ctx: ResearchLoopContext,
-): Promise<DelegateOutcome> {
-  if ((ctx.depth ?? 0) >= (ctx.maxDelegationDepth ?? 0)) {
-    return {
-      content:
-        "Error: delegation is not available here. Research this directly with search/fetch.",
-      fetchedUrls: [],
-    };
-  }
-  const tasks = readDelegateTasks(input);
-  if (tasks.length === 0) {
-    return {
-      content:
-        "Error: delegate requires `tasks` to be a non-empty array of objects with a `question` string.",
-      fetchedUrls: [],
-    };
-  }
-  if (
-    ctx.budget &&
-    ctx.budget.remainingActionCalls < DELEGATE_MIN_REMAINING_ACTION_CALLS
-  ) {
-    return {
-      content:
-        "Error: not enough remaining tool budget to delegate. Investigate the most important angle directly.",
-      fetchedUrls: [],
-    };
-  }
-  const timing = subagentTiming(ctx);
-  if (typeof timing === "string") {
-    return {
-      content: timing,
-      fetchedUrls: [],
-    };
+  perAgentMaxToolCalls: number,
+): SubagentScope {
+  const registry = new Map<string, SubagentEntry>();
+  let counter = 0;
+  const gate =
+    ctx.subagentGate ??
+    createSteelConcurrencyGate(
+      ctx.maxConcurrentSubagents ?? DEFAULT_MAX_CONCURRENT_SUBAGENTS,
+    );
+
+  const uncollected = (): SubagentEntry[] =>
+    [...registry.values()].filter((entry) => !entry.collected);
+
+  async function collect(entries: SubagentEntry[]): Promise<SubagentOutcome[]> {
+    const outcomes = await Promise.all(
+      entries.map((entry) =>
+        entry.promise.catch(
+          (err): SubagentOutcome => ({
+            summary: {
+              task: entry.task,
+              error: err instanceof Error ? err.message : String(err),
+            },
+            fetchedUrls: [],
+          }),
+        ),
+      ),
+    );
+    for (const entry of entries) entry.collected = true;
+    return outcomes;
   }
 
-  const maxConcurrent =
-    ctx.maxConcurrentSubagents ?? DEFAULT_MAX_CONCURRENT_SUBAGENTS;
-  const gate = ctx.subagentGate ?? createSteelConcurrencyGate(maxConcurrent);
-  const outcomes = await fanOutSubagents({
-    ctx,
-    tasks,
-    timing,
-    perAgentMaxToolCalls: SUBAGENT_MAX_TOOL_CALLS,
-    gate,
-  });
   return {
-    content: JSON.stringify(
-      { delegated: outcomes.map((outcome) => outcome.summary) },
-      null,
-      2,
-    ),
-    fetchedUrls: outcomes.flatMap((outcome) => outcome.fetchedUrls),
+    spawn(tasks) {
+      if ((ctx.depth ?? 0) >= (ctx.maxDelegationDepth ?? 0)) {
+        return {
+          handles: [],
+          error:
+            "Error: spawn is not available at this depth. Research this directly with search/fetch.",
+        };
+      }
+      if (
+        ctx.budget &&
+        ctx.budget.remainingActionCalls < SPAWN_MIN_REMAINING_ACTION_CALLS
+      ) {
+        return {
+          handles: [],
+          error:
+            "Error: not enough remaining tool budget to spawn sub-agents. Investigate the most important angle directly.",
+        };
+      }
+      const timing = subagentTiming(ctx);
+      if (typeof timing === "string") {
+        return { handles: [], error: timing };
+      }
+      const accepted = tasks.slice(0, SPAWN_MAX_TASKS);
+      if (accepted.length === 0) {
+        return {
+          handles: [],
+          error:
+            "Error: spawn requires a non-empty `tasks` array of self-contained sub-questions.",
+        };
+      }
+      ctx.emit({ type: "delegation_started", tasks: accepted });
+      const handles: Array<{ handle: string; task: string }> = [];
+      for (const task of accepted) {
+        counter += 1;
+        const handle = `agent_${counter}`;
+        ctx.emit({ type: "subagent_started", task });
+        const promise = gate.run(() =>
+          runSubagentTask(ctx, task, timing, perAgentMaxToolCalls),
+        );
+        const entry: SubagentEntry = {
+          handle,
+          task,
+          status: "running",
+          collected: false,
+          promise,
+        };
+        promise.then(
+          (outcome) => {
+            entry.status = outcome.summary.error ? "error" : "done";
+          },
+          () => {
+            entry.status = "error";
+          },
+        );
+        registry.set(handle, entry);
+        handles.push({ handle, task });
+      }
+      return { handles };
+    },
+
+    async join(handles) {
+      const targets =
+        handles && handles.length > 0
+          ? handles
+              .map((handle) => registry.get(handle))
+              .filter((entry): entry is SubagentEntry => Boolean(entry))
+              .filter((entry) => !entry.collected)
+          : uncollected();
+      if (targets.length === 0) {
+        return {
+          summaries: [],
+          fetchedUrls: [],
+          error:
+            "No outstanding sub-agents to join. Spawn sub-agents first, or write your report if you have enough evidence.",
+        };
+      }
+      const outcomes = await collect(targets);
+      return {
+        summaries: outcomes.map((outcome) => outcome.summary),
+        fetchedUrls: outcomes.flatMap((outcome) => outcome.fetchedUrls),
+      };
+    },
+
+    async settle() {
+      const targets = uncollected();
+      if (targets.length === 0) return [];
+      const outcomes = await collect(targets);
+      return outcomes.flatMap((outcome) => outcome.fetchedUrls);
+    },
   };
 }
 
@@ -769,6 +873,7 @@ export async function runResearchLoop(opts: {
   maxToolCalls?: number;
   effort?: ResearchEffort;
   systemPrompt?: string;
+  suggestedParallelism?: number;
 }): Promise<ResearchLoopResult> {
   const { ctx, query } = opts;
   const systemPrompt = opts.systemPrompt ?? RESEARCH_SYSTEM_PROMPT;
@@ -776,6 +881,7 @@ export async function runResearchLoop(opts: {
   const isSubagent = (ctx.depth ?? 0) > 0;
   const maxToolCalls = opts.maxToolCalls ?? DEFAULT_MAX_TOOL_CALLS;
   const maxTotalToolExecutions = Math.max(maxToolCalls, maxToolCalls * 2);
+  const scope = createSubagentScope(ctx, SUBAGENT_MAX_TOOL_CALLS);
 
   if (!isSubagent) ctx.emit({ type: "research_started" });
 
@@ -789,7 +895,12 @@ export async function runResearchLoop(opts: {
   const messages: ModelMessage[] = [
     {
       role: "user",
-      content: researchQuestionPrompt({ query }),
+      content: researchQuestionPrompt({
+        query,
+        suggestedParallelism: isSubagent
+          ? undefined
+          : opts.suggestedParallelism,
+      }),
     },
   ];
 
@@ -894,7 +1005,7 @@ export async function runResearchLoop(opts: {
     const executions = await mapWithConcurrency(
       activeToolUses,
       ctx.maxConcurrentTools ?? DEFAULT_MAX_CONCURRENT_TOOLS,
-      (tu, index) => executeToolUse(tu, ctx, searchIndexes[index]),
+      (tu, index) => executeToolUse(tu, ctx, scope, searchIndexes[index]),
     );
     const toolResults = [
       ...executions.map((e) => e.toolResult),
@@ -948,7 +1059,12 @@ export async function runResearchLoop(opts: {
     }
   }
 
-  if (!markdown && shouldAttemptFinalSynthesis(finishReason)) {
+  const canSalvageAfterApiError =
+    finishReason.startsWith("api error") && ctx.fetchedSources.length > 0;
+  if (
+    !markdown &&
+    (shouldAttemptFinalSynthesis(finishReason) || canSalvageAfterApiError)
+  ) {
     ctx.abort();
     messages.push({
       role: "user",
@@ -976,6 +1092,9 @@ export async function runResearchLoop(opts: {
     }
   }
 
+  const leftoverFetchedUrls = await scope.settle();
+  if (leftoverFetchedUrls.length > 0) fetchedUrls.push(...leftoverFetchedUrls);
+
   if (!isSubagent) {
     ctx.emit({
       type: "research_finished",
@@ -990,175 +1109,6 @@ export async function runResearchLoop(opts: {
     messages: [...messages],
     markdown,
   };
-}
-
-const FIXED_TEAM_PER_AGENT_MIN_TOOL_CALLS = 12;
-const FIXED_TEAM_MAX_CONCURRENCY = 8;
-
-function fencedBlock(text: string): string | null {
-  const match = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  return match?.[1]?.trim() ?? null;
-}
-
-function spanBetween(text: string, open: string, close: string): string | null {
-  const start = text.indexOf(open);
-  const end = text.lastIndexOf(close);
-  if (start === -1 || end === -1 || end <= start) return null;
-  return text.slice(start, end + 1);
-}
-
-function parseSubtasks(text: string, teamSize: number): string[] {
-  const trimmed = text.trim();
-  if (!trimmed) return [];
-  const candidates = [
-    trimmed,
-    fencedBlock(trimmed),
-    spanBetween(trimmed, "{", "}"),
-    spanBetween(trimmed, "[", "]"),
-  ].filter((candidate): candidate is string => Boolean(candidate));
-  for (const candidate of candidates) {
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(candidate);
-    } catch {
-      continue;
-    }
-    const arr = Array.isArray(parsed)
-      ? parsed
-      : parsed &&
-          typeof parsed === "object" &&
-          Array.isArray((parsed as { subtasks?: unknown }).subtasks)
-        ? (parsed as { subtasks: unknown[] }).subtasks
-        : null;
-    if (!arr) continue;
-    const seen = new Set<string>();
-    const out: string[] = [];
-    for (const item of arr) {
-      const question =
-        typeof item === "string"
-          ? item.trim()
-          : item &&
-              typeof item === "object" &&
-              typeof (item as { question?: unknown }).question === "string"
-            ? (item as { question: string }).question.trim()
-            : "";
-      if (question && !seen.has(question)) {
-        seen.add(question);
-        out.push(question);
-      }
-      if (out.length >= teamSize) break;
-    }
-    if (out.length > 0) return out;
-  }
-  return [];
-}
-
-async function planFixedTeamSubtasks(opts: {
-  ctx: ResearchLoopContext;
-  query: string;
-  teamSize: number;
-  effort?: ResearchEffort;
-}): Promise<string[]> {
-  const { ctx, query, teamSize, effort } = opts;
-  try {
-    const resp = await ctx.model.step({
-      system: FIXED_TEAM_PLAN_SYSTEM_PROMPT,
-      messages: [
-        { role: "user", content: fixedTeamPlanPrompt({ query, teamSize }) },
-      ],
-      maxTokens: ctx.maxOutputTokens ?? 2048,
-      effort,
-      signal: ctx.signal,
-    });
-    return parseSubtasks(textFromContent(resp.content), teamSize);
-  } catch (err) {
-    if (ctx.signal?.aborted) throw err;
-    return [];
-  }
-}
-
-/** Fixed-agent team harness: plan the question into independent sub-tasks, run
- *  them fully in parallel (sharing the token budget + source store), then merge
- *  their findings into one report. There is no iterative lead loop, so latency
- *  tracks the slowest single agent rather than a sequential lead — the
- *  multi-agent latency/Pareto win. Falls back to a single agent when the
- *  question is not splittable. */
-export async function runFixedTeamResearch(opts: {
-  ctx: ResearchLoopContext;
-  query: string;
-  teamSize: number;
-  maxToolCalls?: number;
-  perAgentMaxToolCalls?: number;
-  effort?: ResearchEffort;
-}): Promise<ResearchLoopResult> {
-  const { ctx, query, teamSize, effort } = opts;
-  const subtasks = await planFixedTeamSubtasks({ ctx, query, teamSize, effort });
-  if (subtasks.length < 2) {
-    // Atomic question (or planning failed): a team adds only overhead.
-    return runResearchLoop({
-      ctx,
-      query,
-      maxToolCalls: opts.maxToolCalls,
-      effort,
-    });
-  }
-
-  ctx.emit({ type: "research_started" });
-  const timingRaw = subagentTiming(ctx);
-  const timing = typeof timingRaw === "string" ? {} : timingRaw;
-  const perAgentMaxToolCalls = Math.max(
-    FIXED_TEAM_PER_AGENT_MIN_TOOL_CALLS,
-    opts.perAgentMaxToolCalls ?? SUBAGENT_MAX_TOOL_CALLS,
-  );
-  const gate = createSteelConcurrencyGate(
-    Math.min(FIXED_TEAM_MAX_CONCURRENCY, subtasks.length),
-  );
-  const outcomes = await fanOutSubagents({
-    ctx,
-    tasks: subtasks,
-    timing,
-    perAgentMaxToolCalls,
-    gate,
-  });
-
-  const fetchedUrls = outcomes.flatMap((outcome) => outcome.fetchedUrls);
-  const toolCalls = outcomes.reduce(
-    (sum, outcome) => sum + (outcome.summary.tool_calls ?? 0),
-    0,
-  );
-
-  const messages: ModelMessage[] = [
-    { role: "user", content: researchQuestionPrompt({ query }) },
-    {
-      role: "user",
-      content: fixedTeamMergePrompt({
-        outcomes: outcomes.map((outcome) => outcome.summary),
-      }),
-    },
-  ];
-  let markdown = "";
-  let finishReason = "fixed-team report";
-  try {
-    const resp = await ctx.model.step({
-      system: RESEARCH_SYSTEM_PROMPT,
-      messages,
-      maxTokens: ctx.maxOutputTokens ?? 2048,
-      effort,
-      signal: ctx.signal,
-    });
-    messages.push({ role: "assistant", content: resp.content });
-    markdown = textFromContent(resp.content);
-    if (!markdown) finishReason = "empty fixed-team merge";
-  } catch (err) {
-    if (ctx.signal?.aborted) throw err;
-    finishReason = `fixed-team merge api error: ${errorMessage(err)}`;
-  }
-
-  ctx.emit({
-    type: "research_finished",
-    sourcesFetched: ctx.fetchedSources.length,
-  });
-  return { fetchedUrls, toolCalls, finishReason, messages, markdown };
 }
 
 export const __testing = {

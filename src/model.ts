@@ -187,12 +187,14 @@ function toAnthropicMessage(message: ModelMessage): Anthropic.MessageParam {
     }
     return {
       role: "user",
-      content: message.content.map((result): Anthropic.ToolResultBlockParam => ({
-        type: "tool_result",
-        tool_use_id: result.tool_call_id,
-        content: result.content,
-        is_error: result.is_error,
-      })),
+      content: message.content.map(
+        (result): Anthropic.ToolResultBlockParam => ({
+          type: "tool_result",
+          tool_use_id: result.tool_call_id,
+          content: result.content,
+          is_error: result.is_error,
+        }),
+      ),
     };
   }
 
@@ -395,6 +397,22 @@ function parseOpenAIArguments(raw: string): unknown {
   } catch {
     return {};
   }
+}
+
+export interface ModelConcurrencyGate {
+  run<T>(fn: () => Promise<T>): Promise<T>;
+}
+
+export function wrapModelAdapterWithConcurrency(
+  adapter: ModelAdapter,
+  gate: ModelConcurrencyGate,
+): ModelAdapter {
+  return {
+    provider: adapter.provider,
+    model: adapter.model,
+    usage: adapter.usage,
+    step: (input) => gate.run(() => adapter.step(input)),
+  };
 }
 
 export const __testing = {

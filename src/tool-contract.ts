@@ -267,9 +267,9 @@ export const RESEARCH_TOOLS: ModelToolDefinition[] = [
     },
   },
   {
-    name: "delegate",
+    name: "spawn",
     description:
-      "Spawn parallel sub-agents, each investigating ONE focused, self-contained sub-question in its OWN isolated context. Each sub-agent searches and reads on its own and returns a concise cited summary — not raw pages — so your context stays clean. Sub-agents share your fetched-source store: each returned source carries a source_id (a handle for search_sources, read_source_chunk, find_in_source, and quote_source) and a url (what you cite). Use this to fan out genuinely independent sub-questions for breadth; do simple, single-thread lookups yourself with search/fetch/fetch_many. Sub-agents cannot see this conversation, so each question must include all context it needs.",
+      "Launch one or more parallel sub-agents in the background and return their handles immediately WITHOUT waiting. Each sub-agent investigates ONE focused, self-contained sub-question in its OWN isolated context, searching and reading on its own. Sub-agents share your fetched-source store: a fetched source carries a source_id (a handle for search_sources/read_source_chunk/find_in_source/quote_source) and a url (what you cite). Spawning does not block — keep searching, reading, or spawning more while they run, then call join to collect their cited findings. Spawn genuinely independent sub-questions for breadth; do simple single-thread lookups yourself. Sub-agents cannot see this conversation, so each question must carry all the context it needs.",
     input_schema: {
       type: "object",
       properties: {
@@ -277,21 +277,35 @@ export const RESEARCH_TOOLS: ModelToolDefinition[] = [
           type: "array",
           minItems: 1,
           maxItems: 4,
-          description: "Independent sub-questions to investigate in parallel.",
+          description:
+            "Self-contained sub-questions to investigate in parallel. Each must include all context the sub-agent needs.",
           items: {
-            type: "object",
-            properties: {
-              question: {
-                type: "string",
-                description:
-                  "A self-contained sub-question, including all context the sub-agent needs (it cannot see this conversation).",
-              },
-            },
-            required: ["question"],
+            type: "string",
+            description:
+              "One self-contained sub-question, including all context the sub-agent needs.",
           },
         },
       },
       required: ["tasks"],
+    },
+  },
+  {
+    name: "join",
+    description:
+      "Collect the cited findings of sub-agents started with spawn, blocking until they finish. Pass the handles you want, or omit handles to collect every outstanding sub-agent. Returns each sub-agent's concise findings plus the source_id and url of every source it fetched. Always join your sub-agents before writing the final report so their evidence is in context.",
+    input_schema: {
+      type: "object",
+      properties: {
+        handles: {
+          type: "array",
+          items: {
+            type: "string",
+            description: "A sub-agent handle returned by spawn, such as agent_1.",
+          },
+          description:
+            "Handles to collect. Omit to join every outstanding sub-agent.",
+        },
+      },
     },
   },
 ];
@@ -301,8 +315,8 @@ export const RESEARCH_SYSTEM_PROMPT =
   "Ground every conclusion in the raw content of sources you actually fetched. Search snippets, source cards, source digests, URLs, and listing/SEO/directory pages are leads to follow, not evidence — follow them to a primary or detailed source and verify with read_source_chunk or quote_source before relying on a claim. If the evidence contradicts your current hypothesis, revise it rather than forcing an answer.\n\n" +
   "Fetch broadly when needed: fetch and fetch_many store full source documents without forcing summaries into your context. Use search_sources to search across stored documents, digest_source only as an optional navigation aid for a specific current goal, and quote_source for exact wording.\n\n" +
   "How you search and what you read is up to you. For interactive sites, internal site search, pagination, or pages where search/fetch is not enough, use browser_open and browser_cdp to inspect and navigate directly. When a browser page contains evidence you may cite, call browser_extract to store it as a source before relying on it in the final answer.\n\n" +
-  "When the question splits into independent sub-questions that can be investigated separately, call `delegate` to run them as parallel sub-agents. Each sub-agent works in its own isolated context and returns a concise cited summary plus the source_id and url of each source it fetched — so prefer delegating breadth over reading many long pages yourself, and reuse those source_ids with quote_source when you need exact wording. Investigate simple, single-thread questions directly.\n\n" +
-  "Orchestrate in rounds: after sub-agents return, review their findings, decide what is still missing, ambiguous, or unverified, and either run another focused `delegate` round on the remaining gaps or verify the key evidence yourself with quote_source. Do not finalize after a single delegation while important gaps remain; only write the report once the open questions are resolved or you can clearly state why they cannot be.\n\n" +
+  "You scale yourself with two primitives: `spawn` launches parallel sub-agents in the background and returns immediately; `join` collects their cited findings, blocking until they finish. This one mechanism covers every shape of work, and you choose the shape per question: investigate simple single-thread questions yourself with no sub-agents; for a question that cleanly splits into independent parts, spawn that breadth up front and join once before writing; for an open-ended question where each step informs the next, spawn a focused round, join it, review what is still missing or unverified, then spawn another round on the gaps. You may also spawn, keep working yourself, and join later. Each sub-agent works in its own isolated context and returns a concise cited summary plus the source_id and url of each source it fetched, so prefer spawning breadth over reading many long pages yourself, and reuse those source_ids with quote_source when you need exact wording.\n\n" +
+  "Match the effort to the question and govern yourself by the budget status you are shown: do not spawn sub-agents for a question you can answer directly, and do not keep spawning rounds once the open questions are resolved. Always join every sub-agent you spawned before finalizing; never write the report while sub-agents are still outstanding or while important gaps remain.\n\n" +
   "To think, take stock, or re-plan without searching or fetching yet, call `plan` and keep going — it does not end the run. A turn with no tool calls is treated as your final answer, so only stop calling tools when you are ready to write the report. When you have enough evidence, write a cited Markdown report; if the evidence is incomplete, say so and explain the gaps. Cite every claim with the source's URL — as a Markdown link `[title](https://…)` or a bare https URL — so each citation is independently verifiable. Never cite an internal source_id (such as `source_6`) in the report; source_id values are only handles for the read/quote tools, not citations.";
 
 export const SUBAGENT_SYSTEM_PROMPT =
@@ -311,50 +325,23 @@ export const SUBAGENT_SYSTEM_PROMPT =
   "Always investigate before answering: run at least one search and fetch at least one relevant source before writing your findings. Do not answer from prior knowledge alone — if you cannot find supporting sources, say so explicitly.\n\n" +
   "A turn with no tool calls is treated as your final answer. When you are done, write a concise findings summary — a few short paragraphs or bullet points, not a full report — and cite every claim with the source's full https URL inline. If the evidence is incomplete, state the gap plainly. Keep it tight: the lead only needs your findings and the source URLs, not a polished write-up.";
 
-export const FIXED_TEAM_PLAN_SYSTEM_PROMPT =
-  "You are the planner for a fixed team of research agents that will work in parallel on one question. Split the question into independent, self-contained sub-questions that together cover everything needed to answer it. Each sub-question must be investigable on its own by an agent that cannot see the others or this conversation, so include all the context it needs. Prefer genuinely separable angles over redundant restatements of the whole question. If the question is atomic and cannot be meaningfully split, return fewer sub-questions (even one). Respond with ONLY a JSON object: {\"subtasks\": [\"...\", \"...\"]}.";
-
-export function fixedTeamPlanPrompt(opts: {
-  query: string;
-  teamSize: number;
-}): string {
-  return [
-    `Question: ${opts.query}`,
-    `Split this into at most ${opts.teamSize} independent, self-contained sub-questions for ${opts.teamSize} parallel agents.`,
-    `Respond with only JSON: {"subtasks": ["...", "..."]} containing at most ${opts.teamSize} items.`,
-  ].join("\n\n");
-}
-
-export function fixedTeamMergePrompt(opts: {
-  outcomes: Array<{
-    task: string;
-    findings?: string;
-    error?: string;
-    sources?: Array<{ source_id?: string; url: string; title?: string }>;
-  }>;
-}): string {
-  const blocks = opts.outcomes.map((outcome, index) => {
-    const body = outcome.findings ?? outcome.error ?? "(no findings)";
-    const sources = (outcome.sources ?? [])
-      .map((source) => `${source.source_id ? `${source.source_id} ` : ""}${source.url}`)
-      .join("; ");
-    return `### Agent ${index + 1}: ${outcome.task}\n${body}${sources ? `\nSources: ${sources}` : ""}`;
-  });
-  return [
-    "A fixed team of sub-agents investigated this question in parallel. Using only their findings and the shared fetched sources, write one cohesive, cited Markdown report that answers the question. Reconcile any disagreements between agents, state remaining gaps plainly, and cite every claim with the source's URL. Do not call any tools — write the final report now.",
-    "Team findings:",
-    blocks.join("\n\n"),
-  ].join("\n\n");
-}
-
 export const STRUCTURED_FINALIZE_SYSTEM_PROMPT =
   "You are finalizing a completed research run into a structured JSON result. The read-only source tools (find_in_source, quote_source, read_source_chunk) remain available, so confirm any quote against the source you already fetched before committing it. If one concrete missing fact prevents a correct JSON result, call request_more_research with the focused gap; otherwise do not search again. Quote only text that genuinely appears in those sources, and attribute each quote to the source it actually came from; never invent quotes, spans, or sources. When you are ready, respond with only the JSON object that matches the requested schema — no further tool calls, no prose, no Markdown fences.";
 
 export const STRUCTURED_EMIT_SYSTEM_PROMPT =
   "You format a completed research run into JSON. Use only evidence already gathered in the conversation. Return only the JSON object matching the requested schema.";
 
-export function researchQuestionPrompt(opts: { query: string }): string {
-  return `Research question: ${opts.query}`;
+export function researchQuestionPrompt(opts: {
+  query: string;
+  suggestedParallelism?: number;
+}): string {
+  const lines = [`Research question: ${opts.query}`];
+  if (opts.suggestedParallelism && opts.suggestedParallelism >= 2) {
+    lines.push(
+      `You may run up to ${opts.suggestedParallelism} sub-agents in parallel with spawn. If this question splits into independent parts, spawn that breadth early and join before writing.`,
+    );
+  }
+  return lines.join("\n\n");
 }
 
 export function finalSynthesisPrompt(reason: string): string {
