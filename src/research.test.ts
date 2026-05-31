@@ -67,7 +67,7 @@ function sourceDocument(markdown: string): SourceDocument {
 
 describe("research source citations", () => {
   it("matches cited URLs with the same normalization used for fetched sources", () => {
-    const audit = __testing.auditCitationsInMarkdown(
+    const citations = __testing.reconcileCitations(
       "Evidence from [Example](https://example.com/report?utm_source=newsletter&b=2&a=1#section).",
       [
         {
@@ -77,20 +77,20 @@ describe("research source citations", () => {
       ],
     );
 
-    expect(audit.verifiedSources).toEqual([
+    expect(citations.citedSources).toEqual([
       {
         url: "https://example.com/report?a=1&b=2",
         title: "Example Report",
       },
     ]);
-    expect(audit.unverifiedCitations).toEqual([]);
+    expect(citations.citationsNotFetched).toEqual([]);
   });
 
-  it("does not promote unfetched cited URLs into verified sources", () => {
-    const audit = __testing.auditCitationsInMarkdown(
+  it("does not promote unfetched cited URLs into cited sources", () => {
+    const citations = __testing.reconcileCitations(
       [
-        "Verified evidence from [Fetched](https://example.com/fetched).",
-        "Unverified claim from [Unfetched](https://example.com/unfetched).",
+        "Cited evidence from [Fetched](https://example.com/fetched).",
+        "Claim citing an unread page [Unfetched](https://example.com/unfetched).",
         "Repeated bare URL should dedupe: https://example.com/unfetched.",
       ].join("\n"),
       [
@@ -101,13 +101,13 @@ describe("research source citations", () => {
       ],
     );
 
-    expect(audit.verifiedSources).toEqual([
+    expect(citations.citedSources).toEqual([
       {
         url: "https://example.com/fetched",
         title: "Fetched Source",
       },
     ]);
-    expect(audit.unverifiedCitations).toEqual([
+    expect(citations.citationsNotFetched).toEqual([
       "https://example.com/unfetched",
     ]);
   });

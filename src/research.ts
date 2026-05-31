@@ -34,7 +34,7 @@ import type {
   FetchedSource,
   SourceExtractionAttempt,
   SourceDocument,
-  VerifiedSource,
+  CitedSource,
 } from "./sources.js";
 import { createSteel } from "./steel.js";
 import {
@@ -98,11 +98,7 @@ const MAX_TEAM_SIZE = 8;
 
 export type { ModelProvider, UsageSummary } from "./model.js";
 export type { ResearchEffort } from "./defaults.js";
-export type {
-  FetchedSource,
-  SourceDocument,
-  VerifiedSource,
-} from "./sources.js";
+export type { FetchedSource, SourceDocument, CitedSource } from "./sources.js";
 
 export interface ResearchRun {
   fetchedUrls: string[];
@@ -115,8 +111,8 @@ export interface ResearchResult {
   provider: ModelProvider;
   model: string;
   runs: ResearchRun[];
-  verifiedSources: VerifiedSource[];
-  unverifiedCitations: string[];
+  citedSources: CitedSource[];
+  citationsNotFetched: string[];
   markdown: string;
   structured?: unknown;
   sourceDocuments?: SourceDocument[];
@@ -174,7 +170,7 @@ export type ResearchEvent = (
       toolCalls: number;
       finishReason: string;
     }
-  | { type: "unverified_citations"; count: number; urls: string[] }
+  | { type: "citations_not_fetched"; count: number; urls: string[] }
   | { type: "written"; markdownChars: number }
   | { type: "completed"; result: ResearchResult }
 ) & {
@@ -431,12 +427,12 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
         `research: loop did not produce a final report (${run.finishReason})`,
       );
     }
-    const citationAudit = auditCitationsInMarkdown(markdown, fetchedSources);
-    if (citationAudit.unverifiedCitations.length > 0) {
+    const citations = reconcileCitations(markdown, fetchedSources);
+    if (citations.citationsNotFetched.length > 0) {
       emit({
-        type: "unverified_citations",
-        count: citationAudit.unverifiedCitations.length,
-        urls: citationAudit.unverifiedCitations,
+        type: "citations_not_fetched",
+        count: citations.citationsNotFetched.length,
+        urls: citations.citationsNotFetched,
       });
     }
     emit({ type: "written", markdownChars: markdown.length });
@@ -460,8 +456,8 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
       provider,
       model,
       runs,
-      verifiedSources: citationAudit.verifiedSources,
-      unverifiedCitations: citationAudit.unverifiedCitations,
+      citedSources: citations.citedSources,
+      citationsNotFetched: citations.citationsNotFetched,
       markdown,
       ...(structured !== undefined ? { structured } : {}),
       ...(includeSourceDocuments
@@ -925,15 +921,15 @@ function createModelAdapter(opts: {
   return createOpenAIModelAdapter({ apiKey, baseUrl, model: opts.model });
 }
 
-interface CitationAudit {
-  verifiedSources: VerifiedSource[];
-  unverifiedCitations: string[];
+interface CitationReconciliation {
+  citedSources: CitedSource[];
+  citationsNotFetched: string[];
 }
 
-function auditCitationsInMarkdown(
+function reconcileCitations(
   markdown: string,
   fetchedSources: FetchedSource[],
-): CitationAudit {
+): CitationReconciliation {
   const citedUrls = extractMarkdownUrls(markdown);
   const byNormalizedUrl = new Map(
     fetchedSources.map((source) => [
@@ -942,8 +938,8 @@ function auditCitationsInMarkdown(
     ]),
   );
 
-  const verifiedSources: VerifiedSource[] = [];
-  const unverifiedCitations: string[] = [];
+  const citedSources: CitedSource[] = [];
+  const citationsNotFetched: string[] = [];
   const seen = new Set<string>();
   for (const url of citedUrls) {
     const normalized = normalizeUrlForCitation(url);
@@ -951,14 +947,14 @@ function auditCitationsInMarkdown(
     seen.add(normalized);
     const fetchedSource = byNormalizedUrl.get(normalized);
     if (fetchedSource) {
-      verifiedSources.push(fetchedSource);
+      citedSources.push(fetchedSource);
     } else {
-      unverifiedCitations.push(url);
+      citationsNotFetched.push(url);
     }
   }
   return {
-    verifiedSources,
-    unverifiedCitations,
+    citedSources,
+    citationsNotFetched,
   };
 }
 
@@ -1014,7 +1010,7 @@ function timeoutSynthesisReserveMs(
 }
 
 export const __testing = {
-  auditCitationsInMarkdown,
+  reconcileCitations,
   generateStructuredOutput: async (
     opts: Parameters<typeof generateStructuredOutput>[0],
   ) => (await generateStructuredOutput(opts)).value,

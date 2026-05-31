@@ -178,10 +178,10 @@ function prettyEventBody(e: ResearchEvent): string {
       );
     case "source_error":
       return paint(YELLOW, `    ! ${e.url} — ${e.error}`);
-    case "unverified_citations":
+    case "citations_not_fetched":
       return (
-        paint(YELLOW, "    ! unverified citations:") +
-        ` ${e.count} URL${e.count === 1 ? "" : "s"} not fetched by Atlas`
+        paint(YELLOW, "    ! citations not fetched:") +
+        ` ${e.count} cited URL${e.count === 1 ? "" : "s"} Atlas did not read`
       );
     case "written":
       return (
@@ -203,7 +203,7 @@ function prettyEventBody(e: ResearchEvent): string {
       );
       return (
         paint(GREEN, "✓") +
-        ` done — ${e.result.verifiedSources.length} documents\n` +
+        ` done — ${e.result.citedSources.length} documents\n` +
         tokenLine
       );
     }

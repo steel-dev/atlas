@@ -51,11 +51,11 @@ const result = await research({
 });
 
 console.log(result.markdown);
-console.log(result.verifiedSources); // URLs Atlas fetched and the report cited
-console.log(result.unverifiedCitations); // cited URLs Atlas did not fetch
+console.log(result.citedSources); // sources Atlas fetched and the report cited (provenance)
+console.log(result.citationsNotFetched); // cited URLs Atlas did not fetch
 ```
 
-Atlas supports Anthropic and OpenAI-compatible chat completions through a thin internal model adapter. The research loop stays the same: models can call `search` and `fetch`, then Atlas applies runtime limits, source tracking, and citation auditing.
+Atlas supports Anthropic and OpenAI-compatible chat completions through a thin internal model adapter. The research loop stays the same: models can call `search` and `fetch`, then Atlas applies runtime limits, source tracking, and citation reconciliation.
 
 ## Search backends
 
@@ -67,7 +67,7 @@ atlas "..." --search-provider brave   # ATLAS_BRAVE_API_KEY or BRAVE_API_KEY
 # or: export ATLAS_SEARCH_PROVIDER=exa
 ```
 
-Bring your own backend by passing a `SearchProvider` instance — give a query, return ranked results, and Atlas handles batching, RRF merging, caching, and citation auditing:
+Bring your own backend by passing a `SearchProvider` instance — give a query, return ranked results, and Atlas handles batching, RRF merging, caching, and citation reconciliation:
 
 ```ts
 import {

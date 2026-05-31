@@ -5,7 +5,7 @@ export interface FetchedSource {
   canonicalUrl?: string;
 }
 
-export interface VerifiedSource {
+export interface CitedSource {
   url: string;
   title: string;
   sourceId?: string;

@@ -8,7 +8,7 @@ export type {
   ResearchRun,
   SourceDocument,
   UsageSummary,
-  VerifiedSource,
+  CitedSource,
 } from "./research.js";
 export {
   createExaSearchProvider,
