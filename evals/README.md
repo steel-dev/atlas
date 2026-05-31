@@ -80,6 +80,6 @@ is provided. The file contains:
 
 Primary exact scoring uses `structured.final_answer`, falling back to the
 Markdown `Final answer:` line. Secondary metrics include latency, tool calls,
-verified source count, and unverified citation count. When `--judge` is enabled,
+cited source count, and not-fetched citation count. When `--judge` is enabled,
 `accuracy` uses judge correctness while `exactAccuracy` remains in the summary
 for comparison.

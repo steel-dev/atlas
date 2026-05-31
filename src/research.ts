@@ -210,9 +210,7 @@ export interface ResearchOptions {
    *  the lead and all sub-agents. Omit to use the default; set to 0 for
    *  unlimited. Per-step thinking is controlled by ATLAS_THINKING_EFFORT. */
   tokenLimit?: number;
-  /** Run as a fixed team of N parallel agents (plan -> fan-out -> merge) instead
-   *  of a single agent. >= 2 enables the team; 1 (default) is single-agent. */
-  teamSize?: number;
+  suggestedTeamSize?: number;
   output?: ResearchOutputOptions;
   includeSourceDocuments?: boolean;
   onEvent?: (event: ResearchEvent) => void;
@@ -236,7 +234,7 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
     useProxy = false,
     timeoutMs,
     tokenLimit: tokenLimitOverride,
-    teamSize: teamSizeOverride,
+    suggestedTeamSize: suggestedTeamSizeOverride,
     output,
     includeSourceDocuments = false,
     onEvent,
@@ -278,13 +276,16 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
   );
   const maxDelegationDepth =
     readIntEnv("ATLAS_MAX_DELEGATION_DEPTH", 0) ?? limits.maxDelegationDepth;
-  const teamSize = Math.min(
+  const suggestedTeamSize = Math.min(
     MAX_TEAM_SIZE,
-    Math.max(1, teamSizeOverride ?? readIntEnv("ATLAS_TEAM_SIZE", 1) ?? 1),
+    Math.max(
+      1,
+      suggestedTeamSizeOverride ?? readIntEnv("ATLAS_TEAM_SIZE", 1) ?? 1,
+    ),
   );
   const maxConcurrentSubagents = Math.max(
     readIntEnv("ATLAS_MAX_SUBAGENTS", 1) ?? limits.maxConcurrentSubagents,
-    teamSize,
+    suggestedTeamSize,
   );
   const maxConcurrentModelCalls =
     readIntEnv("ATLAS_MAX_CONCURRENT_MODEL_CALLS", 1) ??
@@ -420,7 +421,8 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
       query,
       maxToolCalls: safetyMaxToolCalls,
       effort: thinkingEffort,
-      suggestedParallelism: teamSize >= 2 ? teamSize : undefined,
+      suggestedParallelism:
+        suggestedTeamSize >= 2 ? suggestedTeamSize : undefined,
     });
     const runs: ResearchRun[] = [
       {

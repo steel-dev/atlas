@@ -107,8 +107,8 @@ interface EvalResult {
     totalToolCalls: number;
     subagents: SubagentMetrics[];
     fetchedUrls: string[];
-    verifiedSources: number;
-    unverifiedCitations: number;
+    citedSources: number;
+    citationsNotFetched: number;
     inputTokens: number;
     outputTokens: number;
   };
@@ -203,8 +203,8 @@ type EvalTraceEvent = {
   tokensAfter?: number;
   foldedMessages?: number;
   result?: {
-    verifiedSources: number;
-    unverifiedCitations: number;
+    citedSources: number;
+    citationsNotFetched: number;
     markdownChars: number;
   };
 };
@@ -227,7 +227,7 @@ Options:
       --out <file>         Write manifest/results/summary JSONL
       --timeout N          Per-case timeout in seconds (default: 300)
       --token-limit N      Total token budget per case (e.g. 1000000, 3000000, 10000000)
-      --team N             Run each case as a fixed team of N parallel agents (default: 1)
+      --team N             Suggest up to N parallel sub-agents per case (default: 1)
       --provider NAME      Model provider: anthropic, openai
       --model NAME         Model name
       --base-url URL       OpenAI-compatible base URL
@@ -1199,8 +1199,8 @@ function summarizeRun(
     totalToolCalls,
     subagents,
     fetchedUrls: result.runs.flatMap((run) => run.fetchedUrls),
-    verifiedSources: result.verifiedSources.length,
-    unverifiedCitations: result.unverifiedCitations.length,
+    citedSources: result.citedSources.length,
+    citationsNotFetched: result.citationsNotFetched.length,
     inputTokens:
       result.usage.input_tokens +
       result.usage.cache_creation_input_tokens +
@@ -1235,8 +1235,8 @@ function progressLine(caseId: string, event: ResearchEvent): string | null {
       return `${caseId}: sub-agent started: ${event.task.slice(0, 80)}`;
     case "subagent_finished":
       return `${caseId}: sub-agent finished: ${event.sourcesFetched} source(s), ${event.toolCalls} tool call(s), ${event.finishReason}`;
-    case "unverified_citations":
-      return `${caseId}: ${event.count} unverified citation(s)`;
+    case "citations_not_fetched":
+      return `${caseId}: ${event.count} citation(s) not fetched`;
     case "written":
       return `${caseId}: wrote ${event.markdownChars} markdown chars`;
     case "completed":
@@ -1304,7 +1304,7 @@ function traceEvent(event: ResearchEvent, started: number): EvalTraceEvent {
         toolCalls: event.toolCalls,
         finishReason: event.finishReason,
       };
-    case "unverified_citations":
+    case "citations_not_fetched":
       return { ...base, count: event.count };
     case "written":
       return { ...base, markdownChars: event.markdownChars };
@@ -1312,8 +1312,8 @@ function traceEvent(event: ResearchEvent, started: number): EvalTraceEvent {
       return {
         ...base,
         result: {
-          verifiedSources: event.result.verifiedSources.length,
-          unverifiedCitations: event.result.unverifiedCitations.length,
+          citedSources: event.result.citedSources.length,
+          citationsNotFetched: event.result.citationsNotFetched.length,
           markdownChars: event.result.markdown.length,
         },
       };
@@ -1345,7 +1345,7 @@ async function runCase(
       openaiBaseUrl: opts.openaiBaseUrl,
       timeoutMs: opts.timeoutMs,
       tokenLimit: opts.tokenLimit,
-      teamSize: opts.teamSize,
+      suggestedTeamSize: opts.teamSize,
       output: browseCompOutput(),
       includeSourceDocuments: true,
       useProxy: opts.useProxy,
@@ -1801,8 +1801,8 @@ function summarize(results: EvalResult[]) {
     totalToolCalls,
     totalLeadToolCalls,
     totalSubagentToolCalls,
-    totalUnverifiedCitations: completed.reduce(
-      (sum, result) => sum + (result.metrics?.unverifiedCitations ?? 0),
+    totalCitationsNotFetched: completed.reduce(
+      (sum, result) => sum + (result.metrics?.citationsNotFetched ?? 0),
       0,
     ),
     totalEvidenceChecked: completed.reduce(

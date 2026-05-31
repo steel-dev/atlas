@@ -312,7 +312,7 @@ async function main(): Promise<void> {
       summaryModel: values["summary-model"],
       openaiBaseUrl: values["base-url"],
       tokenLimit,
-      teamSize,
+      suggestedTeamSize: teamSize,
       useProxy,
       onEvent,
       signal,
