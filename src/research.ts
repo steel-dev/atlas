@@ -9,20 +9,16 @@ import {
   type ModelProvider,
   type ModelToolDefinition,
   type ModelToolCall,
-  type ModelToolResult,
   type UsageSummary,
 } from "./model.js";
 import {
-  execReadSource,
-  execSearchSources,
-  type ReadSourceToolInput,
-  type SearchSourcesToolInput,
-} from "./evidence-tool.js";
-import {
-  RESEARCH_TOOLS,
   STRUCTURED_EMIT_SYSTEM_PROMPT,
   STRUCTURED_FINALIZE_SYSTEM_PROMPT,
 } from "./tool-contract.js";
+import {
+  executeFinalizeTool,
+  finalizeToolDefinitions,
+} from "./tool-registry.js";
 import {
   DEFAULT_ANTHROPIC_MODEL,
   DEFAULT_ANTHROPIC_SUMMARY_MODEL,
@@ -505,7 +501,6 @@ function textFromBlocks(content: ModelAssistantBlock[]): string {
     .trim();
 }
 
-const FINALIZE_TOOL_NAMES = new Set(["read_source", "search_sources"]);
 const MAX_FINALIZE_STEPS = 6;
 const MAX_STRUCTURED_RESEARCH_RETRIES = 1;
 const STRUCTURED_RESEARCH_MAX_TOOL_CALLS = 8;
@@ -617,9 +612,7 @@ async function runStructuredFinalizeAttempt(opts: {
   signal?: AbortSignal;
   allowMoreResearch: boolean;
 }): Promise<StructuredFinalizeAttempt> {
-  const finalizeTools = RESEARCH_TOOLS.filter((tool) =>
-    FINALIZE_TOOL_NAMES.has(tool.name),
-  );
+  const finalizeTools = finalizeToolDefinitions();
   if (opts.allowMoreResearch) {
     finalizeTools.push(REQUEST_MORE_RESEARCH_TOOL);
   }
@@ -656,9 +649,12 @@ async function runStructuredFinalizeAttempt(opts: {
         query: readMoreResearchQuestion(moreResearch.input),
       };
     }
+    const finalizeResults = await Promise.all(
+      toolUses.map((tu) => executeFinalizeTool(tu, opts.ctx)),
+    );
     messages.push({
       role: "user",
-      content: toolUses.map((tu) => execFinalizationTool(tu, opts.ctx)),
+      content: finalizeResults.map((result) => result.toolResult),
     });
   }
 
@@ -684,38 +680,6 @@ function readMoreResearchQuestion(input: unknown): string {
     return input.question.trim();
   }
   return "Verify the missing facts needed for the structured JSON output.";
-}
-
-function execFinalizationTool(
-  tu: ModelToolCall,
-  ctx: ResearchCtx,
-): ModelToolResult {
-  const run = (): { content: string; isError?: boolean } => {
-    if (tu.name === "read_source") {
-      return {
-        content: execReadSource((tu.input ?? {}) as ReadSourceToolInput, ctx),
-      };
-    }
-    if (tu.name === "search_sources") {
-      return {
-        content: execSearchSources(
-          (tu.input ?? {}) as SearchSourcesToolInput,
-          ctx,
-        ),
-      };
-    }
-    return {
-      content: `Tool ${tu.name} is not available while finalizing. Use read_source or search_sources to verify evidence, then return the JSON.`,
-      isError: true,
-    };
-  };
-  const { content, isError } = run();
-  return {
-    type: "tool_result",
-    tool_call_id: tu.id,
-    content,
-    ...(isError ? { is_error: true } : {}),
-  };
 }
 
 async function emitStructuredJson(opts: {

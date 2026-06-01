@@ -3,7 +3,6 @@ import {
   type ModelAssistantBlock,
   type ModelMessage,
   type ModelToolCall,
-  type ModelToolDefinition,
   type ModelToolResult,
 } from "./model.js";
 import type { ResearchEffort } from "./defaults.js";
@@ -12,37 +11,23 @@ import { createSteelConcurrencyGate } from "./runtime.js";
 import { maybeCompactResearchContext } from "./compaction.js";
 import { errorMessage } from "./errors.js";
 import { parseRetryAfterSeconds } from "./steel-runtime.js";
+import { normalizeFetchUrl } from "./fetch-tool.js";
 import {
-  execFetch,
-  normalizeFetchUrl,
-  type FetchToolInput,
-} from "./fetch-tool.js";
-import {
-  execDigestSource,
-  execReadSource,
-  execSearchSources,
-  type DigestSourceToolInput,
-  type ReadSourceToolInput,
-  type SearchSourcesToolInput,
-} from "./evidence-tool.js";
-import {
-  execBrowserCdp,
-  execBrowserExtract,
-  execBrowserOpen,
-  type BrowserCdpToolInput,
-  type BrowserExtractToolInput,
-  type BrowserOpenToolInput,
-} from "./browser-tool.js";
-import {
-  execSearch,
   searchQueryCount,
   searchEnginesInFallbackOrder,
   type SearchToolInput,
 } from "./search-tool.js";
 import {
+  executeResearchTool,
+  researchToolDefinitions,
+  toolSpendsActionBudget,
+  SPAWN_MAX_TASKS,
+  type SubagentScope,
+  type SubagentSummary,
+} from "./tool-registry.js";
+import {
   finalSynthesisPrompt,
   RESEARCH_SYSTEM_PROMPT,
-  RESEARCH_TOOLS,
   researchQuestionPrompt,
   SUBAGENT_SYSTEM_PROMPT,
 } from "./tool-contract.js";
@@ -66,28 +51,12 @@ export type {
 const DEFAULT_MAX_TOOL_CALLS = 12;
 const DEFAULT_MAX_CONCURRENT_TOOLS = 4;
 const DEFAULT_MAX_CONCURRENT_SUBAGENTS = 3;
-const SPAWN_MAX_TASKS = 4;
 const SUBAGENT_MAX_TOOL_CALLS = 20;
 const SPAWN_MIN_REMAINING_ACTION_CALLS = 2;
 const SUBAGENT_MIN_RUNTIME_MS = 30_000;
 const SUBAGENT_SYNTHESIS_RESERVE_MS = 45_000;
 const SUBAGENT_FINDINGS_MAX_CHARS = 4_000;
 const BUDGET_STATUS_REMAINING_RATIO = 0.3;
-const FREE_TOOL_NAMES = new Set([
-  "plan",
-  "join",
-  "read_source",
-  "search_sources",
-  "digest_source",
-]);
-const SUBAGENT_TOOL_NAMES = new Set(["spawn", "join"]);
-
-function toolsForContext(ctx: ResearchCtx): ModelToolDefinition[] {
-  if ((ctx.scope.depth ?? 0) >= (ctx.config.maxDelegationDepth ?? 0)) {
-    return RESEARCH_TOOLS.filter((tool) => !SUBAGENT_TOOL_NAMES.has(tool.name));
-  }
-  return RESEARCH_TOOLS;
-}
 
 export interface ResearchLoopResult {
   fetchedUrls: string[];
@@ -102,12 +71,6 @@ function textFromContent(content: ModelAssistantBlock[]): string {
     .map((block) => (block.type === "text" ? block.text : ""))
     .join("")
     .trim();
-}
-
-interface ToolExecution {
-  toolResult: ModelToolResult;
-  fetchedUrl?: string;
-  fetchedUrls?: string[];
 }
 
 function timeoutSynthesisReason(ctx: ResearchCtx): string | null {
@@ -140,7 +103,7 @@ function tokenBudgetExhaustedReason(ctx: ResearchCtx): string | null {
 }
 
 function spendsActionBudget(tu: ModelToolCall): boolean {
-  return !FREE_TOOL_NAMES.has(tu.name);
+  return toolSpendsActionBudget(tu.name);
 }
 
 function actionToolCallCount(toolUses: ModelToolCall[]): number {
@@ -221,287 +184,6 @@ async function mapWithConcurrency<T, R>(
   return results;
 }
 
-async function executeToolUse(
-  tu: ModelToolCall,
-  ctx: ResearchCtx,
-  subagents: SubagentScope,
-  searchIndex?: number,
-): Promise<ToolExecution> {
-  if (tu.name === "search") {
-    try {
-      const text = await execSearch(
-        (tu.input as SearchToolInput) ?? {},
-        ctx,
-        searchIndex ?? 0,
-      );
-      return {
-        toolResult: {
-          type: "tool_result",
-          tool_call_id: tu.id,
-          content: text,
-        },
-      };
-    } catch (err) {
-      ctx.deps.abort();
-      return {
-        toolResult: {
-          type: "tool_result",
-          tool_call_id: tu.id,
-          content: `Tool error: ${err instanceof Error ? err.message : String(err)}`,
-          is_error: true,
-        },
-      };
-    }
-  }
-
-  if (tu.name === "fetch") {
-    try {
-      const out = await execFetch((tu.input as FetchToolInput) ?? {}, ctx);
-      return {
-        fetchedUrl: out.fetchedUrl,
-        fetchedUrls: out.fetchedUrls,
-        toolResult: {
-          type: "tool_result",
-          tool_call_id: tu.id,
-          content: out.text,
-        },
-      };
-    } catch (err) {
-      ctx.deps.abort();
-      return {
-        toolResult: {
-          type: "tool_result",
-          tool_call_id: tu.id,
-          content: `Tool error: ${err instanceof Error ? err.message : String(err)}`,
-          is_error: true,
-        },
-      };
-    }
-  }
-
-  if (tu.name === "read_source") {
-    return {
-      toolResult: {
-        type: "tool_result",
-        tool_call_id: tu.id,
-        content: execReadSource((tu.input as ReadSourceToolInput) ?? {}, ctx),
-      },
-    };
-  }
-
-  if (tu.name === "search_sources") {
-    return {
-      toolResult: {
-        type: "tool_result",
-        tool_call_id: tu.id,
-        content: execSearchSources(
-          (tu.input as SearchSourcesToolInput) ?? {},
-          ctx,
-        ),
-      },
-    };
-  }
-
-  if (tu.name === "digest_source") {
-    try {
-      return {
-        toolResult: {
-          type: "tool_result",
-          tool_call_id: tu.id,
-          content: await execDigestSource(
-            (tu.input as DigestSourceToolInput) ?? {},
-            ctx,
-          ),
-        },
-      };
-    } catch (err) {
-      return {
-        toolResult: {
-          type: "tool_result",
-          tool_call_id: tu.id,
-          content: `Tool error: ${err instanceof Error ? err.message : String(err)}`,
-          is_error: true,
-        },
-      };
-    }
-  }
-
-  if (tu.name === "browser_open") {
-    try {
-      return {
-        toolResult: {
-          type: "tool_result",
-          tool_call_id: tu.id,
-          content: await execBrowserOpen(
-            (tu.input as BrowserOpenToolInput) ?? {},
-            ctx,
-          ),
-        },
-      };
-    } catch (err) {
-      return {
-        toolResult: {
-          type: "tool_result",
-          tool_call_id: tu.id,
-          content: `Tool error: ${err instanceof Error ? err.message : String(err)}`,
-          is_error: true,
-        },
-      };
-    }
-  }
-
-  if (tu.name === "browser_cdp") {
-    try {
-      return {
-        toolResult: {
-          type: "tool_result",
-          tool_call_id: tu.id,
-          content: await execBrowserCdp(
-            (tu.input as BrowserCdpToolInput) ?? {},
-            ctx,
-          ),
-        },
-      };
-    } catch (err) {
-      return {
-        toolResult: {
-          type: "tool_result",
-          tool_call_id: tu.id,
-          content: `Tool error: ${err instanceof Error ? err.message : String(err)}`,
-          is_error: true,
-        },
-      };
-    }
-  }
-
-  if (tu.name === "browser_extract") {
-    try {
-      const content = await execBrowserExtract(
-        (tu.input as BrowserExtractToolInput) ?? {},
-        ctx,
-      );
-      return {
-        toolResult: {
-          type: "tool_result",
-          tool_call_id: tu.id,
-          content,
-        },
-      };
-    } catch (err) {
-      return {
-        toolResult: {
-          type: "tool_result",
-          tool_call_id: tu.id,
-          content: `Tool error: ${err instanceof Error ? err.message : String(err)}`,
-          is_error: true,
-        },
-      };
-    }
-  }
-
-  if (tu.name === "spawn") {
-    const tasks = readSpawnTasks(tu.input);
-    if (tasks.length === 0) {
-      return textResult(
-        tu.id,
-        "spawn requires a non-empty `tasks` array of self-contained sub-questions.",
-      );
-    }
-    const { handles, error } = subagents.spawn(tasks);
-    if (error) return textResult(tu.id, error);
-    return textResult(
-      tu.id,
-      JSON.stringify(
-        {
-          spawned: handles,
-          note: "Sub-agents are running in the background. Call join (with these handles, or no arguments to collect all) to receive their cited findings before you finalize.",
-        },
-        null,
-        2,
-      ),
-    );
-  }
-
-  if (tu.name === "join") {
-    const { summaries, fetchedUrls, error } = await subagents.join(
-      readJoinHandles(tu.input),
-    );
-    if (error) return textResult(tu.id, error);
-    return {
-      toolResult: {
-        type: "tool_result",
-        tool_call_id: tu.id,
-        content: JSON.stringify({ joined: summaries }, null, 2),
-      },
-      ...(fetchedUrls.length > 0 ? { fetchedUrls } : {}),
-    };
-  }
-
-  if (tu.name === "plan") {
-    return {
-      toolResult: {
-        type: "tool_result",
-        tool_call_id: tu.id,
-        content:
-          "Plan recorded. Continue with search/fetch, or write your final report when you have enough evidence.",
-      },
-    };
-  }
-
-  return {
-    toolResult: {
-      type: "tool_result",
-      tool_call_id: tu.id,
-      content:
-        `Unknown tool: ${tu.name}. Available tools: ` +
-        "search, fetch, search_sources, read_source, digest_source, browser_open, browser_cdp, browser_extract, spawn, join, plan.",
-      is_error: true,
-    },
-  };
-}
-
-function textResult(id: string, content: string): ToolExecution {
-  return {
-    toolResult: { type: "tool_result", tool_call_id: id, content },
-  };
-}
-
-function readSpawnTasks(input: unknown): string[] {
-  const raw =
-    input &&
-    typeof input === "object" &&
-    Array.isArray((input as { tasks?: unknown }).tasks)
-      ? (input as { tasks: unknown[] }).tasks
-      : [];
-  const seen = new Set<string>();
-  const tasks: string[] = [];
-  for (const entry of raw) {
-    const question =
-      typeof entry === "string"
-        ? entry.trim()
-        : entry &&
-            typeof entry === "object" &&
-            typeof (entry as { question?: unknown }).question === "string"
-          ? (entry as { question: string }).question.trim()
-          : "";
-    if (!question || seen.has(question)) continue;
-    seen.add(question);
-    tasks.push(question);
-    if (tasks.length >= SPAWN_MAX_TASKS) break;
-  }
-  return tasks;
-}
-
-function readJoinHandles(input: unknown): string[] | undefined {
-  if (!input || typeof input !== "object") return undefined;
-  const raw = (input as { handles?: unknown }).handles;
-  if (!Array.isArray(raw)) return undefined;
-  const handles = raw
-    .map((handle) => (typeof handle === "string" ? handle.trim() : ""))
-    .filter((handle) => handle.length > 0);
-  return handles.length > 0 ? handles : undefined;
-}
-
 interface SubagentTiming {
   deadlineAt?: number;
   synthesisReserveMs?: number;
@@ -570,15 +252,6 @@ function subagentSources(
   return sources;
 }
 
-interface SubagentSummary {
-  task: string;
-  findings?: string;
-  sources?: Array<{ source_id?: string; url: string; title?: string }>;
-  tool_calls?: number;
-  finish_reason?: string;
-  error?: string;
-}
-
 interface SubagentOutcome {
   summary: SubagentSummary;
   fetchedUrls: string[];
@@ -643,23 +316,6 @@ interface SubagentEntry {
   status: "running" | "done" | "error";
   collected: boolean;
   promise: Promise<SubagentOutcome>;
-}
-
-interface SpawnResult {
-  handles: Array<{ handle: string; task: string }>;
-  error?: string;
-}
-
-interface JoinResult {
-  summaries: SubagentSummary[];
-  fetchedUrls: string[];
-  error?: string;
-}
-
-interface SubagentScope {
-  spawn(tasks: string[]): SpawnResult;
-  join(handles: string[] | undefined): Promise<JoinResult>;
-  settle(): Promise<string[]>;
 }
 
 function createSubagentScope(
@@ -798,7 +454,10 @@ export async function runResearchLoop(opts: {
 }): Promise<ResearchLoopResult> {
   const { ctx, query } = opts;
   const systemPrompt = opts.systemPrompt ?? RESEARCH_SYSTEM_PROMPT;
-  const tools = toolsForContext(ctx);
+  const tools = researchToolDefinitions({
+    includeDelegation:
+      (ctx.scope.depth ?? 0) < (ctx.config.maxDelegationDepth ?? 0),
+  });
   const isSubagent = (ctx.scope.depth ?? 0) > 0;
   const maxToolCalls = opts.maxToolCalls ?? DEFAULT_MAX_TOOL_CALLS;
   const maxTotalToolExecutions = Math.max(maxToolCalls, maxToolCalls * 2);
@@ -928,7 +587,11 @@ export async function runResearchLoop(opts: {
     const executions = await mapWithConcurrency(
       activeToolUses,
       ctx.config.maxConcurrentTools ?? DEFAULT_MAX_CONCURRENT_TOOLS,
-      (tu, index) => executeToolUse(tu, ctx, subagents, searchIndexes[index]),
+      (tu, index) =>
+        executeResearchTool(tu, ctx, {
+          subagents,
+          searchIndex: searchIndexes[index],
+        }),
     );
     const toolResults = [
       ...executions.map((e) => e.toolResult),
