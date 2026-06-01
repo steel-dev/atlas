@@ -367,7 +367,7 @@ export function safeDomain(url: string): string {
   }
 }
 
-export function searchEnginesInFallbackOrder(defaultEngine: Engine): Engine[] {
+export function searchEnginesForFusion(defaultEngine: Engine): Engine[] {
   return [
     defaultEngine,
     ...ENGINES.filter((engine) => engine !== defaultEngine),

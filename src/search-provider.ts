@@ -1,7 +1,7 @@
 import {
   dedupeSearchResults,
   safeDomain,
-  searchEnginesInFallbackOrder,
+  searchEnginesForFusion,
   webSearch,
   type Engine,
   type SearchResult,
@@ -86,7 +86,7 @@ export function createScrapingSearchProvider(ctx: ResearchCtx): SearchProvider {
   return {
     name: "web",
     async searchQuery({ query, limit }) {
-      const engines = searchEnginesInFallbackOrder(ctx.config.defaultEngine);
+      const engines = searchEnginesForFusion(ctx.config.defaultEngine);
       const outcomes = await Promise.all(
         engines.map(async (engine, order) => {
           try {

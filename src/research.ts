@@ -60,18 +60,6 @@ const DEFAULT_RUNTIME_LIMITS = {
   compactionKeepTokens: 100_000,
   subagentCompactionTriggerTokens: 100_000,
   subagentCompactionKeepTokens: 50_000,
-} satisfies {
-  maxConcurrentTools: number;
-  maxConcurrentSteelCalls: number;
-  maxDelegationDepth: number;
-  maxConcurrentSubagents: number;
-  defaultSearchLimit: number;
-  maxOutputTokens: number;
-  timeoutSynthesisReserveMs: number;
-  compactionTriggerTokens: number;
-  compactionKeepTokens: number;
-  subagentCompactionTriggerTokens: number;
-  subagentCompactionKeepTokens: number;
 };
 
 // Caps total in-flight model connections across the lead, every sub-agent, and
@@ -849,7 +837,7 @@ function reconcileCitations(
   const citedUrls = extractMarkdownUrls(markdown);
   const byNormalizedUrl = new Map(
     fetchedSources.map((source) => [
-      normalizeUrlForCitation(source.url),
+      normalizeUrlForSource(source.url),
       source,
     ]),
   );
@@ -858,7 +846,7 @@ function reconcileCitations(
   const citationsNotFetched: string[] = [];
   const seen = new Set<string>();
   for (const url of citedUrls) {
-    const normalized = normalizeUrlForCitation(url);
+    const normalized = normalizeUrlForSource(url);
     if (seen.has(normalized)) continue;
     seen.add(normalized);
     const fetchedSource = byNormalizedUrl.get(normalized);
@@ -892,10 +880,6 @@ function trimUrlBoundary(url: string): string {
     trimmed = trimmed.slice(0, -1).replace(/[.,;:!?]+$/g, "");
   }
   return trimmed;
-}
-
-function normalizeUrlForCitation(url: string): string {
-  return normalizeUrlForSource(url);
 }
 
 function combineSignals(

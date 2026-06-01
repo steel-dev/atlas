@@ -1,6 +1,6 @@
 import {
   dedupeSearchResults,
-  searchEnginesInFallbackOrder,
+  searchEnginesForFusion,
   type SearchResult,
 } from "./search.js";
 import {
@@ -24,8 +24,7 @@ export interface SearchToolInput {
 
 const normalizeFetchUrl = normalizeUrlForSource;
 
-// Re-exported for tools.ts __testing surface and tests.
-export { searchEnginesInFallbackOrder };
+export { searchEnginesForFusion };
 
 function compactSearchResults(results: MergedSearchResult[]): Array<{
   rank: number;

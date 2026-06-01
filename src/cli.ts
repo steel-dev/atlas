@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 import {
   research,
@@ -60,7 +60,11 @@ Examples:
   atlas "..." --json 2> events.jsonl > report.md
 `;
 
-const VERSION = "0.1.0";
+const VERSION = (
+  JSON.parse(
+    readFileSync(new URL("../package.json", import.meta.url), "utf8"),
+  ) as { version: string }
+).version;
 
 function fail(message: string, code = 1): never {
   process.stderr.write(`atlas: ${message}\n`);

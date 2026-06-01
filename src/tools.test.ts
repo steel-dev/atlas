@@ -268,8 +268,8 @@ describe("tool helpers", () => {
     ).toBe("https://example.com/a?a=1&b=2");
   });
 
-  it("orders search fallback from the configured default engine", () => {
-    expect(__testing.searchEnginesInFallbackOrder("bing")).toEqual([
+  it("orders fusion engines with the configured default engine first", () => {
+    expect(__testing.searchEnginesForFusion("bing")).toEqual([
       "bing",
       "ddg",
       "google",

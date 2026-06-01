@@ -17,7 +17,7 @@ import { parseRetryAfterSeconds } from "./steel-runtime.js";
 import { normalizeFetchUrl } from "./fetch-tool.js";
 import {
   searchQueryCount,
-  searchEnginesInFallbackOrder,
+  searchEnginesForFusion,
   type SearchToolInput,
 } from "./search-tool.js";
 import {
@@ -694,5 +694,5 @@ export async function runResearchLoop(opts: {
 export const __testing = {
   normalizeFetchUrl,
   parseRetryAfterSeconds,
-  searchEnginesInFallbackOrder,
+  searchEnginesForFusion,
 };
