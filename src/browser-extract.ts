@@ -1,6 +1,7 @@
 import type { CdpCommandOptions } from "./browser-cdp.js";
 import {
   BrowserSessionPool,
+  defaultBrowserMaxSessions,
   readBrowserMaxSessionsFromEnv,
 } from "./browser-session-pool.js";
 import { errorMessage } from "./errors.js";
@@ -41,7 +42,10 @@ export async function extractSourceWithBrowser(
       const outcome = await extractSourceOnce(ctx, url, attempts);
       if (outcome.ok) return outcome.entry;
       attempts.push(outcome.attempt);
-      if (!isTransientBrowserError(outcome.error) || attempt >= BROWSER_EXTRACTION_ATTEMPTS) {
+      if (
+        !isTransientBrowserError(outcome.error) ||
+        attempt >= BROWSER_EXTRACTION_ATTEMPTS
+      ) {
         return {
           markdown: "",
           title: null,
@@ -74,12 +78,17 @@ export async function extractHtmlWithBrowser(
         return await extractHtmlOnce(ctx, url);
       } catch (err) {
         lastError = err;
-        if (!isTransientBrowserError(err) || attempt >= BROWSER_EXTRACTION_ATTEMPTS) {
+        if (
+          !isTransientBrowserError(err) ||
+          attempt >= BROWSER_EXTRACTION_ATTEMPTS
+        ) {
           throw err;
         }
       }
     }
-    throw lastError instanceof Error ? lastError : new Error(errorMessage(lastError));
+    throw lastError instanceof Error
+      ? lastError
+      : new Error(errorMessage(lastError));
   });
 }
 
@@ -170,7 +179,9 @@ function getBrowserSessionPool(ctx: ResearchLoopContext): BrowserSessionPool {
       namespace: `atlas-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
       signal: ctx.signal,
       deadlineAt: ctx.deadlineAt,
-      maxSessions: readBrowserMaxSessionsFromEnv(),
+      maxSessions:
+        readBrowserMaxSessionsFromEnv() ??
+        defaultBrowserMaxSessions(ctx.maxConcurrentSubagents),
     });
   }
   return ctx.browserSessionPool;
@@ -178,7 +189,17 @@ function getBrowserSessionPool(ctx: ResearchLoopContext): BrowserSessionPool {
 
 export async function navigateToUrl(
   resource: {
-    client: { send: <T>(method: string, params?: Record<string, unknown>, opts?: CdpCommandOptions) => Promise<T>; waitForEvent: <T>(method: string, opts?: { sessionId?: string; timeoutMs?: number }) => Promise<T> };
+    client: {
+      send: <T>(
+        method: string,
+        params?: Record<string, unknown>,
+        opts?: CdpCommandOptions,
+      ) => Promise<T>;
+      waitForEvent: <T>(
+        method: string,
+        opts?: { sessionId?: string; timeoutMs?: number },
+      ) => Promise<T>;
+    };
     cdpSessionId?: string;
   },
   url: string,
@@ -206,7 +227,13 @@ export async function navigateToUrl(
 }
 
 async function settlePage(resource: {
-  client: { send: <T>(method: string, params?: Record<string, unknown>, opts?: CdpCommandOptions) => Promise<T> };
+  client: {
+    send: <T>(
+      method: string,
+      params?: Record<string, unknown>,
+      opts?: CdpCommandOptions,
+    ) => Promise<T>;
+  };
   cdpSessionId?: string;
 }): Promise<void> {
   const startedAt = Date.now();
@@ -229,7 +256,13 @@ async function settlePage(resource: {
 }
 
 export async function extractCurrentPage(resource: {
-  client: { send: <T>(method: string, params?: Record<string, unknown>, opts?: CdpCommandOptions) => Promise<T> };
+  client: {
+    send: <T>(
+      method: string,
+      params?: Record<string, unknown>,
+      opts?: CdpCommandOptions,
+    ) => Promise<T>;
+  };
   cdpSessionId?: string;
 }): Promise<PageSnapshot> {
   const snapshot = await evaluate<PageSnapshot>(
@@ -249,7 +282,13 @@ export async function extractCurrentPage(resource: {
 
 async function evaluate<T>(
   resource: {
-    client: { send: <R>(method: string, params?: Record<string, unknown>, opts?: CdpCommandOptions) => Promise<R> };
+    client: {
+      send: <R>(
+        method: string,
+        params?: Record<string, unknown>,
+        opts?: CdpCommandOptions,
+      ) => Promise<R>;
+    };
     cdpSessionId?: string;
   },
   expression: string,
@@ -282,6 +321,8 @@ function isTransientBrowserError(err: unknown): boolean {
   if (/aborted|aborterror/i.test(message)) return false;
   return (
     /Unexpected server response:\s*(?:502|503|504)/i.test(message) ||
-    /\b(?:CDP connection closed|session timeout|timed out|timeout|ECONNRESET|ETIMEDOUT|socket hang up)\b/i.test(message)
+    /\b(?:CDP connection closed|session timeout|timed out|timeout|ECONNRESET|ETIMEDOUT|socket hang up)\b/i.test(
+      message,
+    )
   );
 }

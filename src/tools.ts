@@ -26,6 +26,7 @@ import {
   type SearchSourcesToolInput,
 } from "./evidence-tool.js";
 import {
+  closeBrowserLease,
   execBrowserCdp,
   execBrowserExtract,
   execBrowserOpen,
@@ -616,9 +617,10 @@ async function runSubagentTask(
   timing: SubagentTiming,
   perAgentMaxToolCalls: number,
 ): Promise<SubagentOutcome> {
+  const subagentCtx = forkContextForSubagent(ctx, question, timing);
   try {
     const run = await runResearchLoop({
-      ctx: forkContextForSubagent(ctx, question, timing),
+      ctx: subagentCtx,
       query: question,
       maxToolCalls: perAgentMaxToolCalls,
       effort: ctx.subagentEffort,
@@ -651,6 +653,8 @@ async function runSubagentTask(
       },
       fetchedUrls: [],
     };
+  } finally {
+    await closeBrowserLease(subagentCtx);
   }
 }
 

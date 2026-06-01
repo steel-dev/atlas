@@ -4,6 +4,8 @@ import { errorMessage } from "./errors.js";
 
 const DEFAULT_ACQUIRE_TIMEOUT_MS = 30_000;
 const DEFAULT_IDLE_TTL_MS = 2 * 60_000;
+const DEFAULT_BROWSER_SESSIONS_PER_AGENT = 4;
+const MIN_DEFAULT_BROWSER_SESSIONS = 8;
 const DEFAULT_SESSION_TIMEOUT_MS = 5 * 60_000;
 const MIN_SESSION_TIMEOUT_MS = 60_000;
 const SESSION_TIMEOUT_SAFETY_MS = 15_000;
@@ -55,8 +57,11 @@ export class BrowserSessionPool {
   private creating = 0;
   private learnedCapacity: number | null = null;
   private closed = false;
+  private readonly maxSessions: number;
 
-  constructor(private readonly opts: BrowserSessionPoolOptions) {}
+  constructor(private readonly opts: BrowserSessionPoolOptions) {
+    this.maxSessions = opts.maxSessions ?? defaultBrowserMaxSessions();
+  }
 
   async acquire(): Promise<BrowserSessionLease> {
     if (this.closed) throw new Error("Browser session pool is closed");
@@ -108,12 +113,17 @@ export class BrowserSessionPool {
 
   private canCreate(): boolean {
     const total = this.totalSessions();
-    const hardCap = this.opts.maxSessions;
-    if (hardCap !== undefined && total >= hardCap) return false;
+    if (total >= this.maxSessions) return false;
     if (this.learnedCapacity !== null && total >= this.learnedCapacity) {
       return false;
     }
     return true;
+  }
+
+  private effectiveCapacity(): number {
+    return this.learnedCapacity !== null
+      ? Math.min(this.maxSessions, this.learnedCapacity)
+      : this.maxSessions;
   }
 
   private totalSessions(): number {
@@ -132,7 +142,11 @@ export class BrowserSessionPool {
           if (index >= 0) this.waiters.splice(index, 1);
           reject(
             new Error(
-              `Timed out waiting for browser session after ${timeoutMs}ms`,
+              `No browser session became available within ${timeoutMs}ms ` +
+                `(${this.totalSessions()}/${this.effectiveCapacity()} sessions in use). ` +
+                `Browser capacity is a shared limit — retry after other tool ` +
+                `calls finish, or use the fetch tool to gather this URL without ` +
+                `an interactive session.`,
             ),
           );
         }, timeoutMs),
@@ -205,7 +219,9 @@ export class BrowserSessionPool {
         "Runtime.evaluate",
         { expression: "1", returnByValue: true },
         {
-          ...(resource.cdpSessionId ? { sessionId: resource.cdpSessionId } : {}),
+          ...(resource.cdpSessionId
+            ? { sessionId: resource.cdpSessionId }
+            : {}),
           timeoutMs: CDP_HEALTHCHECK_TIMEOUT_MS,
         },
       );
@@ -352,6 +368,14 @@ export class BrowserSessionPool {
       // Session timeout/release races are harmless during cleanup.
     }
   }
+}
+
+export function defaultBrowserMaxSessions(maxConcurrentSubagents = 0): number {
+  const agents = 1 + Math.max(0, Math.floor(maxConcurrentSubagents));
+  return Math.max(
+    MIN_DEFAULT_BROWSER_SESSIONS,
+    agents * DEFAULT_BROWSER_SESSIONS_PER_AGENT,
+  );
 }
 
 export function readBrowserMaxSessionsFromEnv(): number | undefined {

@@ -2474,6 +2474,76 @@ describe("spawn/join fan-out", () => {
     });
   });
 
+  it("returns a sub-agent's browser session to the pool when it finishes", async () => {
+    let leadCalls = 0;
+    let subCalls = 0;
+    const messagesCreate = vi.fn(async (input: ModelStepInput) => {
+      if (input.system === SUBAGENT_SYSTEM_PROMPT) {
+        subCalls += 1;
+        if (subCalls === 1) {
+          return messageWith([
+            toolUse("sub_browser", "browser_open", {
+              url: "https://example.com/live",
+            }),
+          ]);
+        }
+        return messageWith([
+          {
+            type: "text",
+            text: "Live page reports the population is 12,345 per https://example.com/live.",
+          },
+        ]);
+      }
+      leadCalls += 1;
+      if (leadCalls === 1) {
+        return messageWith([
+          toolUse("spawn_1", "spawn", {
+            tasks: ["What does the live page report?"],
+          }),
+        ]);
+      }
+      if (leadCalls === 2) {
+        return messageWith([toolUse("join_1", "join", {})]);
+      }
+      return finalReport();
+    });
+
+    const ctx = createContext({ messagesCreate });
+    ctx.depth = 0;
+    ctx.maxDelegationDepth = 1;
+    ctx.maxConcurrentSubagents = 2;
+    ctx.subagentGate = createSteelConcurrencyGate(2);
+    ctx.subagentEffort = "low";
+    ctx.budget = createBudgetLedger(20, 40);
+
+    // Capture every lease the shared pool hands out so we can assert the
+    // sub-agent's browser session is returned, not stranded in the pool's
+    // active set until the whole run's closeAll().
+    const pool = ctx.browserSessionPool as unknown as {
+      acquire: () => Promise<{ release: ReturnType<typeof vi.fn> }>;
+    };
+    const realAcquire = pool.acquire;
+    const leases: Array<{ release: ReturnType<typeof vi.fn> }> = [];
+    pool.acquire = vi.fn(async () => {
+      const lease = await realAcquire();
+      leases.push(lease);
+      return lease;
+    });
+
+    const result = await runResearchLoop({
+      ctx,
+      query: "Profile this town.",
+      maxToolCalls: 20,
+    });
+
+    expect(result.finishReason).toBe("final report");
+    // Only the sub-agent opened a browser, so exactly one lease was acquired...
+    expect(leases).toHaveLength(1);
+    // ...and it must be released once the sub-agent finishes. Before the
+    // closeBrowserLease wiring this stayed pinned to the forked ctx forever.
+    expect(leases[0]?.release).toHaveBeenCalledTimes(1);
+  });
+
   it("shares the source store and tags sub-agent fetch events with depth", async () => {
     const scrape = vi.fn(async () => ({
       content: {

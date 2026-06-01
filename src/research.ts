@@ -50,6 +50,7 @@ import {
 } from "./tools.js";
 import {
   BrowserSessionPool,
+  defaultBrowserMaxSessions,
   readBrowserIdleTtlMsFromEnv,
   readBrowserMaxSessionsFromEnv,
 } from "./browser-session-pool.js";
@@ -348,7 +349,9 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
     namespace: `atlas-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
     signal: runSignal,
     deadlineAt: timeoutDeadlineAt,
-    maxSessions: readBrowserMaxSessionsFromEnv(),
+    maxSessions:
+      readBrowserMaxSessionsFromEnv() ??
+      defaultBrowserMaxSessions(maxConcurrentSubagents),
     idleTtlMs: readBrowserIdleTtlMsFromEnv(),
   });
 
