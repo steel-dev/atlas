@@ -1,6 +1,7 @@
 import type Steel from "steel-sdk";
 import { BrowserCdpClient } from "./browser-cdp.js";
 import { errorMessage } from "./errors.js";
+import { sleep } from "./async.js";
 
 const DEFAULT_ACQUIRE_TIMEOUT_MS = 30_000;
 const DEFAULT_IDLE_TTL_MS = 2 * 60_000;
@@ -269,7 +270,7 @@ export class BrowserSessionPool {
         ) {
           break;
         }
-        await delay(CDP_CONNECT_BASE_DELAY_MS * attempt, this.opts.signal);
+        await sleep(CDP_CONNECT_BASE_DELAY_MS * attempt, this.opts.signal);
       }
     }
     throw lastError instanceof Error
@@ -451,16 +452,4 @@ function isTransientCdpConnectError(err: unknown): boolean {
     /Unexpected server response:\s*(?:502|503|504)/i.test(message) ||
     /\b(?:ECONNRESET|ETIMEDOUT|EAI_AGAIN|socket hang up)\b/i.test(message)
   );
-}
-
-async function delay(ms: number, signal?: AbortSignal): Promise<void> {
-  if (signal?.aborted) throw signal.reason ?? new Error("Aborted");
-  await new Promise<void>((resolve, reject) => {
-    const timeout = setTimeout(resolve, ms);
-    const onAbort = () => {
-      clearTimeout(timeout);
-      reject(signal?.reason ?? new Error("Aborted"));
-    };
-    signal?.addEventListener("abort", onAbort, { once: true });
-  });
 }

@@ -2,6 +2,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import OpenAI from "openai";
 import type { ResearchEffort } from "./defaults.js";
 import { errorMessage } from "./errors.js";
+import { sleep } from "./async.js";
 import type { AdaptiveConcurrencyGate, ConcurrencyGate } from "./runtime.js";
 
 export type ModelProvider = "anthropic" | "openai";
@@ -77,9 +78,6 @@ export interface ModelStepInput {
 
 export interface ModelStepResult {
   content: ModelAssistantBlock[];
-  /** Full prompt size of this request in tokens (fresh input + both cache
-   *  legs), as reported by the provider. Used to calibrate the context-size
-   *  estimate that drives compaction. */
   inputTokens?: number;
 }
 
@@ -122,9 +120,6 @@ function addUsage(
 export function createAnthropicModelAdapter(opts: {
   apiKey: string;
   model: string;
-  /** SDK-level retries. Defaults to 2 for raw (unwrapped) use such as the
-   *  judge; the research path passes 0 because the resilience wrapper owns
-   *  rate-limit retries (jittered, slot-freeing, concurrency-throttling). */
   maxRetries?: number;
 }): ModelAdapter {
   const client = new Anthropic({
@@ -277,7 +272,6 @@ export function createOpenAIModelAdapter(opts: {
   apiKey: string;
   baseUrl?: string;
   model: string;
-  /** See createAnthropicModelAdapter; defaults to 2 for raw use. */
   maxRetries?: number;
 }): ModelAdapter {
   const client = new OpenAI({
@@ -444,8 +438,6 @@ export interface ModelRetryInfo {
   attempt: number;
   maxAttempts: number;
   delayMs: number;
-  /** True when the trigger was a "too many concurrent connections" 429, which
-   *  also shrinks the adaptive gate (retrying alone never clears it). */
   concurrency: boolean;
 }
 
@@ -453,13 +445,6 @@ export interface ModelConcurrencyOptions {
   onRetry?: (info: ModelRetryInfo) => void;
 }
 
-// Wraps the adapter so every model step (a) passes through the shared gate and
-// (b) survives transient provider failures. The retry loop lives OUTSIDE
-// gate.run, so a sleeping retry releases its slot — letting in-flight calls
-// finish and free the very connections a concurrency-limit 429 is complaining
-// about. A concurrency 429 additionally throttles the adaptive gate so the run
-// stops trying to hold more connections than the account allows; clean
-// successes relax it back up.
 export function wrapModelAdapterWithConcurrency(
   adapter: ModelAdapter,
   gate: ConcurrencyGate,
@@ -497,8 +482,12 @@ export function wrapModelAdapterWithConcurrency(
   };
 }
 
-function isAdaptiveGate(gate: ConcurrencyGate): gate is AdaptiveConcurrencyGate {
-  return typeof (gate as Partial<AdaptiveConcurrencyGate>).throttle === "function";
+function isAdaptiveGate(
+  gate: ConcurrencyGate,
+): gate is AdaptiveConcurrencyGate {
+  return (
+    typeof (gate as Partial<AdaptiveConcurrencyGate>).throttle === "function"
+  );
 }
 
 interface ModelErrorClassification {
@@ -524,8 +513,7 @@ function classifyModelError(err: unknown): ModelErrorClassification {
       message,
     );
   return {
-    retryable:
-      rateLimited || overloaded || transientServer || connectionError,
+    retryable: rateLimited || overloaded || transientServer || connectionError,
     concurrency,
     retryAfterMs: readRetryAfterMs(err),
   };
@@ -536,14 +524,15 @@ function retryDelayMs(attempt: number, retryAfterMs: number | null): number {
     MODEL_RETRY_MAX_MS,
     MODEL_RETRY_BASE_MS * 2 ** (attempt - 1),
   );
-  // Equal jitter (50%-100% of the window) so synchronized callers that all
-  // back off at once do not retry in lockstep and re-collide.
   const jittered = exponential / 2 + Math.random() * (exponential / 2);
   return Math.max(retryAfterMs ?? 0, Math.round(jittered));
 }
 
 function readRetryAfterMs(err: unknown): number | null {
-  const raw = readHeaderValue((err as { headers?: unknown })?.headers, "retry-after");
+  const raw = readHeaderValue(
+    (err as { headers?: unknown })?.headers,
+    "retry-after",
+  );
   if (!raw) return null;
   const seconds = Number(raw);
   if (Number.isFinite(seconds) && seconds >= 0) {
@@ -557,31 +546,14 @@ function readRetryAfterMs(err: unknown): number | null {
 function readHeaderValue(headers: unknown, name: string): string | undefined {
   if (!headers) return undefined;
   if (typeof (headers as { get?: unknown }).get === "function") {
-    const value = (headers as { get: (key: string) => string | null }).get(name);
+    const value = (headers as { get: (key: string) => string | null }).get(
+      name,
+    );
     return value ?? undefined;
   }
   const record = headers as Record<string, unknown>;
   const value = record[name] ?? record[name.toLowerCase()];
   return typeof value === "string" ? value : undefined;
-}
-
-async function sleep(ms: number, signal?: AbortSignal): Promise<void> {
-  if (ms <= 0) {
-    signal?.throwIfAborted();
-    return;
-  }
-  if (signal?.aborted) throw signal.reason ?? new Error("Aborted");
-  await new Promise<void>((resolve, reject) => {
-    const timer = setTimeout(() => {
-      signal?.removeEventListener("abort", onAbort);
-      resolve();
-    }, ms);
-    const onAbort = () => {
-      clearTimeout(timer);
-      reject(signal?.reason ?? new Error("Aborted"));
-    };
-    signal?.addEventListener("abort", onAbort, { once: true });
-  });
 }
 
 export const __testing = {

@@ -5,6 +5,7 @@ import type { ResearchCtx, SourceCacheEntry } from "./runtime.js";
 import type { SourceExtractionAttempt } from "./sources.js";
 import { extractionMetadataFromBrowser } from "./source-documents.js";
 import { runSteelRequest } from "./steel-runtime.js";
+import { sleep } from "./async.js";
 
 const NAVIGATION_TIMEOUT_MS = 20_000;
 const SETTLE_TIMEOUT_MS = 5_000;
@@ -153,7 +154,7 @@ export async function navigateToUrl(
     { url },
     { ...opts, timeoutMs: NAVIGATION_TIMEOUT_MS },
   );
-  await Promise.race([domReady, loaded, delay(NAVIGATION_TIMEOUT_MS)]);
+  await Promise.race([domReady, loaded, sleep(NAVIGATION_TIMEOUT_MS)]);
   await settlePage(resource);
 }
 
@@ -182,7 +183,7 @@ async function settlePage(resource: {
       stableSamples = 0;
       lastLength = length;
     }
-    await delay(SETTLE_POLL_MS);
+    await sleep(SETTLE_POLL_MS);
   }
 }
 
@@ -241,10 +242,6 @@ async function evaluate<T>(
 
 function commandOpts(resource: { cdpSessionId?: string }): CdpCommandOptions {
   return resource.cdpSessionId ? { sessionId: resource.cdpSessionId } : {};
-}
-
-async function delay(ms: number): Promise<void> {
-  await new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function isTransientBrowserError(err: unknown): boolean {

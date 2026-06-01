@@ -1,5 +1,4 @@
 import {
-  dedupeSearchResults,
   DEFAULT_SEARCH_ENGINE,
   safeDomain,
   searchEnginesForFusion,
@@ -76,7 +75,9 @@ async function searchEngineWithCache(
   }
 
   try {
-    return await outcomePromise;
+    const outcome = await outcomePromise;
+    if (!outcome.ok) ctx.store.caches.serp.delete(cacheKey);
+    return outcome;
   } catch (err) {
     ctx.store.caches.serp.delete(cacheKey);
     throw err;
@@ -118,13 +119,16 @@ export function createScrapingSearchProvider(ctx: ResearchCtx): SearchProvider {
           warnings.push(`${entry.engine}: ${entry.outcome.error.message}`);
           continue;
         }
-        const results = dedupeSearchResults(entry.outcome.results, limit);
-        if (results.length === 0) {
+        if (entry.outcome.results.length === 0) {
           sawEmptyResults = true;
           warnings.push(`${entry.engine}: no results`);
           continue;
         }
-        sources.push({ source: entry.engine, order: entry.order, results });
+        sources.push({
+          source: entry.engine,
+          order: entry.order,
+          results: entry.outcome.results,
+        });
       }
 
       return {

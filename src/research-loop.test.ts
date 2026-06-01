@@ -830,7 +830,7 @@ describe("research loop cache integration", () => {
     expect(payload.warnings[0]).toContain("ddg:");
     expect(fetch).toHaveBeenCalledTimes(3);
     expect(scrape).toHaveBeenCalledTimes(2);
-    expect(ctx.store.caches.serp.size).toBe(3);
+    expect(ctx.store.caches.serp.size).toBe(1);
   });
 
   it("merges another engine when the default engine returns no results", async () => {
@@ -3008,7 +3008,9 @@ describe("empty final response", () => {
     const messagesCreate = vi
       .fn()
       .mockResolvedValueOnce(
-        messageWith([{ type: "thinking", thinking: "thinking…", signature: "sig" }]),
+        messageWith([
+          { type: "thinking", thinking: "thinking…", signature: "sig" },
+        ]),
       )
       .mockResolvedValueOnce(finalReport());
     const ctx = createContext({ messagesCreate });
@@ -3032,7 +3034,9 @@ describe("empty final response", () => {
     const messagesCreate = vi
       .fn()
       .mockResolvedValue(
-        messageWith([{ type: "thinking", thinking: "still nothing", signature: "sig" }]),
+        messageWith([
+          { type: "thinking", thinking: "still nothing", signature: "sig" },
+        ]),
       );
     const ctx = createContext({ messagesCreate });
 

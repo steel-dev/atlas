@@ -207,19 +207,16 @@ async function collectSearchResults(opts: {
     };
   }
 
-  const merged = mergeSearchResults(
-    outcome.sources.map((source) => ({
-      query,
-      source: source.source,
-      order: source.order,
-      results: source.results,
-    })),
-    limit,
-  );
+  const distinctUrls = new Set<string>();
+  for (const source of outcome.sources) {
+    for (const result of source.results) {
+      distinctUrls.add(normalizeUrlForSource(result.url));
+    }
+  }
   ctx.scope.emit({
     type: "search_results",
     index,
-    count: merged.length,
+    count: Math.min(distinctUrls.size, limit),
   });
   return {
     query,

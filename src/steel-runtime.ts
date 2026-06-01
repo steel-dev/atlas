@@ -1,4 +1,5 @@
 import { errorMessage } from "./errors.js";
+import { sleep } from "./async.js";
 import type { ResearchCtx } from "./runtime.js";
 
 const STEEL_RATE_LIMIT_MAX_ATTEMPTS = 6;
@@ -50,20 +51,6 @@ export function parseRetryAfterSeconds(err: unknown): number | null {
   return DEFAULT_RATE_LIMIT_RETRY_SECONDS;
 }
 
-async function delay(ms: number, signal?: AbortSignal): Promise<void> {
-  if (signal?.aborted) {
-    throw signal.reason ?? new Error("Aborted");
-  }
-  await new Promise<void>((resolve, reject) => {
-    const timeout = setTimeout(resolve, ms);
-    const onAbort = () => {
-      clearTimeout(timeout);
-      reject(signal?.reason ?? new Error("Aborted"));
-    };
-    signal?.addEventListener("abort", onAbort, { once: true });
-  });
-}
-
 export async function runSteelRequest<T>(
   ctx: ResearchCtx,
   request: () => Promise<T>,
@@ -82,7 +69,7 @@ export async function runSteelRequest<T>(
         attempt,
         maxAttempts: STEEL_RATE_LIMIT_MAX_ATTEMPTS,
       });
-      await delay((retryAfterSeconds + 1) * 1000, ctx.deps.signal);
+      await sleep((retryAfterSeconds + 1) * 1000, ctx.deps.signal);
     }
   }
 
