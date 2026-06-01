@@ -167,9 +167,6 @@ export async function closeBrowserLease(ctx: ResearchCtx): Promise<void> {
 
 async function ensureBrowserLease(ctx: ResearchCtx) {
   if (ctx.scope.browserSessionLease) return ctx.scope.browserSessionLease;
-  if (!ctx.deps.browserSessionPool) {
-    return Promise.reject(new Error("Browser session pool is unavailable"));
-  }
   ctx.scope.browserSessionLease = await ctx.deps.browserSessionPool.acquire();
   return ctx.scope.browserSessionLease;
 }

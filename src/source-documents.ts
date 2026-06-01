@@ -15,14 +15,6 @@ const DISCOVERY_LINK_LIMIT = 20;
 const SOURCE_CARD_PREVIEW_CHARS = 700;
 const SOURCE_SEARCH_CONTEXT_CHARS = 180;
 
-function fallbackSourceId(url: string): string {
-  let hash = 5381;
-  for (const char of normalizeUrlForSource(url)) {
-    hash = (hash * 33) ^ char.charCodeAt(0);
-  }
-  return `source_${(hash >>> 0).toString(36)}`;
-}
-
 function createChunks(markdown: string): SourceChunk[] {
   const chunks: SourceChunk[] = [];
   for (let start = 0; start < markdown.length; start += SOURCE_CHUNK_CHARS) {
@@ -43,8 +35,8 @@ export function createSourceDocument(
   title: string,
   markdown: string,
   metadata: SourceExtractionMetadata,
-  originalChars = markdown.length,
-  sourceId = fallbackSourceId(url),
+  originalChars: number,
+  sourceId: string,
   canonicalUrl = normalizeUrlForSource(url),
 ): SourceDocument {
   return {
@@ -78,18 +70,42 @@ export function findSourceDocumentById(
   return undefined;
 }
 
-export function extractionMetadataFromSteel(
-  markdownChars: number,
-  notes: string[] = [],
-  attempts: SourceExtractionAttempt[] = [],
-  qualityWarnings: string[] = [],
-): SourceExtractionMetadata {
+function buildExtractionMetadata(opts: {
+  method: string;
+  markdownChars: number;
+  leadNote: string;
+  contentType?: string;
+  finalUrl?: string;
+  notes?: string[];
+  attempts?: SourceExtractionAttempt[];
+  qualityWarnings?: string[];
+  discoveredLinks?: SourceDiscoveredLink[];
+  pageMetadata?: HtmlPageMetadata;
+}): SourceExtractionMetadata {
+  const page = opts.pageMetadata;
   return {
-    markdownChars,
-    method: "steel_markdown",
-    ...(attempts.length > 0 ? { attempts } : {}),
-    ...(qualityWarnings.length > 0 ? { qualityWarnings } : {}),
-    extractionNotes: ["Fetched with browser-rendered markdown.", ...notes],
+    markdownChars: opts.markdownChars,
+    method: opts.method,
+    ...(opts.contentType ? { contentType: opts.contentType } : {}),
+    ...(opts.finalUrl ? { finalUrl: opts.finalUrl } : {}),
+    ...(opts.attempts && opts.attempts.length > 0
+      ? { attempts: opts.attempts }
+      : {}),
+    ...(opts.qualityWarnings && opts.qualityWarnings.length > 0
+      ? { qualityWarnings: opts.qualityWarnings }
+      : {}),
+    ...(opts.discoveredLinks && opts.discoveredLinks.length > 0
+      ? { discoveredLinks: opts.discoveredLinks }
+      : {}),
+    ...(page?.canonical ? { canonical: page.canonical } : {}),
+    ...(page?.author ? { author: page.author } : {}),
+    ...(page?.articleAuthor ? { articleAuthor: page.articleAuthor } : {}),
+    ...(page?.publishedTime ? { publishedTime: page.publishedTime } : {}),
+    ...(page?.modifiedTime ? { modifiedTime: page.modifiedTime } : {}),
+    ...(page?.description ? { description: page.description } : {}),
+    ...(page?.language ? { language: page.language } : {}),
+    ...(page?.jsonLd !== undefined ? { jsonLd: page.jsonLd } : {}),
+    extractionNotes: [opts.leadNote, ...(opts.notes ?? [])],
   };
 }
 
@@ -102,46 +118,11 @@ export function extractionMetadataFromBrowser(opts: {
   discoveredLinks?: SourceDiscoveredLink[];
   pageMetadata?: HtmlPageMetadata;
 }): SourceExtractionMetadata {
-  return {
-    markdownChars: opts.markdownChars,
+  return buildExtractionMetadata({
+    ...opts,
     method: "browser_cdp",
-    ...(opts.finalUrl ? { finalUrl: opts.finalUrl } : {}),
-    ...(opts.attempts && opts.attempts.length > 0
-      ? { attempts: opts.attempts }
-      : {}),
-    ...(opts.qualityWarnings && opts.qualityWarnings.length > 0
-      ? { qualityWarnings: opts.qualityWarnings }
-      : {}),
-    ...(opts.discoveredLinks && opts.discoveredLinks.length > 0
-      ? { discoveredLinks: opts.discoveredLinks }
-      : {}),
-    ...(opts.pageMetadata?.canonical
-      ? { canonical: opts.pageMetadata.canonical }
-      : {}),
-    ...(opts.pageMetadata?.author ? { author: opts.pageMetadata.author } : {}),
-    ...(opts.pageMetadata?.articleAuthor
-      ? { articleAuthor: opts.pageMetadata.articleAuthor }
-      : {}),
-    ...(opts.pageMetadata?.publishedTime
-      ? { publishedTime: opts.pageMetadata.publishedTime }
-      : {}),
-    ...(opts.pageMetadata?.modifiedTime
-      ? { modifiedTime: opts.pageMetadata.modifiedTime }
-      : {}),
-    ...(opts.pageMetadata?.description
-      ? { description: opts.pageMetadata.description }
-      : {}),
-    ...(opts.pageMetadata?.language
-      ? { language: opts.pageMetadata.language }
-      : {}),
-    ...(opts.pageMetadata?.jsonLd !== undefined
-      ? { jsonLd: opts.pageMetadata.jsonLd }
-      : {}),
-    extractionNotes: [
-      "Fetched with browser session via Chrome DevTools Protocol.",
-      ...(opts.notes ?? []),
-    ],
-  };
+    leadNote: "Fetched with browser session via Chrome DevTools Protocol.",
+  });
 }
 
 export function extractionMetadataFromPdf(opts: {
@@ -153,22 +134,11 @@ export function extractionMetadataFromPdf(opts: {
   qualityWarnings?: string[];
   discoveredLinks?: SourceDiscoveredLink[];
 }): SourceExtractionMetadata {
-  return {
-    markdownChars: opts.markdownChars,
+  return buildExtractionMetadata({
+    ...opts,
     method: "pdf_direct",
-    ...(opts.contentType ? { contentType: opts.contentType } : {}),
-    ...(opts.finalUrl ? { finalUrl: opts.finalUrl } : {}),
-    ...(opts.attempts && opts.attempts.length > 0
-      ? { attempts: opts.attempts }
-      : {}),
-    ...(opts.qualityWarnings && opts.qualityWarnings.length > 0
-      ? { qualityWarnings: opts.qualityWarnings }
-      : {}),
-    extractionNotes: [
-      "Fetched with direct PDF text extraction.",
-      ...(opts.notes ?? []),
-    ],
-  };
+    leadNote: "Fetched with direct PDF text extraction.",
+  });
 }
 
 export function extractionMetadataFromText(opts: {
@@ -180,22 +150,10 @@ export function extractionMetadataFromText(opts: {
   attempts?: SourceExtractionAttempt[];
   qualityWarnings?: string[];
 }): SourceExtractionMetadata {
-  return {
-    markdownChars: opts.markdownChars,
-    method: opts.method,
-    ...(opts.contentType ? { contentType: opts.contentType } : {}),
-    ...(opts.finalUrl ? { finalUrl: opts.finalUrl } : {}),
-    ...(opts.attempts && opts.attempts.length > 0
-      ? { attempts: opts.attempts }
-      : {}),
-    ...(opts.qualityWarnings && opts.qualityWarnings.length > 0
-      ? { qualityWarnings: opts.qualityWarnings }
-      : {}),
-    extractionNotes: [
-      "Fetched with direct text extraction.",
-      ...(opts.notes ?? []),
-    ],
-  };
+  return buildExtractionMetadata({
+    ...opts,
+    leadNote: "Fetched with direct text extraction.",
+  });
 }
 
 export function extractionMetadataFromHtml(opts: {
@@ -208,47 +166,11 @@ export function extractionMetadataFromHtml(opts: {
   discoveredLinks?: SourceDiscoveredLink[];
   pageMetadata?: HtmlPageMetadata;
 }): SourceExtractionMetadata {
-  return {
-    markdownChars: opts.markdownChars,
+  return buildExtractionMetadata({
+    ...opts,
     method: "html_direct",
-    ...(opts.contentType ? { contentType: opts.contentType } : {}),
-    ...(opts.finalUrl ? { finalUrl: opts.finalUrl } : {}),
-    ...(opts.attempts && opts.attempts.length > 0
-      ? { attempts: opts.attempts }
-      : {}),
-    ...(opts.qualityWarnings && opts.qualityWarnings.length > 0
-      ? { qualityWarnings: opts.qualityWarnings }
-      : {}),
-    ...(opts.discoveredLinks && opts.discoveredLinks.length > 0
-      ? { discoveredLinks: opts.discoveredLinks }
-      : {}),
-    ...(opts.pageMetadata?.canonical
-      ? { canonical: opts.pageMetadata.canonical }
-      : {}),
-    ...(opts.pageMetadata?.author ? { author: opts.pageMetadata.author } : {}),
-    ...(opts.pageMetadata?.articleAuthor
-      ? { articleAuthor: opts.pageMetadata.articleAuthor }
-      : {}),
-    ...(opts.pageMetadata?.publishedTime
-      ? { publishedTime: opts.pageMetadata.publishedTime }
-      : {}),
-    ...(opts.pageMetadata?.modifiedTime
-      ? { modifiedTime: opts.pageMetadata.modifiedTime }
-      : {}),
-    ...(opts.pageMetadata?.description
-      ? { description: opts.pageMetadata.description }
-      : {}),
-    ...(opts.pageMetadata?.language
-      ? { language: opts.pageMetadata.language }
-      : {}),
-    ...(opts.pageMetadata?.jsonLd !== undefined
-      ? { jsonLd: opts.pageMetadata.jsonLd }
-      : {}),
-    extractionNotes: [
-      "Fetched with direct HTML text extraction.",
-      ...(opts.notes ?? []),
-    ],
-  };
+    leadNote: "Fetched with direct HTML text extraction.",
+  });
 }
 
 export function storeMarkdown(markdown: string): {
@@ -268,82 +190,6 @@ export function storeMarkdown(markdown: string): {
     originalChars: markdown.length,
     truncated: true,
   };
-}
-
-export function formatFetchResult(
-  document: SourceDocument,
-  offset: number,
-  maxChars: number,
-): string {
-  const start = Math.min(offset, document.markdown.length);
-  const isDiscoveryPage =
-    document.metadata.qualityWarnings?.some((warning) =>
-      warning.startsWith("search_listing_page"),
-    ) ?? false;
-  const end = Math.min(document.markdown.length, start + maxChars);
-  const content = document.markdown.slice(start, end);
-  const hasMore = end < document.markdown.length;
-  const chunk = chunkForRange(document, start);
-  const qualityWarnings = document.metadata.qualityWarnings ?? [];
-  const result = {
-    source_id: document.sourceId,
-    title: document.title,
-    url: document.url,
-    canonical_url: document.canonicalUrl,
-    ...(qualityWarnings.length > 0
-      ? {
-          source_quality: {
-            warnings: qualityWarnings,
-          },
-        }
-      : {}),
-    ...(document.metadata.method &&
-    (document.metadata.method !== "steel_markdown" ||
-      (document.metadata.attempts?.length ?? 0) > 0)
-      ? {
-          extraction: {
-            method: document.metadata.method,
-            ...(document.metadata.contentType
-              ? { content_type: document.metadata.contentType }
-              : {}),
-            ...(document.metadata.finalUrl
-              ? { final_url: document.metadata.finalUrl }
-              : {}),
-            ...(document.metadata.attempts &&
-            document.metadata.attempts.length > 0
-              ? { attempts: document.metadata.attempts }
-              : {}),
-            ...(qualityWarnings.length > 0
-              ? { quality_warnings: qualityWarnings }
-              : {}),
-            notes: document.metadata.extractionNotes,
-          },
-        }
-      : {}),
-    ...(isDiscoveryPage
-      ? {
-          discovery: {
-            source_kind: "discovery_page",
-            links: (document.metadata.discoveredLinks ?? []).slice(
-              0,
-              DISCOVERY_LINK_LIMIT,
-            ),
-          },
-        }
-      : {}),
-    chunk: {
-      index: chunk.index,
-      start: chunk.start,
-      end: chunk.end,
-      next_chunk:
-        chunk.index + 1 < document.chunks.length ? chunk.index + 1 : null,
-    },
-    offset: start,
-    next_offset: hasMore ? end : null,
-    has_more: hasMore,
-    content,
-  };
-  return JSON.stringify(result, null, 2);
 }
 
 export function formatSourceCard(

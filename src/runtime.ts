@@ -118,7 +118,7 @@ export interface ResearchDeps {
   searchProvider?: SearchProvider;
   /** Bounds concurrent Steel/network requests (web search + browser fetch). */
   ioGate: ConcurrencyGate;
-  browserSessionPool?: BrowserSessionPool;
+  browserSessionPool: BrowserSessionPool;
 }
 
 export interface SourceStore {

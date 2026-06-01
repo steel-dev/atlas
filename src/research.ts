@@ -25,12 +25,7 @@ import {
   DEFAULT_OPENAI_MODEL,
   type ResearchEffort,
 } from "./defaults.js";
-import type {
-  FetchedSource,
-  SourceExtractionAttempt,
-  SourceDocument,
-  CitedSource,
-} from "./sources.js";
+import type { FetchedSource, SourceDocument, CitedSource } from "./sources.js";
 import { createSteel } from "./steel.js";
 import {
   resolveSearchProvider,
@@ -43,6 +38,7 @@ import {
   createConcurrencyGate,
   runResearchLoop,
   type ResearchCtx,
+  type ResearchLoopEvent,
 } from "./tools.js";
 import {
   BrowserSessionPool,
@@ -126,60 +122,18 @@ export interface ResearchOutputOptions {
   name?: string;
 }
 
-export type ResearchEvent = (
-  | { type: "research_started" }
-  | { type: "searching"; index: number; query: string }
-  | {
-      type: "search_results";
-      index: number;
-      count: number;
-    }
-  | {
-      type: "search_failed";
-      index: number;
-      error: string;
-    }
-  | { type: "fetching"; url: string }
-  | {
-      type: "rate_limited";
-      retryAfterSeconds: number;
-      attempt: number;
-      maxAttempts: number;
-    }
-  | {
-      type: "source_fetched";
-      url: string;
-      title: string;
-      method?: string;
-      markdownChars?: number;
-      attempts?: SourceExtractionAttempt[];
-      qualityWarnings?: string[];
-    }
-  | { type: "source_error"; url: string; error: string }
-  | { type: "research_finished"; sourcesFetched: number }
-  | {
-      type: "context_compacted";
-      tokensBefore: number;
-      tokensAfter: number;
-      foldedMessages: number;
-    }
-  | { type: "delegation_started"; tasks: string[] }
-  | { type: "subagent_started"; task: string }
-  | {
-      type: "subagent_finished";
-      task: string;
-      sourcesFetched: number;
-      toolCalls: number;
-      finishReason: string;
-    }
+type LeadResearchEvent =
   | { type: "citations_not_fetched"; count: number; urls: string[] }
   | { type: "written"; markdownChars: number }
-  | { type: "completed"; result: ResearchResult }
-) & {
-  /** Set on events emitted by a sub-agent (1 for the first level of
-   *  delegation). Absent/0 for the lead agent. */
-  depth?: number;
-};
+  | { type: "completed"; result: ResearchResult };
+
+export type ResearchEvent =
+  | ResearchLoopEvent
+  | (LeadResearchEvent & {
+      /** Set on events emitted by a sub-agent (1 for the first level of
+       *  delegation). Absent/0 for the lead agent. */
+      depth?: number;
+    });
 
 export interface ResearchOptions {
   query: string;

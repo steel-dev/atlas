@@ -1,9 +1,4 @@
 import type { CdpCommandOptions } from "./browser-cdp.js";
-import {
-  BrowserSessionPool,
-  defaultBrowserMaxSessions,
-  readBrowserMaxSessionsFromEnv,
-} from "./browser-session-pool.js";
 import { errorMessage } from "./errors.js";
 import { htmlToMarkdown } from "./html-extract.js";
 import type { ResearchCtx, SourceCacheEntry } from "./runtime.js";
@@ -101,8 +96,7 @@ async function extractSourceOnce(
   url: string,
   previousAttempts: SourceExtractionAttempt[],
 ): Promise<SourceExtractionOutcome> {
-  const pool = getBrowserSessionPool(ctx);
-  const lease = await pool.acquire();
+  const lease = await ctx.deps.browserSessionPool.acquire();
   let discard = false;
   try {
     await navigateToUrl(lease.resource, url);
@@ -152,8 +146,7 @@ async function extractHtmlOnce(
   ctx: ResearchCtx,
   url: string,
 ): Promise<{ html: string; finalUrl: string; title: string }> {
-  const pool = getBrowserSessionPool(ctx);
-  const lease = await pool.acquire();
+  const lease = await ctx.deps.browserSessionPool.acquire();
   let discard = false;
   try {
     await navigateToUrl(lease.resource, url);
@@ -169,22 +162,6 @@ async function extractHtmlOnce(
   } finally {
     await lease.release({ discard });
   }
-}
-
-function getBrowserSessionPool(ctx: ResearchCtx): BrowserSessionPool {
-  if (!ctx.deps.browserSessionPool) {
-    ctx.deps.browserSessionPool = new BrowserSessionPool({
-      steel: ctx.deps.steel,
-      useProxy: ctx.config.useProxy,
-      namespace: `atlas-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
-      signal: ctx.deps.signal,
-      deadlineAt: ctx.scope.deadlineAt,
-      maxSessions:
-        readBrowserMaxSessionsFromEnv() ??
-        defaultBrowserMaxSessions(ctx.config.maxConcurrentSubagents),
-    });
-  }
-  return ctx.deps.browserSessionPool;
 }
 
 export async function navigateToUrl(
