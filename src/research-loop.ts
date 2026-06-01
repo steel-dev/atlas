@@ -7,7 +7,7 @@ import {
   type ModelToolResult,
 } from "./model.js";
 import type { ResearchEffort } from "./defaults.js";
-import { createConcurrencyGate, type ResearchCtx } from "./runtime.js";
+import { tokenBudgetExhaustedReason, type ResearchCtx } from "./runtime.js";
 import {
   estimateMessagesTokens,
   maybeCompactResearchContext,
@@ -24,24 +24,17 @@ import {
   executeResearchTool,
   researchToolDefinitions,
   toolSpendsActionBudget,
-  SPAWN_MAX_TASKS,
-  type SubagentScope,
-  type SubagentSummary,
 } from "./tool-registry.js";
 import {
   EMPTY_RESPONSE_PROMPT,
   finalSynthesisPrompt,
   RESEARCH_SYSTEM_PROMPT,
   researchQuestionPrompt,
-  SUBAGENT_SYSTEM_PROMPT,
 } from "./tool-contract.js";
+import { createSubagentScope, SUBAGENT_MAX_TOOL_CALLS } from "./subagents.js";
 
 const DEFAULT_MAX_TOOL_CALLS = 12;
 const DEFAULT_MAX_CONCURRENT_TOOLS = 4;
-const SUBAGENT_MAX_TOOL_CALLS = 20;
-const SUBAGENT_MIN_RUNTIME_MS = 30_000;
-const SUBAGENT_SYNTHESIS_RESERVE_MS = 45_000;
-const SUBAGENT_FINDINGS_MAX_CHARS = 4_000;
 const BUDGET_STATUS_REMAINING_RATIO = 0.3;
 
 export interface ResearchLoopResult {
@@ -79,13 +72,6 @@ function shouldAttemptFinalSynthesis(finishReason: string): boolean {
     finishReason === "token budget exhausted" ||
     finishReason.startsWith("timeout approaching")
   );
-}
-
-function tokenBudgetExhaustedReason(ctx: ResearchCtx): string | null {
-  if (!ctx.config.tokenLimit || ctx.config.tokenLimit <= 0) return null;
-  if (totalUsageTokens(ctx.deps.model.usage) < ctx.config.tokenLimit)
-    return null;
-  return "token budget exhausted";
 }
 
 function spendsActionBudget(tu: ModelToolCall): boolean {
@@ -172,259 +158,6 @@ async function mapWithConcurrency<T, R>(
   return results;
 }
 
-interface SubagentTiming {
-  deadlineAt?: number;
-  synthesisReserveMs?: number;
-}
-
-function subagentTiming(ctx: ResearchCtx): SubagentTiming | string {
-  if (
-    ctx.scope.deadlineAt === undefined ||
-    ctx.scope.synthesisReserveMs === undefined
-  ) {
-    return {};
-  }
-
-  const now = Date.now();
-  const leadDeadlineAt = ctx.scope.deadlineAt;
-  const leadReserveMs = Math.max(0, ctx.scope.synthesisReserveMs);
-  const subagentDeadlineAt = leadDeadlineAt - leadReserveMs;
-  const subagentReserveMs = Math.min(
-    leadReserveMs,
-    SUBAGENT_SYNTHESIS_RESERVE_MS,
-  );
-  const usableMs = subagentDeadlineAt - now - subagentReserveMs;
-  if (usableMs < SUBAGENT_MIN_RUNTIME_MS) {
-    const remainingSeconds = Math.max(
-      0,
-      Math.ceil((leadDeadlineAt - now) / 1000),
-    );
-    const reserveSeconds = Math.ceil(leadReserveMs / 1000);
-    return `Error: not enough remaining time to spawn sub-agents (${remainingSeconds}s left; ${reserveSeconds}s reserved for finalization). Investigate or finalize directly.`;
-  }
-
-  return {
-    deadlineAt: subagentDeadlineAt,
-    synthesisReserveMs: subagentReserveMs,
-  };
-}
-
-function truncateFindings(text: string): string {
-  const trimmed = (text ?? "").trim();
-  if (trimmed.length <= SUBAGENT_FINDINGS_MAX_CHARS) return trimmed;
-  return `${trimmed.slice(0, SUBAGENT_FINDINGS_MAX_CHARS)}\n... [truncated]`;
-}
-
-function subagentSources(
-  ctx: ResearchCtx,
-  fetchedUrls: string[],
-): Array<{ source_id?: string; url: string; title?: string }> {
-  const seen = new Set<string>();
-  const sources: Array<{ source_id?: string; url: string; title?: string }> =
-    [];
-  for (const url of fetchedUrls) {
-    const key = normalizeUrlForSource(url);
-    if (seen.has(key)) continue;
-    seen.add(key);
-    const document = ctx.store.sourceDocuments.get(key);
-    sources.push(
-      document
-        ? {
-            source_id: document.sourceId,
-            url: document.url,
-            title: document.title,
-          }
-        : { url },
-    );
-  }
-  return sources;
-}
-
-interface SubagentOutcome {
-  summary: SubagentSummary;
-  fetchedUrls: string[];
-}
-
-async function runSubagentTask(
-  ctx: ResearchCtx,
-  question: string,
-  timing: SubagentTiming,
-  perAgentMaxToolCalls: number,
-): Promise<SubagentOutcome> {
-  await using scope = ctx.scope.derive({
-    query: question,
-    depth: ctx.scope.depth + 1,
-    deadlineAt: timing.deadlineAt,
-    synthesisReserveMs: timing.synthesisReserveMs,
-    compactionTriggerTokens: ctx.config.subagentCompactionTriggerTokens,
-    compactionKeepTokens: ctx.config.subagentCompactionKeepTokens,
-  });
-  const subagentCtx: ResearchCtx = { ...ctx, scope };
-  try {
-    const run = await runResearchLoop({
-      ctx: subagentCtx,
-      query: question,
-      maxToolCalls: perAgentMaxToolCalls,
-      effort: ctx.config.subagentEffort,
-      systemPrompt: SUBAGENT_SYSTEM_PROMPT,
-    });
-    const findings = truncateFindings(run.markdown);
-    ctx.scope.emit({
-      type: "subagent_finished",
-      task: question,
-      sourcesFetched: run.fetchedUrls.length,
-      toolCalls: run.toolCalls,
-      finishReason: run.finishReason,
-    });
-    return {
-      summary: {
-        task: question,
-        findings: findings || `(no findings; ${run.finishReason})`,
-        sources: subagentSources(ctx, run.fetchedUrls),
-        tool_calls: run.toolCalls,
-        finish_reason: run.finishReason,
-      },
-      fetchedUrls: run.fetchedUrls,
-    };
-  } catch (err) {
-    ctx.deps.abort();
-    return {
-      summary: {
-        task: question,
-        error: err instanceof Error ? err.message : String(err),
-      },
-      fetchedUrls: [],
-    };
-  }
-}
-
-interface SubagentEntry {
-  handle: string;
-  task: string;
-  status: "running" | "done" | "error";
-  collected: boolean;
-  promise: Promise<SubagentOutcome>;
-}
-
-function createSubagentScope(
-  ctx: ResearchCtx,
-  perAgentMaxToolCalls: number,
-): SubagentScope {
-  const registry = new Map<string, SubagentEntry>();
-  const gate = createConcurrencyGate(ctx.config.maxConcurrentSubagents ?? 1);
-  let counter = 0;
-
-  const uncollected = (): SubagentEntry[] =>
-    [...registry.values()].filter((entry) => !entry.collected);
-
-  async function collect(entries: SubagentEntry[]): Promise<SubagentOutcome[]> {
-    const outcomes = await Promise.all(
-      entries.map((entry) =>
-        entry.promise.catch(
-          (err): SubagentOutcome => ({
-            summary: {
-              task: entry.task,
-              error: err instanceof Error ? err.message : String(err),
-            },
-            fetchedUrls: [],
-          }),
-        ),
-      ),
-    );
-    for (const entry of entries) entry.collected = true;
-    return outcomes;
-  }
-
-  return {
-    spawn(tasks) {
-      if ((ctx.scope.depth ?? 0) >= (ctx.config.maxDelegationDepth ?? 0)) {
-        return {
-          handles: [],
-          error:
-            "Error: spawn is not available at this depth. Research this directly with search/fetch.",
-        };
-      }
-      if (tokenBudgetExhaustedReason(ctx)) {
-        return {
-          handles: [],
-          error:
-            "Error: token budget exhausted. Investigate the most important angle directly and finalize.",
-        };
-      }
-      const timing = subagentTiming(ctx);
-      if (typeof timing === "string") {
-        return { handles: [], error: timing };
-      }
-      const accepted = tasks.slice(0, SPAWN_MAX_TASKS);
-      if (accepted.length === 0) {
-        return {
-          handles: [],
-          error:
-            "Error: spawn requires a non-empty `tasks` array of self-contained sub-questions.",
-        };
-      }
-      ctx.scope.emit({ type: "delegation_started", tasks: accepted });
-      const handles: Array<{ handle: string; task: string }> = [];
-      for (const task of accepted) {
-        counter += 1;
-        const handle = `agent_${counter}`;
-        ctx.scope.emit({ type: "subagent_started", task });
-        const promise = gate.run(() =>
-          runSubagentTask(ctx, task, timing, perAgentMaxToolCalls),
-        );
-        const entry: SubagentEntry = {
-          handle,
-          task,
-          status: "running",
-          collected: false,
-          promise,
-        };
-        promise.then(
-          (outcome) => {
-            entry.status = outcome.summary.error ? "error" : "done";
-          },
-          () => {
-            entry.status = "error";
-          },
-        );
-        registry.set(handle, entry);
-        handles.push({ handle, task });
-      }
-      return { handles };
-    },
-
-    async join(handles) {
-      const targets =
-        handles && handles.length > 0
-          ? handles
-              .map((handle) => registry.get(handle))
-              .filter((entry): entry is SubagentEntry => Boolean(entry))
-              .filter((entry) => !entry.collected)
-          : uncollected();
-      if (targets.length === 0) {
-        return {
-          summaries: [],
-          fetchedUrls: [],
-          error:
-            "No outstanding sub-agents to join. Spawn sub-agents first, or write your report if you have enough evidence.",
-        };
-      }
-      const outcomes = await collect(targets);
-      return {
-        summaries: outcomes.map((outcome) => outcome.summary),
-        fetchedUrls: outcomes.flatMap((outcome) => outcome.fetchedUrls),
-      };
-    },
-
-    async settle() {
-      const targets = uncollected();
-      if (targets.length === 0) return [];
-      const outcomes = await collect(targets);
-      return outcomes.flatMap((outcome) => outcome.fetchedUrls);
-    },
-  };
-}
-
 export async function runResearchLoop(opts: {
   ctx: ResearchCtx;
   query: string;
@@ -442,7 +175,11 @@ export async function runResearchLoop(opts: {
   const isSubagent = (ctx.scope.depth ?? 0) > 0;
   const maxToolCalls = opts.maxToolCalls ?? DEFAULT_MAX_TOOL_CALLS;
   const maxTotalToolExecutions = maxToolCalls * 2;
-  const subagents = createSubagentScope(ctx, SUBAGENT_MAX_TOOL_CALLS);
+  const subagents = createSubagentScope(
+    ctx,
+    SUBAGENT_MAX_TOOL_CALLS,
+    runResearchLoop,
+  );
 
   if (!isSubagent) ctx.scope.emit({ type: "research_started" });
 

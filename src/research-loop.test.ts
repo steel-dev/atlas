@@ -7,7 +7,7 @@ import type {
   ModelStepInput,
   ModelToolCall,
 } from "./model.js";
-import { __testing, runResearchLoop } from "./tools.js";
+import { __testing, runResearchLoop } from "./research-loop.js";
 import {
   createAgentScope,
   createSourceReservations,

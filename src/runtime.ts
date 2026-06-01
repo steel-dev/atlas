@@ -1,5 +1,5 @@
 import type Steel from "steel-sdk";
-import type { ModelAdapter } from "./model.js";
+import { totalUsageTokens, type ModelAdapter } from "./model.js";
 import type { ResearchEffort } from "./defaults.js";
 import type { WebSearchOutcome } from "./search.js";
 import type { SearchProvider } from "./search-provider.js";
@@ -14,6 +14,12 @@ import type { BrowserSessionLease } from "./browser-session-pool.js";
 
 export interface ConcurrencyGate {
   run<T>(fn: () => Promise<T>): Promise<T>;
+}
+
+export interface AdaptiveConcurrencyGate extends ConcurrencyGate {
+  throttle(): void;
+  relax(): void;
+  readonly limit: number;
 }
 
 export interface SourceReservations {
@@ -74,6 +80,80 @@ export function createConcurrencyGate(limit: number): ConcurrencyGate {
     ? Math.max(1, Math.floor(limit))
     : 1;
   return new Semaphore(normalized);
+}
+
+class AdaptiveSemaphore implements AdaptiveConcurrencyGate {
+  private active = 0;
+  private current: number;
+  private readonly ceiling: number;
+  private cleanSuccesses = 0;
+  private readonly waiting: Array<() => void> = [];
+
+  constructor(ceiling: number) {
+    this.ceiling = Math.max(1, Math.floor(ceiling));
+    this.current = this.ceiling;
+  }
+
+  get limit(): number {
+    return this.current;
+  }
+
+  throttle(): void {
+    this.current = Math.max(1, Math.floor(this.current / 2));
+    this.cleanSuccesses = 0;
+  }
+
+  relax(): void {
+    if (this.current >= this.ceiling) return;
+    this.cleanSuccesses++;
+    if (this.cleanSuccesses >= this.current) {
+      this.current++;
+      this.cleanSuccesses = 0;
+      this.wake();
+    }
+  }
+
+  async run<T>(fn: () => Promise<T>): Promise<T> {
+    await this.acquire();
+    try {
+      return await fn();
+    } finally {
+      this.release();
+    }
+  }
+
+  private async acquire(): Promise<void> {
+    if (this.active < this.current) {
+      this.active++;
+      return;
+    }
+    await new Promise<void>((resolve) =>
+      this.waiting.push(() => {
+        this.active++;
+        resolve();
+      }),
+    );
+  }
+
+  private release(): void {
+    this.active--;
+    this.wake();
+  }
+
+  private wake(): void {
+    while (this.active < this.current && this.waiting.length > 0) {
+      this.waiting.shift()?.();
+    }
+  }
+}
+
+export function createAdaptiveConcurrencyGate(
+  ceiling: number,
+): AdaptiveConcurrencyGate {
+  const normalized = Number.isFinite(ceiling)
+    ? Math.max(1, Math.floor(ceiling))
+    : 1;
+  return new AdaptiveSemaphore(normalized);
 }
 
 export function createResearchCaches(): ResearchCaches {
@@ -156,6 +236,13 @@ export interface ResearchCtx {
   deps: ResearchDeps;
   store: SourceStore;
   scope: AgentScope;
+}
+
+export function tokenBudgetExhaustedReason(ctx: ResearchCtx): string | null {
+  if (!ctx.config.tokenLimit || ctx.config.tokenLimit <= 0) return null;
+  if (totalUsageTokens(ctx.deps.model.usage) < ctx.config.tokenLimit)
+    return null;
+  return "token budget exhausted";
 }
 
 export function createAgentScope(init: AgentScopeInit): AgentScope {
