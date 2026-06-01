@@ -314,6 +314,10 @@ async function main(): Promise<void> {
       tokenLimit,
       suggestedTeamSize: teamSize,
       useProxy,
+      timeoutMs:
+        timeoutSeconds !== undefined
+          ? Math.floor(timeoutSeconds * 1000)
+          : undefined,
       onEvent,
       signal,
     });

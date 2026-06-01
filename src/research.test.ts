@@ -117,6 +117,25 @@ describe("research source citations", () => {
       "https://example.com/unfetched",
     ]);
   });
+
+  it("preserves balanced parentheses in cited URLs", () => {
+    const citations = __testing.reconcileCitations(
+      [
+        "From [Foo](https://en.wikipedia.org/wiki/Foo_(bar)) and a bare",
+        "https://en.wikipedia.org/wiki/Baz_(qux).",
+      ].join(" "),
+      [
+        { url: "https://en.wikipedia.org/wiki/Foo_(bar)", title: "Foo" },
+        { url: "https://en.wikipedia.org/wiki/Baz_(qux)", title: "Baz" },
+      ],
+    );
+
+    expect(citations.citedSources).toEqual([
+      { url: "https://en.wikipedia.org/wiki/Foo_(bar)", title: "Foo" },
+      { url: "https://en.wikipedia.org/wiki/Baz_(qux)", title: "Baz" },
+    ]);
+    expect(citations.citationsNotFetched).toEqual([]);
+  });
 });
 
 describe("structured output finalization", () => {

@@ -30,7 +30,6 @@ Get keys from [Anthropic](https://console.anthropic.com) or [OpenAI](https://pla
 atlas "What's the state of the art in single-image novel view synthesis?"
 atlas "..." > report.md
 atlas "..." --out report.md
-atlas "..." --effort max
 atlas "..." --provider openai --model gpt-5.5
 atlas "..." --provider openai --base-url https://your-openai-compatible-endpoint/v1
 atlas "..." --proxy

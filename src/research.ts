@@ -876,20 +876,22 @@ function reconcileCitations(
 
 function extractMarkdownUrls(markdown: string): string[] {
   const urls: string[] = [];
-  const markdownLinkPattern = /\[[^\]]+\]\((https?:\/\/[^)\s]+)\)/gi;
-  for (const match of markdown.matchAll(markdownLinkPattern)) {
-    urls.push(stripTrailingUrlPunctuation(match[1]));
-  }
-
-  const bareUrlPattern = /https?:\/\/[^\s<>"')]+/gi;
-  for (const match of markdown.matchAll(bareUrlPattern)) {
-    urls.push(stripTrailingUrlPunctuation(match[0]));
+  const urlPattern = /https?:\/\/[^\s<>"'\]]+/gi;
+  for (const match of markdown.matchAll(urlPattern)) {
+    urls.push(trimUrlBoundary(match[0]));
   }
   return urls;
 }
 
-function stripTrailingUrlPunctuation(url: string): string {
-  return url.replace(/[.,;:!?]+$/g, "");
+function trimUrlBoundary(url: string): string {
+  let trimmed = url.replace(/[.,;:!?]+$/g, "");
+  while (trimmed.endsWith(")")) {
+    const opens = (trimmed.match(/\(/g) ?? []).length;
+    const closes = (trimmed.match(/\)/g) ?? []).length;
+    if (closes <= opens) break;
+    trimmed = trimmed.slice(0, -1).replace(/[.,;:!?]+$/g, "");
+  }
+  return trimmed;
 }
 
 function normalizeUrlForCitation(url: string): string {

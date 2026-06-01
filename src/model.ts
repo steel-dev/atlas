@@ -288,7 +288,10 @@ export function createOpenAIModelAdapter(opts: {
           tools: input.tools?.map(toOpenAITool),
           tool_choice: input.tools?.length ? "auto" : undefined,
           response_format: openAIResponseFormat(input.outputSchema),
-          max_tokens: input.maxTokens,
+          max_completion_tokens: input.maxTokens,
+          ...(input.effort
+            ? { reasoning_effort: toOpenAIReasoningEffort(input.effort) }
+            : {}),
         },
         { signal: input.signal },
       );
@@ -302,6 +305,21 @@ export function createOpenAIModelAdapter(opts: {
       return { content: fromOpenAIMessage(message), inputTokens };
     },
   };
+}
+
+function toOpenAIReasoningEffort(
+  effort: ResearchEffort,
+): "low" | "medium" | "high" | "xhigh" {
+  switch (effort) {
+    case "low":
+      return "low";
+    case "medium":
+      return "medium";
+    case "high":
+      return "high";
+    case "max":
+      return "xhigh";
+  }
 }
 
 function openAIResponseFormat(
