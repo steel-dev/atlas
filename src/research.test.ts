@@ -151,10 +151,9 @@ describe("structured output finalization", () => {
 
     const toolNames = (calls[0]?.tools ?? []).map((tool) => tool.name).sort();
     expect(toolNames).toEqual([
-      "find_in_source",
-      "quote_source",
-      "read_source_chunk",
+      "read_source",
       "request_more_research",
+      "search_sources",
     ]);
   });
 
@@ -201,10 +200,12 @@ describe("structured output finalization", () => {
     expect(JSON.stringify(calls[1]?.messages)).toContain(
       "Find the missing date.",
     );
-    expect(JSON.stringify(calls[2]?.messages)).toContain("Missing date is 2020");
+    expect(JSON.stringify(calls[2]?.messages)).toContain(
+      "Missing date is 2020",
+    );
   });
 
-  it("executes a quote_source call and returns the verified JSON", async () => {
+  it("executes a read_source quote call and returns the verified JSON", async () => {
     const markdown = "Nicholas Munene Mutuma is a Kenyan actor.";
     const ctx = singleSourceContext(sourceDocument(markdown));
     const { adapter, calls } = fakeModel([
@@ -212,7 +213,7 @@ describe("structured output finalization", () => {
         {
           type: "tool_call",
           id: "call_1",
-          name: "quote_source",
+          name: "read_source",
           input: { source_id: "source_1", start: 0, end: 23 },
         },
       ],
@@ -246,6 +247,8 @@ describe("structured output finalization", () => {
       evidence: [{ source_id: "source_1", quote: "Nicholas Munene Mutuma" }],
     });
     // The tool call was actually executed and its real quote fed back to the model.
-    expect(JSON.stringify(calls[1]?.messages)).toContain("Nicholas Munene Mutuma");
+    expect(JSON.stringify(calls[1]?.messages)).toContain(
+      "Nicholas Munene Mutuma",
+    );
   });
 });

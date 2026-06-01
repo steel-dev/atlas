@@ -164,7 +164,10 @@ export function extractionMetadataFromPdf(opts: {
     ...(opts.qualityWarnings && opts.qualityWarnings.length > 0
       ? { qualityWarnings: opts.qualityWarnings }
       : {}),
-    extractionNotes: ["Fetched with direct PDF text extraction.", ...(opts.notes ?? [])],
+    extractionNotes: [
+      "Fetched with direct PDF text extraction.",
+      ...(opts.notes ?? []),
+    ],
   };
 }
 
@@ -241,7 +244,10 @@ export function extractionMetadataFromHtml(opts: {
     ...(opts.pageMetadata?.jsonLd !== undefined
       ? { jsonLd: opts.pageMetadata.jsonLd }
       : {}),
-    extractionNotes: ["Fetched with direct HTML text extraction.", ...(opts.notes ?? [])],
+    extractionNotes: [
+      "Fetched with direct HTML text extraction.",
+      ...(opts.notes ?? []),
+    ],
   };
 }
 
@@ -270,9 +276,10 @@ export function formatFetchResult(
   maxChars: number,
 ): string {
   const start = Math.min(offset, document.markdown.length);
-  const isDiscoveryPage = document.metadata.qualityWarnings?.some((warning) =>
-    warning.startsWith("search_listing_page"),
-  ) ?? false;
+  const isDiscoveryPage =
+    document.metadata.qualityWarnings?.some((warning) =>
+      warning.startsWith("search_listing_page"),
+    ) ?? false;
   const end = Math.min(document.markdown.length, start + maxChars);
   const content = document.markdown.slice(start, end);
   const hasMore = end < document.markdown.length;
@@ -302,7 +309,8 @@ export function formatFetchResult(
             ...(document.metadata.finalUrl
               ? { final_url: document.metadata.finalUrl }
               : {}),
-            ...(document.metadata.attempts && document.metadata.attempts.length > 0
+            ...(document.metadata.attempts &&
+            document.metadata.attempts.length > 0
               ? { attempts: document.metadata.attempts }
               : {}),
             ...(qualityWarnings.length > 0
@@ -327,7 +335,8 @@ export function formatFetchResult(
       index: chunk.index,
       start: chunk.start,
       end: chunk.end,
-      next_chunk: chunk.index + 1 < document.chunks.length ? chunk.index + 1 : null,
+      next_chunk:
+        chunk.index + 1 < document.chunks.length ? chunk.index + 1 : null,
     },
     offset: start,
     next_offset: hasMore ? end : null,
@@ -342,9 +351,10 @@ export function formatSourceCard(
   previewChars = SOURCE_CARD_PREVIEW_CHARS,
 ): string {
   const qualityWarnings = document.metadata.qualityWarnings ?? [];
-  const isDiscoveryPage = document.metadata.qualityWarnings?.some((warning) =>
-    warning.startsWith("search_listing_page"),
-  ) ?? false;
+  const isDiscoveryPage =
+    document.metadata.qualityWarnings?.some((warning) =>
+      warning.startsWith("search_listing_page"),
+    ) ?? false;
   const previewEnd = Math.min(
     document.markdown.length,
     Math.max(0, Math.floor(previewChars)),
@@ -369,7 +379,8 @@ export function formatSourceCard(
             ...(document.metadata.finalUrl
               ? { final_url: document.metadata.finalUrl }
               : {}),
-            ...(document.metadata.attempts && document.metadata.attempts.length > 0
+            ...(document.metadata.attempts &&
+            document.metadata.attempts.length > 0
               ? { attempts: document.metadata.attempts }
               : {}),
             ...(qualityWarnings.length > 0
@@ -400,17 +411,16 @@ export function formatSourceCard(
       start: chunk.start,
       end: chunk.end,
     })),
-    ...(previewEnd > 0 ? { preview: document.markdown.slice(0, previewEnd) } : {}),
+    ...(previewEnd > 0
+      ? { preview: document.markdown.slice(0, previewEnd) }
+      : {}),
     raw_access:
-      "Stored as a source document. Use search_sources to search across stored sources, read_source_chunk for raw text, digest_source for an optional goal-focused map, or quote_source for exact evidence.",
+      "Stored as a source document. Use search_sources to find relevant passages across stored sources, read_source to read a chunk or quote an exact span, or digest_source for an optional goal-focused map.",
   };
   return JSON.stringify(result, null, 2);
 }
 
-function chunkForRange(
-  document: SourceDocument,
-  start: number,
-): SourceChunk {
+function chunkForRange(document: SourceDocument, start: number): SourceChunk {
   const chunk =
     document.chunks.find(
       (candidate) =>
@@ -439,57 +449,12 @@ export function formatSourceChunk(
       start: chunk.start,
       end: chunk.end,
       previous_chunk: chunk.index > 0 ? chunk.index - 1 : null,
-      next_chunk: chunk.index + 1 < document.chunks.length ? chunk.index + 1 : null,
+      next_chunk:
+        chunk.index + 1 < document.chunks.length ? chunk.index + 1 : null,
     },
     content: document.markdown.slice(chunk.start, chunk.end),
   };
   return JSON.stringify(result, null, 2);
-}
-
-export function findInSource(
-  document: SourceDocument,
-  query: string,
-  maxResults: number,
-): string {
-  const needle = query.trim().toLowerCase();
-  if (!needle) return "Error: find_in_source requires a non-empty `query`.";
-
-  const haystack = document.markdown.toLowerCase();
-  const matches: Array<{
-    start: number;
-    end: number;
-    chunk_index: number;
-    snippet: string;
-  }> = [];
-  let fromIndex = 0;
-  while (matches.length < maxResults) {
-    const start = haystack.indexOf(needle, fromIndex);
-    if (start === -1) break;
-    const end = start + needle.length;
-    const snippetStart = Math.max(0, start - 160);
-    const snippetEnd = Math.min(document.markdown.length, end + 160);
-    const chunk = chunkForRange(document, start);
-    matches.push({
-      start,
-      end,
-      chunk_index: chunk.index,
-      snippet: document.markdown.slice(snippetStart, snippetEnd),
-    });
-    fromIndex = end;
-  }
-
-  return JSON.stringify(
-    {
-      source_id: document.sourceId,
-      title: document.title,
-      url: document.url,
-      canonical_url: document.canonicalUrl,
-      query,
-      matches,
-    },
-    null,
-    2,
-  );
 }
 
 export function searchSourceDocuments(
@@ -527,11 +492,15 @@ export function searchSourceDocuments(
         const absolute = chunk.start + relative;
         const count = countOccurrences(chunkLower, term);
         score += count * Math.max(1, term.length);
-        firstMatch = firstMatch === -1 ? absolute : Math.min(firstMatch, absolute);
+        firstMatch =
+          firstMatch === -1 ? absolute : Math.min(firstMatch, absolute);
         lastMatch = Math.max(lastMatch, absolute + term.length);
       }
       if (score === 0 || firstMatch === -1 || lastMatch === -1) continue;
-      const snippetStart = Math.max(0, firstMatch - SOURCE_SEARCH_CONTEXT_CHARS);
+      const snippetStart = Math.max(
+        0,
+        firstMatch - SOURCE_SEARCH_CONTEXT_CHARS,
+      );
       const snippetEnd = Math.min(
         document.markdown.length,
         lastMatch + SOURCE_SEARCH_CONTEXT_CHARS,
@@ -550,7 +519,9 @@ export function searchSourceDocuments(
     }
   }
 
-  results.sort((a, b) => b.score - a.score || a.source_id.localeCompare(b.source_id));
+  results.sort(
+    (a, b) => b.score - a.score || a.source_id.localeCompare(b.source_id),
+  );
   return JSON.stringify(
     {
       query,
@@ -593,10 +564,10 @@ export function quoteSource(
   const safeStart = Math.max(0, Math.floor(start));
   const safeEnd = Math.min(document.markdown.length, Math.floor(end));
   if (!Number.isFinite(safeStart) || !Number.isFinite(safeEnd)) {
-    return "Error: quote_source start/end must be finite numbers.";
+    return "Error: read_source start/end must be finite numbers.";
   }
   if (safeEnd <= safeStart) {
-    return "Error: quote_source end must be greater than start.";
+    return "Error: read_source end must be greater than start.";
   }
   const chunk = chunkForRange(document, safeStart);
   return JSON.stringify(

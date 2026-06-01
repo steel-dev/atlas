@@ -1,8 +1,5 @@
 import type { ResearchLoopContext, SourceCacheEntry } from "./runtime.js";
-import type {
-  SourceDocument,
-  SourceExtractionAttempt,
-} from "./sources.js";
+import type { SourceDocument, SourceExtractionAttempt } from "./sources.js";
 import {
   createSourceDocument,
   extractionMetadataFromHtml,
@@ -25,11 +22,6 @@ import { normalizeUrlForSource } from "./url.js";
 
 export interface FetchToolInput {
   url?: string;
-  preview_chars?: number;
-  max_chars?: number;
-}
-
-export interface FetchManyToolInput {
   urls?: string[];
   preview_chars?: number;
   max_chars?: number;
@@ -161,9 +153,10 @@ async function tryDirectExtraction(
 
     const contentType = response.headers.get("content-type") ?? undefined;
     const contentLength = readContentLength(response.headers);
-    const maxBytes = isLikelyPdfUrl(url) || isPdfContentType(contentType)
-      ? DIRECT_PDF_MAX_BYTES
-      : DIRECT_HTML_MAX_BYTES;
+    const maxBytes =
+      isLikelyPdfUrl(url) || isPdfContentType(contentType)
+        ? DIRECT_PDF_MAX_BYTES
+        : DIRECT_HTML_MAX_BYTES;
     if (contentLength !== undefined && contentLength > maxBytes) {
       return failedDirectAttempt(
         "direct_http",
@@ -261,7 +254,10 @@ async function extractDirectPdf(
     const extracted = await extractPdfText(data);
     const markdown = extracted.text.trim();
     if (!markdown) {
-      return failedDirectAttempt("pdf_direct", "pdf_no_text: PDF extraction produced no text");
+      return failedDirectAttempt(
+        "pdf_direct",
+        "pdf_no_text: PDF extraction produced no text",
+      );
     }
     const attempt = {
       method: "pdf_direct",
@@ -295,7 +291,10 @@ function extractDirectHtml(
 ): DirectExtractionOutcome {
   const html = new TextDecoder("utf-8", { fatal: false }).decode(data);
   if (looksBlocked(html)) {
-    return failedDirectAttempt("html_direct", "blocked_or_challenge: direct HTML looked blocked");
+    return failedDirectAttempt(
+      "html_direct",
+      "blocked_or_challenge: direct HTML looked blocked",
+    );
   }
 
   const extracted = htmlToMarkdown(html, opts.finalUrl);
@@ -420,7 +419,9 @@ function normalizeDirectText(
 
 function isPdfBytes(data: Uint8Array): boolean {
   if (data.byteLength < PDF_MAGIC.length) return false;
-  const prefix = new TextDecoder("ascii").decode(data.slice(0, PDF_MAGIC.length));
+  const prefix = new TextDecoder("ascii").decode(
+    data.slice(0, PDF_MAGIC.length),
+  );
   return prefix === PDF_MAGIC;
 }
 
@@ -434,7 +435,9 @@ function readContentLength(headers: Headers): number | undefined {
 function titleFromPdfUrl(url: string): string {
   try {
     const pathname = new URL(url).pathname;
-    const filename = decodeURIComponent(pathname.split("/").filter(Boolean).at(-1) ?? "");
+    const filename = decodeURIComponent(
+      pathname.split("/").filter(Boolean).at(-1) ?? "",
+    );
     return filename || url;
   } catch {
     return url;
@@ -454,7 +457,7 @@ function titleFromTextUrl(url: string): string {
 }
 
 function readPreviewChars(
-  args: FetchToolInput | FetchManyToolInput,
+  args: FetchToolInput,
   ctx: ResearchLoopContext,
 ): number | string {
   const raw =
@@ -547,6 +550,10 @@ export async function execFetch(
   args: FetchToolInput,
   ctx: ResearchLoopContext,
 ): Promise<FetchOutcome> {
+  if (Array.isArray(args.urls)) {
+    return fetchManyUrls(args, ctx);
+  }
+
   const previewChars = readPreviewChars(args, ctx);
   if (typeof previewChars === "string") return { text: previewChars };
 
@@ -568,7 +575,11 @@ export async function execFetch(
     if (typeof reservation === "string") return { text: reservation };
     const url = reservation.url;
     fetchedThisCall = true;
-    documentPromise = fetchSourceDocument(ctx, url, reservation.sourceId).finally(() => {
+    documentPromise = fetchSourceDocument(
+      ctx,
+      url,
+      reservation.sourceId,
+    ).finally(() => {
       ctx.sourceReservations.documents.delete(normalizedUrl);
       releaseSourceReservation(ctx, reservation);
     });
@@ -597,22 +608,28 @@ export async function execFetch(
   }
 }
 
-export async function execFetchMany(
-  args: FetchManyToolInput,
+async function fetchManyUrls(
+  args: FetchToolInput,
   ctx: ResearchLoopContext,
 ): Promise<FetchOutcome> {
   const previewChars = readPreviewChars(args, ctx);
   if (typeof previewChars === "string") return { text: previewChars };
 
   const urls = Array.isArray(args.urls)
-    ? [...new Set(args.urls.map((url) => String(url ?? "").trim()).filter(Boolean))]
+    ? [
+        ...new Set(
+          args.urls.map((url) => String(url ?? "").trim()).filter(Boolean),
+        ),
+      ]
     : [];
   if (urls.length === 0) {
-    return { text: "Error: fetch_many requires a non-empty `urls` array." };
+    return {
+      text: "Error: fetch requires a non-empty `urls` array (or a single `url`).",
+    };
   }
   if (urls.length > FETCH_MANY_MAX_URLS) {
     return {
-      text: `Error: fetch_many accepts at most ${FETCH_MANY_MAX_URLS} URLs per call.`,
+      text: `Error: fetch accepts at most ${FETCH_MANY_MAX_URLS} URLs per call.`,
     };
   }
 
@@ -642,7 +659,9 @@ export async function execFetchMany(
   };
 }
 
-function parseJsonResult(text: string): { ok: true; value: unknown } | { ok: false } {
+function parseJsonResult(
+  text: string,
+): { ok: true; value: unknown } | { ok: false } {
   try {
     return { ok: true, value: JSON.parse(text) as unknown };
   } catch {
@@ -650,11 +669,15 @@ function parseJsonResult(text: string): { ok: true; value: unknown } | { ok: fal
   }
 }
 
-function sourceErrorFromMetadata(metadata: SourceCacheEntry["metadata"]): string {
-  const failedAttempts = metadata.attempts?.filter((attempt) => !attempt.ok) ?? [];
+function sourceErrorFromMetadata(
+  metadata: SourceCacheEntry["metadata"],
+): string {
+  const failedAttempts =
+    metadata.attempts?.filter((attempt) => !attempt.ok) ?? [];
   const priorityAttempt =
-    failedAttempts.find((attempt) => attempt.note.includes("blocked_or_challenge")) ??
-    failedAttempts.at(-1);
+    failedAttempts.find((attempt) =>
+      attempt.note.includes("blocked_or_challenge"),
+    ) ?? failedAttempts.at(-1);
   if (priorityAttempt) {
     const attempts = failedAttempts
       .map((attempt) => `${attempt.method}: ${attempt.note}`)

@@ -14,21 +14,15 @@ import { errorMessage } from "./errors.js";
 import { parseRetryAfterSeconds } from "./steel-runtime.js";
 import {
   execFetch,
-  execFetchMany,
   normalizeFetchUrl,
-  type FetchManyToolInput,
   type FetchToolInput,
 } from "./fetch-tool.js";
 import {
   execDigestSource,
-  execFindInSource,
-  execQuoteSource,
-  execReadSourceChunk,
+  execReadSource,
   execSearchSources,
   type DigestSourceToolInput,
-  type FindInSourceToolInput,
-  type QuoteSourceToolInput,
-  type ReadSourceChunkToolInput,
+  type ReadSourceToolInput,
   type SearchSourcesToolInput,
 } from "./evidence-tool.js";
 import {
@@ -81,11 +75,9 @@ const BUDGET_STATUS_REMAINING_RATIO = 0.3;
 const FREE_TOOL_NAMES = new Set([
   "plan",
   "join",
-  "read_source_chunk",
+  "read_source",
   "search_sources",
   "digest_source",
-  "find_in_source",
-  "quote_source",
 ]);
 const SUBAGENT_TOOL_NAMES = new Set(["spawn", "join"]);
 
@@ -197,7 +189,7 @@ function budgetStatusMessage(opts: {
     `sources=${opts.ctx.fetchedSources.length}/${opts.ctx.sourceCap}`,
     `sources_remaining=${sourcesRemaining}`,
     ...(tokenLimit > 0 ? [`tokens_used=${tokensUsed}/${tokenLimit}`] : []),
-    "plan/read_source_chunk/search_sources/digest_source/find_in_source/quote_source do not spend action_tool_calls.",
+    "plan/read_source/search_sources/digest_source do not spend action_tool_calls.",
   ].join(" ");
 }
 
@@ -282,43 +274,12 @@ async function executeToolUse(
     }
   }
 
-  if (tu.name === "fetch_many") {
-    try {
-      const out = await execFetchMany(
-        (tu.input as FetchManyToolInput) ?? {},
-        ctx,
-      );
-      return {
-        fetchedUrl: out.fetchedUrl,
-        fetchedUrls: out.fetchedUrls,
-        toolResult: {
-          type: "tool_result",
-          tool_call_id: tu.id,
-          content: out.text,
-        },
-      };
-    } catch (err) {
-      ctx.abort();
-      return {
-        toolResult: {
-          type: "tool_result",
-          tool_call_id: tu.id,
-          content: `Tool error: ${err instanceof Error ? err.message : String(err)}`,
-          is_error: true,
-        },
-      };
-    }
-  }
-
-  if (tu.name === "read_source_chunk") {
+  if (tu.name === "read_source") {
     return {
       toolResult: {
         type: "tool_result",
         tool_call_id: tu.id,
-        content: execReadSourceChunk(
-          (tu.input as ReadSourceChunkToolInput) ?? {},
-          ctx,
-        ),
+        content: execReadSource((tu.input as ReadSourceToolInput) ?? {}, ctx),
       },
     };
   }
@@ -358,29 +319,6 @@ async function executeToolUse(
         },
       };
     }
-  }
-
-  if (tu.name === "find_in_source") {
-    return {
-      toolResult: {
-        type: "tool_result",
-        tool_call_id: tu.id,
-        content: execFindInSource(
-          (tu.input as FindInSourceToolInput) ?? {},
-          ctx,
-        ),
-      },
-    };
-  }
-
-  if (tu.name === "quote_source") {
-    return {
-      toolResult: {
-        type: "tool_result",
-        tool_call_id: tu.id,
-        content: execQuoteSource((tu.input as QuoteSourceToolInput) ?? {}, ctx),
-      },
-    };
   }
 
   if (tu.name === "browser_open") {
@@ -511,7 +449,7 @@ async function executeToolUse(
       tool_call_id: tu.id,
       content:
         `Unknown tool: ${tu.name}. Available tools: ` +
-        "search, fetch, fetch_many, read_source_chunk, search_sources, digest_source, find_in_source, quote_source, browser_open, browser_cdp, browser_extract, spawn, join, plan.",
+        "search, fetch, search_sources, read_source, digest_source, browser_open, browser_cdp, browser_extract, spawn, join, plan.",
       is_error: true,
     },
   };

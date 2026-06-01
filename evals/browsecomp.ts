@@ -338,7 +338,9 @@ function parseArgs(argv: string[]): EvalOptions {
       continue;
     }
     if (arg === "--timeout") {
-      opts.timeoutMs = Math.floor(readPositiveNumber(readValue(argv, i, arg), arg) * 1000);
+      opts.timeoutMs = Math.floor(
+        readPositiveNumber(readValue(argv, i, arg), arg) * 1000,
+      );
       i++;
       continue;
     }
@@ -428,7 +430,9 @@ function readEnv(...keys: string[]): string | undefined {
   return undefined;
 }
 
-function resolveEvalProvider(provider: ModelProvider | undefined): ModelProvider {
+function resolveEvalProvider(
+  provider: ModelProvider | undefined,
+): ModelProvider {
   const raw = provider ?? readEnv("ATLAS_PROVIDER");
   if (raw === "anthropic" || raw === "openai") return raw;
   if (raw) fail(`provider must be one of: anthropic, openai (got "${raw}")`);
@@ -491,9 +495,9 @@ function deriveKey(password: string, length: number): Buffer {
 function decryptBrowseCompValue(value: string, canary: string): string {
   const encrypted = Buffer.from(value, "base64");
   const key = deriveKey(canary, encrypted.length);
-  return Buffer.from(encrypted.map((byte, index) => byte ^ key[index])).toString(
-    "utf8",
-  );
+  return Buffer.from(
+    encrypted.map((byte, index) => byte ^ key[index]),
+  ).toString("utf8");
 }
 
 function optionalString(raw: unknown): string | undefined {
@@ -686,7 +690,7 @@ function evalQuery(query: string): string {
     "Answer the following hard browsing question.",
     "Write a concise cited Markdown report using reliable sources.",
     "For decisive evidence, prefer exact quotes from fetched sources and preserve source_id plus character spans when available.",
-    "Use quote_source for important quotes when you need exact source spans.",
+    "Use read_source for important quotes when you need exact source spans.",
     "End with a single final line in this exact format: Final answer: <answer>",
     "Keep the final answer as short as possible so it can be exact-graded.",
     "",
@@ -716,7 +720,8 @@ function browseCompOutput() {
             properties: {
               clue: {
                 type: "string",
-                description: "Question clue or answer claim this evidence supports.",
+                description:
+                  "Question clue or answer claim this evidence supports.",
               },
               source_url: {
                 type: "string",
@@ -807,7 +812,11 @@ function repairStructuredEvidenceSpans(
   structured: unknown,
   sources: SourceDocument[] | undefined,
 ): unknown {
-  if (typeof structured !== "object" || structured === null || Array.isArray(structured)) {
+  if (
+    typeof structured !== "object" ||
+    structured === null ||
+    Array.isArray(structured)
+  ) {
     return structured;
   }
   const evidence = structuredEvidence(structured);
@@ -897,7 +906,9 @@ function findWhitespaceNormalizedSpan(
   const preferredNormalizedStart: number | undefined =
     preferredStart === undefined
       ? undefined
-      : normalizedSource.offsets.findIndex((offset) => offset >= preferredStart);
+      : normalizedSource.offsets.findIndex(
+          (offset) => offset >= preferredStart,
+        );
   const normalizedStart = chooseClosestStart(
     matches,
     preferredNormalizedStart !== undefined && preferredNormalizedStart >= 0
@@ -988,15 +999,24 @@ function validateStructuredEvidence(
     if (!source) {
       return {
         ...base,
-        reason: sourceId || sourceUrl ? "source not found" : "missing source_id/source_url",
+        reason:
+          sourceId || sourceUrl
+            ? "source not found"
+            : "missing source_id/source_url",
       };
     }
     const withSource = { ...base, source_title: source.title };
     if (sourceId && source.sourceId !== sourceId) {
-      return { ...withSource, reason: "source_id does not match fetched source" };
+      return {
+        ...withSource,
+        reason: "source_id does not match fetched source",
+      };
     }
     if (sourceUrl && !sourceMatchesUrl(source, sourceUrl)) {
-      return { ...withSource, reason: "source_url does not match fetched source" };
+      return {
+        ...withSource,
+        reason: "source_url does not match fetched source",
+      };
     }
     if (!quote) {
       return { ...withSource, reason: "missing quote" };
@@ -1060,7 +1080,9 @@ function gradeAnswer(
 ): boolean {
   if (!predictedAnswer) return false;
   const predicted = normalizeAnswer(predictedAnswer);
-  return expectedAnswers.some((answer) => predicted === normalizeAnswer(answer));
+  return expectedAnswers.some(
+    (answer) => predicted === normalizeAnswer(answer),
+  );
 }
 
 function judgePrompt(opts: {
@@ -1183,7 +1205,10 @@ function summarizeRun(
   result: ResearchResult,
   trace: EvalTraceEvent[],
 ): EvalResult["metrics"] {
-  const leadToolCalls = result.runs.reduce((sum, run) => sum + run.toolCalls, 0);
+  const leadToolCalls = result.runs.reduce(
+    (sum, run) => sum + run.toolCalls,
+    0,
+  );
   const subagents = summarizeSubagents(trace);
   const subagentToolCalls = subagents.reduce(
     (sum, subagent) => sum + subagent.toolCalls,
@@ -1359,7 +1384,10 @@ async function runCase(
     const structured =
       result.structured === undefined
         ? undefined
-        : repairStructuredEvidenceSpans(result.structured, result.sourceDocuments);
+        : repairStructuredEvidenceSpans(
+            result.structured,
+            result.sourceDocuments,
+          );
     const predictedAnswer =
       structuredFinalAnswer(structured) ?? extractFinalAnswer(result.markdown);
     const evidenceValidation = validateStructuredEvidence(
@@ -1371,7 +1399,9 @@ async function runCase(
     let judgeError: string | undefined;
     if (judge) {
       try {
-        process.stderr.write(`eval:browsecomp: ${entry.id}: judging response\n`);
+        process.stderr.write(
+          `eval:browsecomp: ${entry.id}: judging response\n`,
+        );
         judgeResult = await judgeResponse({
           judge,
           question: entry.query,
@@ -1555,7 +1585,9 @@ function buildDiagnostics(opts: {
   latencyMs: number;
   metrics?: EvalResult["metrics"];
 }): EvalDiagnostics {
-  const searchEvents = opts.trace.filter((event) => event.event === "searching");
+  const searchEvents = opts.trace.filter(
+    (event) => event.event === "searching",
+  );
   const groups = searchGroups(searchEvents);
   const fetchedByMethod: Record<string, number> = {};
   const fetchedByDepthAndMethod: Record<string, Record<string, number>> = {};
@@ -1744,7 +1776,9 @@ function summarizeChokeDiagnostics(results: EvalResult[]) {
         summary.blockedOrThinByHost[host] =
           (summary.blockedOrThinByHost[host] ?? 0) + count;
       }
-      for (const [reason, count] of Object.entries(choke.subagentFinishReasons)) {
+      for (const [reason, count] of Object.entries(
+        choke.subagentFinishReasons,
+      )) {
         summary.subagentFinishReasons[reason] =
           (summary.subagentFinishReasons[reason] ?? 0) + count;
       }
@@ -1869,9 +1903,7 @@ async function main(): Promise<void> {
   };
 
   if (opts.dryRun) {
-    process.stdout.write(
-      `${selected.map((entry) => entry.id).join("\n")}\n`,
-    );
+    process.stdout.write(`${selected.map((entry) => entry.id).join("\n")}\n`);
     return;
   }
 

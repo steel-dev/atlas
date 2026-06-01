@@ -905,12 +905,9 @@ describe("research loop cache integration", () => {
     expect(request.tools.map((tool) => tool.name)).toEqual([
       "search",
       "fetch",
-      "fetch_many",
-      "read_source_chunk",
       "search_sources",
       "digest_source",
-      "find_in_source",
-      "quote_source",
+      "read_source",
       "browser_open",
       "browser_cdp",
       "browser_extract",
@@ -995,7 +992,7 @@ describe("research loop cache integration", () => {
       )
       .mockResolvedValueOnce(
         messageWith([
-          toolUse("read_1", "read_source_chunk", {
+          toolUse("read_1", "read_source", {
             source_id: "source_1",
             chunk_index: 0,
           }),
@@ -1044,15 +1041,15 @@ describe("research loop cache integration", () => {
       )
       .mockResolvedValueOnce(
         messageWith([
-          toolUse("read_1", "read_source_chunk", {
+          toolUse("read_1", "read_source", {
             source_id: "source_1",
             chunk_index: 0,
           }),
-          toolUse("find_1", "find_in_source", {
-            source_id: "source_1",
+          toolUse("find_1", "search_sources", {
+            source_ids: ["source_1"],
             query: "methods and controls",
           }),
-          toolUse("quote_1", "quote_source", {
+          toolUse("quote_1", "read_source", {
             source_id: "source_1",
             start: quoteStart,
             end: quoteEnd,
@@ -1099,7 +1096,7 @@ describe("research loop cache integration", () => {
       .fn()
       .mockResolvedValueOnce(
         messageWith([
-          toolUse("fetch_many_1", "fetch_many", {
+          toolUse("fetch_1", "fetch", {
             urls: ["https://example.com/one", "https://example.com/two"],
             preview_chars: 40,
           }),

@@ -13,12 +13,10 @@ import {
   type UsageSummary,
 } from "./model.js";
 import {
-  execFindInSource,
-  execQuoteSource,
-  execReadSourceChunk,
-  type FindInSourceToolInput,
-  type QuoteSourceToolInput,
-  type ReadSourceChunkToolInput,
+  execReadSource,
+  execSearchSources,
+  type ReadSourceToolInput,
+  type SearchSourcesToolInput,
 } from "./evidence-tool.js";
 import {
   RESEARCH_TOOLS,
@@ -495,11 +493,7 @@ function textFromBlocks(content: ModelAssistantBlock[]): string {
     .trim();
 }
 
-const FINALIZE_TOOL_NAMES = new Set([
-  "read_source_chunk",
-  "find_in_source",
-  "quote_source",
-]);
+const FINALIZE_TOOL_NAMES = new Set(["read_source", "search_sources"]);
 const MAX_FINALIZE_STEPS = 6;
 const MAX_STRUCTURED_RESEARCH_RETRIES = 1;
 const STRUCTURED_RESEARCH_MAX_TOOL_CALLS = 8;
@@ -679,29 +673,21 @@ function execFinalizationTool(
   ctx: ResearchLoopContext,
 ): ModelToolResult {
   const run = (): { content: string; isError?: boolean } => {
-    if (tu.name === "read_source_chunk") {
+    if (tu.name === "read_source") {
       return {
-        content: execReadSourceChunk(
-          (tu.input ?? {}) as ReadSourceChunkToolInput,
-          ctx,
-        ),
+        content: execReadSource((tu.input ?? {}) as ReadSourceToolInput, ctx),
       };
     }
-    if (tu.name === "find_in_source") {
+    if (tu.name === "search_sources") {
       return {
-        content: execFindInSource(
-          (tu.input ?? {}) as FindInSourceToolInput,
+        content: execSearchSources(
+          (tu.input ?? {}) as SearchSourcesToolInput,
           ctx,
         ),
-      };
-    }
-    if (tu.name === "quote_source") {
-      return {
-        content: execQuoteSource((tu.input ?? {}) as QuoteSourceToolInput, ctx),
       };
     }
     return {
-      content: `Tool ${tu.name} is not available while finalizing. Use find_in_source, quote_source, or read_source_chunk to verify evidence, then return the JSON.`,
+      content: `Tool ${tu.name} is not available while finalizing. Use read_source or search_sources to verify evidence, then return the JSON.`,
       isError: true,
     };
   };

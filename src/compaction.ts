@@ -58,7 +58,10 @@ export function estimateMessageTokens(message: ModelMessage): number {
     );
     return Math.ceil(chars / CHARS_PER_TOKEN);
   }
-  const chars = message.content.reduce((sum, block) => sum + blockChars(block), 0);
+  const chars = message.content.reduce(
+    (sum, block) => sum + blockChars(block),
+    0,
+  );
   return Math.ceil(chars / CHARS_PER_TOKEN);
 }
 
@@ -154,7 +157,7 @@ export function buildSourceIndex(ctx: ResearchLoopContext): string {
     lines.push(`- ${handle}${title}(${source.url})`);
   }
   return (
-    "Sources already fetched (reuse these source_id handles with read_source_chunk / search_sources / find_in_source / quote_source; cite the url in the report, never the source_id):\n" +
+    "Sources already fetched (reuse these source_id handles with search_sources / read_source; cite the url in the report, never the source_id):\n" +
     lines.join("\n")
   );
 }
@@ -166,7 +169,10 @@ function textFromBlocks(content: ModelAssistantBlock[]): string {
     .trim();
 }
 
-function compactionUserPrompt(query: string | undefined, transcript: string): string {
+function compactionUserPrompt(
+  query: string | undefined,
+  transcript: string,
+): string {
   return [
     query ? `Research question: ${query}` : null,
     "Compress the following earlier research turns into a faithful progress note. Keep every concrete fact tied to the source_id that established it, the current best hypothesis, ruled-out paths, queries/URLs already tried, and the remaining gaps.",

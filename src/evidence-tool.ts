@@ -1,7 +1,6 @@
 import type { ResearchLoopContext } from "./runtime.js";
 import type { ModelAssistantBlock } from "./model.js";
 import {
-  findInSource,
   findSourceDocumentById,
   formatSourceChunk,
   quoteSource,
@@ -12,15 +11,11 @@ import {
   digestSourcePrompt,
 } from "./tool-contract.js";
 
-export interface ReadSourceChunkToolInput {
+export interface ReadSourceToolInput {
   source_id?: string;
   chunk_index?: number;
-}
-
-export interface FindInSourceToolInput {
-  source_id?: string;
-  query?: string;
-  max_results?: number;
+  start?: number;
+  end?: number;
 }
 
 export interface SearchSourcesToolInput {
@@ -32,12 +27,6 @@ export interface SearchSourcesToolInput {
 export interface DigestSourceToolInput {
   source_id?: string;
   goal?: string;
-}
-
-export interface QuoteSourceToolInput {
-  source_id?: string;
-  start?: number;
-  end?: number;
 }
 
 const DIGEST_INPUT_CHARS = 30_000;
@@ -62,10 +51,7 @@ function readSourceId(
     : { ok: false, error: `Error: ${toolName} requires \`source_id\`.` };
 }
 
-function readNonNegativeInteger(
-  raw: unknown,
-  name: string,
-): number | string {
+function readNonNegativeInteger(raw: unknown, name: string): number | string {
   const n = Math.floor(Number(raw));
   if (!Number.isFinite(n) || n < 0) {
     return `Error: ${name} must be a non-negative integer.`;
@@ -86,42 +72,30 @@ function readPositiveInteger(
   return Math.min(n, max);
 }
 
-export function execReadSourceChunk(
-  args: ReadSourceChunkToolInput,
+export function execReadSource(
+  args: ReadSourceToolInput,
   ctx: ResearchLoopContext,
 ): string {
-  const sourceId = readSourceId(args, "read_source_chunk");
+  const sourceId = readSourceId(args, "read_source");
   if (!sourceId.ok) return sourceId.error;
-
-  const chunkIndex = readNonNegativeInteger(args.chunk_index ?? 0, "chunk_index");
-  if (typeof chunkIndex === "string") return chunkIndex;
 
   const document = findSourceDocumentById(ctx, sourceId.sourceId);
   if (!document) return `Error: unknown source_id: ${sourceId.sourceId}`;
-  return formatSourceChunk(document, chunkIndex);
-}
 
-export function execFindInSource(
-  args: FindInSourceToolInput,
-  ctx: ResearchLoopContext,
-): string {
-  const sourceId = readSourceId(args, "find_in_source");
-  if (!sourceId.ok) return sourceId.error;
+  if (args.start !== undefined || args.end !== undefined) {
+    const start = readNonNegativeInteger(args.start, "start");
+    if (typeof start === "string") return start;
+    const end = readNonNegativeInteger(args.end, "end");
+    if (typeof end === "string") return end;
+    return quoteSource(document, start, end);
+  }
 
-  const query = String(args.query ?? "").trim();
-  if (!query) return "Error: find_in_source requires a non-empty `query`.";
-
-  const maxResults = readPositiveInteger(
-    args.max_results,
-    "max_results",
-    5,
-    20,
+  const chunkIndex = readNonNegativeInteger(
+    args.chunk_index ?? 0,
+    "chunk_index",
   );
-  if (typeof maxResults === "string") return maxResults;
-
-  const document = findSourceDocumentById(ctx, sourceId.sourceId);
-  if (!document) return `Error: unknown source_id: ${sourceId.sourceId}`;
-  return findInSource(document, query, maxResults);
+  if (typeof chunkIndex === "string") return chunkIndex;
+  return formatSourceChunk(document, chunkIndex);
 }
 
 export function execSearchSources(
@@ -196,7 +170,7 @@ export async function execDigestSource(
         goal,
         digest,
         raw_access:
-          "Digest is only a navigation aid. Verify any claim with read_source_chunk or quote_source.",
+          "Digest is only a navigation aid. Verify any claim with read_source.",
       },
       null,
       2,
@@ -207,29 +181,16 @@ export async function execDigestSource(
   }
 }
 
-export function execQuoteSource(
-  args: QuoteSourceToolInput,
-  ctx: ResearchLoopContext,
-): string {
-  const sourceId = readSourceId(args, "quote_source");
-  if (!sourceId.ok) return sourceId.error;
-
-  const start = readNonNegativeInteger(args.start, "start");
-  if (typeof start === "string") return start;
-  const end = readNonNegativeInteger(args.end, "end");
-  if (typeof end === "string") return end;
-
-  const document = findSourceDocumentById(ctx, sourceId.sourceId);
-  if (!document) return `Error: unknown source_id: ${sourceId.sourceId}`;
-  return quoteSource(document, start, end);
-}
-
 function documentsForSearch(
   ctx: ResearchLoopContext,
   sourceIds: string[] | undefined,
 ) {
   const ids = Array.isArray(sourceIds)
-    ? [...new Set(sourceIds.map((id) => String(id ?? "").trim()).filter(Boolean))]
+    ? [
+        ...new Set(
+          sourceIds.map((id) => String(id ?? "").trim()).filter(Boolean),
+        ),
+      ]
     : [];
   if (ids.length === 0) return [...ctx.sourceDocuments.values()];
 
