@@ -19,7 +19,7 @@ export ANTHROPIC_API_KEY=sk-ant-...
 # export OPENAI_API_KEY=sk-...
 export STEEL_API_KEY=sk_...
 
-npx @steel-dev/atlas "What are the strongest deep research framework?"
+npx @steel-dev/atlas "What is the strongest deep research framework?"
 ```
 
 Get keys from [Anthropic](https://console.anthropic.com) or [OpenAI](https://platform.openai.com), plus [Steel](https://app.steel.dev).
@@ -32,7 +32,13 @@ atlas "..." > report.md
 atlas "..." --out report.md
 atlas "..." --provider openai --model gpt-5.5
 atlas "..." --provider openai --base-url https://your-openai-compatible-endpoint/v1
+atlas "..." --search-provider exa
+atlas "..." --team 4                 # allow up to 4 parallel sub-agents
+atlas "..." --token-limit 5000000    # raise the test-time compute budget (0 = unlimited)
+atlas "..." --timeout 300            # wall-clock budget in seconds
 atlas "..." --proxy
+atlas "..." --json 2> events.jsonl   # one JSON progress event per line on stderr
+atlas "..." --quiet                  # suppress progress output
 ```
 
 Run `atlas --help` for the full option list.

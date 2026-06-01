@@ -7,14 +7,14 @@ import {
   type ModelToolResult,
 } from "./model.js";
 import type { ResearchEffort } from "./defaults.js";
-import type { ResearchCtx } from "./runtime.js";
+import { createConcurrencyGate, type ResearchCtx } from "./runtime.js";
 import {
   estimateMessagesTokens,
   maybeCompactResearchContext,
 } from "./compaction.js";
 import { errorMessage } from "./errors.js";
 import { parseRetryAfterSeconds } from "./steel-runtime.js";
-import { normalizeFetchUrl } from "./fetch-tool.js";
+import { normalizeUrlForSource } from "./url.js";
 import {
   searchQueryCount,
   searchEnginesForFusion,
@@ -29,25 +29,12 @@ import {
   type SubagentSummary,
 } from "./tool-registry.js";
 import {
+  EMPTY_RESPONSE_PROMPT,
   finalSynthesisPrompt,
   RESEARCH_SYSTEM_PROMPT,
   researchQuestionPrompt,
   SUBAGENT_SYSTEM_PROMPT,
 } from "./tool-contract.js";
-
-export {
-  createAgentScope,
-  createConcurrencyGate,
-  createResearchCaches,
-  createSourceReservations,
-} from "./runtime.js";
-export type {
-  ConcurrencyGate,
-  ResearchCaches,
-  ResearchCtx,
-  ResearchLoopEvent,
-  SourceReservations,
-} from "./runtime.js";
 
 const DEFAULT_MAX_TOOL_CALLS = 12;
 const DEFAULT_MAX_CONCURRENT_TOOLS = 4;
@@ -236,7 +223,7 @@ function subagentSources(
   const sources: Array<{ source_id?: string; url: string; title?: string }> =
     [];
   for (const url of fetchedUrls) {
-    const key = normalizeFetchUrl(url);
+    const key = normalizeUrlForSource(url);
     if (seen.has(key)) continue;
     seen.add(key);
     const document = ctx.store.sourceDocuments.get(key);
@@ -324,6 +311,7 @@ function createSubagentScope(
   perAgentMaxToolCalls: number,
 ): SubagentScope {
   const registry = new Map<string, SubagentEntry>();
+  const gate = createConcurrencyGate(ctx.config.maxConcurrentSubagents ?? 1);
   let counter = 0;
 
   const uncollected = (): SubagentEntry[] =>
@@ -381,11 +369,8 @@ function createSubagentScope(
         counter += 1;
         const handle = `agent_${counter}`;
         ctx.scope.emit({ type: "subagent_started", task });
-        const promise = runSubagentTask(
-          ctx,
-          task,
-          timing,
-          perAgentMaxToolCalls,
+        const promise = gate.run(() =>
+          runSubagentTask(ctx, task, timing, perAgentMaxToolCalls),
         );
         const entry: SubagentEntry = {
           handle,
@@ -456,7 +441,7 @@ export async function runResearchLoop(opts: {
   });
   const isSubagent = (ctx.scope.depth ?? 0) > 0;
   const maxToolCalls = opts.maxToolCalls ?? DEFAULT_MAX_TOOL_CALLS;
-  const maxTotalToolExecutions = Math.max(maxToolCalls, maxToolCalls * 2);
+  const maxTotalToolExecutions = maxToolCalls * 2;
   const subagents = createSubagentScope(ctx, SUBAGENT_MAX_TOOL_CALLS);
 
   if (!isSubagent) ctx.scope.emit({ type: "research_started" });
@@ -467,6 +452,7 @@ export async function runResearchLoop(opts: {
   let finishReason = "tool call budget exhausted";
   let markdown = "";
   let searchIndex = 0;
+  let nudgedEmptyResponse = false;
   // Real-tokens-per-(char/4)-estimate ratio, updated from each step's reported
   // prompt size so compaction tracks true context cost (CJK/JSON cost more).
   let tokenCalibration = 1;
@@ -534,10 +520,23 @@ export async function runResearchLoop(opts: {
       (c): c is ModelToolCall => c.type === "tool_call",
     );
     if (toolUses.length === 0) {
-      messages.push({ role: "assistant", content: resp.content });
       const text = textFromContent(resp.content);
-      markdown = text;
-      finishReason = text ? "final report" : "empty final response";
+      if (text) {
+        messages.push({ role: "assistant", content: resp.content });
+        markdown = text;
+        finishReason = "final report";
+        break;
+      }
+      if (!nudgedEmptyResponse && resp.content.length > 0) {
+        nudgedEmptyResponse = true;
+        messages.push({ role: "assistant", content: resp.content });
+        messages.push({ role: "user", content: EMPTY_RESPONSE_PROMPT });
+        continue;
+      }
+      if (resp.content.length > 0) {
+        messages.push({ role: "assistant", content: resp.content });
+      }
+      finishReason = "empty final response";
       break;
     }
 
@@ -692,7 +691,7 @@ export async function runResearchLoop(opts: {
 }
 
 export const __testing = {
-  normalizeFetchUrl,
+  normalizeUrlForSource,
   parseRetryAfterSeconds,
   searchEnginesForFusion,
 };

@@ -1,7 +1,7 @@
 import type Steel from "steel-sdk";
 import type { ModelAdapter } from "./model.js";
 import type { ResearchEffort } from "./defaults.js";
-import type { Engine, WebSearchOutcome } from "./search.js";
+import type { WebSearchOutcome } from "./search.js";
 import type { SearchProvider } from "./search-provider.js";
 import type {
   FetchedSource,
@@ -94,13 +94,11 @@ export function createSourceReservations(): SourceReservations {
 }
 
 export interface ResearchConfig {
-  readonly defaultEngine: Engine;
   readonly useProxy: boolean;
   readonly sourceCap: number;
   readonly maxOutputTokens?: number;
   readonly defaultSearchLimit?: number;
   readonly maxConcurrentTools?: number;
-  readonly fetchSnippetChars?: number;
   readonly subagentCompactionTriggerTokens?: number;
   readonly subagentCompactionKeepTokens?: number;
   readonly tokenLimit?: number;

@@ -7,15 +7,14 @@ import type {
   ModelStepInput,
   ModelToolCall,
 } from "./model.js";
+import { __testing, runResearchLoop } from "./tools.js";
 import {
-  __testing,
   createAgentScope,
   createSourceReservations,
   createResearchCaches,
   createConcurrencyGate,
-  runResearchLoop,
   type ResearchCtx,
-} from "./tools.js";
+} from "./runtime.js";
 import { SUBAGENT_SYSTEM_PROMPT } from "./tool-contract.js";
 import type { ResearchEffort } from "./defaults.js";
 import type { SourceDocument } from "./sources.js";
@@ -155,7 +154,6 @@ function createContext(opts: {
   const emit = vi.fn();
   return {
     config: {
-      defaultEngine: "ddg",
       useProxy: opts.useProxy ?? false,
       sourceCap: opts.sourceCap ?? 4,
       maxConcurrentTools: 2,
@@ -262,7 +260,7 @@ afterEach(() => {
 describe("tool helpers", () => {
   it("normalizes fetch URLs for dedupe keys", () => {
     expect(
-      __testing.normalizeFetchUrl(
+      __testing.normalizeUrlForSource(
         "https://example.com/a?utm_source=x&b=2&a=1#section",
       ),
     ).toBe("https://example.com/a?a=1&b=2");
@@ -2255,7 +2253,6 @@ describe("context compaction", () => {
     expect(ctx.emitSpy).toHaveBeenCalledWith(
       expect.objectContaining({ type: "context_compacted" }),
     );
-    // Question preserved; compaction note inserted; tail kept verbatim.
     expect(finalRequest.messages[0]?.content).toBe(
       "Research question: What is Atlas?",
     );
@@ -2266,9 +2263,7 @@ describe("context compaction", () => {
     expect(String(finalRequest.messages[1]?.content)).toContain(
       "COMPACTED_NOTE",
     );
-    // Tail starts at an assistant message, so no tool_result is orphaned.
     expect(finalRequest.messages[2]?.role).toBe("assistant");
-    // The older turn is folded away; the most recent turn survives verbatim.
     expect(serialized).not.toContain("BIG1_MARKER");
     expect(serialized).toContain("BIG2_MARKER");
   });
@@ -2278,7 +2273,6 @@ describe("context compaction", () => {
     const { adapter, step: compactionStep } = compactionModel("unused");
     const ctx = createContext({ messagesCreate });
     ctx.deps.summaryModel = adapter;
-    // No compactionTriggerTokens configured -> compaction is off.
 
     const result = await runResearchLoop({
       ctx,
@@ -2374,7 +2368,6 @@ describe("token budget", () => {
   it("stops starting new steps once the token budget is exhausted and finalizes", async () => {
     let ctx: ResearchCtx;
     const messagesCreate = vi.fn(async (input: ModelStepInput) => {
-      // The final-synthesis call is made without tools.
       if (!input.tools) return finalReport();
       ctx.deps.model.usage.output_tokens += 5_000;
       return messageWith([
@@ -2399,7 +2392,7 @@ describe("token budget", () => {
       "final report after token budget exhausted",
     );
     expect(result.markdown).toContain("# Test Report");
-    expect(result.toolCalls).toBe(0); // plan is free
+    expect(result.toolCalls).toBe(0);
     expect(messagesCreate).toHaveBeenCalledTimes(3);
     expect(synthesisRequest.tools).toBeUndefined();
     expect(JSON.stringify(synthesisRequest.messages)).toContain("tokens_used=");
@@ -2413,7 +2406,6 @@ describe("token budget", () => {
       return messageWith([toolUse("plan_1", "plan", { thought: "one step" })]);
     });
     const ctx = createContext({ messagesCreate });
-    // No ctx.config.tokenLimit configured.
 
     const result = await runResearchLoop({
       ctx,
@@ -2569,6 +2561,54 @@ describe("spawn/join fan-out", () => {
       toolCalls: 0,
       finishReason: "final report",
     });
+  });
+
+  it("never runs more sub-agents at once than maxConcurrentSubagents", async () => {
+    let active = 0;
+    let peak = 0;
+    let leadCalls = 0;
+    const messagesCreate = vi.fn(async (input: ModelStepInput) => {
+      if (input.system === SUBAGENT_SYSTEM_PROMPT) {
+        active += 1;
+        peak = Math.max(peak, active);
+        await new Promise((resolve) => setTimeout(resolve, 25));
+        active -= 1;
+        return messageWith([{ type: "text", text: "Sub-finding done." }]);
+      }
+      leadCalls += 1;
+      if (leadCalls === 1) {
+        return messageWith([
+          toolUse("spawn_1", "spawn", {
+            tasks: ["task one", "task two", "task three", "task four"],
+          }),
+        ]);
+      }
+      if (leadCalls === 2) {
+        return messageWith([toolUse("join_1", "join", {})]);
+      }
+      return finalReport();
+    });
+
+    const ctx = createContext({
+      messagesCreate,
+      maxDelegationDepth: 1,
+      maxConcurrentSubagents: 2,
+      subagentEffort: "low",
+    });
+
+    const result = await runResearchLoop({
+      ctx,
+      query: "Profile this town.",
+      maxToolCalls: 20,
+    });
+
+    const subagentCalls = messagesCreate.mock.calls.filter(
+      ([input]) => (input as ModelStepInput).system === SUBAGENT_SYSTEM_PROMPT,
+    );
+
+    expect(result.finishReason).toBe("final report");
+    expect(subagentCalls).toHaveLength(4);
+    expect(peak).toBe(2);
   });
 
   it("returns a sub-agent's browser session to the pool when it finishes", async () => {
@@ -2960,5 +3000,50 @@ describe("api error recovery", () => {
     expect(result.markdown).toBe("");
     expect(result.finishReason).toBe("api error: 429 rate_limit_error");
     expect(messagesCreate).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("empty final response", () => {
+  it("nudges once then accepts the report the model writes next", async () => {
+    const messagesCreate = vi
+      .fn()
+      .mockResolvedValueOnce(
+        messageWith([{ type: "thinking", thinking: "thinking…", signature: "sig" }]),
+      )
+      .mockResolvedValueOnce(finalReport());
+    const ctx = createContext({ messagesCreate });
+
+    const result = await runResearchLoop({
+      ctx,
+      query: "What is Atlas?",
+      maxToolCalls: 5,
+    });
+    const secondRequest = messagesCreate.mock.calls[1]?.[0] as ModelStepInput;
+
+    expect(result.finishReason).toBe("final report");
+    expect(result.markdown).toContain("Test Report");
+    expect(messagesCreate).toHaveBeenCalledTimes(2);
+    expect(JSON.stringify(secondRequest.messages)).toContain(
+      "ended your turn with no report text",
+    );
+  });
+
+  it("gives up after a second empty turn", async () => {
+    const messagesCreate = vi
+      .fn()
+      .mockResolvedValue(
+        messageWith([{ type: "thinking", thinking: "still nothing", signature: "sig" }]),
+      );
+    const ctx = createContext({ messagesCreate });
+
+    const result = await runResearchLoop({
+      ctx,
+      query: "What is Atlas?",
+      maxToolCalls: 5,
+    });
+
+    expect(result.finishReason).toBe("empty final response");
+    expect(result.markdown).toBe("");
+    expect(messagesCreate).toHaveBeenCalledTimes(2);
   });
 });

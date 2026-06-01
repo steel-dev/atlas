@@ -30,16 +30,18 @@ import { createSteel } from "./steel.js";
 import {
   resolveSearchProvider,
   type SearchProvider,
+  type SearchProviderResolution,
 } from "./search-provider.js";
+import { runResearchLoop } from "./tools.js";
 import {
   createAgentScope,
   createSourceReservations,
   createResearchCaches,
   createConcurrencyGate,
-  runResearchLoop,
+  type ResearchConfig,
   type ResearchCtx,
   type ResearchLoopEvent,
-} from "./tools.js";
+} from "./runtime.js";
 import {
   BrowserSessionPool,
   defaultBrowserMaxSessions,
@@ -63,10 +65,10 @@ const DEFAULT_RUNTIME_LIMITS = {
 };
 
 // Caps total in-flight model connections across the lead, every sub-agent, and
-// their compaction/digest calls. With no dedicated sub-agent gate, this is also
-// what bounds fan-out: at most maxConcurrentSubagents sub-agents call the model
-// at once, plus headroom so the lead is never starved. Derived from the fan-out
-// width unless ATLAS_MAX_CONCURRENT_MODEL_CALLS overrides it.
+// their compaction/digest calls. A dedicated sub-agent semaphore bounds fan-out
+// to maxConcurrentSubagents live sub-agents; this adds headroom on top so the
+// lead is never starved while that many sub-agents call the model. Derived from
+// the fan-out width unless ATLAS_MAX_CONCURRENT_MODEL_CALLS overrides it.
 const MODEL_CALL_HEADROOM = 1;
 
 // Total token budget = the single test-time compute knob. Tool-call and source
@@ -155,214 +157,46 @@ export interface ResearchOptions {
 }
 
 export async function research(opts: ResearchOptions): Promise<ResearchResult> {
-  const {
-    query,
-    provider: providerOverride,
-    model: modelOverride,
-    summaryModel: summaryModelOverride,
-    anthropicApiKey: anthropicApiKeyOverride,
-    openaiApiKey: openaiApiKeyOverride,
-    openaiBaseUrl: openaiBaseUrlOverride,
-    steelApiKey: steelApiKeyOverride,
-    steelBaseUrl: steelBaseUrlOverride,
-    searchProvider: searchProviderOverride,
-    exaApiKey: exaApiKeyOverride,
-    braveApiKey: braveApiKeyOverride,
-    useProxy = false,
-    timeoutMs,
-    tokenLimit: tokenLimitOverride,
-    suggestedTeamSize: suggestedTeamSizeOverride,
-    output,
-    includeSourceDocuments = false,
-    onEvent,
-    signal,
-  } = opts;
-
-  if (!query || !query.trim()) {
+  if (!opts.query?.trim()) {
     throw new Error("research: query is required");
   }
-  const provider = resolveProvider(providerOverride);
-  const model = resolveModel(provider, modelOverride);
-  const steelApiKey =
-    steelApiKeyOverride ?? readEnv("ATLAS_STEEL_API_KEY", "STEEL_API_KEY");
-  const steelBaseUrl =
-    steelBaseUrlOverride ?? readEnv("ATLAS_STEEL_BASE_URL", "STEEL_BASE_URL");
-  if (!steelApiKey) {
-    throw new Error(
-      "research: STEEL_API_KEY or ATLAS_STEEL_API_KEY is required",
-    );
-  }
-
-  const limits = DEFAULT_RUNTIME_LIMITS;
-  const thinkingEffort = resolveThinkingEffort();
-  const tokenLimit =
-    tokenLimitOverride ??
-    readIntEnv("ATLAS_TOKEN_LIMIT", 0) ??
-    DEFAULT_TOKEN_LIMIT;
-  // Caps are derived from the budget (unlimited tokens fall back to the default
-  // budget for sizing) so the token limit binds before these safety backstops.
-  const effectiveLimitForCaps =
-    tokenLimit > 0 ? tokenLimit : DEFAULT_TOKEN_LIMIT;
-  const safetyMaxToolCalls = Math.max(
-    MIN_SAFETY_TOOL_CALLS,
-    Math.ceil(effectiveLimitForCaps / TOKENS_PER_TOOL_CALL),
-  );
-  const safetySourceCap = Math.max(
-    MIN_SAFETY_SOURCE_CAP,
-    Math.ceil(effectiveLimitForCaps / TOKENS_PER_SOURCE),
-  );
-  const maxDelegationDepth =
-    readIntEnv("ATLAS_MAX_DELEGATION_DEPTH", 0) ?? limits.maxDelegationDepth;
-  const suggestedTeamSize = Math.min(
-    MAX_TEAM_SIZE,
-    Math.max(
-      1,
-      suggestedTeamSizeOverride ?? readIntEnv("ATLAS_TEAM_SIZE", 1) ?? 1,
-    ),
-  );
-  const maxConcurrentSubagents = Math.max(
-    readIntEnv("ATLAS_MAX_SUBAGENTS", 1) ?? limits.maxConcurrentSubagents,
-    suggestedTeamSize,
-  );
-  const maxConcurrentModelCalls =
-    readIntEnv("ATLAS_MAX_CONCURRENT_MODEL_CALLS", 1) ??
-    maxConcurrentSubagents + MODEL_CALL_HEADROOM;
-  // Set ATLAS_COMPACTION_TRIGGER_TOKENS=0 to disable compaction. Lower it for
-  // models with a sub-1M context window.
-  const compactionTriggerTokens =
-    readIntEnv("ATLAS_COMPACTION_TRIGGER_TOKENS", 0) ??
-    limits.compactionTriggerTokens;
-  const compactionKeepTokens =
-    readIntEnv("ATLAS_COMPACTION_KEEP_TOKENS", 0) ??
-    limits.compactionKeepTokens;
-  const timeoutDeadlineAt =
-    timeoutMs === undefined ? undefined : Date.now() + Math.floor(timeoutMs);
-  const runSignal = combineSignals(signal, timeoutMs);
-
+  const config = resolveRunConfig(opts);
+  const runSignal = combineSignals(opts.signal, opts.timeoutMs);
   const emit = (e: ResearchEvent) => {
     try {
-      onEvent?.(e);
+      opts.onEvent?.(e);
     } catch {
       // user callbacks must never break the research run
     }
   };
   const abort = () => runSignal?.throwIfAborted();
-
-  const modelCallGate = createConcurrencyGate(maxConcurrentModelCalls);
-  const modelAdapter = wrapModelAdapterWithConcurrency(
-    createModelAdapter({
-      provider,
-      model,
-      anthropicApiKey: anthropicApiKeyOverride,
-      openaiApiKey: openaiApiKeyOverride,
-      openaiBaseUrl: openaiBaseUrlOverride,
-    }),
-    modelCallGate,
-  );
-  const summaryModelName = resolveSummaryModel(
-    provider,
-    summaryModelOverride,
-    model,
-  );
-  const summaryAdapter =
-    summaryModelName === model
-      ? modelAdapter
-      : wrapModelAdapterWithConcurrency(
-          createModelAdapter({
-            provider,
-            model: summaryModelName,
-            anthropicApiKey: anthropicApiKeyOverride,
-            openaiApiKey: openaiApiKeyOverride,
-            openaiBaseUrl: openaiBaseUrlOverride,
-          }),
-          modelCallGate,
-        );
-  const steel = createSteel({ apiKey: steelApiKey, baseUrl: steelBaseUrl });
-
-  const fetchedSources: FetchedSource[] = [];
-  const sourceDocuments = new Map<string, SourceDocument>();
-  const browserSessionPool = new BrowserSessionPool({
-    steel,
-    useProxy,
-    namespace: `atlas-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
-    signal: runSignal,
-    deadlineAt: timeoutDeadlineAt,
-    maxSessions:
-      readBrowserMaxSessionsFromEnv() ??
-      defaultBrowserMaxSessions(maxConcurrentSubagents),
-    idleTtlMs: readBrowserIdleTtlMsFromEnv(),
-  });
+  const resources = createRunResources(opts, config, runSignal);
 
   try {
     await using leadScope = createAgentScope({
       sink: emit,
-      query,
+      query: opts.query,
       depth: 0,
-      deadlineAt: timeoutDeadlineAt,
-      synthesisReserveMs:
-        timeoutMs === undefined
-          ? undefined
-          : timeoutSynthesisReserveMs(
-              timeoutMs,
-              limits.timeoutSynthesisReserveMs,
-            ),
-      compactionTriggerTokens,
-      compactionKeepTokens,
+      deadlineAt: config.timeoutDeadlineAt,
+      synthesisReserveMs: config.synthesisReserveMs,
+      compactionTriggerTokens: config.compactionTriggerTokens,
+      compactionKeepTokens: config.compactionKeepTokens,
     });
-    const ctx: ResearchCtx = {
-      config: {
-        defaultEngine: "ddg",
-        useProxy,
-        sourceCap: safetySourceCap,
-        maxOutputTokens: limits.maxOutputTokens,
-        defaultSearchLimit: limits.defaultSearchLimit,
-        maxConcurrentTools: limits.maxConcurrentTools,
-        subagentCompactionTriggerTokens: limits.subagentCompactionTriggerTokens,
-        subagentCompactionKeepTokens: limits.subagentCompactionKeepTokens,
-        tokenLimit,
-        maxDelegationDepth,
-        maxConcurrentSubagents,
-        subagentEffort: thinkingEffort,
-      },
-      deps: {
-        model: modelAdapter,
-        summaryModel: summaryAdapter,
-        steel,
-        signal: runSignal,
-        abort,
-        ioGate: createConcurrencyGate(limits.maxConcurrentSteelCalls),
-        browserSessionPool,
-      },
-      store: {
-        fetchedSources,
-        sourceDocuments,
-        sourceReservations: createSourceReservations(),
-        caches: createResearchCaches(),
-      },
-      scope: leadScope,
-    };
-    ctx.deps.searchProvider = resolveSearchProvider(ctx, {
-      instance:
-        searchProviderOverride && typeof searchProviderOverride !== "string"
-          ? searchProviderOverride
-          : undefined,
-      kind:
-        (typeof searchProviderOverride === "string"
-          ? searchProviderOverride
-          : undefined) ?? readEnv("ATLAS_SEARCH_PROVIDER"),
-      exaApiKey:
-        exaApiKeyOverride ?? readEnv("ATLAS_EXA_API_KEY", "EXA_API_KEY"),
-      braveApiKey:
-        braveApiKeyOverride ?? readEnv("ATLAS_BRAVE_API_KEY", "BRAVE_API_KEY"),
+    const ctx = buildResearchCtx({
+      config,
+      resources,
+      leadScope,
+      runSignal,
+      abort,
     });
 
     const run = await runResearchLoop({
       ctx,
-      query,
-      maxToolCalls: safetyMaxToolCalls,
-      effort: thinkingEffort,
+      query: opts.query,
+      maxToolCalls: config.safetyMaxToolCalls,
+      effort: config.thinkingEffort,
       suggestedParallelism:
-        suggestedTeamSize >= 2 ? suggestedTeamSize : undefined,
+        config.suggestedTeamSize >= 2 ? config.suggestedTeamSize : undefined,
     });
     const runs: ResearchRun[] = [
       {
@@ -379,7 +213,7 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
         `research: loop did not produce a final report (${run.finishReason})`,
       );
     }
-    const citations = reconcileCitations(markdown, fetchedSources);
+    const citations = reconcileCitations(markdown, ctx.store.fetchedSources);
     if (citations.citationsNotFetched.length > 0) {
       emit({
         type: "citations_not_fetched",
@@ -389,14 +223,14 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
     }
     emit({ type: "written", markdownChars: markdown.length });
     let structured: unknown;
-    if (output !== undefined) {
+    if (opts.output !== undefined) {
       const structuredResult = await generateStructuredOutput({
         ctx,
-        model: modelAdapter,
+        model: resources.modelAdapter,
         messages: run.messages,
-        output,
-        maxTokens: limits.maxOutputTokens,
-        effort: thinkingEffort,
+        output: opts.output,
+        maxTokens: config.agent.maxOutputTokens ?? DEFAULT_RUNTIME_LIMITS.maxOutputTokens,
+        effort: config.thinkingEffort,
         signal: runSignal,
       });
       structured = structuredResult.value;
@@ -404,28 +238,245 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
     }
 
     const result: ResearchResult = {
-      query,
-      provider,
-      model,
+      query: opts.query,
+      provider: config.provider,
+      model: config.model,
       runs,
       citedSources: citations.citedSources,
       citationsNotFetched: citations.citationsNotFetched,
       markdown,
       ...(structured !== undefined ? { structured } : {}),
-      ...(includeSourceDocuments
-        ? { sourceDocuments: [...sourceDocuments.values()] }
+      ...(opts.includeSourceDocuments
+        ? { sourceDocuments: [...ctx.store.sourceDocuments.values()] }
         : {}),
       usage:
-        summaryAdapter === modelAdapter
-          ? { ...modelAdapter.usage }
-          : sumUsage(modelAdapter.usage, summaryAdapter.usage),
+        resources.summaryAdapter === resources.modelAdapter
+          ? { ...resources.modelAdapter.usage }
+          : sumUsage(
+              resources.modelAdapter.usage,
+              resources.summaryAdapter.usage,
+            ),
     };
 
     emit({ type: "completed", result });
     return result;
   } finally {
-    await browserSessionPool.closeAll();
+    await resources.browserSessionPool.closeAll();
   }
+}
+
+interface ResolvedRunConfig {
+  provider: ModelProvider;
+  model: string;
+  summaryModel: string;
+  steelApiKey: string;
+  steelBaseUrl?: string;
+  useProxy: boolean;
+  thinkingEffort: ResearchEffort;
+  safetyMaxToolCalls: number;
+  suggestedTeamSize: number;
+  maxConcurrentModelCalls: number;
+  maxConcurrentSteelCalls: number;
+  compactionTriggerTokens: number;
+  compactionKeepTokens: number;
+  timeoutDeadlineAt?: number;
+  synthesisReserveMs?: number;
+  browserMaxSessions: number;
+  browserIdleTtlMs?: number | null;
+  searchProvider: SearchProviderResolution;
+  agent: ResearchConfig;
+}
+
+interface RunResources {
+  modelAdapter: ModelAdapter;
+  summaryAdapter: ModelAdapter;
+  steel: ReturnType<typeof createSteel>;
+  browserSessionPool: BrowserSessionPool;
+}
+
+// Resolves every knob from explicit options then environment then defaults, with
+// no side effects (no clients, gates, or pools) so the resolution can be tested
+// in isolation. The token budget is the single scaling knob; tool-call and
+// source caps are derived from it and floored.
+function resolveRunConfig(opts: ResearchOptions): ResolvedRunConfig {
+  const limits = DEFAULT_RUNTIME_LIMITS;
+  const provider = resolveProvider(opts.provider);
+  const model = resolveModel(provider, opts.model);
+  const steelApiKey =
+    opts.steelApiKey ?? readEnv("ATLAS_STEEL_API_KEY", "STEEL_API_KEY");
+  if (!steelApiKey) {
+    throw new Error("research: STEEL_API_KEY or ATLAS_STEEL_API_KEY is required");
+  }
+
+  const useProxy = opts.useProxy ?? false;
+  const thinkingEffort = resolveThinkingEffort();
+  const tokenLimit =
+    opts.tokenLimit ?? readIntEnv("ATLAS_TOKEN_LIMIT", 0) ?? DEFAULT_TOKEN_LIMIT;
+  const effectiveLimitForCaps =
+    tokenLimit > 0 ? tokenLimit : DEFAULT_TOKEN_LIMIT;
+  const suggestedTeamSize = Math.min(
+    MAX_TEAM_SIZE,
+    Math.max(1, opts.suggestedTeamSize ?? readIntEnv("ATLAS_TEAM_SIZE", 1) ?? 1),
+  );
+  const maxConcurrentSubagents = Math.max(
+    readIntEnv("ATLAS_MAX_SUBAGENTS", 1) ?? limits.maxConcurrentSubagents,
+    suggestedTeamSize,
+  );
+
+  const agent: ResearchConfig = {
+    useProxy,
+    sourceCap: Math.max(
+      MIN_SAFETY_SOURCE_CAP,
+      Math.ceil(effectiveLimitForCaps / TOKENS_PER_SOURCE),
+    ),
+    maxOutputTokens: limits.maxOutputTokens,
+    defaultSearchLimit: limits.defaultSearchLimit,
+    maxConcurrentTools: limits.maxConcurrentTools,
+    subagentCompactionTriggerTokens: limits.subagentCompactionTriggerTokens,
+    subagentCompactionKeepTokens: limits.subagentCompactionKeepTokens,
+    tokenLimit,
+    maxDelegationDepth:
+      readIntEnv("ATLAS_MAX_DELEGATION_DEPTH", 0) ?? limits.maxDelegationDepth,
+    maxConcurrentSubagents,
+    subagentEffort: thinkingEffort,
+  };
+
+  return {
+    provider,
+    model,
+    summaryModel: resolveSummaryModel(provider, opts.summaryModel, model),
+    steelApiKey,
+    steelBaseUrl:
+      opts.steelBaseUrl ?? readEnv("ATLAS_STEEL_BASE_URL", "STEEL_BASE_URL"),
+    useProxy,
+    thinkingEffort,
+    safetyMaxToolCalls: Math.max(
+      MIN_SAFETY_TOOL_CALLS,
+      Math.ceil(effectiveLimitForCaps / TOKENS_PER_TOOL_CALL),
+    ),
+    suggestedTeamSize,
+    maxConcurrentModelCalls:
+      readIntEnv("ATLAS_MAX_CONCURRENT_MODEL_CALLS", 1) ??
+      maxConcurrentSubagents + MODEL_CALL_HEADROOM,
+    maxConcurrentSteelCalls: limits.maxConcurrentSteelCalls,
+    compactionTriggerTokens:
+      readIntEnv("ATLAS_COMPACTION_TRIGGER_TOKENS", 0) ??
+      limits.compactionTriggerTokens,
+    compactionKeepTokens:
+      readIntEnv("ATLAS_COMPACTION_KEEP_TOKENS", 0) ??
+      limits.compactionKeepTokens,
+    agent,
+    timeoutDeadlineAt:
+      opts.timeoutMs === undefined
+        ? undefined
+        : Date.now() + Math.floor(opts.timeoutMs),
+    synthesisReserveMs:
+      opts.timeoutMs === undefined
+        ? undefined
+        : timeoutSynthesisReserveMs(
+            opts.timeoutMs,
+            limits.timeoutSynthesisReserveMs,
+          ),
+    browserMaxSessions:
+      readBrowserMaxSessionsFromEnv() ??
+      defaultBrowserMaxSessions(maxConcurrentSubagents),
+    browserIdleTtlMs: readBrowserIdleTtlMsFromEnv(),
+    searchProvider: {
+      instance:
+        opts.searchProvider && typeof opts.searchProvider !== "string"
+          ? opts.searchProvider
+          : undefined,
+      kind:
+        (typeof opts.searchProvider === "string"
+          ? opts.searchProvider
+          : undefined) ?? readEnv("ATLAS_SEARCH_PROVIDER"),
+      exaApiKey: opts.exaApiKey ?? readEnv("ATLAS_EXA_API_KEY", "EXA_API_KEY"),
+      braveApiKey:
+        opts.braveApiKey ?? readEnv("ATLAS_BRAVE_API_KEY", "BRAVE_API_KEY"),
+    },
+  };
+}
+
+// Creates the long-lived clients, gates, and the browser pool the run owns. The
+// lead and summary models share one concurrency gate so the total in-flight
+// model connections stay bounded across the whole run.
+function createRunResources(
+  opts: ResearchOptions,
+  config: ResolvedRunConfig,
+  runSignal: AbortSignal | undefined,
+): RunResources {
+  const modelKeys = {
+    anthropicApiKey: opts.anthropicApiKey,
+    openaiApiKey: opts.openaiApiKey,
+    openaiBaseUrl: opts.openaiBaseUrl,
+  };
+  const modelCallGate = createConcurrencyGate(config.maxConcurrentModelCalls);
+  const modelAdapter = wrapModelAdapterWithConcurrency(
+    createModelAdapter({
+      provider: config.provider,
+      model: config.model,
+      ...modelKeys,
+    }),
+    modelCallGate,
+  );
+  const summaryAdapter =
+    config.summaryModel === config.model
+      ? modelAdapter
+      : wrapModelAdapterWithConcurrency(
+          createModelAdapter({
+            provider: config.provider,
+            model: config.summaryModel,
+            ...modelKeys,
+          }),
+          modelCallGate,
+        );
+  const steel = createSteel({
+    apiKey: config.steelApiKey,
+    baseUrl: config.steelBaseUrl,
+  });
+  const browserSessionPool = new BrowserSessionPool({
+    steel,
+    useProxy: config.useProxy,
+    namespace: `atlas-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+    signal: runSignal,
+    deadlineAt: config.timeoutDeadlineAt,
+    maxSessions: config.browserMaxSessions,
+    idleTtlMs: config.browserIdleTtlMs,
+  });
+  return { modelAdapter, summaryAdapter, steel, browserSessionPool };
+}
+
+// Assembles the per-run context (config/deps/store/scope) and wires the search
+// provider, which needs the context it lives in.
+function buildResearchCtx(args: {
+  config: ResolvedRunConfig;
+  resources: RunResources;
+  leadScope: ResearchCtx["scope"];
+  runSignal: AbortSignal | undefined;
+  abort: () => void;
+}): ResearchCtx {
+  const { config, resources, leadScope, runSignal, abort } = args;
+  const ctx: ResearchCtx = {
+    config: config.agent,
+    deps: {
+      model: resources.modelAdapter,
+      summaryModel: resources.summaryAdapter,
+      steel: resources.steel,
+      signal: runSignal,
+      abort,
+      ioGate: createConcurrencyGate(config.maxConcurrentSteelCalls),
+      browserSessionPool: resources.browserSessionPool,
+    },
+    store: {
+      fetchedSources: [],
+      sourceDocuments: new Map<string, SourceDocument>(),
+      sourceReservations: createSourceReservations(),
+      caches: createResearchCaches(),
+    },
+    scope: leadScope,
+  };
+  ctx.deps.searchProvider = resolveSearchProvider(ctx, config.searchProvider);
+  return ctx;
 }
 
 function textFromBlocks(content: ModelAssistantBlock[]): string {
@@ -682,7 +733,6 @@ function parseJsonOutput(text: string): unknown {
     try {
       return JSON.parse(candidate);
     } catch {
-      // try the next likely JSON span
     }
   }
   throw new Error("structured output was not valid JSON");
@@ -913,6 +963,7 @@ function timeoutSynthesisReserveMs(
 
 export const __testing = {
   reconcileCitations,
+  resolveRunConfig,
   generateStructuredOutput: async (
     opts: Parameters<typeof generateStructuredOutput>[0],
   ) => (await generateStructuredOutput(opts)).value,

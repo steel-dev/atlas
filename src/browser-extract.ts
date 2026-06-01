@@ -33,88 +33,23 @@ export async function extractSourceWithBrowser(
 ): Promise<SourceCacheEntry> {
   return runSteelRequest(ctx, async () => {
     const attempts = [...previousAttempts];
-    for (let attempt = 1; attempt <= BROWSER_EXTRACTION_ATTEMPTS; attempt++) {
-      const outcome = await extractSourceOnce(ctx, url, attempts);
-      if (outcome.ok) return outcome.entry;
-      attempts.push(outcome.attempt);
-      if (
-        !isTransientBrowserError(outcome.error) ||
-        attempt >= BROWSER_EXTRACTION_ATTEMPTS
-      ) {
-        return {
-          markdown: "",
-          title: null,
-          metadata: extractionMetadataFromBrowser({
-            markdownChars: 0,
-            attempts,
-          }),
-        };
-      }
-    }
-    return {
-      markdown: "",
-      title: null,
-      metadata: extractionMetadataFromBrowser({
-        markdownChars: 0,
-        attempts,
-      }),
-    };
-  });
-}
-
-export async function extractHtmlWithBrowser(
-  ctx: ResearchCtx,
-  url: string,
-): Promise<{ html: string; finalUrl: string; title: string }> {
-  return runSteelRequest(ctx, async () => {
-    let lastError: unknown;
-    for (let attempt = 1; attempt <= BROWSER_EXTRACTION_ATTEMPTS; attempt++) {
-      try {
-        return await extractHtmlOnce(ctx, url);
-      } catch (err) {
-        lastError = err;
-        if (
-          !isTransientBrowserError(err) ||
-          attempt >= BROWSER_EXTRACTION_ATTEMPTS
-        ) {
-          throw err;
-        }
-      }
-    }
-    throw lastError instanceof Error
-      ? lastError
-      : new Error(errorMessage(lastError));
-  });
-}
-
-type SourceExtractionOutcome =
-  | { ok: true; entry: SourceCacheEntry }
-  | { ok: false; attempt: SourceExtractionAttempt; error: unknown };
-
-async function extractSourceOnce(
-  ctx: ResearchCtx,
-  url: string,
-  previousAttempts: SourceExtractionAttempt[],
-): Promise<SourceExtractionOutcome> {
-  const lease = await ctx.deps.browserSessionPool.acquire();
-  let discard = false;
-  try {
-    await navigateToUrl(lease.resource, url);
-    const snapshot = await extractCurrentPage(lease.resource);
-    const extracted = htmlToMarkdown(snapshot.html, snapshot.url);
-    const attempts = [
-      ...previousAttempts,
-      {
+    try {
+      const snapshot = await snapshotWithRetries(ctx, url, (err) => {
+        attempts.push({
+          method: "browser_cdp",
+          ok: false,
+          note: `browser_error: ${errorMessage(err)}`,
+        });
+      });
+      const extracted = htmlToMarkdown(snapshot.html, snapshot.url);
+      attempts.push({
         method: "browser_cdp",
         ok: Boolean(extracted.markdown),
         note: extracted.markdown
           ? `browser_cdp: extracted ${extracted.markdown.length} markdown chars`
           : "empty_markdown: browser session returned empty markdown",
-      },
-    ];
-    return {
-      ok: true,
-      entry: {
+      });
+      return {
         markdown: extracted.markdown,
         title: extracted.title || snapshot.title || snapshot.url,
         metadata: extractionMetadataFromBrowser({
@@ -124,44 +59,63 @@ async function extractSourceOnce(
           discoveredLinks: extracted.links,
           pageMetadata: extracted.metadata,
         }),
-      },
-    };
-  } catch (err) {
-    discard = true;
-    return {
-      ok: false,
-      error: err,
-      attempt: {
-        method: "browser_cdp",
-        ok: false,
-        note: `browser_error: ${errorMessage(err)}`,
-      },
-    };
-  } finally {
-    await lease.release({ discard });
-  }
+      };
+    } catch {
+      return {
+        markdown: "",
+        title: null,
+        metadata: extractionMetadataFromBrowser({
+          markdownChars: 0,
+          attempts,
+        }),
+      };
+    }
+  });
 }
 
-async function extractHtmlOnce(
+export async function extractHtmlWithBrowser(
   ctx: ResearchCtx,
   url: string,
 ): Promise<{ html: string; finalUrl: string; title: string }> {
-  const lease = await ctx.deps.browserSessionPool.acquire();
-  let discard = false;
-  try {
-    await navigateToUrl(lease.resource, url);
-    const snapshot = await extractCurrentPage(lease.resource);
+  return runSteelRequest(ctx, async () => {
+    const snapshot = await snapshotWithRetries(ctx, url);
     return {
       html: snapshot.html,
       finalUrl: snapshot.url,
       title: snapshot.title,
     };
-  } catch (err) {
-    discard = true;
-    throw err;
-  } finally {
-    await lease.release({ discard });
+  });
+}
+
+async function snapshotWithRetries(
+  ctx: ResearchCtx,
+  url: string,
+  onFailedAttempt?: (err: unknown) => void,
+): Promise<PageSnapshot> {
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= BROWSER_EXTRACTION_ATTEMPTS; attempt++) {
+    const lease = await ctx.deps.browserSessionPool.acquire();
+    let discard = false;
+    try {
+      await navigateToUrl(lease.resource, url);
+      return await extractCurrentPage(lease.resource);
+    } catch (err) {
+      discard = true;
+      lastError = err;
+      onFailedAttempt?.(err);
+      if (
+        !isTransientBrowserError(err) ||
+        attempt >= BROWSER_EXTRACTION_ATTEMPTS
+      ) {
+        break;
+      }
+    } finally {
+      await lease.release({ discard });
+    }
   }
+  throw lastError instanceof Error
+    ? lastError
+    : new Error(errorMessage(lastError));
 }
 
 export async function navigateToUrl(

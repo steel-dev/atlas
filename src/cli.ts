@@ -54,7 +54,7 @@ Examples:
   atlas "What changed when Cloudflare DO added SQLite?"
   atlas "..." --out report.md
   atlas "..." --token-limit 5000000
-  atlas "..." --provider openai --model gpt-4.1
+  atlas "..." --provider openai --model gpt-5.5
   atlas "..." --proxy
   atlas "..." --timeout 300
   atlas "..." --json 2> events.jsonl > report.md
@@ -71,7 +71,10 @@ function fail(message: string, code = 1): never {
   process.exit(code);
 }
 
-function parseNumber(raw: string | undefined, name: string): number | undefined {
+function parseNumber(
+  raw: string | undefined,
+  name: string,
+): number | undefined {
   if (raw === undefined) return undefined;
   const n = Number(raw);
   if (!Number.isFinite(n)) fail(`${name} must be a number (got "${raw}")`);
@@ -176,7 +179,10 @@ function prettyEventBody(e: ResearchEvent): string {
         ` ${e.url}` +
         (e.method ? paint(DIM, ` (${e.method}`) : "") +
         (e.markdownChars !== undefined
-          ? paint(DIM, `${e.method ? ", " : " ("}${e.markdownChars.toLocaleString()} chars`)
+          ? paint(
+              DIM,
+              `${e.method ? ", " : " ("}${e.markdownChars.toLocaleString()} chars`,
+            )
           : "") +
         (e.method || e.markdownChars !== undefined ? paint(DIM, ")") : "")
       );
@@ -189,7 +195,8 @@ function prettyEventBody(e: ResearchEvent): string {
       );
     case "written":
       return (
-        paint(GREEN, "✓") + ` written (${e.markdownChars.toLocaleString()} chars)`
+        paint(GREEN, "✓") +
+        ` written (${e.markdownChars.toLocaleString()} chars)`
       );
     case "completed": {
       const us = e.result.usage;
@@ -198,9 +205,7 @@ function prettyEventBody(e: ResearchEvent): string {
         us.cache_creation_input_tokens +
         us.cache_read_input_tokens;
       const cacheHitPct =
-        totalInput > 0
-          ? (us.cache_read_input_tokens / totalInput) * 100
-          : 0;
+        totalInput > 0 ? (us.cache_read_input_tokens / totalInput) * 100 : 0;
       const tokenLine = paint(
         DIM,
         `  ↳ ${totalInput.toLocaleString()} in / ${us.output_tokens.toLocaleString()} out tok · cache ${cacheHitPct.toFixed(0)}% hit (${us.cache_read_input_tokens.toLocaleString()} read, ${us.cache_creation_input_tokens.toLocaleString()} write)`,
@@ -214,7 +219,10 @@ function prettyEventBody(e: ResearchEvent): string {
   }
 }
 
-function writeCompletionSummary(result: Awaited<ReturnType<typeof research>>, json: boolean): void {
+function writeCompletionSummary(
+  result: Awaited<ReturnType<typeof research>>,
+  json: boolean,
+): void {
   if (json) {
     process.stderr.write(JSON.stringify({ type: "completed", result }) + "\n");
     return;

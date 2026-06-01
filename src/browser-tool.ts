@@ -12,7 +12,7 @@ import {
   DEFAULT_FETCH_PREVIEW_CHARS,
   MAX_FETCH_PREVIEW_CHARS,
 } from "./tool-contract.js";
-import { normalizeFetchUrl } from "./fetch-tool.js";
+import { normalizeUrlForSource } from "./url.js";
 
 const BROWSER_CDP_OUTPUT_CHARS = 60_000;
 const BROWSER_CDP_ALLOWED_PREFIXES = [
@@ -103,12 +103,12 @@ export async function execBrowserExtract(
   if (!ctx.scope.browserSessionLease) {
     return "Error: browser_extract requires an open browser session. Call browser_open first.";
   }
-  const maxChars = readMaxChars(args, ctx);
+  const maxChars = readMaxChars(args);
   if (typeof maxChars === "string") return maxChars;
   const snapshot = await extractCurrentPage(
     ctx.scope.browserSessionLease.resource,
   );
-  const normalizedUrl = normalizeFetchUrl(snapshot.url);
+  const normalizedUrl = normalizeUrlForSource(snapshot.url);
   const existing = findSourceDocumentByUrl(ctx, normalizedUrl);
   if (existing) return formatSourceCard(existing, maxChars);
   if (ctx.store.fetchedSources.length >= ctx.config.sourceCap) {
@@ -197,14 +197,8 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function readMaxChars(
-  args: BrowserExtractToolInput,
-  ctx: ResearchCtx,
-): number | string {
-  const raw =
-    args.max_chars ??
-    ctx.config.fetchSnippetChars ??
-    DEFAULT_FETCH_PREVIEW_CHARS;
+function readMaxChars(args: BrowserExtractToolInput): number | string {
+  const raw = args.max_chars ?? DEFAULT_FETCH_PREVIEW_CHARS;
   const maxChars = Math.min(
     MAX_FETCH_PREVIEW_CHARS,
     Math.max(1, Math.floor(Number(raw))),

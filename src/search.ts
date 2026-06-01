@@ -4,6 +4,7 @@ import { normalizeUrlForSource } from "./url.js";
 
 export const ENGINES = ["ddg", "bing", "google"] as const;
 export type Engine = (typeof ENGINES)[number];
+export const DEFAULT_SEARCH_ENGINE: Engine = "ddg";
 const SEARCH_USER_AGENT =
   "Mozilla/5.0 (compatible; AtlasResearchBot/0.1; +https://github.com/steel-experiments/atlas)";
 

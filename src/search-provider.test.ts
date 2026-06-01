@@ -14,7 +14,7 @@ afterEach(() => {
 
 function ctxWithProvider(provider: SearchProvider): ResearchCtx {
   return {
-    config: { defaultEngine: "ddg", useProxy: false, defaultSearchLimit: 5 },
+    config: { useProxy: false, defaultSearchLimit: 5 },
     deps: { searchProvider: provider },
     scope: createAgentScope({ sink: () => undefined }),
   } as unknown as ResearchCtx;

@@ -22,8 +22,6 @@ export interface SearchToolInput {
   limit?: number;
 }
 
-const normalizeFetchUrl = normalizeUrlForSource;
-
 export { searchEnginesForFusion };
 
 function compactSearchResults(results: MergedSearchResult[]): Array<{
@@ -86,7 +84,7 @@ function mergeSearchResults(
   for (const list of lists) {
     const results = dedupeSearchResults(list.results, limit);
     for (const result of results) {
-      const key = normalizeFetchUrl(result.url);
+      const key = normalizeUrlForSource(result.url);
       const score = 1 / (RRF_K + result.position);
       const existing = byUrl.get(key);
       if (!existing) {

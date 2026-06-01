@@ -1,5 +1,6 @@
 import {
   dedupeSearchResults,
+  DEFAULT_SEARCH_ENGINE,
   safeDomain,
   searchEnginesForFusion,
   webSearch,
@@ -86,7 +87,7 @@ export function createScrapingSearchProvider(ctx: ResearchCtx): SearchProvider {
   return {
     name: "web",
     async searchQuery({ query, limit }) {
-      const engines = searchEnginesForFusion(ctx.config.defaultEngine);
+      const engines = searchEnginesForFusion(DEFAULT_SEARCH_ENGINE);
       const outcomes = await Promise.all(
         engines.map(async (engine, order) => {
           try {

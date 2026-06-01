@@ -35,6 +35,9 @@ export function researchQuestionPrompt(opts: {
   return lines.join("\n\n");
 }
 
+export const EMPTY_RESPONSE_PROMPT =
+  "You ended your turn with no report text and no tool calls. If you already have enough evidence, write the cited Markdown report now. If not, call a tool (search, fetch, search_sources, or read_source) to keep going — do not return an empty turn.";
+
 export function finalSynthesisPrompt(reason: string): string {
   return (
     `Runtime limit reached: ${reason}.\n\n` +

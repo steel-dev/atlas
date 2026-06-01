@@ -43,8 +43,6 @@ interface SourceReservation {
   sourceId: string;
 }
 
-export const normalizeFetchUrl = normalizeUrlForSource;
-
 const DIRECT_PDF_MAX_BYTES = 25 * 1024 * 1024;
 const DIRECT_HTML_MAX_BYTES = 5 * 1024 * 1024;
 const DIRECT_HTML_MIN_CHARS = 100;
@@ -69,7 +67,7 @@ function reserveSource(
   ctx: ResearchCtx,
   url: string,
 ): SourceReservation | string {
-  const normalizedUrl = normalizeFetchUrl(url);
+  const normalizedUrl = normalizeUrlForSource(url);
   if (ctx.store.sourceReservations.urls.has(normalizedUrl)) {
     return `Already being fetched: ${url}. Try another source or continue after this fetch completes.`;
   }
@@ -458,15 +456,9 @@ function titleFromTextUrl(url: string): string {
   }
 }
 
-function readPreviewChars(
-  args: FetchToolInput,
-  ctx: ResearchCtx,
-): number | string {
+function readPreviewChars(args: FetchToolInput): number | string {
   const raw =
-    args.preview_chars ??
-    args.max_chars ??
-    ctx.config.fetchSnippetChars ??
-    DEFAULT_FETCH_PREVIEW_CHARS;
+    args.preview_chars ?? args.max_chars ?? DEFAULT_FETCH_PREVIEW_CHARS;
   const previewChars = Math.min(
     MAX_FETCH_PREVIEW_CHARS,
     Math.max(1, Math.floor(Number(raw))),
@@ -525,7 +517,7 @@ async function fetchSourceDocument(
     metadataWithQuality,
     stored.originalChars,
     sourceId,
-    normalizeFetchUrl(url),
+    normalizeUrlForSource(url),
   );
   ctx.store.fetchedSources.push({
     url,
@@ -533,7 +525,7 @@ async function fetchSourceDocument(
     sourceId: document.sourceId,
     canonicalUrl: document.canonicalUrl,
   });
-  ctx.store.sourceDocuments.set(normalizeFetchUrl(url), document);
+  ctx.store.sourceDocuments.set(normalizeUrlForSource(url), document);
 
   ctx.scope.emit({
     type: "source_fetched",
@@ -556,13 +548,13 @@ export async function execFetch(
     return fetchManyUrls(args, ctx);
   }
 
-  const previewChars = readPreviewChars(args, ctx);
+  const previewChars = readPreviewChars(args);
   if (typeof previewChars === "string") return { text: previewChars };
 
   const requestedUrl = String(args.url ?? "").trim();
   const validationError = validateHttpUrl(requestedUrl);
   if (validationError) return { text: validationError };
-  const normalizedUrl = normalizeFetchUrl(requestedUrl);
+  const normalizedUrl = normalizeUrlForSource(requestedUrl);
   const existing = findSourceDocumentByUrl(ctx, normalizedUrl);
   if (existing) {
     return { text: formatSourceCard(existing, previewChars) };
@@ -615,7 +607,7 @@ async function fetchManyUrls(
   args: FetchToolInput,
   ctx: ResearchCtx,
 ): Promise<FetchOutcome> {
-  const previewChars = readPreviewChars(args, ctx);
+  const previewChars = readPreviewChars(args);
   if (typeof previewChars === "string") return { text: previewChars };
 
   const urls = Array.isArray(args.urls)
