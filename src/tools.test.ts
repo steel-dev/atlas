@@ -10,10 +10,9 @@ import type {
 import {
   __testing,
   createAgentScope,
-  createBudgetLedger,
   createSourceReservations,
   createResearchCaches,
-  createSteelConcurrencyGate,
+  createConcurrencyGate,
   runResearchLoop,
   type ResearchCtx,
 } from "./tools.js";
@@ -81,11 +80,9 @@ function createContext(opts: {
   synthesisReserveMs?: number;
   depth?: number;
   summaryModel?: ModelAdapter;
-  budget?: ReturnType<typeof createBudgetLedger>;
   tokenLimit?: number;
   maxDelegationDepth?: number;
   maxConcurrentSubagents?: number;
-  subagentGate?: ReturnType<typeof createSteelConcurrencyGate>;
   subagentEffort?: ResearchEffort;
   compactionTriggerTokens?: number;
   compactionKeepTokens?: number;
@@ -186,8 +183,7 @@ function createContext(opts: {
       summaryModel: opts.summaryModel,
       steel: { sessions: {} } as unknown as Steel,
       abort: vi.fn(),
-      steelConcurrencyGate: createSteelConcurrencyGate(2),
-      subagentGate: opts.subagentGate,
+      ioGate: createConcurrencyGate(2),
       browserSessionPool:
         browserSessionPool as unknown as ResearchCtx["deps"]["browserSessionPool"],
     },
@@ -196,7 +192,6 @@ function createContext(opts: {
       sourceDocuments: opts.sourceDocuments ?? new Map(),
       sourceReservations: createSourceReservations(),
       caches: createResearchCaches(),
-      budget: opts.budget,
     },
     scope: createAgentScope({
       sink: emit,
@@ -2301,6 +2296,78 @@ describe("context compaction", () => {
     );
     expect(JSON.stringify(finalRequest.messages)).toContain("BIG1_MARKER");
   });
+
+  it("calibrates the compaction trigger to the model's reported prompt size", async () => {
+    const TRIGGER = 20_000;
+
+    function bigPlanTurns(inputTokens?: number) {
+      const wrap = (content: ModelAssistantBlock[]) =>
+        inputTokens === undefined ? { content } : { content, inputTokens };
+      return vi
+        .fn()
+        .mockResolvedValueOnce(
+          wrap([
+            { type: "text", text: `BIG1_MARKER ${"x".repeat(16_000)}` },
+            toolUse("plan_1", "plan", { thought: "decompose" }),
+          ]),
+        )
+        .mockResolvedValueOnce(
+          wrap([
+            { type: "text", text: `BIG2_MARKER ${"y".repeat(16_000)}` },
+            toolUse("plan_2", "plan", { thought: "keep going" }),
+          ]),
+        )
+        .mockResolvedValueOnce(wrap(finalReport().content));
+    }
+
+    const baselineCreate = bigPlanTurns();
+    const baseline = compactionModel("BASELINE_NOTE");
+    const baselineCtx = createContext({ messagesCreate: baselineCreate });
+    baselineCtx.deps.summaryModel = baseline.adapter;
+    baselineCtx.scope.compactionTriggerTokens = TRIGGER;
+    baselineCtx.scope.compactionKeepTokens = 50;
+
+    const baselineResult = await runResearchLoop({
+      ctx: baselineCtx,
+      query: "What is Atlas?",
+      maxToolCalls: 10,
+    });
+    const baselineFinal = JSON.stringify(
+      (baselineCreate.mock.calls[2]?.[0] as { messages: unknown }).messages,
+    );
+
+    expect(baselineResult.finishReason).toBe("final report");
+    expect(baseline.step).not.toHaveBeenCalled();
+    expect(baselineCtx.emitSpy).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: "context_compacted" }),
+    );
+    expect(baselineFinal).toContain("BIG1_MARKER");
+
+    const calibratedCreate = bigPlanTurns(5_000_000);
+    const calibrated = compactionModel("CALIBRATED_NOTE");
+    const calibratedCtx = createContext({ messagesCreate: calibratedCreate });
+    calibratedCtx.deps.summaryModel = calibrated.adapter;
+    calibratedCtx.scope.compactionTriggerTokens = TRIGGER;
+    calibratedCtx.scope.compactionKeepTokens = 50;
+
+    const calibratedResult = await runResearchLoop({
+      ctx: calibratedCtx,
+      query: "What is Atlas?",
+      maxToolCalls: 10,
+    });
+    const calibratedFinal = JSON.stringify(
+      (calibratedCreate.mock.calls[2]?.[0] as { messages: unknown }).messages,
+    );
+
+    expect(calibratedResult.finishReason).toBe("final report");
+    expect(calibrated.step).toHaveBeenCalledTimes(1);
+    expect(calibratedCtx.emitSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "context_compacted" }),
+    );
+    expect(calibratedFinal).not.toContain("BIG1_MARKER");
+    expect(calibratedFinal).toContain("BIG2_MARKER");
+    expect(calibratedFinal).toContain("CALIBRATED_NOTE");
+  });
 });
 
 describe("token budget", () => {
@@ -2328,8 +2395,6 @@ describe("token budget", () => {
       messages: Array<{ content: unknown }>;
     };
 
-    // Two tool-bearing steps push usage to 10k (>= 8k); the third iteration
-    // stops on the budget before calling the model again.
     expect(result.finishReason).toBe(
       "final report after token budget exhausted",
     );
@@ -2392,7 +2457,6 @@ describe("spawn/join fan-out", () => {
       synthesisReserveMs: 10_000,
       maxDelegationDepth: 1,
     });
-    ctx.store.budget = createBudgetLedger(20, 40);
 
     const result = await runResearchLoop({
       ctx,
@@ -2445,10 +2509,8 @@ describe("spawn/join fan-out", () => {
       messagesCreate,
       maxDelegationDepth: 1,
       maxConcurrentSubagents: 2,
-      subagentGate: createSteelConcurrencyGate(2),
       subagentEffort: "low",
     });
-    ctx.store.budget = createBudgetLedger(20, 40);
 
     const result = await runResearchLoop({
       ctx,
@@ -2490,7 +2552,7 @@ describe("spawn/join fan-out", () => {
     expect(toolResultText(leadFinal)).toContain("joined");
 
     expect(result.finishReason).toBe("final report");
-    expect(ctx.store.budget?.remainingActionCalls).toBe(19);
+    expect(result.toolCalls).toBe(1);
 
     expect(ctx.emitSpy).toHaveBeenCalledWith({
       type: "delegation_started",
@@ -2547,14 +2609,9 @@ describe("spawn/join fan-out", () => {
       messagesCreate,
       maxDelegationDepth: 1,
       maxConcurrentSubagents: 2,
-      subagentGate: createSteelConcurrencyGate(2),
       subagentEffort: "low",
     });
-    ctx.store.budget = createBudgetLedger(20, 40);
 
-    // Capture every lease the shared pool hands out so we can assert the
-    // sub-agent's browser session is returned, not stranded in the pool's
-    // active set until the whole run's closeAll().
     const pool = ctx.deps.browserSessionPool as unknown as {
       acquire: () => Promise<{ release: ReturnType<typeof vi.fn> }>;
     };
@@ -2573,10 +2630,7 @@ describe("spawn/join fan-out", () => {
     });
 
     expect(result.finishReason).toBe("final report");
-    // Only the sub-agent opened a browser, so exactly one lease was acquired...
     expect(leases).toHaveLength(1);
-    // ...and it must be released once the sub-agent finishes. Before the
-    // closeBrowserLease wiring this stayed pinned to the forked ctx forever.
     expect(leases[0]?.release).toHaveBeenCalledTimes(1);
   });
 
@@ -2626,10 +2680,8 @@ describe("spawn/join fan-out", () => {
       scrape,
       maxDelegationDepth: 1,
       maxConcurrentSubagents: 2,
-      subagentGate: createSteelConcurrencyGate(2),
       subagentEffort: "low",
     });
-    ctx.store.budget = createBudgetLedger(20, 40);
 
     const result = await runResearchLoop({
       ctx,
@@ -2673,7 +2725,6 @@ describe("spawn/join fan-out", () => {
       .mockResolvedValueOnce(finalReport());
     const ctx = createContext({ messagesCreate, maxDelegationDepth: 1 });
     ctx.scope.depth = 1;
-    ctx.store.budget = createBudgetLedger(20, 40);
 
     const result = await runResearchLoop({
       ctx,
@@ -2738,7 +2789,6 @@ describe("spawn/join fan-out", () => {
       messagesCreate,
       maxDelegationDepth: 1,
       maxConcurrentSubagents: 1,
-      subagentGate: createSteelConcurrencyGate(1),
       subagentEffort: "low",
       subagentCompactionTriggerTokens: 200,
       subagentCompactionKeepTokens: 50,
@@ -2756,7 +2806,6 @@ describe("spawn/join fan-out", () => {
         input: ModelStepInput,
       ) => Promise<{ content: ModelAssistantBlock[] }>,
     } satisfies ModelAdapter;
-    ctx.store.budget = createBudgetLedger(20, 40);
     ctx.scope.compactionTriggerTokens = undefined;
 
     const result = await runResearchLoop({
@@ -2800,10 +2849,8 @@ describe("emergent team via spawn/join", () => {
       messagesCreate,
       maxDelegationDepth: 1,
       maxConcurrentSubagents: 2,
-      subagentGate: createSteelConcurrencyGate(2),
       subagentEffort: "low",
     });
-    ctx.store.budget = createBudgetLedger(40, 80);
 
     const result = await runResearchLoop({
       ctx,
@@ -2838,7 +2885,6 @@ describe("emergent team via spawn/join", () => {
       finalReport(),
     );
     const ctx = createContext({ messagesCreate, maxDelegationDepth: 1 });
-    ctx.store.budget = createBudgetLedger(20, 40);
 
     const result = await runResearchLoop({
       ctx,
@@ -2884,7 +2930,6 @@ describe("api error recovery", () => {
       ]);
     });
     const ctx = createContext({ messagesCreate, scrape });
-    ctx.store.budget = createBudgetLedger(20, 40);
 
     const result = await runResearchLoop({
       ctx,
@@ -2905,7 +2950,6 @@ describe("api error recovery", () => {
       throw new Error("429 rate_limit_error");
     });
     const ctx = createContext({ messagesCreate });
-    ctx.store.budget = createBudgetLedger(20, 40);
 
     const result = await runResearchLoop({
       ctx,

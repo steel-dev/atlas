@@ -12,7 +12,7 @@ import type {
 import type { BrowserSessionPool } from "./browser-session-pool.js";
 import type { BrowserSessionLease } from "./browser-session-pool.js";
 
-export interface SteelConcurrencyGate {
+export interface ConcurrencyGate {
   run<T>(fn: () => Promise<T>): Promise<T>;
 }
 
@@ -21,34 +21,6 @@ export interface SourceReservations {
   sourceSlots: number;
   nextSourceNumber: number;
   documents: Map<string, Promise<SourceDocument | null>>;
-}
-
-export interface BudgetLedger {
-  remainingActionCalls: number;
-  remainingToolExecutions: number;
-  consume(actionCalls: number, toolExecutions: number): void;
-}
-
-export function createBudgetLedger(
-  maxActionCalls: number,
-  maxToolExecutions: number,
-): BudgetLedger {
-  const clampInit = (n: number) =>
-    Number.isFinite(n) ? Math.max(0, Math.floor(n)) : 0;
-  return {
-    remainingActionCalls: clampInit(maxActionCalls),
-    remainingToolExecutions: clampInit(maxToolExecutions),
-    consume(actionCalls, toolExecutions) {
-      this.remainingActionCalls = Math.max(
-        0,
-        this.remainingActionCalls - Math.max(0, Math.floor(actionCalls)),
-      );
-      this.remainingToolExecutions = Math.max(
-        0,
-        this.remainingToolExecutions - Math.max(0, Math.floor(toolExecutions)),
-      );
-    },
-  };
 }
 
 export interface SourceCacheEntry {
@@ -63,7 +35,7 @@ export interface ResearchCaches {
   summaries: Map<string, Promise<string>>;
 }
 
-class Semaphore implements SteelConcurrencyGate {
+class Semaphore implements ConcurrencyGate {
   private active = 0;
   private readonly waiting: Array<() => void> = [];
 
@@ -97,9 +69,7 @@ class Semaphore implements SteelConcurrencyGate {
   }
 }
 
-export function createSteelConcurrencyGate(
-  limit: number,
-): SteelConcurrencyGate {
+export function createConcurrencyGate(limit: number): ConcurrencyGate {
   const normalized = Number.isFinite(limit)
     ? Math.max(1, Math.floor(limit))
     : 1;
@@ -146,8 +116,8 @@ export interface ResearchDeps {
   signal?: AbortSignal;
   abort: () => void;
   searchProvider?: SearchProvider;
-  steelConcurrencyGate: SteelConcurrencyGate;
-  subagentGate?: SteelConcurrencyGate;
+  /** Bounds concurrent Steel/network requests (web search + browser fetch). */
+  ioGate: ConcurrencyGate;
   browserSessionPool?: BrowserSessionPool;
 }
 
@@ -156,7 +126,6 @@ export interface SourceStore {
   sourceDocuments: Map<string, SourceDocument>;
   sourceReservations: SourceReservations;
   caches: ResearchCaches;
-  budget?: BudgetLedger;
 }
 
 export interface AgentScopeOverrides {

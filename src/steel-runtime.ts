@@ -70,7 +70,7 @@ export async function runSteelRequest<T>(
 ): Promise<T> {
   for (let attempt = 1; attempt <= STEEL_RATE_LIMIT_MAX_ATTEMPTS; attempt++) {
     try {
-      return await ctx.deps.steelConcurrencyGate.run(request);
+      return await ctx.deps.ioGate.run(request);
     } catch (err) {
       const retryAfterSeconds = parseRetryAfterSeconds(err);
       if (!retryAfterSeconds || attempt >= STEEL_RATE_LIMIT_MAX_ATTEMPTS) {

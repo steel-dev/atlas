@@ -1,6 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import OpenAI from "openai";
 import type { ResearchEffort } from "./defaults.js";
+import type { ConcurrencyGate } from "./runtime.js";
 
 export type ModelProvider = "anthropic" | "openai";
 
@@ -42,8 +43,6 @@ export interface ModelToolResult {
   is_error?: boolean;
 }
 
-/** Extended-thinking block. Preserved verbatim (with its signature) so the
- *  model's reasoning carries across turns during tool use. */
 export interface ModelThinkingBlock {
   type: "thinking";
   thinking: string;
@@ -77,6 +76,10 @@ export interface ModelStepInput {
 
 export interface ModelStepResult {
   content: ModelAssistantBlock[];
+  /** Full prompt size of this request in tokens (fresh input + both cache
+   *  legs), as reported by the provider. Used to calibrate the context-size
+   *  estimate that drives compaction. */
+  inputTokens?: number;
 }
 
 export interface ModelAdapter {
@@ -95,8 +98,6 @@ export function emptyUsageSummary(): UsageSummary {
   };
 }
 
-/** Total billed tokens across a run: fresh input, output, and both cache
- *  legs. Used as the meter for the token budget (test-time compute limit). */
 export function totalUsageTokens(usage: UsageSummary): number {
   return (
     usage.input_tokens +
@@ -140,6 +141,10 @@ export function createAnthropicModelAdapter(opts: {
         },
         { signal: input.signal },
       );
+      const inputTokens =
+        (resp.usage.input_tokens ?? 0) +
+        (resp.usage.cache_creation_input_tokens ?? 0) +
+        (resp.usage.cache_read_input_tokens ?? 0);
       addUsage(usage, {
         input_tokens: resp.usage.input_tokens ?? 0,
         output_tokens: resp.usage.output_tokens ?? 0,
@@ -147,7 +152,10 @@ export function createAnthropicModelAdapter(opts: {
           resp.usage.cache_creation_input_tokens ?? 0,
         cache_read_input_tokens: resp.usage.cache_read_input_tokens ?? 0,
       });
-      return { content: resp.content.flatMap(fromAnthropicBlock) };
+      return {
+        content: resp.content.flatMap(fromAnthropicBlock),
+        inputTokens,
+      };
     },
   };
 }
@@ -284,13 +292,14 @@ export function createOpenAIModelAdapter(opts: {
         },
         { signal: input.signal },
       );
+      const inputTokens = resp.usage?.prompt_tokens ?? 0;
       addUsage(usage, {
-        input_tokens: resp.usage?.prompt_tokens ?? 0,
+        input_tokens: inputTokens,
         output_tokens: resp.usage?.completion_tokens ?? 0,
       });
       const message = resp.choices[0]?.message;
-      if (!message) return { content: [] };
-      return { content: fromOpenAIMessage(message) };
+      if (!message) return { content: [], inputTokens };
+      return { content: fromOpenAIMessage(message), inputTokens };
     },
   };
 }
@@ -399,13 +408,9 @@ function parseOpenAIArguments(raw: string): unknown {
   }
 }
 
-export interface ModelConcurrencyGate {
-  run<T>(fn: () => Promise<T>): Promise<T>;
-}
-
 export function wrapModelAdapterWithConcurrency(
   adapter: ModelAdapter,
-  gate: ModelConcurrencyGate,
+  gate: ConcurrencyGate,
 ): ModelAdapter {
   return {
     provider: adapter.provider,

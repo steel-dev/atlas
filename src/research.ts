@@ -38,10 +38,9 @@ import {
 } from "./search-provider.js";
 import {
   createAgentScope,
-  createBudgetLedger,
   createSourceReservations,
   createResearchCaches,
-  createSteelConcurrencyGate,
+  createConcurrencyGate,
   runResearchLoop,
   type ResearchCtx,
 } from "./tools.js";
@@ -80,10 +79,10 @@ const DEFAULT_RUNTIME_LIMITS = {
 };
 
 // Caps total in-flight model connections across the lead, every sub-agent, and
-// their compaction/digest calls — the spawn/join tree runs concurrently, so this
-// bounds it to the provider's concurrent-connection limit. Derived from the
-// sub-agent fan-out width (lead + sub-agents) unless ATLAS_MAX_CONCURRENT_MODEL_CALLS
-// overrides it.
+// their compaction/digest calls. With no dedicated sub-agent gate, this is also
+// what bounds fan-out: at most maxConcurrentSubagents sub-agents call the model
+// at once, plus headroom so the lead is never starved. Derived from the fan-out
+// width unless ATLAS_MAX_CONCURRENT_MODEL_CALLS overrides it.
 const MODEL_CALL_HEADROOM = 1;
 
 // Total token budget = the single test-time compute knob. Tool-call and source
@@ -307,7 +306,7 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
   };
   const abort = () => runSignal?.throwIfAborted();
 
-  const modelCallGate = createSteelConcurrencyGate(maxConcurrentModelCalls);
+  const modelCallGate = createConcurrencyGate(maxConcurrentModelCalls);
   const modelAdapter = wrapModelAdapterWithConcurrency(
     createModelAdapter({
       provider,
@@ -389,10 +388,7 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
         steel,
         signal: runSignal,
         abort,
-        steelConcurrencyGate: createSteelConcurrencyGate(
-          limits.maxConcurrentSteelCalls,
-        ),
-        subagentGate: createSteelConcurrencyGate(maxConcurrentSubagents),
+        ioGate: createConcurrencyGate(limits.maxConcurrentSteelCalls),
         browserSessionPool,
       },
       store: {
@@ -400,10 +396,6 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
         sourceDocuments,
         sourceReservations: createSourceReservations(),
         caches: createResearchCaches(),
-        budget: createBudgetLedger(
-          safetyMaxToolCalls,
-          Math.max(safetyMaxToolCalls, safetyMaxToolCalls * 2),
-        ),
       },
       scope: leadScope,
     };
@@ -557,17 +549,7 @@ async function generateStructuredOutput(opts: {
       depth: opts.ctx.config.maxDelegationDepth ?? 1,
     });
     const run = await runResearchLoop({
-      ctx: {
-        ...opts.ctx,
-        store: {
-          ...opts.ctx.store,
-          budget: createBudgetLedger(
-            STRUCTURED_RESEARCH_MAX_TOOL_CALLS,
-            STRUCTURED_RESEARCH_MAX_TOOL_CALLS * 2,
-          ),
-        },
-        scope,
-      },
+      ctx: { ...opts.ctx, scope },
       query: `Additional research requested while finalizing structured output: ${attempt.query}`,
       maxToolCalls: STRUCTURED_RESEARCH_MAX_TOOL_CALLS,
       effort: opts.effort,

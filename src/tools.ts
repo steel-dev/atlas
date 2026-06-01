@@ -2,13 +2,16 @@ import {
   totalUsageTokens,
   type ModelAssistantBlock,
   type ModelMessage,
+  type ModelStepResult,
   type ModelToolCall,
   type ModelToolResult,
 } from "./model.js";
 import type { ResearchEffort } from "./defaults.js";
 import type { ResearchCtx } from "./runtime.js";
-import { createSteelConcurrencyGate } from "./runtime.js";
-import { maybeCompactResearchContext } from "./compaction.js";
+import {
+  estimateMessagesTokens,
+  maybeCompactResearchContext,
+} from "./compaction.js";
 import { errorMessage } from "./errors.js";
 import { parseRetryAfterSeconds } from "./steel-runtime.js";
 import { normalizeFetchUrl } from "./fetch-tool.js";
@@ -34,25 +37,21 @@ import {
 
 export {
   createAgentScope,
-  createBudgetLedger,
+  createConcurrencyGate,
   createResearchCaches,
   createSourceReservations,
-  createSteelConcurrencyGate,
 } from "./runtime.js";
 export type {
-  BudgetLedger,
+  ConcurrencyGate,
   ResearchCaches,
   ResearchCtx,
   ResearchLoopEvent,
   SourceReservations,
-  SteelConcurrencyGate,
 } from "./runtime.js";
 
 const DEFAULT_MAX_TOOL_CALLS = 12;
 const DEFAULT_MAX_CONCURRENT_TOOLS = 4;
-const DEFAULT_MAX_CONCURRENT_SUBAGENTS = 3;
 const SUBAGENT_MAX_TOOL_CALLS = 20;
-const SPAWN_MIN_REMAINING_ACTION_CALLS = 2;
 const SUBAGENT_MIN_RUNTIME_MS = 30_000;
 const SUBAGENT_SYNTHESIS_RESERVE_MS = 45_000;
 const SUBAGENT_FINDINGS_MAX_CHARS = 4_000;
@@ -117,12 +116,14 @@ function budgetStatusMessage(opts: {
   maxTotalToolExecutions: number;
   ctx: ResearchCtx;
 }): string | null {
-  const actionRemaining = opts.ctx.store.budget
-    ? opts.ctx.store.budget.remainingActionCalls
-    : Math.max(0, opts.maxActionToolCalls - opts.actionToolCalls);
-  const totalRemaining = opts.ctx.store.budget
-    ? opts.ctx.store.budget.remainingToolExecutions
-    : Math.max(0, opts.maxTotalToolExecutions - opts.totalToolExecutions);
+  const actionRemaining = Math.max(
+    0,
+    opts.maxActionToolCalls - opts.actionToolCalls,
+  );
+  const totalRemaining = Math.max(
+    0,
+    opts.maxTotalToolExecutions - opts.totalToolExecutions,
+  );
   const sourcesRemaining = Math.max(
     0,
     opts.ctx.config.sourceCap - opts.ctx.store.fetchedSources.length,
@@ -324,11 +325,6 @@ function createSubagentScope(
 ): SubagentScope {
   const registry = new Map<string, SubagentEntry>();
   let counter = 0;
-  const gate =
-    ctx.deps.subagentGate ??
-    createSteelConcurrencyGate(
-      ctx.config.maxConcurrentSubagents ?? DEFAULT_MAX_CONCURRENT_SUBAGENTS,
-    );
 
   const uncollected = (): SubagentEntry[] =>
     [...registry.values()].filter((entry) => !entry.collected);
@@ -360,14 +356,11 @@ function createSubagentScope(
             "Error: spawn is not available at this depth. Research this directly with search/fetch.",
         };
       }
-      if (
-        ctx.store.budget &&
-        ctx.store.budget.remainingActionCalls < SPAWN_MIN_REMAINING_ACTION_CALLS
-      ) {
+      if (tokenBudgetExhaustedReason(ctx)) {
         return {
           handles: [],
           error:
-            "Error: not enough remaining tool budget to spawn sub-agents. Investigate the most important angle directly.",
+            "Error: token budget exhausted. Investigate the most important angle directly and finalize.",
         };
       }
       const timing = subagentTiming(ctx);
@@ -388,8 +381,11 @@ function createSubagentScope(
         counter += 1;
         const handle = `agent_${counter}`;
         ctx.scope.emit({ type: "subagent_started", task });
-        const promise = gate.run(() =>
-          runSubagentTask(ctx, task, timing, perAgentMaxToolCalls),
+        const promise = runSubagentTask(
+          ctx,
+          task,
+          timing,
+          perAgentMaxToolCalls,
         );
         const entry: SubagentEntry = {
           handle,
@@ -471,6 +467,9 @@ export async function runResearchLoop(opts: {
   let finishReason = "tool call budget exhausted";
   let markdown = "";
   let searchIndex = 0;
+  // Real-tokens-per-(char/4)-estimate ratio, updated from each step's reported
+  // prompt size so compaction tracks true context cost (CJK/JSON cost more).
+  let tokenCalibration = 1;
 
   const messages: ModelMessage[] = [
     {
@@ -501,9 +500,14 @@ export async function runResearchLoop(opts: {
       break;
     }
 
-    await maybeCompactResearchContext({ ctx, messages });
+    await maybeCompactResearchContext({
+      ctx,
+      messages,
+      calibration: tokenCalibration,
+    });
 
-    let resp: { content: ModelAssistantBlock[] };
+    const promptTokenEstimate = estimateMessagesTokens(messages);
+    let resp: ModelStepResult;
     try {
       resp = await ctx.deps.model.step({
         system: systemPrompt,
@@ -518,6 +522,12 @@ export async function runResearchLoop(opts: {
       const message = errorMessage(err);
       finishReason = `api error: ${message}`;
       break;
+    }
+    if (promptTokenEstimate > 0 && (resp.inputTokens ?? 0) > 0) {
+      tokenCalibration = Math.min(
+        8,
+        Math.max(1, (resp.inputTokens as number) / promptTokenEstimate),
+      );
     }
 
     const toolUses = resp.content.filter(
@@ -539,18 +549,9 @@ export async function runResearchLoop(opts: {
 
     messages.push({ role: "assistant", content: resp.content });
 
-    let remainingActionToolCalls = Math.min(
-      maxToolCalls - toolCalls,
-      ctx.store.budget
-        ? ctx.store.budget.remainingActionCalls
-        : Number.POSITIVE_INFINITY,
-    );
-    let remainingTotalToolExecutions = Math.min(
-      maxTotalToolExecutions - totalToolExecutions,
-      ctx.store.budget
-        ? ctx.store.budget.remainingToolExecutions
-        : Number.POSITIVE_INFINITY,
-    );
+    let remainingActionToolCalls = maxToolCalls - toolCalls;
+    let remainingTotalToolExecutions =
+      maxTotalToolExecutions - totalToolExecutions;
     const activeToolUses: ModelToolCall[] = [];
     const skippedToolUses: Array<{ toolUse: ModelToolCall; reason: string }> =
       [];
@@ -582,7 +583,6 @@ export async function runResearchLoop(opts: {
     const actionCallsThisStep = actionToolCallCount(activeToolUses);
     toolCalls += actionCallsThisStep;
     totalToolExecutions += activeToolUses.length;
-    ctx.store.budget?.consume(actionCallsThisStep, activeToolUses.length);
 
     const executions = await mapWithConcurrency(
       activeToolUses,
@@ -628,18 +628,12 @@ export async function runResearchLoop(opts: {
       });
     }
 
-    if (
-      totalToolExecutions >= maxTotalToolExecutions ||
-      (ctx.store.budget && ctx.store.budget.remainingToolExecutions <= 0)
-    ) {
+    if (totalToolExecutions >= maxTotalToolExecutions) {
       finishReason = "tool execution safety budget exhausted";
       break;
     }
 
-    if (
-      toolCalls >= maxToolCalls ||
-      (ctx.store.budget && ctx.store.budget.remainingActionCalls <= 0)
-    ) {
+    if (toolCalls >= maxToolCalls) {
       finishReason = "tool call budget exhausted";
       break;
     }

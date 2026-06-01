@@ -71,7 +71,11 @@ export function estimateMessagesTokens(messages: ModelMessage[]): number {
   return total;
 }
 
-function planCutIndex(messages: ModelMessage[], keepTokens: number): number {
+function planCutIndex(
+  messages: ModelMessage[],
+  keepTokens: number,
+  calibration = 1,
+): number {
   let lastAssistantIdx = -1;
   for (let i = messages.length - 1; i >= 1; i--) {
     if (messages[i].role === "assistant") {
@@ -84,7 +88,7 @@ function planCutIndex(messages: ModelMessage[], keepTokens: number): number {
   let acc = 0;
   let cut = messages.length;
   for (let i = messages.length - 1; i >= 1; i--) {
-    const tokens = estimateMessageTokens(messages[i]);
+    const tokens = estimateMessageTokens(messages[i]) * calibration;
     if (acc + tokens > keepTokens && cut <= lastAssistantIdx) break;
     acc += tokens;
     cut = i;
@@ -179,24 +183,29 @@ function compactionUserPrompt(
 export async function maybeCompactResearchContext(opts: {
   ctx: ResearchCtx;
   messages: ModelMessage[];
+  calibration?: number;
 }): Promise<boolean> {
   const { ctx, messages } = opts;
+  const calibration =
+    opts.calibration && opts.calibration > 0 ? opts.calibration : 1;
   const trigger = ctx.scope.compactionTriggerTokens ?? 0;
   if (!Number.isFinite(trigger) || trigger <= 0) return false;
   if (messages.length < 4) return false;
 
-  const tokensBefore = estimateMessagesTokens(messages);
+  const tokensBefore = Math.round(
+    estimateMessagesTokens(messages) * calibration,
+  );
   if (tokensBefore <= trigger) return false;
 
   const keepTokens = Math.max(
     1,
     Math.floor(ctx.scope.compactionKeepTokens ?? Math.floor(trigger / 2)),
   );
-  const cut = planCutIndex(messages, keepTokens);
+  const cut = planCutIndex(messages, keepTokens, calibration);
   if (cut < 2) return false;
 
   const folded = messages.slice(1, cut);
-  const foldedTokens = estimateMessagesTokens(folded);
+  const foldedTokens = Math.round(estimateMessagesTokens(folded) * calibration);
   if (foldedTokens < MIN_FOLD_TOKENS) return false;
 
   const summarizer = ctx.deps.summaryModel ?? ctx.deps.model;
@@ -239,7 +248,9 @@ export async function maybeCompactResearchContext(opts: {
     { role: "user", content },
     ...messages.slice(cut),
   ];
-  const tokensAfter = estimateMessagesTokens(rewritten);
+  const tokensAfter = Math.round(
+    estimateMessagesTokens(rewritten) * calibration,
+  );
   messages.splice(0, messages.length, ...rewritten);
 
   ctx.scope.emit({
