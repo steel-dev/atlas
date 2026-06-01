@@ -123,58 +123,112 @@ export function createSourceReservations(): SourceReservations {
   };
 }
 
-export interface ResearchLoopContext {
+export interface ResearchConfig {
+  readonly defaultEngine: Engine;
+  readonly useProxy: boolean;
+  readonly sourceCap: number;
+  readonly maxOutputTokens?: number;
+  readonly defaultSearchLimit?: number;
+  readonly maxConcurrentTools?: number;
+  readonly fetchSnippetChars?: number;
+  readonly subagentCompactionTriggerTokens?: number;
+  readonly subagentCompactionKeepTokens?: number;
+  readonly tokenLimit?: number;
+  readonly maxDelegationDepth?: number;
+  readonly maxConcurrentSubagents?: number;
+  readonly subagentEffort?: ResearchEffort;
+}
+
+export interface ResearchDeps {
   model: ModelAdapter;
   summaryModel?: ModelAdapter;
   steel: Steel;
-  query?: string;
+  signal?: AbortSignal;
+  abort: () => void;
+  searchProvider?: SearchProvider;
+  steelConcurrencyGate: SteelConcurrencyGate;
+  subagentGate?: SteelConcurrencyGate;
+  browserSessionPool?: BrowserSessionPool;
+}
+
+export interface SourceStore {
   fetchedSources: FetchedSource[];
   sourceDocuments: Map<string, SourceDocument>;
-  emit: (e: ResearchLoopEvent) => void;
-  abort: () => void;
-  /** Forwarded to every model / Steel / HTTP call so cancellation
-   *  interrupts in-flight requests, not just step boundaries. */
-  signal?: AbortSignal;
-  /** Pluggable search backend. When unset, the search tool falls back to the
-   *  scraping provider built from this context (SERP scraping via Steel). */
-  searchProvider?: SearchProvider;
-  /** Default search engine for the scraping provider's fallback order. */
-  defaultEngine: Engine;
-  useProxy: boolean;
-  sourceCap: number;
-  maxOutputTokens?: number;
-  defaultSearchLimit?: number;
-  maxConcurrentTools?: number;
-  fetchSnippetChars?: number;
-  deadlineAt?: number;
-  synthesisReserveMs?: number;
-  steelConcurrencyGate: SteelConcurrencyGate;
-  browserSessionPool?: BrowserSessionPool;
-  browserSessionLease?: BrowserSessionLease;
   sourceReservations: SourceReservations;
   caches: ResearchCaches;
   budget?: BudgetLedger;
-  /** When the estimated transcript exceeds this many tokens, older turns are
-   *  folded into a compact progress note before the next model step. Unset or
-   *  <= 0 disables compaction. */
-  compactionTriggerTokens?: number;
-  /** Approximate size of the most recent turns kept verbatim after a
-   *  compaction. Defaults to half the trigger. */
-  compactionKeepTokens?: number;
-  /** Compaction trigger applied to sub-agents (lower than the lead's, per the
-   *  multi-agent system-card setting). Inherited by forked sub-agent contexts. */
-  subagentCompactionTriggerTokens?: number;
-  /** Verbatim tail size kept after a sub-agent compaction. */
-  subagentCompactionKeepTokens?: number;
-  /** Total token budget (test-time compute limit) shared across the lead and
-   *  every sub-agent, metered against the shared model adapter usage. The loop
-   *  stops starting new steps once this is exceeded. Unset or <= 0 = unlimited. */
-  tokenLimit?: number;
+}
+
+export interface AgentScopeOverrides {
+  query?: string;
   depth?: number;
-  maxDelegationDepth?: number;
-  maxConcurrentSubagents?: number;
-  subagentGate?: SteelConcurrencyGate;
-  subagentEffort?: ResearchEffort;
+  deadlineAt?: number;
+  synthesisReserveMs?: number;
+  compactionTriggerTokens?: number;
+  compactionKeepTokens?: number;
+}
+
+export interface AgentScopeInit extends AgentScopeOverrides {
+  sink: (event: ResearchLoopEvent) => void;
+}
+
+export interface AgentScope extends AsyncDisposable {
+  query?: string;
+  depth: number;
+  deadlineAt?: number;
+  synthesisReserveMs?: number;
+  compactionTriggerTokens?: number;
+  compactionKeepTokens?: number;
+  browserSessionLease?: BrowserSessionLease;
+  emit(event: ResearchLoopEvent): void;
+  derive(overrides: AgentScopeOverrides): AgentScope;
+}
+
+export interface ResearchCtx {
+  config: ResearchConfig;
+  deps: ResearchDeps;
+  store: SourceStore;
+  scope: AgentScope;
+}
+
+export function createAgentScope(init: AgentScopeInit): AgentScope {
+  const sink = init.sink;
+  const scope: AgentScope = {
+    query: init.query,
+    depth: init.depth ?? 0,
+    deadlineAt: init.deadlineAt,
+    synthesisReserveMs: init.synthesisReserveMs,
+    compactionTriggerTokens: init.compactionTriggerTokens,
+    compactionKeepTokens: init.compactionKeepTokens,
+    browserSessionLease: undefined,
+    emit(event) {
+      sink(
+        scope.depth > 0 && event.depth === undefined
+          ? { ...event, depth: scope.depth }
+          : event,
+      );
+    },
+    derive(overrides) {
+      return createAgentScope({
+        sink,
+        query: overrides.query ?? scope.query,
+        depth: overrides.depth ?? scope.depth,
+        deadlineAt: overrides.deadlineAt ?? scope.deadlineAt,
+        synthesisReserveMs:
+          overrides.synthesisReserveMs ?? scope.synthesisReserveMs,
+        compactionTriggerTokens:
+          overrides.compactionTriggerTokens ?? scope.compactionTriggerTokens,
+        compactionKeepTokens:
+          overrides.compactionKeepTokens ?? scope.compactionKeepTokens,
+      });
+    },
+    async [Symbol.asyncDispose]() {
+      const lease = scope.browserSessionLease;
+      scope.browserSessionLease = undefined;
+      await lease?.release();
+    },
+  };
+  return scope;
 }
 
 export type ResearchLoopEvent = (

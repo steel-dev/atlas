@@ -1,5 +1,5 @@
 import { errorMessage } from "./errors.js";
-import type { ResearchLoopContext } from "./runtime.js";
+import type { ResearchCtx } from "./runtime.js";
 
 const STEEL_RATE_LIMIT_MAX_ATTEMPTS = 6;
 const DEFAULT_RATE_LIMIT_RETRY_SECONDS = 15;
@@ -65,24 +65,24 @@ async function delay(ms: number, signal?: AbortSignal): Promise<void> {
 }
 
 export async function runSteelRequest<T>(
-  ctx: ResearchLoopContext,
+  ctx: ResearchCtx,
   request: () => Promise<T>,
 ): Promise<T> {
   for (let attempt = 1; attempt <= STEEL_RATE_LIMIT_MAX_ATTEMPTS; attempt++) {
     try {
-      return await ctx.steelConcurrencyGate.run(request);
+      return await ctx.deps.steelConcurrencyGate.run(request);
     } catch (err) {
       const retryAfterSeconds = parseRetryAfterSeconds(err);
       if (!retryAfterSeconds || attempt >= STEEL_RATE_LIMIT_MAX_ATTEMPTS) {
         throw err;
       }
-      ctx.emit({
+      ctx.scope.emit({
         type: "rate_limited",
         retryAfterSeconds,
         attempt,
         maxAttempts: STEEL_RATE_LIMIT_MAX_ATTEMPTS,
       });
-      await delay((retryAfterSeconds + 1) * 1000, ctx.signal);
+      await delay((retryAfterSeconds + 1) * 1000, ctx.deps.signal);
     }
   }
 

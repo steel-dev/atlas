@@ -41,12 +41,13 @@ import {
   type SearchProvider,
 } from "./search-provider.js";
 import {
+  createAgentScope,
   createBudgetLedger,
   createSourceReservations,
   createResearchCaches,
   createSteelConcurrencyGate,
   runResearchLoop,
-  type ResearchLoopContext,
+  type ResearchCtx,
 } from "./tools.js";
 import {
   BrowserSessionPool,
@@ -355,54 +356,62 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
     idleTtlMs: readBrowserIdleTtlMsFromEnv(),
   });
 
-  const ctx: ResearchLoopContext = {
-    model: modelAdapter,
-    summaryModel: summaryAdapter,
-    steel,
-    query,
-    fetchedSources,
-    sourceDocuments,
-    emit,
-    abort,
-    signal: runSignal,
-    defaultEngine: "ddg",
-    useProxy,
-    sourceCap: safetySourceCap,
-    maxOutputTokens: limits.maxOutputTokens,
-    defaultSearchLimit: limits.defaultSearchLimit,
-    maxConcurrentTools: limits.maxConcurrentTools,
-    deadlineAt: timeoutDeadlineAt,
-    synthesisReserveMs:
-      timeoutMs === undefined
-        ? undefined
-        : timeoutSynthesisReserveMs(
-            timeoutMs,
-            limits.timeoutSynthesisReserveMs,
-          ),
-    steelConcurrencyGate: createSteelConcurrencyGate(
-      limits.maxConcurrentSteelCalls,
-    ),
-    browserSessionPool,
-    sourceReservations: createSourceReservations(),
-    caches: createResearchCaches(),
-    budget: createBudgetLedger(
-      safetyMaxToolCalls,
-      Math.max(safetyMaxToolCalls, safetyMaxToolCalls * 2),
-    ),
-    compactionTriggerTokens,
-    compactionKeepTokens,
-    subagentCompactionTriggerTokens: limits.subagentCompactionTriggerTokens,
-    subagentCompactionKeepTokens: limits.subagentCompactionKeepTokens,
-    tokenLimit,
-    depth: 0,
-    maxDelegationDepth,
-    maxConcurrentSubagents,
-    subagentGate: createSteelConcurrencyGate(maxConcurrentSubagents),
-    subagentEffort: thinkingEffort,
-  };
-
   try {
-    ctx.searchProvider = resolveSearchProvider(ctx, {
+    await using leadScope = createAgentScope({
+      sink: emit,
+      query,
+      depth: 0,
+      deadlineAt: timeoutDeadlineAt,
+      synthesisReserveMs:
+        timeoutMs === undefined
+          ? undefined
+          : timeoutSynthesisReserveMs(
+              timeoutMs,
+              limits.timeoutSynthesisReserveMs,
+            ),
+      compactionTriggerTokens,
+      compactionKeepTokens,
+    });
+    const ctx: ResearchCtx = {
+      config: {
+        defaultEngine: "ddg",
+        useProxy,
+        sourceCap: safetySourceCap,
+        maxOutputTokens: limits.maxOutputTokens,
+        defaultSearchLimit: limits.defaultSearchLimit,
+        maxConcurrentTools: limits.maxConcurrentTools,
+        subagentCompactionTriggerTokens: limits.subagentCompactionTriggerTokens,
+        subagentCompactionKeepTokens: limits.subagentCompactionKeepTokens,
+        tokenLimit,
+        maxDelegationDepth,
+        maxConcurrentSubagents,
+        subagentEffort: thinkingEffort,
+      },
+      deps: {
+        model: modelAdapter,
+        summaryModel: summaryAdapter,
+        steel,
+        signal: runSignal,
+        abort,
+        steelConcurrencyGate: createSteelConcurrencyGate(
+          limits.maxConcurrentSteelCalls,
+        ),
+        subagentGate: createSteelConcurrencyGate(maxConcurrentSubagents),
+        browserSessionPool,
+      },
+      store: {
+        fetchedSources,
+        sourceDocuments,
+        sourceReservations: createSourceReservations(),
+        caches: createResearchCaches(),
+        budget: createBudgetLedger(
+          safetyMaxToolCalls,
+          Math.max(safetyMaxToolCalls, safetyMaxToolCalls * 2),
+        ),
+      },
+      scope: leadScope,
+    };
+    ctx.deps.searchProvider = resolveSearchProvider(ctx, {
       instance:
         searchProviderOverride && typeof searchProviderOverride !== "string"
           ? searchProviderOverride
@@ -528,7 +537,7 @@ type StructuredFinalizeAttempt =
   | { kind: "more_research"; query: string };
 
 async function generateStructuredOutput(opts: {
-  ctx: ResearchLoopContext;
+  ctx: ResearchCtx;
   model: ModelAdapter;
   messages: ModelMessage[];
   output: ResearchOutputOptions;
@@ -549,14 +558,20 @@ async function generateStructuredOutput(opts: {
       return { value: attempt.value, additionalRuns };
     }
 
+    await using scope = opts.ctx.scope.derive({
+      depth: opts.ctx.config.maxDelegationDepth ?? 1,
+    });
     const run = await runResearchLoop({
       ctx: {
         ...opts.ctx,
-        budget: createBudgetLedger(
-          STRUCTURED_RESEARCH_MAX_TOOL_CALLS,
-          STRUCTURED_RESEARCH_MAX_TOOL_CALLS * 2,
-        ),
-        depth: opts.ctx.maxDelegationDepth ?? 1,
+        store: {
+          ...opts.ctx.store,
+          budget: createBudgetLedger(
+            STRUCTURED_RESEARCH_MAX_TOOL_CALLS,
+            STRUCTURED_RESEARCH_MAX_TOOL_CALLS * 2,
+          ),
+        },
+        scope,
       },
       query: `Additional research requested while finalizing structured output: ${attempt.query}`,
       maxToolCalls: STRUCTURED_RESEARCH_MAX_TOOL_CALLS,
@@ -593,7 +608,7 @@ async function generateStructuredOutput(opts: {
 }
 
 async function runStructuredFinalizeAttempt(opts: {
-  ctx: ResearchLoopContext;
+  ctx: ResearchCtx;
   model: ModelAdapter;
   messages: ModelMessage[];
   output: ResearchOutputOptions;
@@ -673,7 +688,7 @@ function readMoreResearchQuestion(input: unknown): string {
 
 function execFinalizationTool(
   tu: ModelToolCall,
-  ctx: ResearchLoopContext,
+  ctx: ResearchCtx,
 ): ModelToolResult {
   const run = (): { content: string; isError?: boolean } => {
     if (tu.name === "read_source") {

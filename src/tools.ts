@@ -7,7 +7,7 @@ import {
   type ModelToolResult,
 } from "./model.js";
 import type { ResearchEffort } from "./defaults.js";
-import type { ResearchLoopContext, ResearchLoopEvent } from "./runtime.js";
+import type { ResearchCtx } from "./runtime.js";
 import { createSteelConcurrencyGate } from "./runtime.js";
 import { maybeCompactResearchContext } from "./compaction.js";
 import { errorMessage } from "./errors.js";
@@ -26,7 +26,6 @@ import {
   type SearchSourcesToolInput,
 } from "./evidence-tool.js";
 import {
-  closeBrowserLease,
   execBrowserCdp,
   execBrowserExtract,
   execBrowserOpen,
@@ -49,6 +48,7 @@ import {
 } from "./tool-contract.js";
 
 export {
+  createAgentScope,
   createBudgetLedger,
   createResearchCaches,
   createSourceReservations,
@@ -57,7 +57,7 @@ export {
 export type {
   BudgetLedger,
   ResearchCaches,
-  ResearchLoopContext,
+  ResearchCtx,
   ResearchLoopEvent,
   SourceReservations,
   SteelConcurrencyGate,
@@ -82,8 +82,8 @@ const FREE_TOOL_NAMES = new Set([
 ]);
 const SUBAGENT_TOOL_NAMES = new Set(["spawn", "join"]);
 
-function toolsForContext(ctx: ResearchLoopContext): ModelToolDefinition[] {
-  if ((ctx.depth ?? 0) >= (ctx.maxDelegationDepth ?? 0)) {
+function toolsForContext(ctx: ResearchCtx): ModelToolDefinition[] {
+  if ((ctx.scope.depth ?? 0) >= (ctx.config.maxDelegationDepth ?? 0)) {
     return RESEARCH_TOOLS.filter((tool) => !SUBAGENT_TOOL_NAMES.has(tool.name));
   }
   return RESEARCH_TOOLS;
@@ -110,12 +110,15 @@ interface ToolExecution {
   fetchedUrls?: string[];
 }
 
-function timeoutSynthesisReason(ctx: ResearchLoopContext): string | null {
-  if (ctx.deadlineAt === undefined || ctx.synthesisReserveMs === undefined) {
+function timeoutSynthesisReason(ctx: ResearchCtx): string | null {
+  if (
+    ctx.scope.deadlineAt === undefined ||
+    ctx.scope.synthesisReserveMs === undefined
+  ) {
     return null;
   }
-  const remainingMs = ctx.deadlineAt - Date.now();
-  if (remainingMs > ctx.synthesisReserveMs) return null;
+  const remainingMs = ctx.scope.deadlineAt - Date.now();
+  if (remainingMs > ctx.scope.synthesisReserveMs) return null;
   const remainingSeconds = Math.max(0, Math.ceil(remainingMs / 1000));
   return `timeout approaching (${remainingSeconds}s remaining)`;
 }
@@ -129,9 +132,10 @@ function shouldAttemptFinalSynthesis(finishReason: string): boolean {
   );
 }
 
-function tokenBudgetExhaustedReason(ctx: ResearchLoopContext): string | null {
-  if (!ctx.tokenLimit || ctx.tokenLimit <= 0) return null;
-  if (totalUsageTokens(ctx.model.usage) < ctx.tokenLimit) return null;
+function tokenBudgetExhaustedReason(ctx: ResearchCtx): string | null {
+  if (!ctx.config.tokenLimit || ctx.config.tokenLimit <= 0) return null;
+  if (totalUsageTokens(ctx.deps.model.usage) < ctx.config.tokenLimit)
+    return null;
   return "token budget exhausted";
 }
 
@@ -148,21 +152,21 @@ function budgetStatusMessage(opts: {
   maxActionToolCalls: number;
   totalToolExecutions: number;
   maxTotalToolExecutions: number;
-  ctx: ResearchLoopContext;
+  ctx: ResearchCtx;
 }): string | null {
-  const actionRemaining = opts.ctx.budget
-    ? opts.ctx.budget.remainingActionCalls
+  const actionRemaining = opts.ctx.store.budget
+    ? opts.ctx.store.budget.remainingActionCalls
     : Math.max(0, opts.maxActionToolCalls - opts.actionToolCalls);
-  const totalRemaining = opts.ctx.budget
-    ? opts.ctx.budget.remainingToolExecutions
+  const totalRemaining = opts.ctx.store.budget
+    ? opts.ctx.store.budget.remainingToolExecutions
     : Math.max(0, opts.maxTotalToolExecutions - opts.totalToolExecutions);
   const sourcesRemaining = Math.max(
     0,
-    opts.ctx.sourceCap - opts.ctx.fetchedSources.length,
+    opts.ctx.config.sourceCap - opts.ctx.store.fetchedSources.length,
   );
-  const tokenLimit = opts.ctx.tokenLimit ?? 0;
+  const tokenLimit = opts.ctx.config.tokenLimit ?? 0;
   const tokensUsed =
-    tokenLimit > 0 ? totalUsageTokens(opts.ctx.model.usage) : 0;
+    tokenLimit > 0 ? totalUsageTokens(opts.ctx.deps.model.usage) : 0;
   const tokenRatio =
     tokenLimit > 0
       ? Math.max(0, (tokenLimit - tokensUsed) / tokenLimit)
@@ -187,7 +191,7 @@ function budgetStatusMessage(opts: {
     `action_tool_calls=${opts.actionToolCalls}/${opts.maxActionToolCalls}`,
     `action_tool_calls_remaining=${actionRemaining}`,
     `tool_execution_safety_remaining=${totalRemaining}`,
-    `sources=${opts.ctx.fetchedSources.length}/${opts.ctx.sourceCap}`,
+    `sources=${opts.ctx.store.fetchedSources.length}/${opts.ctx.config.sourceCap}`,
     `sources_remaining=${sourcesRemaining}`,
     ...(tokenLimit > 0 ? [`tokens_used=${tokensUsed}/${tokenLimit}`] : []),
     "plan/read_source/search_sources/digest_source do not spend action_tool_calls.",
@@ -219,8 +223,8 @@ async function mapWithConcurrency<T, R>(
 
 async function executeToolUse(
   tu: ModelToolCall,
-  ctx: ResearchLoopContext,
-  scope: SubagentScope,
+  ctx: ResearchCtx,
+  subagents: SubagentScope,
   searchIndex?: number,
 ): Promise<ToolExecution> {
   if (tu.name === "search") {
@@ -238,7 +242,7 @@ async function executeToolUse(
         },
       };
     } catch (err) {
-      ctx.abort();
+      ctx.deps.abort();
       return {
         toolResult: {
           type: "tool_result",
@@ -263,7 +267,7 @@ async function executeToolUse(
         },
       };
     } catch (err) {
-      ctx.abort();
+      ctx.deps.abort();
       return {
         toolResult: {
           type: "tool_result",
@@ -403,7 +407,7 @@ async function executeToolUse(
         "spawn requires a non-empty `tasks` array of self-contained sub-questions.",
       );
     }
-    const { handles, error } = scope.spawn(tasks);
+    const { handles, error } = subagents.spawn(tasks);
     if (error) return textResult(tu.id, error);
     return textResult(
       tu.id,
@@ -419,7 +423,7 @@ async function executeToolUse(
   }
 
   if (tu.name === "join") {
-    const { summaries, fetchedUrls, error } = await scope.join(
+    const { summaries, fetchedUrls, error } = await subagents.join(
       readJoinHandles(tu.input),
     );
     if (error) return textResult(tu.id, error);
@@ -498,53 +502,22 @@ function readJoinHandles(input: unknown): string[] | undefined {
   return handles.length > 0 ? handles : undefined;
 }
 
-function tagEventDepth(
-  event: ResearchLoopEvent,
-  depth: number,
-): ResearchLoopEvent {
-  return event.depth === undefined ? { ...event, depth } : event;
-}
-
-function forkContextForSubagent(
-  ctx: ResearchLoopContext,
-  question: string,
-  timing: SubagentTiming,
-): ResearchLoopContext {
-  const depth = (ctx.depth ?? 0) + 1;
-  return {
-    ...ctx,
-    query: question,
-    depth,
-    ...(timing.deadlineAt !== undefined
-      ? { deadlineAt: timing.deadlineAt }
-      : {}),
-    ...(timing.synthesisReserveMs !== undefined
-      ? { synthesisReserveMs: timing.synthesisReserveMs }
-      : {}),
-    ...(ctx.subagentCompactionTriggerTokens !== undefined
-      ? { compactionTriggerTokens: ctx.subagentCompactionTriggerTokens }
-      : {}),
-    ...(ctx.subagentCompactionKeepTokens !== undefined
-      ? { compactionKeepTokens: ctx.subagentCompactionKeepTokens }
-      : {}),
-    browserSessionLease: undefined,
-    emit: (event) => ctx.emit(tagEventDepth(event, depth)),
-  };
-}
-
 interface SubagentTiming {
   deadlineAt?: number;
   synthesisReserveMs?: number;
 }
 
-function subagentTiming(ctx: ResearchLoopContext): SubagentTiming | string {
-  if (ctx.deadlineAt === undefined || ctx.synthesisReserveMs === undefined) {
+function subagentTiming(ctx: ResearchCtx): SubagentTiming | string {
+  if (
+    ctx.scope.deadlineAt === undefined ||
+    ctx.scope.synthesisReserveMs === undefined
+  ) {
     return {};
   }
 
   const now = Date.now();
-  const leadDeadlineAt = ctx.deadlineAt;
-  const leadReserveMs = Math.max(0, ctx.synthesisReserveMs);
+  const leadDeadlineAt = ctx.scope.deadlineAt;
+  const leadReserveMs = Math.max(0, ctx.scope.synthesisReserveMs);
   const subagentDeadlineAt = leadDeadlineAt - leadReserveMs;
   const subagentReserveMs = Math.min(
     leadReserveMs,
@@ -573,7 +546,7 @@ function truncateFindings(text: string): string {
 }
 
 function subagentSources(
-  ctx: ResearchLoopContext,
+  ctx: ResearchCtx,
   fetchedUrls: string[],
 ): Array<{ source_id?: string; url: string; title?: string }> {
   const seen = new Set<string>();
@@ -583,7 +556,7 @@ function subagentSources(
     const key = normalizeFetchUrl(url);
     if (seen.has(key)) continue;
     seen.add(key);
-    const document = ctx.sourceDocuments.get(key);
+    const document = ctx.store.sourceDocuments.get(key);
     sources.push(
       document
         ? {
@@ -612,22 +585,30 @@ interface SubagentOutcome {
 }
 
 async function runSubagentTask(
-  ctx: ResearchLoopContext,
+  ctx: ResearchCtx,
   question: string,
   timing: SubagentTiming,
   perAgentMaxToolCalls: number,
 ): Promise<SubagentOutcome> {
-  const subagentCtx = forkContextForSubagent(ctx, question, timing);
+  await using scope = ctx.scope.derive({
+    query: question,
+    depth: ctx.scope.depth + 1,
+    deadlineAt: timing.deadlineAt,
+    synthesisReserveMs: timing.synthesisReserveMs,
+    compactionTriggerTokens: ctx.config.subagentCompactionTriggerTokens,
+    compactionKeepTokens: ctx.config.subagentCompactionKeepTokens,
+  });
+  const subagentCtx: ResearchCtx = { ...ctx, scope };
   try {
     const run = await runResearchLoop({
       ctx: subagentCtx,
       query: question,
       maxToolCalls: perAgentMaxToolCalls,
-      effort: ctx.subagentEffort,
+      effort: ctx.config.subagentEffort,
       systemPrompt: SUBAGENT_SYSTEM_PROMPT,
     });
     const findings = truncateFindings(run.markdown);
-    ctx.emit({
+    ctx.scope.emit({
       type: "subagent_finished",
       task: question,
       sourcesFetched: run.fetchedUrls.length,
@@ -645,7 +626,7 @@ async function runSubagentTask(
       fetchedUrls: run.fetchedUrls,
     };
   } catch (err) {
-    ctx.abort();
+    ctx.deps.abort();
     return {
       summary: {
         task: question,
@@ -653,8 +634,6 @@ async function runSubagentTask(
       },
       fetchedUrls: [],
     };
-  } finally {
-    await closeBrowserLease(subagentCtx);
   }
 }
 
@@ -684,15 +663,15 @@ interface SubagentScope {
 }
 
 function createSubagentScope(
-  ctx: ResearchLoopContext,
+  ctx: ResearchCtx,
   perAgentMaxToolCalls: number,
 ): SubagentScope {
   const registry = new Map<string, SubagentEntry>();
   let counter = 0;
   const gate =
-    ctx.subagentGate ??
+    ctx.deps.subagentGate ??
     createSteelConcurrencyGate(
-      ctx.maxConcurrentSubagents ?? DEFAULT_MAX_CONCURRENT_SUBAGENTS,
+      ctx.config.maxConcurrentSubagents ?? DEFAULT_MAX_CONCURRENT_SUBAGENTS,
     );
 
   const uncollected = (): SubagentEntry[] =>
@@ -718,7 +697,7 @@ function createSubagentScope(
 
   return {
     spawn(tasks) {
-      if ((ctx.depth ?? 0) >= (ctx.maxDelegationDepth ?? 0)) {
+      if ((ctx.scope.depth ?? 0) >= (ctx.config.maxDelegationDepth ?? 0)) {
         return {
           handles: [],
           error:
@@ -726,8 +705,8 @@ function createSubagentScope(
         };
       }
       if (
-        ctx.budget &&
-        ctx.budget.remainingActionCalls < SPAWN_MIN_REMAINING_ACTION_CALLS
+        ctx.store.budget &&
+        ctx.store.budget.remainingActionCalls < SPAWN_MIN_REMAINING_ACTION_CALLS
       ) {
         return {
           handles: [],
@@ -747,12 +726,12 @@ function createSubagentScope(
             "Error: spawn requires a non-empty `tasks` array of self-contained sub-questions.",
         };
       }
-      ctx.emit({ type: "delegation_started", tasks: accepted });
+      ctx.scope.emit({ type: "delegation_started", tasks: accepted });
       const handles: Array<{ handle: string; task: string }> = [];
       for (const task of accepted) {
         counter += 1;
         const handle = `agent_${counter}`;
-        ctx.emit({ type: "subagent_started", task });
+        ctx.scope.emit({ type: "subagent_started", task });
         const promise = gate.run(() =>
           runSubagentTask(ctx, task, timing, perAgentMaxToolCalls),
         );
@@ -810,7 +789,7 @@ function createSubagentScope(
 }
 
 export async function runResearchLoop(opts: {
-  ctx: ResearchLoopContext;
+  ctx: ResearchCtx;
   query: string;
   maxToolCalls?: number;
   effort?: ResearchEffort;
@@ -820,12 +799,12 @@ export async function runResearchLoop(opts: {
   const { ctx, query } = opts;
   const systemPrompt = opts.systemPrompt ?? RESEARCH_SYSTEM_PROMPT;
   const tools = toolsForContext(ctx);
-  const isSubagent = (ctx.depth ?? 0) > 0;
+  const isSubagent = (ctx.scope.depth ?? 0) > 0;
   const maxToolCalls = opts.maxToolCalls ?? DEFAULT_MAX_TOOL_CALLS;
   const maxTotalToolExecutions = Math.max(maxToolCalls, maxToolCalls * 2);
-  const scope = createSubagentScope(ctx, SUBAGENT_MAX_TOOL_CALLS);
+  const subagents = createSubagentScope(ctx, SUBAGENT_MAX_TOOL_CALLS);
 
-  if (!isSubagent) ctx.emit({ type: "research_started" });
+  if (!isSubagent) ctx.scope.emit({ type: "research_started" });
 
   const fetchedUrls: string[] = [];
   let toolCalls = 0;
@@ -850,7 +829,7 @@ export async function runResearchLoop(opts: {
     toolCalls < maxToolCalls &&
     totalToolExecutions < maxTotalToolExecutions
   ) {
-    ctx.abort();
+    ctx.deps.abort();
     const preStepTimeoutReason = timeoutSynthesisReason(ctx);
     if (preStepTimeoutReason) {
       finishReason = preStepTimeoutReason;
@@ -867,16 +846,16 @@ export async function runResearchLoop(opts: {
 
     let resp: { content: ModelAssistantBlock[] };
     try {
-      resp = await ctx.model.step({
+      resp = await ctx.deps.model.step({
         system: systemPrompt,
         tools,
         messages,
-        maxTokens: ctx.maxOutputTokens ?? 2048,
+        maxTokens: ctx.config.maxOutputTokens ?? 2048,
         effort: opts.effort,
-        signal: ctx.signal,
+        signal: ctx.deps.signal,
       });
     } catch (err) {
-      if (ctx.signal?.aborted) throw err;
+      if (ctx.deps.signal?.aborted) throw err;
       const message = errorMessage(err);
       finishReason = `api error: ${message}`;
       break;
@@ -903,12 +882,14 @@ export async function runResearchLoop(opts: {
 
     let remainingActionToolCalls = Math.min(
       maxToolCalls - toolCalls,
-      ctx.budget ? ctx.budget.remainingActionCalls : Number.POSITIVE_INFINITY,
+      ctx.store.budget
+        ? ctx.store.budget.remainingActionCalls
+        : Number.POSITIVE_INFINITY,
     );
     let remainingTotalToolExecutions = Math.min(
       maxTotalToolExecutions - totalToolExecutions,
-      ctx.budget
-        ? ctx.budget.remainingToolExecutions
+      ctx.store.budget
+        ? ctx.store.budget.remainingToolExecutions
         : Number.POSITIVE_INFINITY,
     );
     const activeToolUses: ModelToolCall[] = [];
@@ -942,12 +923,12 @@ export async function runResearchLoop(opts: {
     const actionCallsThisStep = actionToolCallCount(activeToolUses);
     toolCalls += actionCallsThisStep;
     totalToolExecutions += activeToolUses.length;
-    ctx.budget?.consume(actionCallsThisStep, activeToolUses.length);
+    ctx.store.budget?.consume(actionCallsThisStep, activeToolUses.length);
 
     const executions = await mapWithConcurrency(
       activeToolUses,
-      ctx.maxConcurrentTools ?? DEFAULT_MAX_CONCURRENT_TOOLS,
-      (tu, index) => executeToolUse(tu, ctx, scope, searchIndexes[index]),
+      ctx.config.maxConcurrentTools ?? DEFAULT_MAX_CONCURRENT_TOOLS,
+      (tu, index) => executeToolUse(tu, ctx, subagents, searchIndexes[index]),
     );
     const toolResults = [
       ...executions.map((e) => e.toolResult),
@@ -986,7 +967,7 @@ export async function runResearchLoop(opts: {
 
     if (
       totalToolExecutions >= maxTotalToolExecutions ||
-      (ctx.budget && ctx.budget.remainingToolExecutions <= 0)
+      (ctx.store.budget && ctx.store.budget.remainingToolExecutions <= 0)
     ) {
       finishReason = "tool execution safety budget exhausted";
       break;
@@ -994,7 +975,7 @@ export async function runResearchLoop(opts: {
 
     if (
       toolCalls >= maxToolCalls ||
-      (ctx.budget && ctx.budget.remainingActionCalls <= 0)
+      (ctx.store.budget && ctx.store.budget.remainingActionCalls <= 0)
     ) {
       finishReason = "tool call budget exhausted";
       break;
@@ -1002,24 +983,24 @@ export async function runResearchLoop(opts: {
   }
 
   const canSalvageAfterApiError =
-    finishReason.startsWith("api error") && ctx.fetchedSources.length > 0;
+    finishReason.startsWith("api error") && ctx.store.fetchedSources.length > 0;
   if (
     !markdown &&
     (shouldAttemptFinalSynthesis(finishReason) || canSalvageAfterApiError)
   ) {
-    ctx.abort();
+    ctx.deps.abort();
     messages.push({
       role: "user",
       content: finalSynthesisPrompt(finishReason),
     });
 
     try {
-      const resp = await ctx.model.step({
+      const resp = await ctx.deps.model.step({
         system: systemPrompt,
         messages,
-        maxTokens: ctx.maxOutputTokens ?? 2048,
+        maxTokens: ctx.config.maxOutputTokens ?? 2048,
         effort: opts.effort,
-        signal: ctx.signal,
+        signal: ctx.deps.signal,
       });
       messages.push({ role: "assistant", content: resp.content });
       const text = textFromContent(resp.content);
@@ -1028,19 +1009,19 @@ export async function runResearchLoop(opts: {
         ? `final report after ${finishReason}`
         : `empty final synthesis after ${finishReason}`;
     } catch (err) {
-      if (ctx.signal?.aborted) throw err;
+      if (ctx.deps.signal?.aborted) throw err;
       const message = errorMessage(err);
       finishReason = `final synthesis api error after ${finishReason}: ${message}`;
     }
   }
 
-  const leftoverFetchedUrls = await scope.settle();
+  const leftoverFetchedUrls = await subagents.settle();
   if (leftoverFetchedUrls.length > 0) fetchedUrls.push(...leftoverFetchedUrls);
 
   if (!isSubagent) {
-    ctx.emit({
+    ctx.scope.emit({
       type: "research_finished",
-      sourcesFetched: ctx.fetchedSources.length,
+      sourcesFetched: ctx.store.fetchedSources.length,
     });
   }
 

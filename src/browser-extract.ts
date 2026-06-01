@@ -6,7 +6,7 @@ import {
 } from "./browser-session-pool.js";
 import { errorMessage } from "./errors.js";
 import { htmlToMarkdown } from "./html-extract.js";
-import type { ResearchLoopContext, SourceCacheEntry } from "./runtime.js";
+import type { ResearchCtx, SourceCacheEntry } from "./runtime.js";
 import type { SourceExtractionAttempt } from "./sources.js";
 import { extractionMetadataFromBrowser } from "./source-documents.js";
 import { runSteelRequest } from "./steel-runtime.js";
@@ -32,7 +32,7 @@ interface PageSnapshot {
 }
 
 export async function extractSourceWithBrowser(
-  ctx: ResearchLoopContext,
+  ctx: ResearchCtx,
   url: string,
   previousAttempts: SourceExtractionAttempt[],
 ): Promise<SourceCacheEntry> {
@@ -68,7 +68,7 @@ export async function extractSourceWithBrowser(
 }
 
 export async function extractHtmlWithBrowser(
-  ctx: ResearchLoopContext,
+  ctx: ResearchCtx,
   url: string,
 ): Promise<{ html: string; finalUrl: string; title: string }> {
   return runSteelRequest(ctx, async () => {
@@ -97,7 +97,7 @@ type SourceExtractionOutcome =
   | { ok: false; attempt: SourceExtractionAttempt; error: unknown };
 
 async function extractSourceOnce(
-  ctx: ResearchLoopContext,
+  ctx: ResearchCtx,
   url: string,
   previousAttempts: SourceExtractionAttempt[],
 ): Promise<SourceExtractionOutcome> {
@@ -149,7 +149,7 @@ async function extractSourceOnce(
 }
 
 async function extractHtmlOnce(
-  ctx: ResearchLoopContext,
+  ctx: ResearchCtx,
   url: string,
 ): Promise<{ html: string; finalUrl: string; title: string }> {
   const pool = getBrowserSessionPool(ctx);
@@ -171,20 +171,20 @@ async function extractHtmlOnce(
   }
 }
 
-function getBrowserSessionPool(ctx: ResearchLoopContext): BrowserSessionPool {
-  if (!ctx.browserSessionPool) {
-    ctx.browserSessionPool = new BrowserSessionPool({
-      steel: ctx.steel,
-      useProxy: ctx.useProxy,
+function getBrowserSessionPool(ctx: ResearchCtx): BrowserSessionPool {
+  if (!ctx.deps.browserSessionPool) {
+    ctx.deps.browserSessionPool = new BrowserSessionPool({
+      steel: ctx.deps.steel,
+      useProxy: ctx.config.useProxy,
       namespace: `atlas-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
-      signal: ctx.signal,
-      deadlineAt: ctx.deadlineAt,
+      signal: ctx.deps.signal,
+      deadlineAt: ctx.scope.deadlineAt,
       maxSessions:
         readBrowserMaxSessionsFromEnv() ??
-        defaultBrowserMaxSessions(ctx.maxConcurrentSubagents),
+        defaultBrowserMaxSessions(ctx.config.maxConcurrentSubagents),
     });
   }
-  return ctx.browserSessionPool;
+  return ctx.deps.browserSessionPool;
 }
 
 export async function navigateToUrl(

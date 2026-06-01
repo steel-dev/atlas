@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ModelMessage } from "./model.js";
-import type { ResearchLoopContext } from "./runtime.js";
+import type { ResearchCtx } from "./runtime.js";
 import { __testing, estimateMessagesTokens } from "./compaction.js";
 
 const { planCutIndex, buildSourceIndex } = __testing;
@@ -10,13 +10,18 @@ function question(chars: number): ModelMessage {
 }
 
 function assistantText(chars: number, marker = "a"): ModelMessage {
-  return { role: "assistant", content: [{ type: "text", text: marker.repeat(chars) }] };
+  return {
+    role: "assistant",
+    content: [{ type: "text", text: marker.repeat(chars) }],
+  };
 }
 
 function toolResult(id: string, chars: number): ModelMessage {
   return {
     role: "user",
-    content: [{ type: "tool_result", tool_call_id: id, content: "r".repeat(chars) }],
+    content: [
+      { type: "tool_result", tool_call_id: id, content: "r".repeat(chars) },
+    ],
   };
 }
 
@@ -69,12 +74,14 @@ describe("planCutIndex", () => {
 describe("buildSourceIndex", () => {
   it("lists fetched sources with their handles and dedupes", () => {
     const ctx = {
-      fetchedSources: [
-        { url: "https://a.example", title: "A", sourceId: "source_1" },
-        { url: "https://b.example", title: "B", sourceId: "source_2" },
-        { url: "https://a.example", title: "A", sourceId: "source_1" },
-      ],
-    } as unknown as ResearchLoopContext;
+      store: {
+        fetchedSources: [
+          { url: "https://a.example", title: "A", sourceId: "source_1" },
+          { url: "https://b.example", title: "B", sourceId: "source_2" },
+          { url: "https://a.example", title: "A", sourceId: "source_1" },
+        ],
+      },
+    } as unknown as ResearchCtx;
     const index = buildSourceIndex(ctx);
 
     expect(index).toContain("source_1 — A (https://a.example)");
@@ -83,7 +90,9 @@ describe("buildSourceIndex", () => {
   });
 
   it("returns an empty string when nothing has been fetched", () => {
-    const ctx = { fetchedSources: [] } as unknown as ResearchLoopContext;
+    const ctx = {
+      store: { fetchedSources: [] },
+    } as unknown as ResearchCtx;
     expect(buildSourceIndex(ctx)).toBe("");
   });
 });

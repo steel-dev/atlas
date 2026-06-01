@@ -10,7 +10,7 @@ import {
   type SearchSourceResults,
 } from "./search-provider.js";
 import { errorMessage } from "./errors.js";
-import type { ResearchLoopContext } from "./runtime.js";
+import type { ResearchCtx } from "./runtime.js";
 import { normalizeUrlForSource } from "./url.js";
 
 const SEARCH_SNIPPET_CHARS = 500;
@@ -182,11 +182,11 @@ async function collectSearchResults(opts: {
   query: string;
   limit: number;
   index: number;
-  ctx: ResearchLoopContext;
+  ctx: ResearchCtx;
   provider: SearchProvider;
 }): Promise<SearchCollection> {
   const { query, limit, index, ctx, provider } = opts;
-  ctx.emit({
+  ctx.scope.emit({
     type: "searching",
     index,
     query,
@@ -194,9 +194,13 @@ async function collectSearchResults(opts: {
 
   let outcome: SearchQueryOutcome;
   try {
-    outcome = await provider.searchQuery({ query, limit, signal: ctx.signal });
+    outcome = await provider.searchQuery({
+      query,
+      limit,
+      signal: ctx.deps.signal,
+    });
   } catch (err) {
-    ctx.emit({ type: "search_results", index, count: 0 });
+    ctx.scope.emit({ type: "search_results", index, count: 0 });
     return {
       query,
       sources: [],
@@ -215,7 +219,7 @@ async function collectSearchResults(opts: {
     })),
     limit,
   );
-  ctx.emit({
+  ctx.scope.emit({
     type: "search_results",
     index,
     count: merged.length,
@@ -231,7 +235,7 @@ async function collectSearchResults(opts: {
 
 export async function execSearch(
   args: SearchToolInput,
-  ctx: ResearchLoopContext,
+  ctx: ResearchCtx,
   searchIndex: number,
 ): Promise<string> {
   const queries = readSearchQueries(args);
@@ -239,9 +243,9 @@ export async function execSearch(
     return "Error: search requires `queries` to be an array of non-empty strings.";
   }
 
-  const rawLimit = args.limit ?? ctx.defaultSearchLimit ?? 5;
+  const rawLimit = args.limit ?? ctx.config.defaultSearchLimit ?? 5;
   const limit = Math.min(Math.max(1, Math.floor(Number(rawLimit))), 20);
-  const provider = ctx.searchProvider ?? createScrapingSearchProvider(ctx);
+  const provider = ctx.deps.searchProvider ?? createScrapingSearchProvider(ctx);
   const collections = await Promise.all(
     queries.map((query, offset) =>
       collectSearchResults({
@@ -301,7 +305,7 @@ export async function execSearch(
     );
   }
   const error = warnings.join("; ") || "all sources failed";
-  ctx.emit({
+  ctx.scope.emit({
     type: "search_failed",
     index: searchIndex,
     error,

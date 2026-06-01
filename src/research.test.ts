@@ -6,7 +6,12 @@ import {
   type ModelAssistantBlock,
   type ModelStepInput,
 } from "./model.js";
-import type { ResearchLoopContext } from "./tools.js";
+import {
+  createAgentScope,
+  createResearchCaches,
+  createSourceReservations,
+  type ResearchCtx,
+} from "./tools.js";
 import type { SourceDocument } from "./sources.js";
 
 function fakeModel(scriptedSteps: ModelAssistantBlock[][]): {
@@ -30,24 +35,25 @@ function fakeModel(scriptedSteps: ModelAssistantBlock[][]): {
   return { adapter, calls };
 }
 
-function singleSourceContext(document: SourceDocument): ResearchLoopContext {
+function singleSourceContext(document: SourceDocument): ResearchCtx {
   const sourceDocuments = new Map<string, SourceDocument>([
     [document.canonicalUrl, document],
   ]);
-  return { sourceDocuments } as unknown as ResearchLoopContext;
+  return { store: { sourceDocuments } } as unknown as ResearchCtx;
 }
 
-function followupResearchContext(model: ModelAdapter): ResearchLoopContext {
+function followupResearchContext(model: ModelAdapter): ResearchCtx {
   return {
-    model,
-    fetchedSources: [],
-    sourceDocuments: new Map(),
-    emit: () => undefined,
-    abort: () => undefined,
-    defaultEngine: "ddg",
-    useProxy: false,
-    sourceCap: 10,
-  } as unknown as ResearchLoopContext;
+    config: { defaultEngine: "ddg", useProxy: false, sourceCap: 10 },
+    deps: { model, abort: () => undefined },
+    store: {
+      fetchedSources: [],
+      sourceDocuments: new Map(),
+      sourceReservations: createSourceReservations(),
+      caches: createResearchCaches(),
+    },
+    scope: createAgentScope({ sink: () => undefined }),
+  } as unknown as ResearchCtx;
 }
 
 function sourceDocument(markdown: string): SourceDocument {

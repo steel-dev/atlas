@@ -3,7 +3,7 @@ import type {
   ModelMessage,
   ModelToolResult,
 } from "./model.js";
-import type { ResearchLoopContext } from "./runtime.js";
+import type { ResearchCtx } from "./runtime.js";
 
 /** Rough chars-per-token used to estimate context size without an extra
  *  tokenizer dependency. A 200k-token trigger against a much larger context
@@ -71,10 +71,6 @@ export function estimateMessagesTokens(messages: ModelMessage[]): number {
   return total;
 }
 
-/** Pick the index where the kept (verbatim) tail begins. Folds messages in
- *  [1, cut). The tail must start at an assistant message so that no
- *  tool_result is separated from the tool_use it answers, and the final
- *  assistant turn is always kept so the most recent reasoning survives. */
 function planCutIndex(messages: ModelMessage[], keepTokens: number): number {
   let lastAssistantIdx = -1;
   for (let i = messages.length - 1; i >= 1; i--) {
@@ -141,14 +137,11 @@ function renderFoldedForSummary(messages: ModelMessage[]): string {
   return parts.join("\n\n");
 }
 
-/** Deterministic, lossless-for-navigation index of every source fetched so
- *  far. Rebuilt from the shared source store (not the transcript), so source
- *  handles survive compaction even when their source cards are folded away. */
-export function buildSourceIndex(ctx: ResearchLoopContext): string {
-  if (ctx.fetchedSources.length === 0) return "";
+export function buildSourceIndex(ctx: ResearchCtx): string {
+  if (ctx.store.fetchedSources.length === 0) return "";
   const seen = new Set<string>();
   const lines: string[] = [];
-  for (const source of ctx.fetchedSources) {
+  for (const source of ctx.store.fetchedSources) {
     const key = source.sourceId ?? source.url;
     if (seen.has(key)) continue;
     seen.add(key);
@@ -183,16 +176,12 @@ function compactionUserPrompt(
     .join("\n\n");
 }
 
-/** Fold older transcript turns into a compact progress note when the estimated
- *  context exceeds `ctx.compactionTriggerTokens`. Returns true if the message
- *  list was rewritten in place. Fails safe: any error skips compaction and
- *  leaves the full transcript untouched. */
 export async function maybeCompactResearchContext(opts: {
-  ctx: ResearchLoopContext;
+  ctx: ResearchCtx;
   messages: ModelMessage[];
 }): Promise<boolean> {
   const { ctx, messages } = opts;
-  const trigger = ctx.compactionTriggerTokens ?? 0;
+  const trigger = ctx.scope.compactionTriggerTokens ?? 0;
   if (!Number.isFinite(trigger) || trigger <= 0) return false;
   if (messages.length < 4) return false;
 
@@ -201,7 +190,7 @@ export async function maybeCompactResearchContext(opts: {
 
   const keepTokens = Math.max(
     1,
-    Math.floor(ctx.compactionKeepTokens ?? Math.floor(trigger / 2)),
+    Math.floor(ctx.scope.compactionKeepTokens ?? Math.floor(trigger / 2)),
   );
   const cut = planCutIndex(messages, keepTokens);
   if (cut < 2) return false;
@@ -210,7 +199,7 @@ export async function maybeCompactResearchContext(opts: {
   const foldedTokens = estimateMessagesTokens(folded);
   if (foldedTokens < MIN_FOLD_TOKENS) return false;
 
-  const summarizer = ctx.summaryModel ?? ctx.model;
+  const summarizer = ctx.deps.summaryModel ?? ctx.deps.model;
   let summary: string;
   try {
     const resp = await summarizer.step({
@@ -219,17 +208,17 @@ export async function maybeCompactResearchContext(opts: {
         {
           role: "user",
           content: compactionUserPrompt(
-            ctx.query,
+            ctx.scope.query,
             renderFoldedForSummary(folded),
           ),
         },
       ],
       maxTokens: MAX_SUMMARY_TOKENS,
-      signal: ctx.signal,
+      signal: ctx.deps.signal,
     });
     summary = textFromBlocks(resp.content);
   } catch (err) {
-    if (ctx.signal?.aborted) throw err;
+    if (ctx.deps.signal?.aborted) throw err;
     return false;
   }
   if (!summary) return false;
@@ -253,7 +242,7 @@ export async function maybeCompactResearchContext(opts: {
   const tokensAfter = estimateMessagesTokens(rewritten);
   messages.splice(0, messages.length, ...rewritten);
 
-  ctx.emit({
+  ctx.scope.emit({
     type: "context_compacted",
     tokensBefore,
     tokensAfter,

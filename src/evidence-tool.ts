@@ -1,4 +1,4 @@
-import type { ResearchLoopContext } from "./runtime.js";
+import type { ResearchCtx } from "./runtime.js";
 import type { ModelAssistantBlock } from "./model.js";
 import {
   findSourceDocumentById,
@@ -74,7 +74,7 @@ function readPositiveInteger(
 
 export function execReadSource(
   args: ReadSourceToolInput,
-  ctx: ResearchLoopContext,
+  ctx: ResearchCtx,
 ): string {
   const sourceId = readSourceId(args, "read_source");
   if (!sourceId.ok) return sourceId.error;
@@ -100,7 +100,7 @@ export function execReadSource(
 
 export function execSearchSources(
   args: SearchSourcesToolInput,
-  ctx: ResearchLoopContext,
+  ctx: ResearchCtx,
 ): string {
   const query = String(args.query ?? "").trim();
   if (!query) return "Error: search_sources requires a non-empty `query`.";
@@ -123,7 +123,7 @@ export function execSearchSources(
 
 export async function execDigestSource(
   args: DigestSourceToolInput,
-  ctx: ResearchLoopContext,
+  ctx: ResearchCtx,
 ): Promise<string> {
   const sourceId = readSourceId(args, "digest_source");
   if (!sourceId.ok) return sourceId.error;
@@ -135,9 +135,9 @@ export async function execDigestSource(
   if (!document) return `Error: unknown source_id: ${sourceId.sourceId}`;
 
   const cacheKey = `digest\u0000${goal}\u0000${document.canonicalUrl}`;
-  let digestPromise = ctx.caches.summaries.get(cacheKey);
+  let digestPromise = ctx.store.caches.summaries.get(cacheKey);
   if (!digestPromise) {
-    const model = ctx.summaryModel ?? ctx.model;
+    const model = ctx.deps.summaryModel ?? ctx.deps.model;
     digestPromise = model
       .step({
         system: DIGEST_SOURCE_SYSTEM_PROMPT,
@@ -153,10 +153,10 @@ export async function execDigestSource(
           },
         ],
         maxTokens: DIGEST_MAX_TOKENS,
-        signal: ctx.signal,
+        signal: ctx.deps.signal,
       })
       .then((resp) => summaryText(resp.content));
-    ctx.caches.summaries.set(cacheKey, digestPromise);
+    ctx.store.caches.summaries.set(cacheKey, digestPromise);
   }
 
   try {
@@ -176,13 +176,13 @@ export async function execDigestSource(
       2,
     );
   } catch {
-    ctx.caches.summaries.delete(cacheKey);
+    ctx.store.caches.summaries.delete(cacheKey);
     return "Error: digest_source failed.";
   }
 }
 
 function documentsForSearch(
-  ctx: ResearchLoopContext,
+  ctx: ResearchCtx,
   sourceIds: string[] | undefined,
 ) {
   const ids = Array.isArray(sourceIds)
@@ -192,7 +192,7 @@ function documentsForSearch(
         ),
       ]
     : [];
-  if (ids.length === 0) return [...ctx.sourceDocuments.values()];
+  if (ids.length === 0) return [...ctx.store.sourceDocuments.values()];
 
   const documents = [];
   for (const id of ids) {

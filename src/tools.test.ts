@@ -9,14 +9,16 @@ import type {
 } from "./model.js";
 import {
   __testing,
+  createAgentScope,
   createBudgetLedger,
   createSourceReservations,
   createResearchCaches,
   createSteelConcurrencyGate,
   runResearchLoop,
-  type ResearchLoopContext,
+  type ResearchCtx,
 } from "./tools.js";
 import { SUBAGENT_SYSTEM_PROMPT } from "./tool-contract.js";
+import type { ResearchEffort } from "./defaults.js";
 import type { SourceDocument } from "./sources.js";
 
 vi.mock("./pdf-extract.js", () => ({
@@ -71,13 +73,25 @@ function sourceDocument(
 function createContext(opts: {
   messagesCreate: ReturnType<typeof vi.fn>;
   scrape?: unknown;
-  fetchedSources?: ResearchLoopContext["fetchedSources"];
-  sourceDocuments?: ResearchLoopContext["sourceDocuments"];
+  fetchedSources?: ResearchCtx["store"]["fetchedSources"];
+  sourceDocuments?: ResearchCtx["store"]["sourceDocuments"];
   sourceCap?: number;
   useProxy?: boolean;
   deadlineAt?: number;
   synthesisReserveMs?: number;
-}): ResearchLoopContext {
+  depth?: number;
+  summaryModel?: ModelAdapter;
+  budget?: ReturnType<typeof createBudgetLedger>;
+  tokenLimit?: number;
+  maxDelegationDepth?: number;
+  maxConcurrentSubagents?: number;
+  subagentGate?: ReturnType<typeof createSteelConcurrencyGate>;
+  subagentEffort?: ResearchEffort;
+  compactionTriggerTokens?: number;
+  compactionKeepTokens?: number;
+  subagentCompactionTriggerTokens?: number;
+  subagentCompactionKeepTokens?: number;
+}): ResearchCtx & { emitSpy: ReturnType<typeof vi.fn> } {
   const scrape = (opts.scrape ?? vi.fn()) as ReturnType<typeof vi.fn>;
   let currentUrl = "about:blank";
   let currentTitle = "";
@@ -141,36 +155,58 @@ function createContext(opts: {
       release: vi.fn(async () => undefined),
     })),
   };
+  const emit = vi.fn();
   return {
-    model: {
-      provider: "anthropic",
-      model: "test-model",
-      usage: {
-        input_tokens: 0,
-        output_tokens: 0,
-        cache_creation_input_tokens: 0,
-        cache_read_input_tokens: 0,
-      },
-      step: opts.messagesCreate as (
-        input: ModelStepInput,
-      ) => Promise<{ content: ModelAssistantBlock[] }>,
-    } satisfies ModelAdapter,
-    steel: { sessions: {} } as unknown as Steel,
-    fetchedSources: opts.fetchedSources ?? [],
-    sourceDocuments: opts.sourceDocuments ?? new Map(),
-    emit: vi.fn(),
-    abort: vi.fn(),
-    defaultEngine: "ddg",
-    useProxy: opts.useProxy ?? false,
-    sourceCap: opts.sourceCap ?? 4,
-    maxConcurrentTools: 2,
-    deadlineAt: opts.deadlineAt,
-    synthesisReserveMs: opts.synthesisReserveMs,
-    steelConcurrencyGate: createSteelConcurrencyGate(2),
-    browserSessionPool:
-      browserSessionPool as unknown as ResearchLoopContext["browserSessionPool"],
-    sourceReservations: createSourceReservations(),
-    caches: createResearchCaches(),
+    config: {
+      defaultEngine: "ddg",
+      useProxy: opts.useProxy ?? false,
+      sourceCap: opts.sourceCap ?? 4,
+      maxConcurrentTools: 2,
+      tokenLimit: opts.tokenLimit,
+      maxDelegationDepth: opts.maxDelegationDepth,
+      maxConcurrentSubagents: opts.maxConcurrentSubagents,
+      subagentEffort: opts.subagentEffort,
+      subagentCompactionTriggerTokens: opts.subagentCompactionTriggerTokens,
+      subagentCompactionKeepTokens: opts.subagentCompactionKeepTokens,
+    },
+    deps: {
+      model: {
+        provider: "anthropic",
+        model: "test-model",
+        usage: {
+          input_tokens: 0,
+          output_tokens: 0,
+          cache_creation_input_tokens: 0,
+          cache_read_input_tokens: 0,
+        },
+        step: opts.messagesCreate as (
+          input: ModelStepInput,
+        ) => Promise<{ content: ModelAssistantBlock[] }>,
+      } satisfies ModelAdapter,
+      summaryModel: opts.summaryModel,
+      steel: { sessions: {} } as unknown as Steel,
+      abort: vi.fn(),
+      steelConcurrencyGate: createSteelConcurrencyGate(2),
+      subagentGate: opts.subagentGate,
+      browserSessionPool:
+        browserSessionPool as unknown as ResearchCtx["deps"]["browserSessionPool"],
+    },
+    store: {
+      fetchedSources: opts.fetchedSources ?? [],
+      sourceDocuments: opts.sourceDocuments ?? new Map(),
+      sourceReservations: createSourceReservations(),
+      caches: createResearchCaches(),
+      budget: opts.budget,
+    },
+    scope: createAgentScope({
+      sink: emit,
+      depth: opts.depth ?? 0,
+      deadlineAt: opts.deadlineAt,
+      synthesisReserveMs: opts.synthesisReserveMs,
+      compactionTriggerTokens: opts.compactionTriggerTokens,
+      compactionKeepTokens: opts.compactionKeepTokens,
+    }),
+    emitSpy: emit,
   };
 }
 
@@ -315,7 +351,7 @@ describe("research loop cache integration", () => {
     expect(toolResultText(secondRequest)).toContain('"results"');
     expect(toolResultText(secondRequest)).toContain('"engine": "ddg"');
     expect(scrape).toHaveBeenCalledTimes(3);
-    expect(ctx.caches.serp.size).toBe(3);
+    expect(ctx.store.caches.serp.size).toBe(3);
   });
 
   it("ignores model-supplied engine and returns rank provenance", async () => {
@@ -393,7 +429,7 @@ describe("research loop cache integration", () => {
     ]);
     expect(fetch).toHaveBeenCalledTimes(3);
     expect(String(fetch.mock.calls[0]?.[0])).toContain("duckduckgo.com");
-    expect(ctx.caches.serp.size).toBe(3);
+    expect(ctx.store.caches.serp.size).toBe(3);
   });
 
   it("merges results across engines and boosts duplicate URLs", async () => {
@@ -562,12 +598,12 @@ describe("research loop cache integration", () => {
       url: "https://example.com/shared-paper",
       queries: ["alpha query", "beta query"],
     });
-    expect(ctx.emit).toHaveBeenCalledWith({
+    expect(ctx.emitSpy).toHaveBeenCalledWith({
       type: "search_results",
       index: 1,
       count: 1,
     });
-    expect(ctx.emit).toHaveBeenCalledWith({
+    expect(ctx.emitSpy).toHaveBeenCalledWith({
       type: "search_results",
       index: 2,
       count: 1,
@@ -614,12 +650,12 @@ describe("research loop cache integration", () => {
       maxToolCalls: 3,
     });
 
-    expect(ctx.emit).toHaveBeenCalledWith({
+    expect(ctx.emitSpy).toHaveBeenCalledWith({
       type: "searching",
       index: 1,
       query: "valid query",
     });
-    expect(ctx.emit).toHaveBeenCalledWith({
+    expect(ctx.emitSpy).toHaveBeenCalledWith({
       type: "search_results",
       index: 1,
       count: 1,
@@ -676,12 +712,12 @@ describe("research loop cache integration", () => {
 
     expect(payload.queries).toEqual(["alpha query", "beta query"]);
     expect(payload.results[0]?.queries).toEqual(["alpha query", "beta query"]);
-    expect(ctx.emit).toHaveBeenCalledWith({
+    expect(ctx.emitSpy).toHaveBeenCalledWith({
       type: "searching",
       index: 1,
       query: "alpha query",
     });
-    expect(ctx.emit).toHaveBeenCalledWith({
+    expect(ctx.emitSpy).toHaveBeenCalledWith({
       type: "searching",
       index: 2,
       query: "beta query",
@@ -715,7 +751,7 @@ describe("research loop cache integration", () => {
     expect(toolText).toContain(
       "Error: search requires `queries` to be an array of non-empty strings.",
     );
-    expect(ctx.emit).toHaveBeenCalledWith({
+    expect(ctx.emitSpy).toHaveBeenCalledWith({
       type: "searching",
       index: 1,
       query: "valid query",
@@ -801,7 +837,7 @@ describe("research loop cache integration", () => {
     expect(payload.warnings[0]).toContain("ddg:");
     expect(fetch).toHaveBeenCalledTimes(3);
     expect(scrape).toHaveBeenCalledTimes(2);
-    expect(ctx.caches.serp.size).toBe(3);
+    expect(ctx.store.caches.serp.size).toBe(3);
   });
 
   it("merges another engine when the default engine returns no results", async () => {
@@ -945,7 +981,7 @@ describe("research loop cache integration", () => {
     expect(result.finishReason).toBe("final report");
     expect(result.markdown).toContain("# Test Report");
     expect(scrape).toHaveBeenCalledTimes(1);
-    expect(ctx.fetchedSources).toEqual([
+    expect(ctx.store.fetchedSources).toEqual([
       {
         url: "https://example.com/source",
         title: "Primary Source",
@@ -954,7 +990,7 @@ describe("research loop cache integration", () => {
       },
     ]);
     expect(
-      ctx.sourceDocuments.get("https://example.com/source")?.markdown,
+      ctx.store.sourceDocuments.get("https://example.com/source")?.markdown,
     ).toContain("Detailed source body");
     expect(toolResultText(followupRequest)).toContain(
       '"url": "https://example.com/source"',
@@ -1127,7 +1163,7 @@ describe("research loop cache integration", () => {
     expect(result.finishReason).toBe("final report");
     expect(result.toolCalls).toBe(1);
     expect(scrape).toHaveBeenCalledTimes(2);
-    expect(ctx.fetchedSources).toHaveLength(2);
+    expect(ctx.store.fetchedSources).toHaveLength(2);
     expect(toolResultText(fetchRequest)).toContain('"source_id": "source_1"');
     expect(toolResultText(fetchRequest)).toContain('"source_id": "source_2"');
     expect(toolResultText(searchRequest)).toContain("second clue");
@@ -1167,7 +1203,7 @@ describe("research loop cache integration", () => {
       )
       .mockResolvedValueOnce(finalReport());
     const ctx = createContext({ messagesCreate, scrape });
-    ctx.summaryModel = {
+    ctx.deps.summaryModel = {
       provider: "anthropic",
       model: "digest-model",
       usage: {
@@ -1241,7 +1277,7 @@ describe("research loop cache integration", () => {
       "final report after tool call budget exhausted",
     );
     expect(scrape).toHaveBeenCalledTimes(1);
-    expect(ctx.fetchedSources).toEqual([
+    expect(ctx.store.fetchedSources).toEqual([
       {
         url: "https://example.com/shared",
         title: "Shared Source",
@@ -1268,7 +1304,7 @@ describe("research loop cache integration", () => {
     });
     messagesCreate
       .mockImplementationOnce(async () => {
-        ctx.deadlineAt = Date.now() + 5_000;
+        ctx.scope.deadlineAt = Date.now() + 5_000;
         return messageWith([
           toolUse("search_1", "search", { query: "expensive follow-up" }),
         ]);
@@ -1311,7 +1347,7 @@ describe("research loop cache integration", () => {
       .mockImplementationOnce(async (input: ModelStepInput) => {
         expect(input.tools).toBeDefined();
         expect(input.signal).toBeUndefined();
-        ctx.deadlineAt = Date.now() + 5_000;
+        ctx.scope.deadlineAt = Date.now() + 5_000;
         return messageWith([
           toolUse("search_1", "search", { query: "expensive follow-up" }),
         ]);
@@ -1379,7 +1415,7 @@ describe("research loop cache integration", () => {
     expect(request.messages[0]?.content).toBe(
       "Research question: What is Atlas?",
     );
-    expect(ctx.emit).toHaveBeenCalledWith({
+    expect(ctx.emitSpy).toHaveBeenCalledWith({
       type: "research_started",
     });
   });
@@ -1561,7 +1597,7 @@ describe("research loop cache integration", () => {
     expect(result.markdown).toContain("# Test Report");
     expect(fetch).toHaveBeenCalledTimes(1);
     expect(scrape).toHaveBeenCalledTimes(1);
-    expect(ctx.fetchedSources[0]).toMatchObject({
+    expect(ctx.store.fetchedSources[0]).toMatchObject({
       url: "https://example.com/js-app",
       title: "Steel Fetch",
     });
@@ -1625,11 +1661,11 @@ describe("research loop cache integration", () => {
     expect(result.finishReason).toBe("final report");
     expect(fetch).toHaveBeenCalledTimes(1);
     expect(scrape).not.toHaveBeenCalled();
-    expect(ctx.fetchedSources[0]).toMatchObject({
+    expect(ctx.store.fetchedSources[0]).toMatchObject({
       url: "https://example.com/static",
       title: "Direct HTML Source",
     });
-    expect(ctx.emit).toHaveBeenCalledWith({
+    expect(ctx.emitSpy).toHaveBeenCalledWith({
       type: "source_fetched",
       url: "https://example.com/static",
       title: "Direct HTML Source",
@@ -1694,7 +1730,7 @@ describe("research loop cache integration", () => {
 
     expect(fetch).toHaveBeenCalledTimes(1);
     expect(scrape).not.toHaveBeenCalled();
-    expect(ctx.fetchedSources[0]).toMatchObject({
+    expect(ctx.store.fetchedSources[0]).toMatchObject({
       url: "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi?db=pubmed&retmode=json",
       title: "esearch.fcgi",
     });
@@ -1812,7 +1848,7 @@ describe("research loop cache integration", () => {
 
     expect(scrape).not.toHaveBeenCalled();
     expect(
-      ctx.sourceDocuments.get("https://example.com/search?q=x")?.markdown,
+      ctx.store.sourceDocuments.get("https://example.com/search?q=x")?.markdown,
     ).toContain("TAIL_MARKER");
     expect(toolText).toContain('"search_listing_page');
     expect(toolText).toContain('"source_quality"');
@@ -1868,7 +1904,7 @@ describe("research loop cache integration", () => {
     expect(fetch).toHaveBeenCalledTimes(1);
     expect(extractPdfText).toHaveBeenCalledTimes(1);
     expect(scrape).not.toHaveBeenCalled();
-    expect(ctx.fetchedSources[0]).toMatchObject({
+    expect(ctx.store.fetchedSources[0]).toMatchObject({
       url: "https://example.com/FULL_TEXT.PDF",
       title: "FULL_TEXT.PDF",
     });
@@ -1913,10 +1949,10 @@ describe("research loop cache integration", () => {
     expect(extractPdfText).toHaveBeenCalledTimes(1);
     expect(scrape).toHaveBeenCalledTimes(1);
     expect(
-      ctx.sourceDocuments.get("https://example.com/report.pdf")?.markdown,
+      ctx.store.sourceDocuments.get("https://example.com/report.pdf")?.markdown,
     ).toContain("Rendered fallback content.");
     expect(
-      ctx.sourceDocuments
+      ctx.store.sourceDocuments
         .get("https://example.com/report.pdf")
         ?.metadata.attempts?.map((attempt) => attempt.note)
         .join("\n"),
@@ -1959,8 +1995,8 @@ describe("research loop cache integration", () => {
     };
 
     expect(result.finishReason).toBe("final report");
-    expect(ctx.fetchedSources).toEqual([]);
-    expect(ctx.emit).toHaveBeenCalledWith({
+    expect(ctx.store.fetchedSources).toEqual([]);
+    expect(ctx.emitSpy).toHaveBeenCalledWith({
       type: "source_error",
       url: "https://example.com/blocked",
       error: expect.stringContaining(
@@ -2013,8 +2049,8 @@ describe("research loop cache integration", () => {
     const toolText = toolResultText(followupRequest);
 
     expect(result.finishReason).toBe("final report");
-    expect(ctx.fetchedSources).toHaveLength(1);
-    expect(ctx.emit).not.toHaveBeenCalledWith(
+    expect(ctx.store.fetchedSources).toHaveLength(1);
+    expect(ctx.emitSpy).not.toHaveBeenCalledWith(
       expect.objectContaining({ type: "source_error" }),
     );
     expect(toolText).toContain("This article explains why");
@@ -2055,9 +2091,9 @@ describe("research loop cache integration", () => {
     };
 
     expect(result.finishReason).toBe("final report");
-    expect(ctx.fetchedSources).toEqual([]);
-    expect(ctx.sourceDocuments.size).toBe(0);
-    expect(ctx.emit).toHaveBeenCalledWith({
+    expect(ctx.store.fetchedSources).toEqual([]);
+    expect(ctx.store.sourceDocuments.size).toBe(0);
+    expect(ctx.emitSpy).toHaveBeenCalledWith({
       type: "source_error",
       url: "https://example.com/missing",
       error: "thin_content: extracted only 18 chars",
@@ -2119,7 +2155,7 @@ describe("research loop cache integration", () => {
     });
 
     expect(result.finishReason).toBe("final report");
-    expect(ctx.fetchedSources).toEqual([]);
+    expect(ctx.store.fetchedSources).toEqual([]);
   });
 });
 
@@ -2205,9 +2241,9 @@ describe("context compaction", () => {
       "COMPACTED_NOTE: the established facts so far.",
     );
     const ctx = createContext({ messagesCreate });
-    ctx.summaryModel = adapter;
-    ctx.compactionTriggerTokens = 200;
-    ctx.compactionKeepTokens = 50;
+    ctx.deps.summaryModel = adapter;
+    ctx.scope.compactionTriggerTokens = 200;
+    ctx.scope.compactionKeepTokens = 50;
 
     const result = await runResearchLoop({
       ctx,
@@ -2221,7 +2257,7 @@ describe("context compaction", () => {
 
     expect(result.finishReason).toBe("final report");
     expect(compactionStep).toHaveBeenCalledTimes(1);
-    expect(ctx.emit).toHaveBeenCalledWith(
+    expect(ctx.emitSpy).toHaveBeenCalledWith(
       expect.objectContaining({ type: "context_compacted" }),
     );
     // Question preserved; compaction note inserted; tail kept verbatim.
@@ -2246,7 +2282,7 @@ describe("context compaction", () => {
     const messagesCreate = twoBigPlanTurns();
     const { adapter, step: compactionStep } = compactionModel("unused");
     const ctx = createContext({ messagesCreate });
-    ctx.summaryModel = adapter;
+    ctx.deps.summaryModel = adapter;
     // No compactionTriggerTokens configured -> compaction is off.
 
     const result = await runResearchLoop({
@@ -2260,7 +2296,7 @@ describe("context compaction", () => {
 
     expect(result.finishReason).toBe("final report");
     expect(compactionStep).not.toHaveBeenCalled();
-    expect(ctx.emit).not.toHaveBeenCalledWith(
+    expect(ctx.emitSpy).not.toHaveBeenCalledWith(
       expect.objectContaining({ type: "context_compacted" }),
     );
     expect(JSON.stringify(finalRequest.messages)).toContain("BIG1_MARKER");
@@ -2269,19 +2305,18 @@ describe("context compaction", () => {
 
 describe("token budget", () => {
   it("stops starting new steps once the token budget is exhausted and finalizes", async () => {
-    let ctx: ResearchLoopContext;
+    let ctx: ResearchCtx;
     const messagesCreate = vi.fn(async (input: ModelStepInput) => {
       // The final-synthesis call is made without tools.
       if (!input.tools) return finalReport();
-      ctx.model.usage.output_tokens += 5_000;
+      ctx.deps.model.usage.output_tokens += 5_000;
       return messageWith([
-        toolUse(`plan_${ctx.model.usage.output_tokens}`, "plan", {
+        toolUse(`plan_${ctx.deps.model.usage.output_tokens}`, "plan", {
           thought: "keep going",
         }),
       ]);
     });
-    ctx = createContext({ messagesCreate });
-    ctx.tokenLimit = 8_000;
+    ctx = createContext({ messagesCreate, tokenLimit: 8_000 });
 
     const result = await runResearchLoop({
       ctx,
@@ -2313,7 +2348,7 @@ describe("token budget", () => {
       return messageWith([toolUse("plan_1", "plan", { thought: "one step" })]);
     });
     const ctx = createContext({ messagesCreate });
-    // No ctx.tokenLimit configured.
+    // No ctx.config.tokenLimit configured.
 
     const result = await runResearchLoop({
       ctx,
@@ -2355,10 +2390,9 @@ describe("spawn/join fan-out", () => {
       messagesCreate,
       deadlineAt: Date.now() + 20_000,
       synthesisReserveMs: 10_000,
+      maxDelegationDepth: 1,
     });
-    ctx.depth = 0;
-    ctx.maxDelegationDepth = 1;
-    ctx.budget = createBudgetLedger(20, 40);
+    ctx.store.budget = createBudgetLedger(20, 40);
 
     const result = await runResearchLoop({
       ctx,
@@ -2377,7 +2411,7 @@ describe("spawn/join fan-out", () => {
     expect(toolResultText(leadFinal)).toContain(
       "not enough remaining time to spawn sub-agents",
     );
-    expect(ctx.emit).not.toHaveBeenCalledWith(
+    expect(ctx.emitSpy).not.toHaveBeenCalledWith(
       expect.objectContaining({ type: "delegation_started" }),
     );
   });
@@ -2407,13 +2441,14 @@ describe("spawn/join fan-out", () => {
       return finalReport();
     });
 
-    const ctx = createContext({ messagesCreate });
-    ctx.depth = 0;
-    ctx.maxDelegationDepth = 1;
-    ctx.maxConcurrentSubagents = 2;
-    ctx.subagentGate = createSteelConcurrencyGate(2);
-    ctx.subagentEffort = "low";
-    ctx.budget = createBudgetLedger(20, 40);
+    const ctx = createContext({
+      messagesCreate,
+      maxDelegationDepth: 1,
+      maxConcurrentSubagents: 2,
+      subagentGate: createSteelConcurrencyGate(2),
+      subagentEffort: "low",
+    });
+    ctx.store.budget = createBudgetLedger(20, 40);
 
     const result = await runResearchLoop({
       ctx,
@@ -2455,17 +2490,17 @@ describe("spawn/join fan-out", () => {
     expect(toolResultText(leadFinal)).toContain("joined");
 
     expect(result.finishReason).toBe("final report");
-    expect(ctx.budget?.remainingActionCalls).toBe(19);
+    expect(ctx.store.budget?.remainingActionCalls).toBe(19);
 
-    expect(ctx.emit).toHaveBeenCalledWith({
+    expect(ctx.emitSpy).toHaveBeenCalledWith({
       type: "delegation_started",
       tasks: ["What is the local population?"],
     });
-    expect(ctx.emit).toHaveBeenCalledWith({
+    expect(ctx.emitSpy).toHaveBeenCalledWith({
       type: "subagent_started",
       task: "What is the local population?",
     });
-    expect(ctx.emit).toHaveBeenCalledWith({
+    expect(ctx.emitSpy).toHaveBeenCalledWith({
       type: "subagent_finished",
       task: "What is the local population?",
       sourcesFetched: 0,
@@ -2508,18 +2543,19 @@ describe("spawn/join fan-out", () => {
       return finalReport();
     });
 
-    const ctx = createContext({ messagesCreate });
-    ctx.depth = 0;
-    ctx.maxDelegationDepth = 1;
-    ctx.maxConcurrentSubagents = 2;
-    ctx.subagentGate = createSteelConcurrencyGate(2);
-    ctx.subagentEffort = "low";
-    ctx.budget = createBudgetLedger(20, 40);
+    const ctx = createContext({
+      messagesCreate,
+      maxDelegationDepth: 1,
+      maxConcurrentSubagents: 2,
+      subagentGate: createSteelConcurrencyGate(2),
+      subagentEffort: "low",
+    });
+    ctx.store.budget = createBudgetLedger(20, 40);
 
     // Capture every lease the shared pool hands out so we can assert the
     // sub-agent's browser session is returned, not stranded in the pool's
     // active set until the whole run's closeAll().
-    const pool = ctx.browserSessionPool as unknown as {
+    const pool = ctx.deps.browserSessionPool as unknown as {
       acquire: () => Promise<{ release: ReturnType<typeof vi.fn> }>;
     };
     const realAcquire = pool.acquire;
@@ -2585,13 +2621,15 @@ describe("spawn/join fan-out", () => {
       return finalReport();
     });
 
-    const ctx = createContext({ messagesCreate, scrape });
-    ctx.depth = 0;
-    ctx.maxDelegationDepth = 1;
-    ctx.maxConcurrentSubagents = 2;
-    ctx.subagentGate = createSteelConcurrencyGate(2);
-    ctx.subagentEffort = "low";
-    ctx.budget = createBudgetLedger(20, 40);
+    const ctx = createContext({
+      messagesCreate,
+      scrape,
+      maxDelegationDepth: 1,
+      maxConcurrentSubagents: 2,
+      subagentGate: createSteelConcurrencyGate(2),
+      subagentEffort: "low",
+    });
+    ctx.store.budget = createBudgetLedger(20, 40);
 
     const result = await runResearchLoop({
       ctx,
@@ -2606,12 +2644,12 @@ describe("spawn/join fan-out", () => {
 
     expect(result.finishReason).toBe("final report");
     expect(scrape).toHaveBeenCalledTimes(1);
-    expect(ctx.emit).toHaveBeenCalledWith({
+    expect(ctx.emitSpy).toHaveBeenCalledWith({
       type: "fetching",
       url: "https://example.com/census",
       depth: 1,
     });
-    expect(ctx.fetchedSources).toContainEqual({
+    expect(ctx.store.fetchedSources).toContainEqual({
       url: "https://example.com/census",
       title: "Census",
       sourceId: "source_1",
@@ -2633,10 +2671,9 @@ describe("spawn/join fan-out", () => {
         ]),
       )
       .mockResolvedValueOnce(finalReport());
-    const ctx = createContext({ messagesCreate });
-    ctx.depth = 1;
-    ctx.maxDelegationDepth = 1;
-    ctx.budget = createBudgetLedger(20, 40);
+    const ctx = createContext({ messagesCreate, maxDelegationDepth: 1 });
+    ctx.scope.depth = 1;
+    ctx.store.budget = createBudgetLedger(20, 40);
 
     const result = await runResearchLoop({
       ctx,
@@ -2697,8 +2734,16 @@ describe("spawn/join fan-out", () => {
       .mockResolvedValue(
         messageWith([{ type: "text", text: "SUB_NOTE: progress." }]),
       );
-    const ctx = createContext({ messagesCreate });
-    ctx.summaryModel = {
+    const ctx = createContext({
+      messagesCreate,
+      maxDelegationDepth: 1,
+      maxConcurrentSubagents: 1,
+      subagentGate: createSteelConcurrencyGate(1),
+      subagentEffort: "low",
+      subagentCompactionTriggerTokens: 200,
+      subagentCompactionKeepTokens: 50,
+    });
+    ctx.deps.summaryModel = {
       provider: "anthropic",
       model: "summary-model",
       usage: {
@@ -2711,15 +2756,8 @@ describe("spawn/join fan-out", () => {
         input: ModelStepInput,
       ) => Promise<{ content: ModelAssistantBlock[] }>,
     } satisfies ModelAdapter;
-    ctx.depth = 0;
-    ctx.maxDelegationDepth = 1;
-    ctx.maxConcurrentSubagents = 1;
-    ctx.subagentGate = createSteelConcurrencyGate(1);
-    ctx.subagentEffort = "low";
-    ctx.budget = createBudgetLedger(20, 40);
-    ctx.compactionTriggerTokens = undefined;
-    ctx.subagentCompactionTriggerTokens = 200;
-    ctx.subagentCompactionKeepTokens = 50;
+    ctx.store.budget = createBudgetLedger(20, 40);
+    ctx.scope.compactionTriggerTokens = undefined;
 
     const result = await runResearchLoop({
       ctx,
@@ -2729,7 +2767,7 @@ describe("spawn/join fan-out", () => {
 
     expect(result.finishReason).toBe("final report");
     expect(compactionStep).toHaveBeenCalledTimes(1);
-    expect(ctx.emit).toHaveBeenCalledWith(
+    expect(ctx.emitSpy).toHaveBeenCalledWith(
       expect.objectContaining({ type: "context_compacted", depth: 1 }),
     );
   });
@@ -2758,13 +2796,14 @@ describe("emergent team via spawn/join", () => {
       }
       return finalReport();
     });
-    const ctx = createContext({ messagesCreate });
-    ctx.depth = 0;
-    ctx.maxDelegationDepth = 1;
-    ctx.maxConcurrentSubagents = 2;
-    ctx.subagentGate = createSteelConcurrencyGate(2);
-    ctx.subagentEffort = "low";
-    ctx.budget = createBudgetLedger(40, 80);
+    const ctx = createContext({
+      messagesCreate,
+      maxDelegationDepth: 1,
+      maxConcurrentSubagents: 2,
+      subagentGate: createSteelConcurrencyGate(2),
+      subagentEffort: "low",
+    });
+    ctx.store.budget = createBudgetLedger(40, 80);
 
     const result = await runResearchLoop({
       ctx,
@@ -2779,16 +2818,16 @@ describe("emergent team via spawn/join", () => {
 
     expect(result.finishReason).toBe("final report");
     expect(result.markdown).toContain("# Test Report");
-    expect(ctx.emit).toHaveBeenCalledWith(
+    expect(ctx.emitSpy).toHaveBeenCalledWith(
       expect.objectContaining({
         type: "delegation_started",
         tasks: ["Sub A?", "Sub B?"],
       }),
     );
-    expect(ctx.emit).toHaveBeenCalledWith(
+    expect(ctx.emitSpy).toHaveBeenCalledWith(
       expect.objectContaining({ type: "subagent_started", task: "Sub A?" }),
     );
-    expect(ctx.emit).toHaveBeenCalledWith(
+    expect(ctx.emitSpy).toHaveBeenCalledWith(
       expect.objectContaining({ type: "subagent_started", task: "Sub B?" }),
     );
     expect(toolResultText(leadFinal)).toContain("Finding from agent");
@@ -2798,10 +2837,8 @@ describe("emergent team via spawn/join", () => {
     const messagesCreate = vi.fn(async (_input: ModelStepInput) =>
       finalReport(),
     );
-    const ctx = createContext({ messagesCreate });
-    ctx.depth = 0;
-    ctx.maxDelegationDepth = 1;
-    ctx.budget = createBudgetLedger(20, 40);
+    const ctx = createContext({ messagesCreate, maxDelegationDepth: 1 });
+    ctx.store.budget = createBudgetLedger(20, 40);
 
     const result = await runResearchLoop({
       ctx,
@@ -2810,7 +2847,7 @@ describe("emergent team via spawn/join", () => {
     });
 
     expect(result.finishReason).toBe("final report");
-    expect(ctx.emit).not.toHaveBeenCalledWith(
+    expect(ctx.emitSpy).not.toHaveBeenCalledWith(
       expect.objectContaining({ type: "delegation_started" }),
     );
     expect(
@@ -2847,7 +2884,7 @@ describe("api error recovery", () => {
       ]);
     });
     const ctx = createContext({ messagesCreate, scrape });
-    ctx.budget = createBudgetLedger(20, 40);
+    ctx.store.budget = createBudgetLedger(20, 40);
 
     const result = await runResearchLoop({
       ctx,
@@ -2868,7 +2905,7 @@ describe("api error recovery", () => {
       throw new Error("429 rate_limit_error");
     });
     const ctx = createContext({ messagesCreate });
-    ctx.budget = createBudgetLedger(20, 40);
+    ctx.store.budget = createBudgetLedger(20, 40);
 
     const result = await runResearchLoop({
       ctx,

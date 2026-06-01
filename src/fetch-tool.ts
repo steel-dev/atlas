@@ -1,4 +1,4 @@
-import type { ResearchLoopContext, SourceCacheEntry } from "./runtime.js";
+import type { ResearchCtx, SourceCacheEntry } from "./runtime.js";
 import type { SourceDocument, SourceExtractionAttempt } from "./sources.js";
 import {
   createSourceDocument,
@@ -59,38 +59,40 @@ const SEARCH_LISTING_TITLE_PATTERN =
   /\b(?:search results?|advanced search|site search)\b|검색/i;
 const FETCH_MANY_MAX_URLS = 12;
 
-function totalSourceSlots(ctx: ResearchLoopContext): number {
-  return ctx.fetchedSources.length + ctx.sourceReservations.sourceSlots;
+function totalSourceSlots(ctx: ResearchCtx): number {
+  return (
+    ctx.store.fetchedSources.length + ctx.store.sourceReservations.sourceSlots
+  );
 }
 
 function reserveSource(
-  ctx: ResearchLoopContext,
+  ctx: ResearchCtx,
   url: string,
 ): SourceReservation | string {
   const normalizedUrl = normalizeFetchUrl(url);
-  if (ctx.sourceReservations.urls.has(normalizedUrl)) {
+  if (ctx.store.sourceReservations.urls.has(normalizedUrl)) {
     return `Already being fetched: ${url}. Try another source or continue after this fetch completes.`;
   }
-  if (totalSourceSlots(ctx) >= ctx.sourceCap) {
-    return `Fetched source cap reached (${ctx.sourceCap}). Search or read stored sources, or write the report.`;
+  if (totalSourceSlots(ctx) >= ctx.config.sourceCap) {
+    return `Fetched source cap reached (${ctx.config.sourceCap}). Search or read stored sources, or write the report.`;
   }
 
-  ctx.sourceReservations.urls.add(normalizedUrl);
-  ctx.sourceReservations.sourceSlots++;
+  ctx.store.sourceReservations.urls.add(normalizedUrl);
+  ctx.store.sourceReservations.sourceSlots++;
   return {
     url: normalizedUrl,
-    sourceId: `source_${ctx.sourceReservations.nextSourceNumber++}`,
+    sourceId: `source_${ctx.store.sourceReservations.nextSourceNumber++}`,
   };
 }
 
 function releaseSourceReservation(
-  ctx: ResearchLoopContext,
+  ctx: ResearchCtx,
   reservation: SourceReservation,
 ): void {
-  ctx.sourceReservations.urls.delete(reservation.url);
-  ctx.sourceReservations.sourceSlots = Math.max(
+  ctx.store.sourceReservations.urls.delete(reservation.url);
+  ctx.store.sourceReservations.sourceSlots = Math.max(
     0,
-    ctx.sourceReservations.sourceSlots - 1,
+    ctx.store.sourceReservations.sourceSlots - 1,
   );
 }
 
@@ -103,25 +105,25 @@ function validateHttpUrl(url: string): string | null {
 }
 
 async function sourceWithCache(
-  ctx: ResearchLoopContext,
+  ctx: ResearchCtx,
   url: string,
 ): Promise<SourceCacheEntry> {
-  let sourcePromise = ctx.caches.sources.get(url);
+  let sourcePromise = ctx.store.caches.sources.get(url);
   if (!sourcePromise) {
     sourcePromise = extractSourceWithFallbacks(ctx, url);
-    ctx.caches.sources.set(url, sourcePromise);
+    ctx.store.caches.sources.set(url, sourcePromise);
   }
 
   try {
     return await sourcePromise;
   } catch (err) {
-    ctx.caches.sources.delete(url);
+    ctx.store.caches.sources.delete(url);
     throw err;
   }
 }
 
 async function extractSourceWithFallbacks(
-  ctx: ResearchLoopContext,
+  ctx: ResearchCtx,
   url: string,
 ): Promise<SourceCacheEntry> {
   const attempts: SourceExtractionAttempt[] = [];
@@ -133,12 +135,12 @@ async function extractSourceWithFallbacks(
 }
 
 async function tryDirectExtraction(
-  ctx: ResearchLoopContext,
+  ctx: ResearchCtx,
   url: string,
 ): Promise<DirectExtractionOutcome> {
   try {
     const response = await fetch(url, {
-      signal: ctx.signal,
+      signal: ctx.deps.signal,
       headers: {
         accept: "application/pdf,*/*;q=0.8",
         "user-agent": DIRECT_FETCH_USER_AGENT,
@@ -196,7 +198,7 @@ async function tryDirectExtraction(
         : "unsupported_content_type: direct response was not HTML, PDF, JSON, XML, or text",
     );
   } catch (err) {
-    if (ctx.signal?.aborted) throw err;
+    if (ctx.deps.signal?.aborted) throw err;
     return failedDirectAttempt(
       "direct_http",
       `network_error: direct fetch failed: ${errorMessage(err)}`,
@@ -458,12 +460,12 @@ function titleFromTextUrl(url: string): string {
 
 function readPreviewChars(
   args: FetchToolInput,
-  ctx: ResearchLoopContext,
+  ctx: ResearchCtx,
 ): number | string {
   const raw =
     args.preview_chars ??
     args.max_chars ??
-    ctx.fetchSnippetChars ??
+    ctx.config.fetchSnippetChars ??
     DEFAULT_FETCH_PREVIEW_CHARS;
   const previewChars = Math.min(
     MAX_FETCH_PREVIEW_CHARS,
@@ -476,17 +478,17 @@ function readPreviewChars(
 }
 
 async function fetchSourceDocument(
-  ctx: ResearchLoopContext,
+  ctx: ResearchCtx,
   url: string,
   sourceId: string,
 ): Promise<SourceDocument | null> {
-  ctx.emit({ type: "fetching", url });
+  ctx.scope.emit({ type: "fetching", url });
 
   const { markdown, title, metadata } = await sourceWithCache(ctx, url);
   if (!markdown) {
-    ctx.caches.sources.delete(url);
+    ctx.store.caches.sources.delete(url);
     const error = sourceErrorFromMetadata(metadata);
-    ctx.emit({
+    ctx.scope.emit({
       type: "source_error",
       url,
       error,
@@ -497,8 +499,8 @@ async function fetchSourceDocument(
   const resolvedTitle = title ?? url;
   const quality = assessSourceQuality(markdown, resolvedTitle, metadata);
   if (quality.fatalError) {
-    ctx.caches.sources.delete(url);
-    ctx.emit({
+    ctx.store.caches.sources.delete(url);
+    ctx.scope.emit({
       type: "source_error",
       url,
       error: quality.fatalError,
@@ -525,15 +527,15 @@ async function fetchSourceDocument(
     sourceId,
     normalizeFetchUrl(url),
   );
-  ctx.fetchedSources.push({
+  ctx.store.fetchedSources.push({
     url,
     title: resolvedTitle,
     sourceId: document.sourceId,
     canonicalUrl: document.canonicalUrl,
   });
-  ctx.sourceDocuments.set(normalizeFetchUrl(url), document);
+  ctx.store.sourceDocuments.set(normalizeFetchUrl(url), document);
 
-  ctx.emit({
+  ctx.scope.emit({
     type: "source_fetched",
     url,
     title: resolvedTitle,
@@ -548,7 +550,7 @@ async function fetchSourceDocument(
 
 export async function execFetch(
   args: FetchToolInput,
-  ctx: ResearchLoopContext,
+  ctx: ResearchCtx,
 ): Promise<FetchOutcome> {
   if (Array.isArray(args.urls)) {
     return fetchManyUrls(args, ctx);
@@ -566,10 +568,11 @@ export async function execFetch(
     return { text: formatSourceCard(existing, previewChars) };
   }
 
-  ctx.abort();
+  ctx.deps.abort();
 
   let fetchedThisCall = false;
-  let documentPromise = ctx.sourceReservations.documents.get(normalizedUrl);
+  let documentPromise =
+    ctx.store.sourceReservations.documents.get(normalizedUrl);
   if (!documentPromise) {
     const reservation = reserveSource(ctx, requestedUrl);
     if (typeof reservation === "string") return { text: reservation };
@@ -580,10 +583,10 @@ export async function execFetch(
       url,
       reservation.sourceId,
     ).finally(() => {
-      ctx.sourceReservations.documents.delete(normalizedUrl);
+      ctx.store.sourceReservations.documents.delete(normalizedUrl);
       releaseSourceReservation(ctx, reservation);
     });
-    ctx.sourceReservations.documents.set(normalizedUrl, documentPromise);
+    ctx.store.sourceReservations.documents.set(normalizedUrl, documentPromise);
   }
 
   try {
@@ -597,9 +600,9 @@ export async function execFetch(
       text: formatSourceCard(document, previewChars),
     };
   } catch (err) {
-    ctx.caches.sources.delete(normalizedUrl);
+    ctx.store.caches.sources.delete(normalizedUrl);
     const message = errorMessage(err);
-    ctx.emit({
+    ctx.scope.emit({
       type: "source_error",
       url: normalizedUrl,
       error: message,
@@ -610,7 +613,7 @@ export async function execFetch(
 
 async function fetchManyUrls(
   args: FetchToolInput,
-  ctx: ResearchLoopContext,
+  ctx: ResearchCtx,
 ): Promise<FetchOutcome> {
   const previewChars = readPreviewChars(args, ctx);
   if (typeof previewChars === "string") return { text: previewChars };

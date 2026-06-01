@@ -9,7 +9,7 @@ import {
 } from "./search.js";
 import { extractHtmlWithBrowser } from "./browser-extract.js";
 import { errorMessage } from "./errors.js";
-import type { ResearchLoopContext } from "./runtime.js";
+import type { ResearchCtx } from "./runtime.js";
 
 export interface SearchProvider {
   readonly name: string;
@@ -52,43 +52,41 @@ function searchCacheKey(opts: {
 }
 
 async function searchEngineWithCache(
-  ctx: ResearchLoopContext,
+  ctx: ResearchCtx,
   opts: { query: string; limit: number; engine: Engine },
 ): Promise<WebSearchOutcome> {
   const cacheKey = searchCacheKey({
     query: opts.query,
     limit: opts.limit,
     engine: opts.engine,
-    useProxy: ctx.useProxy,
+    useProxy: ctx.config.useProxy,
   });
-  let outcomePromise = ctx.caches.serp.get(cacheKey);
+  let outcomePromise = ctx.store.caches.serp.get(cacheKey);
   if (!outcomePromise) {
     outcomePromise = webSearch({
       query: opts.query,
       engine: opts.engine,
-      useProxy: ctx.useProxy,
+      useProxy: ctx.config.useProxy,
       limit: opts.limit,
-      signal: ctx.signal,
+      signal: ctx.deps.signal,
       renderPage: (url) => extractHtmlWithBrowser(ctx, url),
     });
-    ctx.caches.serp.set(cacheKey, outcomePromise);
+    ctx.store.caches.serp.set(cacheKey, outcomePromise);
   }
 
   try {
     return await outcomePromise;
   } catch (err) {
-    ctx.caches.serp.delete(cacheKey);
+    ctx.store.caches.serp.delete(cacheKey);
     throw err;
   }
 }
 
-export function createScrapingSearchProvider(
-  ctx: ResearchLoopContext,
-): SearchProvider {
+export function createScrapingSearchProvider(ctx: ResearchCtx): SearchProvider {
   return {
     name: "web",
     async searchQuery({ query, limit }) {
-      const engines = searchEnginesInFallbackOrder(ctx.defaultEngine);
+      const engines = searchEnginesInFallbackOrder(ctx.config.defaultEngine);
       const outcomes = await Promise.all(
         engines.map(async (engine, order) => {
           try {
@@ -386,7 +384,7 @@ export interface SearchProviderResolution {
 }
 
 export function resolveSearchProvider(
-  ctx: ResearchLoopContext,
+  ctx: ResearchCtx,
   opts: SearchProviderResolution,
 ): SearchProvider {
   if (opts.instance) return opts.instance;

@@ -1,4 +1,4 @@
-import type { ResearchLoopContext } from "./runtime.js";
+import type { ResearchCtx } from "./runtime.js";
 import type {
   SourceChunk,
   SourceDocument,
@@ -62,17 +62,17 @@ export function createSourceDocument(
 }
 
 export function findSourceDocumentByUrl(
-  ctx: ResearchLoopContext,
+  ctx: ResearchCtx,
   normalizedUrl: string,
 ): SourceDocument | undefined {
-  return ctx.sourceDocuments.get(normalizedUrl);
+  return ctx.store.sourceDocuments.get(normalizedUrl);
 }
 
 export function findSourceDocumentById(
-  ctx: ResearchLoopContext,
+  ctx: ResearchCtx,
   sourceId: string,
 ): SourceDocument | undefined {
-  for (const document of ctx.sourceDocuments.values()) {
+  for (const document of ctx.store.sourceDocuments.values()) {
     if (document.sourceId === sourceId) return document;
   }
   return undefined;

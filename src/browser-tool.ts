@@ -1,4 +1,4 @@
-import type { ResearchLoopContext } from "./runtime.js";
+import type { ResearchCtx } from "./runtime.js";
 import { extractCurrentPage, navigateToUrl } from "./browser-extract.js";
 import {
   createSourceDocument,
@@ -45,7 +45,7 @@ export interface BrowserExtractToolInput {
 
 export async function execBrowserOpen(
   args: BrowserOpenToolInput,
-  ctx: ResearchLoopContext,
+  ctx: ResearchCtx,
 ): Promise<string> {
   const lease = await ensureBrowserLease(ctx);
   const url = String(args.url ?? "").trim();
@@ -69,7 +69,7 @@ export async function execBrowserOpen(
 
 export async function execBrowserCdp(
   args: BrowserCdpToolInput,
-  ctx: ResearchLoopContext,
+  ctx: ResearchCtx,
 ): Promise<string> {
   const method = String(args.method ?? "").trim();
   if (!method) return "Error: browser_cdp requires `method`.";
@@ -87,7 +87,9 @@ export async function execBrowserCdp(
     method,
     isPlainRecord(args.params) ? args.params : {},
     {
-      ...(lease.resource.cdpSessionId ? { sessionId: lease.resource.cdpSessionId } : {}),
+      ...(lease.resource.cdpSessionId
+        ? { sessionId: lease.resource.cdpSessionId }
+        : {}),
       ...(timeoutMs ? { timeoutMs } : {}),
     },
   );
@@ -96,24 +98,26 @@ export async function execBrowserCdp(
 
 export async function execBrowserExtract(
   args: BrowserExtractToolInput,
-  ctx: ResearchLoopContext,
+  ctx: ResearchCtx,
 ): Promise<string> {
-  if (!ctx.browserSessionLease) {
+  if (!ctx.scope.browserSessionLease) {
     return "Error: browser_extract requires an open browser session. Call browser_open first.";
   }
   const maxChars = readMaxChars(args, ctx);
   if (typeof maxChars === "string") return maxChars;
-  const snapshot = await extractCurrentPage(ctx.browserSessionLease.resource);
+  const snapshot = await extractCurrentPage(
+    ctx.scope.browserSessionLease.resource,
+  );
   const normalizedUrl = normalizeFetchUrl(snapshot.url);
   const existing = findSourceDocumentByUrl(ctx, normalizedUrl);
   if (existing) return formatSourceCard(existing, maxChars);
-  if (ctx.fetchedSources.length >= ctx.sourceCap) {
-    return `Fetched source cap reached (${ctx.sourceCap}). Search or read stored sources, or write the report.`;
+  if (ctx.store.fetchedSources.length >= ctx.config.sourceCap) {
+    return `Fetched source cap reached (${ctx.config.sourceCap}). Search or read stored sources, or write the report.`;
   }
 
   const extracted = htmlToMarkdown(snapshot.html, snapshot.url);
   const stored = storeMarkdown(extracted.markdown);
-  const sourceId = `source_${ctx.sourceReservations.nextSourceNumber++}`;
+  const sourceId = `source_${ctx.store.sourceReservations.nextSourceNumber++}`;
   const document = createSourceDocument(
     snapshot.url,
     extracted.title || snapshot.title || snapshot.url,
@@ -135,14 +139,14 @@ export async function execBrowserExtract(
     sourceId,
     normalizedUrl,
   );
-  ctx.fetchedSources.push({
+  ctx.store.fetchedSources.push({
     url: snapshot.url,
     title: document.title,
     sourceId: document.sourceId,
     canonicalUrl: document.canonicalUrl,
   });
-  ctx.sourceDocuments.set(normalizedUrl, document);
-  ctx.emit({
+  ctx.store.sourceDocuments.set(normalizedUrl, document);
+  ctx.scope.emit({
     type: "source_fetched",
     url: snapshot.url,
     title: document.title,
@@ -154,27 +158,29 @@ export async function execBrowserExtract(
   return formatSourceCard(document, maxChars);
 }
 
-export async function closeBrowserLease(ctx: ResearchLoopContext): Promise<void> {
-  const lease = ctx.browserSessionLease;
+export async function closeBrowserLease(ctx: ResearchCtx): Promise<void> {
+  const lease = ctx.scope.browserSessionLease;
   if (!lease) return;
-  ctx.browserSessionLease = undefined;
+  ctx.scope.browserSessionLease = undefined;
   await lease.release();
 }
 
-async function ensureBrowserLease(ctx: ResearchLoopContext) {
-  if (ctx.browserSessionLease) return ctx.browserSessionLease;
-  if (!ctx.browserSessionPool) {
+async function ensureBrowserLease(ctx: ResearchCtx) {
+  if (ctx.scope.browserSessionLease) return ctx.scope.browserSessionLease;
+  if (!ctx.deps.browserSessionPool) {
     return Promise.reject(new Error("Browser session pool is unavailable"));
   }
-  ctx.browserSessionLease = await ctx.browserSessionPool.acquire();
-  return ctx.browserSessionLease;
+  ctx.scope.browserSessionLease = await ctx.deps.browserSessionPool.acquire();
+  return ctx.scope.browserSessionLease;
 }
 
 function validateCdpMethod(method: string): string | null {
   if (BROWSER_CDP_DENIED_METHODS.has(method)) {
     return `Error: CDP method is not allowed: ${method}`;
   }
-  if (!BROWSER_CDP_ALLOWED_PREFIXES.some((prefix) => method.startsWith(prefix))) {
+  if (
+    !BROWSER_CDP_ALLOWED_PREFIXES.some((prefix) => method.startsWith(prefix))
+  ) {
     return `Error: CDP method is not allowed: ${method}`;
   }
   if (
@@ -196,9 +202,12 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
 
 function readMaxChars(
   args: BrowserExtractToolInput,
-  ctx: ResearchLoopContext,
+  ctx: ResearchCtx,
 ): number | string {
-  const raw = args.max_chars ?? ctx.fetchSnippetChars ?? DEFAULT_FETCH_PREVIEW_CHARS;
+  const raw =
+    args.max_chars ??
+    ctx.config.fetchSnippetChars ??
+    DEFAULT_FETCH_PREVIEW_CHARS;
   const maxChars = Math.min(
     MAX_FETCH_PREVIEW_CHARS,
     Math.max(1, Math.floor(Number(raw))),

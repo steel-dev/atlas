@@ -6,20 +6,18 @@ import {
   type SearchProvider,
 } from "./search-provider.js";
 import { execSearch } from "./search-tool.js";
-import type { ResearchLoopContext } from "./runtime.js";
+import { createAgentScope, type ResearchCtx } from "./runtime.js";
 
 afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-function ctxWithProvider(provider: SearchProvider): ResearchLoopContext {
+function ctxWithProvider(provider: SearchProvider): ResearchCtx {
   return {
-    emit: vi.fn(),
-    defaultEngine: "ddg",
-    useProxy: false,
-    defaultSearchLimit: 5,
-    searchProvider: provider,
-  } as unknown as ResearchLoopContext;
+    config: { defaultEngine: "ddg", useProxy: false, defaultSearchLimit: 5 },
+    deps: { searchProvider: provider },
+    scope: createAgentScope({ sink: () => undefined }),
+  } as unknown as ResearchCtx;
 }
 
 function headerValue(init: RequestInit | undefined, name: string): string {
@@ -119,7 +117,10 @@ describe("Exa provider", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     const provider = createExaSearchProvider({ apiKey: "exa-key" });
-    const outcome = await provider.searchQuery({ query: "deep research", limit: 5 });
+    const outcome = await provider.searchQuery({
+      query: "deep research",
+      limit: 5,
+    });
 
     const [url, init] = fetchMock.mock.calls[0]!;
     expect(provider.name).toBe("exa");
@@ -201,7 +202,7 @@ describe("Brave provider", () => {
 });
 
 describe("resolveSearchProvider", () => {
-  const ctx = {} as ResearchLoopContext;
+  const ctx = {} as ResearchCtx;
 
   it("defaults to the scraping provider", () => {
     expect(resolveSearchProvider(ctx, {}).name).toBe("web");
@@ -216,9 +217,9 @@ describe("resolveSearchProvider", () => {
   });
 
   it("constructs named API providers when keys are present", () => {
-    expect(resolveSearchProvider(ctx, { kind: "exa", exaApiKey: "k" }).name).toBe(
-      "exa",
-    );
+    expect(
+      resolveSearchProvider(ctx, { kind: "exa", exaApiKey: "k" }).name,
+    ).toBe("exa");
     expect(
       resolveSearchProvider(ctx, { kind: "brave", braveApiKey: "k" }).name,
     ).toBe("brave");
