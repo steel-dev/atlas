@@ -1,4 +1,4 @@
-export { research } from "./research.js";
+export { research, streamResearch } from "./research.js";
 export { steel } from "./steel.js";
 export type { BrowserProvider, SteelBrowserOptions } from "./steel.js";
 export type {
@@ -9,6 +9,7 @@ export type {
   ResearchOptions,
   ResearchResult,
   ResearchRun,
+  ResearchStream,
   SourceDocument,
   UsageSummary,
   CitedSource,

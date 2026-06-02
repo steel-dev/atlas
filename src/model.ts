@@ -1,6 +1,7 @@
 import {
   generateText,
   generateObject,
+  streamText,
   jsonSchema,
   tool,
   type LanguageModel,
@@ -102,11 +103,20 @@ export interface ModelStepResult {
   inputTokens?: number;
 }
 
+export interface ModelStreamCallbacks {
+  onText: (text: string) => void;
+  onStart?: () => void;
+}
+
 export interface ModelAdapter {
   provider: ModelProvider;
   model: string;
   usage: UsageSummary;
   step(input: ModelStepInput): Promise<ModelStepResult>;
+  stepStream?(
+    input: ModelStepInput,
+    callbacks: ModelStreamCallbacks,
+  ): Promise<ModelStepResult>;
 }
 
 export function emptyUsageSummary(): UsageSummary {
@@ -148,37 +158,19 @@ export function createAISdkModelAdapter(opts: {
   modelId: string;
 }): ModelAdapter {
   const usage = emptyUsageSummary();
-  return {
-    provider: opts.provider,
-    model: opts.modelId,
-    usage,
-    async step(input) {
-      const messages = withCacheBreakpoint(toAiMessages(input.messages));
-      const providerOptions = input.providerOptions;
 
-      if (input.outputSchema) {
-        const result = await generateObject({
-          model: opts.model,
-          system: input.system,
-          messages,
-          schema: jsonSchema(input.outputSchema.schema),
-          maxOutputTokens: input.maxTokens,
-          maxRetries: 0,
-          abortSignal: input.signal,
-          ...(providerOptions ? { providerOptions } : {}),
-        });
-        addUsage(usage, fromAiUsage(result.usage));
-        return {
-          content: [{ type: "text", text: JSON.stringify(result.object) }],
-          inputTokens: totalInputTokens(result.usage),
-        };
-      }
+  const runGenerate = async (
+    input: ModelStepInput,
+  ): Promise<ModelStepResult> => {
+    const messages = withCacheBreakpoint(toAiMessages(input.messages));
+    const providerOptions = input.providerOptions;
 
-      const result = await generateText({
+    if (input.outputSchema) {
+      const result = await generateObject({
         model: opts.model,
         system: input.system,
         messages,
-        ...(input.tools ? { tools: toAiTools(input.tools) } : {}),
+        schema: jsonSchema(input.outputSchema.schema),
         maxOutputTokens: input.maxTokens,
         maxRetries: 0,
         abortSignal: input.signal,
@@ -186,10 +178,74 @@ export function createAISdkModelAdapter(opts: {
       });
       addUsage(usage, fromAiUsage(result.usage));
       return {
-        content: fromAiContent(result.content),
+        content: [{ type: "text", text: JSON.stringify(result.object) }],
         inputTokens: totalInputTokens(result.usage),
       };
-    },
+    }
+
+    const result = await generateText({
+      model: opts.model,
+      system: input.system,
+      messages,
+      ...(input.tools ? { tools: toAiTools(input.tools) } : {}),
+      maxOutputTokens: input.maxTokens,
+      maxRetries: 0,
+      abortSignal: input.signal,
+      ...(providerOptions ? { providerOptions } : {}),
+    });
+    addUsage(usage, fromAiUsage(result.usage));
+    return {
+      content: fromAiContent(result.content),
+      inputTokens: totalInputTokens(result.usage),
+    };
+  };
+
+  const runStream = async (
+    input: ModelStepInput,
+    callbacks: ModelStreamCallbacks,
+  ): Promise<ModelStepResult> => {
+    if (input.outputSchema) return runGenerate(input);
+    const messages = withCacheBreakpoint(toAiMessages(input.messages));
+    const providerOptions = input.providerOptions;
+    let streamError: unknown;
+    const result = streamText({
+      model: opts.model,
+      system: input.system,
+      messages,
+      ...(input.tools ? { tools: toAiTools(input.tools) } : {}),
+      maxOutputTokens: input.maxTokens,
+      maxRetries: 0,
+      abortSignal: input.signal,
+      ...(providerOptions ? { providerOptions } : {}),
+      onError: ({ error }) => {
+        streamError = error;
+      },
+    });
+    let started = false;
+    for await (const delta of result.textStream) {
+      if (!delta) continue;
+      if (!started) {
+        started = true;
+        callbacks.onStart?.();
+      }
+      callbacks.onText(delta);
+    }
+    if (streamError !== undefined) throw streamError;
+    const content = await result.content;
+    const usageResult = await result.usage;
+    addUsage(usage, fromAiUsage(usageResult));
+    return {
+      content: fromAiContent(content),
+      inputTokens: totalInputTokens(usageResult),
+    };
+  };
+
+  return {
+    provider: opts.provider,
+    model: opts.modelId,
+    usage,
+    step: runGenerate,
+    stepStream: runStream,
   };
 }
 
@@ -381,34 +437,45 @@ export function wrapModelAdapterWithConcurrency(
   options: ModelConcurrencyOptions = {},
 ): ModelAdapter {
   const adaptive = isAdaptiveGate(gate) ? gate : null;
+  const runWithRetry = async <T>(
+    signal: AbortSignal | undefined,
+    call: () => Promise<T>,
+  ): Promise<T> => {
+    for (let attempt = 1; ; attempt++) {
+      try {
+        const result = await gate.run(call);
+        adaptive?.relax();
+        return result;
+      } catch (err) {
+        if (signal?.aborted) throw err;
+        const classified = classifyModelError(err);
+        if (!classified.retryable || attempt >= MODEL_RETRY_MAX_ATTEMPTS) {
+          throw err;
+        }
+        if (classified.concurrency) adaptive?.throttle();
+        const delayMs = retryDelayMs(attempt, classified.retryAfterMs);
+        options.onRetry?.({
+          attempt,
+          maxAttempts: MODEL_RETRY_MAX_ATTEMPTS,
+          delayMs,
+          concurrency: classified.concurrency,
+        });
+        await sleep(delayMs, signal);
+      }
+    }
+  };
+  const innerStepStream = adapter.stepStream?.bind(adapter);
   return {
     provider: adapter.provider,
     model: adapter.model,
     usage: adapter.usage,
-    async step(input) {
-      for (let attempt = 1; ; attempt++) {
-        try {
-          const result = await gate.run(() => adapter.step(input));
-          adaptive?.relax();
-          return result;
-        } catch (err) {
-          if (input.signal?.aborted) throw err;
-          const classified = classifyModelError(err);
-          if (!classified.retryable || attempt >= MODEL_RETRY_MAX_ATTEMPTS) {
-            throw err;
-          }
-          if (classified.concurrency) adaptive?.throttle();
-          const delayMs = retryDelayMs(attempt, classified.retryAfterMs);
-          options.onRetry?.({
-            attempt,
-            maxAttempts: MODEL_RETRY_MAX_ATTEMPTS,
-            delayMs,
-            concurrency: classified.concurrency,
-          });
-          await sleep(delayMs, input.signal);
+    step: (input) => runWithRetry(input.signal, () => adapter.step(input)),
+    ...(innerStepStream
+      ? {
+          stepStream: (input, callbacks) =>
+            runWithRetry(input.signal, () => innerStepStream(input, callbacks)),
         }
-      }
-    },
+      : {}),
   };
 }
 

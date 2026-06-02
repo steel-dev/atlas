@@ -2,9 +2,10 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 import {
-  research,
+  streamResearch,
   type ModelProvider,
   type ResearchEvent,
+  type ResearchResult,
 } from "./research.js";
 import { resolveModelSpec } from "./config-resolution.js";
 import { steel } from "./steel.js";
@@ -141,6 +142,9 @@ function prettyEvent(e: ResearchEvent): string {
 
 function prettyEventBody(e: ResearchEvent): string {
   switch (e.type) {
+    case "report-boundary":
+    case "report-delta":
+      return "";
     case "research_started":
       return paint(DIM, "  →") + " research started";
     case "research_finished":
@@ -228,10 +232,7 @@ function prettyEventBody(e: ResearchEvent): string {
   }
 }
 
-function writeCompletionSummary(
-  result: Awaited<ReturnType<typeof research>>,
-  json: boolean,
-): void {
+function writeCompletionSummary(result: ResearchResult, json: boolean): void {
   if (json) {
     process.stderr.write(JSON.stringify({ type: "completed", result }) + "\n");
     return;
@@ -283,28 +284,6 @@ async function main(): Promise<void> {
     process.exit(2);
   }
 
-  const controller = new AbortController();
-  const softController = new AbortController();
-  let softStopRequested = false;
-  const onSigint = () => {
-    if (!softStopRequested) {
-      softStopRequested = true;
-      softController.abort();
-      process.stderr.write(
-        "\natlas: finishing up with sources gathered so far — Ctrl-C again to force quit\n",
-      );
-      return;
-    }
-    process.stderr.write("\natlas: forcing quit…\n");
-    controller.abort();
-  };
-  const onSigterm = () => {
-    process.stderr.write("\natlas: terminating…\n");
-    controller.abort();
-  };
-  process.on("SIGINT", onSigint);
-  process.on("SIGTERM", onSigterm);
-
   const timeoutSeconds = parseNumber(values.timeout, "--timeout");
   if (timeoutSeconds !== undefined && timeoutSeconds <= 0) {
     fail(`--timeout must be > 0 (got ${timeoutSeconds})`);
@@ -312,32 +291,16 @@ async function main(): Promise<void> {
   const tokenLimit = parseTokenLimit(values["token-limit"]);
   const teamSize = parseTeam(values.team);
   const provider = parseProvider(values.provider);
-  const signal =
-    timeoutSeconds !== undefined
-      ? AbortSignal.any([
-          controller.signal,
-          AbortSignal.timeout(Math.floor(timeoutSeconds * 1000)),
-        ])
-      : controller.signal;
 
   const json = values.json === true;
   const quiet = values.quiet === true;
   const useProxy = values.proxy === true;
 
-  const onEvent = quiet
-    ? undefined
-    : (e: ResearchEvent) => {
-        if (e.type === "completed") {
-          // skip — terminal summary will be written after the markdown is emitted
-          return;
-        }
-        if (json) {
-          process.stderr.write(JSON.stringify(e) + "\n");
-        } else {
-          process.stderr.write(prettyEvent(e) + "\n");
-        }
-      };
+  let softStopRequested = false;
+  let hardAborted = false;
+  let timedOut = false;
 
+  let run!: ReturnType<typeof streamResearch>;
   try {
     const { model, summaryModel } = resolveModelSpec({
       provider,
@@ -345,7 +308,7 @@ async function main(): Promise<void> {
       summaryModel: values["summary-model"],
       baseUrl: values["base-url"],
     });
-    const result = await research({
+    run = streamResearch({
       query,
       search: resolveSearch(values["search-provider"]),
       model,
@@ -361,10 +324,53 @@ async function main(): Promise<void> {
         timeoutSeconds !== undefined
           ? Math.floor(timeoutSeconds * 1000)
           : undefined,
-      onEvent,
-      signal,
-      stopSignal: softController.signal,
     });
+  } catch (err) {
+    fail(err instanceof Error ? err.message : String(err));
+  }
+
+  const onSigint = () => {
+    if (!softStopRequested) {
+      softStopRequested = true;
+      run.stop();
+      process.stderr.write(
+        "\natlas: finishing up with sources gathered so far — Ctrl-C again to force quit\n",
+      );
+      return;
+    }
+    process.stderr.write("\natlas: forcing quit…\n");
+    hardAborted = true;
+    run.abort();
+  };
+  const onSigterm = () => {
+    process.stderr.write("\natlas: terminating…\n");
+    hardAborted = true;
+    run.abort();
+  };
+  process.on("SIGINT", onSigint);
+  process.on("SIGTERM", onSigterm);
+  const timeoutTimer =
+    timeoutSeconds !== undefined
+      ? setTimeout(
+          () => {
+            timedOut = true;
+          },
+          Math.floor(timeoutSeconds * 1000),
+        )
+      : undefined;
+
+  try {
+    if (!quiet) {
+      for await (const event of run.events) {
+        if (event.type === "completed") continue;
+        if (json) {
+          process.stderr.write(JSON.stringify(event) + "\n");
+        } else {
+          process.stderr.write(prettyEvent(event) + "\n");
+        }
+      }
+    }
+    const result = await run.result;
 
     if (values.out) {
       writeFileSync(values.out, result.markdown);
@@ -380,19 +386,16 @@ async function main(): Promise<void> {
       }
     }
   } catch (err) {
-    // SDK abort errors don't preserve the original DOMException, so check
-    // the signal directly to distinguish timeout vs SIGINT vs API error.
-    if (signal.aborted) {
-      const reason = signal.reason as { name?: string } | undefined;
-      if (reason?.name === "TimeoutError") {
-        process.stderr.write(
-          `atlas: timed out after ${timeoutSeconds}s (--timeout)\n`,
-        );
-        process.exit(124);
-      }
+    if (timedOut) {
+      process.stderr.write(
+        `atlas: timed out after ${timeoutSeconds}s (--timeout)\n`,
+      );
+      process.exit(124);
+    }
+    if (hardAborted) {
       process.exit(130);
     }
-    if (softController.signal.aborted) {
+    if (softStopRequested) {
       process.stderr.write(
         "atlas: stopped before a report could be produced\n",
       );
@@ -400,6 +403,7 @@ async function main(): Promise<void> {
     }
     fail(err instanceof Error ? err.message : String(err));
   } finally {
+    if (timeoutTimer) clearTimeout(timeoutTimer);
     process.off("SIGINT", onSigint);
     process.off("SIGTERM", onSigterm);
   }

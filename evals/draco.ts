@@ -11,7 +11,7 @@ import {
   DEFAULT_OPENAI_MODEL,
 } from "../src/defaults.js";
 import {
-  research,
+  streamResearch,
   type LanguageModel,
   type ModelProvider,
   type ResearchEvent,
@@ -953,7 +953,10 @@ function sortBySeed(cases: DracoCase[], seed: string): DracoCase[] {
   });
 }
 
-export function selectCases(cases: DracoCase[], opts: EvalOptions): DracoCase[] {
+export function selectCases(
+  cases: DracoCase[],
+  opts: EvalOptions,
+): DracoCase[] {
   let filtered = cases;
   if (opts.domains.size > 0) {
     filtered = filtered.filter((entry) =>
@@ -1346,6 +1349,8 @@ function progressLine(caseId: string, event: ResearchEvent): string | null {
       return `${caseId}: wrote ${event.markdownChars} markdown chars`;
     case "completed":
     case "research_started":
+    case "report-boundary":
+    case "report-delta":
       return null;
   }
 }
@@ -1428,6 +1433,8 @@ function traceEvent(event: ResearchEvent, started: number): EvalTraceEvent {
         },
       };
     case "research_started":
+    case "report-boundary":
+    case "report-delta":
       return base;
   }
 }
@@ -1658,7 +1665,7 @@ async function runResearch(
   let lastError: unknown;
   for (let attempt = 1; attempt <= attempts; attempt++) {
     try {
-      return await research({
+      const run = streamResearch({
         query: entry.problem,
         ...resolveModelSpec({
           provider: opts.provider,
@@ -1670,12 +1677,13 @@ async function runResearch(
         suggestedTeamSize: opts.teamSize,
         includeSourceDocuments: true,
         browser: steel({ proxy: opts.useProxy }),
-        onEvent: (event) => {
-          trace.push(traceEvent(event, started));
-          const line = progressLine(entry.id, event);
-          if (line) process.stderr.write(`eval:draco: ${line}\n`);
-        },
       });
+      for await (const event of run.events) {
+        trace.push(traceEvent(event, started));
+        const line = progressLine(entry.id, event);
+        if (line) process.stderr.write(`eval:draco: ${line}\n`);
+      }
+      return await run.result;
     } catch (err) {
       lastError = err;
       const message = err instanceof Error ? err.message : String(err);

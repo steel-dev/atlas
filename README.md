@@ -36,6 +36,27 @@ console.log(result.markdown);
 console.log(result.citedSources); // sources Atlas fetched and the report cited (provenance)
 ```
 
+## Streaming
+
+`research()` resolves once, at the end. For a live UI, `streamResearch()` returns a handle you can iterate while the run is in flight; its promise fields still resolve at the end whether or not you read the stream.
+
+```ts
+import { streamResearch } from "@steel-dev/atlas";
+import { openai } from "@ai-sdk/openai";
+
+const run = streamResearch({
+  query: "What's changing in browser automation for AI agents?",
+  model: openai("gpt-5.5"),
+});
+
+for await (const part of run.fullStream) {
+  if (part.type === "fetching") process.stderr.write(`reading ${part.url}\n`);
+  else if (part.type === "report-delta") process.stdout.write(part.text);
+}
+
+const { citedSources } = await run.result;
+```
+
 ## Bring any model
 
 Atlas runs every model through the [Vercel AI SDK](https://ai-sdk.dev), so the research loop stays the same — models call `search` and `fetch`, then Atlas applies runtime limits, source tracking, and citation reconciliation, while you can reach any provider the AI SDK supports.

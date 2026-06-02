@@ -1,6 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { LanguageModelV3StreamPart } from "@ai-sdk/provider";
+import { MockLanguageModelV3, convertArrayToReadableStream } from "ai/test";
 import {
   __testing,
+  createAISdkModelAdapter,
   totalUsageTokens,
   wrapModelAdapterWithConcurrency,
   type ModelAdapter,
@@ -11,6 +14,7 @@ import {
 } from "./model.js";
 import {
   createAdaptiveConcurrencyGate,
+  createConcurrencyGate,
   type AdaptiveConcurrencyGate,
 } from "./runtime.js";
 
@@ -187,6 +191,121 @@ describe("wrapModelAdapterWithConcurrency resilience", () => {
   });
 });
 
+describe("wrapModelAdapterWithConcurrency streaming", () => {
+  it("forwards text deltas and returns the aggregated streamed result", async () => {
+    const adapter = wrapModelAdapterWithConcurrency(
+      {
+        ...fakeAdapter(async () => ({ content: [] })),
+        stepStream: async (_input, callbacks) => {
+          callbacks.onText("Hello, ");
+          callbacks.onText("world");
+          return { content: [{ type: "text", text: "Hello, world" }] };
+        },
+      },
+      createConcurrencyGate(2),
+    );
+
+    const deltas: string[] = [];
+    const result = await adapter.stepStream?.(STEP_INPUT, {
+      onText: (t) => deltas.push(t),
+    });
+
+    expect(deltas).toEqual(["Hello, ", "world"]);
+    expect(result).toEqual({
+      content: [{ type: "text", text: "Hello, world" }],
+    });
+  });
+
+  it("retries a rate-limited streaming step, then streams and succeeds", async () => {
+    vi.useFakeTimers();
+    let calls = 0;
+    const adapter = wrapModelAdapterWithConcurrency(
+      {
+        ...fakeAdapter(async () => ({ content: [] })),
+        stepStream: async (_input, callbacks) => {
+          calls++;
+          if (calls === 1) throw rateLimitError("429 rate limit exceeded");
+          callbacks.onText("ok");
+          return { content: [{ type: "text", text: "ok" }] };
+        },
+      },
+      createAdaptiveConcurrencyGate(4),
+    );
+
+    const deltas: string[] = [];
+    const result = adapter.stepStream?.(STEP_INPUT, {
+      onText: (t) => deltas.push(t),
+    });
+    await vi.advanceTimersByTimeAsync(120_000);
+    await expect(result).resolves.toEqual({
+      content: [{ type: "text", text: "ok" }],
+    });
+    expect(calls).toBe(2);
+    expect(deltas).toEqual(["ok"]);
+    vi.useRealTimers();
+  });
+});
+
+describe("createAISdkModelAdapter streaming", () => {
+  it("preserves the thinking block and signature through the streamed result", async () => {
+    const model = new MockLanguageModelV3({
+      doStream: async () => ({
+        stream: convertArrayToReadableStream<LanguageModelV3StreamPart>([
+          { type: "stream-start", warnings: [] },
+          { type: "reasoning-start", id: "r1" },
+          {
+            type: "reasoning-delta",
+            id: "r1",
+            delta: "Weighing the evidence.",
+            providerMetadata: { anthropic: { signature: "SIG-XYZ" } },
+          },
+          { type: "reasoning-end", id: "r1" },
+          { type: "text-start", id: "t1" },
+          { type: "text-delta", id: "t1", delta: "Final " },
+          { type: "text-delta", id: "t1", delta: "answer." },
+          { type: "text-end", id: "t1" },
+          {
+            type: "finish",
+            finishReason: { unified: "stop", raw: "stop" },
+            usage: {
+              inputTokens: {
+                total: 10,
+                noCache: 10,
+                cacheRead: 0,
+                cacheWrite: 0,
+              },
+              outputTokens: { total: 5, text: 5, reasoning: 0 },
+            },
+          },
+        ]),
+      }),
+    });
+    const adapter = createAISdkModelAdapter({
+      model,
+      provider: "anthropic",
+      modelId: "test-model",
+    });
+
+    const deltas: string[] = [];
+    const result = await adapter.stepStream?.(STEP_INPUT, {
+      onText: (t) => deltas.push(t),
+    });
+
+    expect(deltas).toEqual(["Final ", "answer."]);
+    expect(result?.content).toContainEqual(
+      expect.objectContaining({
+        type: "thinking",
+        thinking: "Weighing the evidence.",
+        signature: "SIG-XYZ",
+      }),
+    );
+    expect(result?.content).toContainEqual({
+      type: "text",
+      text: "Final answer.",
+    });
+  });
+});
+
 describe("totalUsageTokens", () => {
   it("sums fresh input, output, and both cache legs", () => {
     expect(
@@ -353,7 +472,9 @@ describe("reasoning round-trip (signature preservation)", () => {
       },
     ] as unknown as Parameters<typeof __testing.fromAiContent>[0]);
 
-    expect(__testing.toAiMessages([{ role: "assistant", content: blocks }])[0]).toMatchObject({
+    expect(
+      __testing.toAiMessages([{ role: "assistant", content: blocks }])[0],
+    ).toMatchObject({
       role: "assistant",
       content: [
         {

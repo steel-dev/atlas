@@ -7,12 +7,9 @@ import {
   DEFAULT_ANTHROPIC_MODEL,
   DEFAULT_OPENAI_MODEL,
 } from "../src/defaults.js";
+import { createAISdkModelAdapter, type ModelAdapter } from "../src/model.js";
 import {
-  createAISdkModelAdapter,
-  type ModelAdapter,
-} from "../src/model.js";
-import {
-  research,
+  streamResearch,
   type ModelProvider,
   type ResearchEvent,
   type ResearchResult,
@@ -1303,6 +1300,8 @@ function progressLine(caseId: string, event: ResearchEvent): string | null {
       return `${caseId}: wrote ${event.markdownChars} markdown chars`;
     case "completed":
     case "research_started":
+    case "report-boundary":
+    case "report-delta":
       return null;
   }
 }
@@ -1385,6 +1384,8 @@ function traceEvent(event: ResearchEvent, started: number): EvalTraceEvent {
         },
       };
     case "research_started":
+    case "report-boundary":
+    case "report-delta":
       return base;
   }
 }
@@ -1405,7 +1406,7 @@ async function runCase(
     );
   }, 30_000);
   try {
-    const result = await research({
+    const run = streamResearch({
       query: evalQuery(entry.query),
       ...resolveModelSpec({
         provider: opts.provider,
@@ -1422,12 +1423,13 @@ async function runCase(
       finalizeProviderOptions: {
         anthropic: { thinking: { type: "adaptive" }, effort: "high" },
       },
-      onEvent: (event) => {
-        trace.push(traceEvent(event, started));
-        const line = progressLine(entry.id, event);
-        if (line) process.stderr.write(`eval:browsecomp: ${line}\n`);
-      },
     });
+    for await (const event of run.events) {
+      trace.push(traceEvent(event, started));
+      const line = progressLine(entry.id, event);
+      if (line) process.stderr.write(`eval:browsecomp: ${line}\n`);
+    }
+    const result = await run.result;
     clearInterval(heartbeat);
     const structured =
       result.structured === undefined

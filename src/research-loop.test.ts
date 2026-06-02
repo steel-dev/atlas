@@ -5,6 +5,7 @@ import type {
   ModelAdapter,
   ModelAssistantBlock,
   ModelStepInput,
+  ModelStreamCallbacks,
   ModelToolCall,
 } from "./model.js";
 import { __testing, runResearchLoop } from "./research-loop.js";
@@ -291,6 +292,81 @@ describe("tool helpers", () => {
     expect(
       __testing.parseRetryAfterSeconds(new Error("not rate limited")),
     ).toBeNull();
+  });
+});
+
+describe("report streaming", () => {
+  it("streams the lead report as a boundary then deltas and aggregates the same markdown", async () => {
+    const reportText =
+      "# Streamed Report\n\nFinding from [S](https://example.com/s).";
+    const messagesCreate = vi.fn();
+    const ctx = createContext({ messagesCreate });
+    ctx.deps.model.stepStream = async (
+      _input: ModelStepInput,
+      callbacks: ModelStreamCallbacks,
+    ): Promise<{ content: ModelAssistantBlock[] }> => {
+      callbacks.onStart?.();
+      callbacks.onText("# Streamed Report\n\n");
+      callbacks.onText("Finding from [S](https://example.com/s).");
+      return { content: [{ type: "text", text: reportText }] };
+    };
+
+    const result = await runResearchLoop({
+      ctx,
+      query: "What is Atlas?",
+      maxToolCalls: 2,
+    });
+
+    expect(result.finishReason).toBe("final report");
+    expect(result.markdown).toBe(reportText);
+
+    const emitted = ctx.emitSpy.mock.calls.map(
+      (call) => call[0] as { type: string; text?: string },
+    );
+    const types = emitted.map((event) => event.type);
+    const boundaryIndex = types.indexOf("report-boundary");
+    const firstDeltaIndex = types.indexOf("report-delta");
+    expect(boundaryIndex).toBeGreaterThanOrEqual(0);
+    expect(boundaryIndex).toBeLessThan(firstDeltaIndex);
+
+    const deltas = emitted
+      .filter((event) => event.type === "report-delta")
+      .map((event) => event.text ?? "");
+    expect(deltas.join("")).toBe(reportText);
+    expect(messagesCreate).not.toHaveBeenCalled();
+  });
+
+  it("does not stream sub-agent reports", async () => {
+    const messagesCreate = vi
+      .fn()
+      .mockResolvedValue(
+        messageWith([{ type: "text", text: "# Sub Report\n\nDone." }]),
+      );
+    const ctx = createContext({ messagesCreate, depth: 1 });
+    let streamed = false;
+    ctx.deps.model.stepStream = async (
+      _input: ModelStepInput,
+      callbacks: ModelStreamCallbacks,
+    ): Promise<{ content: ModelAssistantBlock[] }> => {
+      streamed = true;
+      callbacks.onText("x");
+      return { content: [{ type: "text", text: "# Sub Report\n\nDone." }] };
+    };
+
+    const result = await runResearchLoop({
+      ctx,
+      query: "sub task",
+      maxToolCalls: 2,
+    });
+
+    expect(result.markdown).toBe("# Sub Report\n\nDone.");
+    expect(streamed).toBe(false);
+    const types = ctx.emitSpy.mock.calls.map(
+      (call) => (call[0] as { type: string }).type,
+    );
+    expect(types).not.toContain("report-delta");
+    expect(types).not.toContain("report-boundary");
+    expect(messagesCreate).toHaveBeenCalled();
   });
 });
 
@@ -2503,7 +2579,8 @@ describe("spawn/join fan-out", () => {
     const ctx = createContext({
       messagesCreate,
       maxDelegationDepth: 1,
-      maxConcurrentSubagents: 2,    });
+      maxConcurrentSubagents: 2,
+    });
 
     const result = await runResearchLoop({
       ctx,
@@ -2593,7 +2670,8 @@ describe("spawn/join fan-out", () => {
     const ctx = createContext({
       messagesCreate,
       maxDelegationDepth: 1,
-      maxConcurrentSubagents: 2,    });
+      maxConcurrentSubagents: 2,
+    });
 
     const result = await runResearchLoop({
       ctx,
@@ -2647,7 +2725,8 @@ describe("spawn/join fan-out", () => {
     const ctx = createContext({
       messagesCreate,
       maxDelegationDepth: 1,
-      maxConcurrentSubagents: 2,    });
+      maxConcurrentSubagents: 2,
+    });
 
     const pool = ctx.deps.browserSessionPool as unknown as {
       acquire: () => Promise<{ release: ReturnType<typeof vi.fn> }>;
@@ -2716,7 +2795,8 @@ describe("spawn/join fan-out", () => {
       messagesCreate,
       scrape,
       maxDelegationDepth: 1,
-      maxConcurrentSubagents: 2,    });
+      maxConcurrentSubagents: 2,
+    });
 
     const result = await runResearchLoop({
       ctx,
@@ -2823,7 +2903,8 @@ describe("spawn/join fan-out", () => {
     const ctx = createContext({
       messagesCreate,
       maxDelegationDepth: 1,
-      maxConcurrentSubagents: 1,      subagentCompactionTriggerTokens: 200,
+      maxConcurrentSubagents: 1,
+      subagentCompactionTriggerTokens: 200,
       subagentCompactionKeepTokens: 50,
     });
     ctx.deps.summaryModel = {
@@ -2881,7 +2962,8 @@ describe("emergent team via spawn/join", () => {
     const ctx = createContext({
       messagesCreate,
       maxDelegationDepth: 1,
-      maxConcurrentSubagents: 2,    });
+      maxConcurrentSubagents: 2,
+    });
 
     const result = await runResearchLoop({
       ctx,

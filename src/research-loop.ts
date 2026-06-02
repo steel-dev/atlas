@@ -2,6 +2,7 @@ import {
   totalUsageTokens,
   type ModelAssistantBlock,
   type ModelMessage,
+  type ModelStepInput,
   type ModelStepResult,
   type ModelToolCall,
   type ModelToolResult,
@@ -184,6 +185,17 @@ export async function runResearchLoop(opts: {
     runResearchLoop,
   );
 
+  const streamReportStep = (
+    input: ModelStepInput,
+  ): Promise<ModelStepResult> => {
+    const stepStream = ctx.deps.model.stepStream;
+    if (isSubagent || !stepStream) return ctx.deps.model.step(input);
+    return stepStream(input, {
+      onStart: () => ctx.scope.emit({ type: "report-boundary" }),
+      onText: (text) => ctx.scope.emit({ type: "report-delta", text }),
+    });
+  };
+
   if (!isSubagent) ctx.scope.emit({ type: "research_started" });
 
   const fetchedUrls: string[] = [];
@@ -240,7 +252,7 @@ export async function runResearchLoop(opts: {
     const promptTokenEstimate = estimateMessagesTokens(messages);
     let resp: ModelStepResult;
     try {
-      resp = await ctx.deps.model.step({
+      resp = await streamReportStep({
         system: systemPrompt,
         tools,
         messages,
@@ -401,7 +413,7 @@ export async function runResearchLoop(opts: {
     });
 
     try {
-      const resp = await ctx.deps.model.step({
+      const resp = await streamReportStep({
         system: systemPrompt,
         messages,
         maxTokens: ctx.config.maxOutputTokens ?? 2048,

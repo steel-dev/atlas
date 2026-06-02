@@ -213,9 +213,7 @@ export function formatSourceCard(
     ...(qualityWarnings.length > 0
       ? { source_quality: { warnings: qualityWarnings } }
       : {}),
-    ...(document.metadata.method &&
-    (document.metadata.method !== "steel_markdown" ||
-      (document.metadata.attempts?.length ?? 0) > 0)
+    ...(document.metadata.method
       ? {
           extraction: {
             method: document.metadata.method,

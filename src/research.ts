@@ -28,6 +28,7 @@ import {
   type ResearchLoopEvent,
 } from "./runtime.js";
 import { normalizeUrlForSource } from "./url.js";
+import { createResearchStreamController } from "./research-stream.js";
 
 export type {
   LanguageModel,
@@ -87,12 +88,22 @@ export interface ResearchOptions {
   finalizeProviderOptions?: ProviderOptions;
   output?: ResearchOutputOptions;
   includeSourceDocuments?: boolean;
-  onEvent?: (event: ResearchEvent) => void;
-  signal?: AbortSignal;
-  stopSignal?: AbortSignal;
 }
 
-export async function research(opts: ResearchOptions): Promise<ResearchResult> {
+export interface ResearchStream {
+  readonly fullStream: AsyncIterable<ResearchEvent>;
+  readonly textStream: AsyncIterable<string>;
+  readonly events: AsyncIterable<ResearchEvent>;
+  readonly result: Promise<ResearchResult>;
+  readonly markdown: Promise<string>;
+  readonly citedSources: Promise<CitedSource[]>;
+  readonly citationsNotFetched: Promise<string[]>;
+  readonly usage: Promise<UsageSummary>;
+  abort(): void;
+  stop(): void;
+}
+
+export function streamResearch(opts: ResearchOptions): ResearchStream {
   if (!opts.query?.trim()) {
     throw new Error("research: query is required");
   }
@@ -101,15 +112,32 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
       'research: model is required (pass an AI SDK LanguageModel, e.g. openai("gpt-5.5"))',
     );
   }
+  const hardController = new AbortController();
+  const softController = new AbortController();
+  const controller = createResearchStreamController();
+  queueMicrotask(() => {
+    void runResearch(opts, controller.emit, hardController, softController)
+      .then(controller.resolve, controller.reject)
+      .finally(controller.close);
+  });
+  return controller.build({
+    abort: () => hardController.abort(),
+    stop: () => softController.abort(),
+  });
+}
+
+export async function research(opts: ResearchOptions): Promise<ResearchResult> {
+  return streamResearch(opts).result;
+}
+
+async function runResearch(
+  opts: ResearchOptions,
+  emit: (event: ResearchEvent) => void,
+  hardController: AbortController,
+  softController: AbortController,
+): Promise<ResearchResult> {
   const config = resolveRunConfig(opts);
-  const runSignal = combineSignals(opts.signal, opts.timeoutMs);
-  const emit = (e: ResearchEvent) => {
-    try {
-      opts.onEvent?.(e);
-    } catch {
-      // user callbacks must never break the research run
-    }
-  };
+  const runSignal = combineSignals(hardController.signal, opts.timeoutMs);
   const abort = () => runSignal?.throwIfAborted();
   const resources = createRunResources(opts, config, runSignal, emit);
 
@@ -128,7 +156,7 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
       resources,
       leadScope,
       runSignal,
-      stopSignal: opts.stopSignal,
+      stopSignal: softController.signal,
       abort,
     });
 
