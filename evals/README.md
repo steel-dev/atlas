@@ -83,3 +83,97 @@ Markdown `Final answer:` line. Secondary metrics include latency, tool calls,
 cited source count, and not-fetched citation count. When `--judge` is enabled,
 `accuracy` uses judge correctness while `exactAccuracy` remains in the summary
 for comparison.
+
+---
+
+# DRACO
+
+`eval:draco` runs Perplexity's [DRACO](https://arxiv.org/abs/2602.11685) benchmark
+(*Deep Research Accuracy, Completeness, and Objectivity*) — 100 tasks across 10
+domains, each graded against an expert rubric instead of a single answer. Unlike
+BrowseComp, the full Markdown report is what gets scored.
+
+Cases come from the [`perplexity-ai/draco`](https://huggingface.co/datasets/perplexity-ai/draco)
+dataset (the default `--cases` URL), pinned to an immutable dataset revision so
+scores stay reproducible as `main` moves; the manifest records `casesRevision`.
+Each row is `{ id, domain, problem, answer }`
+where `answer` is a JSON-encoded rubric: `sections[].criteria[]` with
+`{ id, weight, requirement }`. Four sections — `factual-accuracy` (~50% of weight),
+`breadth-and-depth-of-analysis`, `presentation-quality`, `citation-quality` —
+average ~40 criteria per task.
+
+## Run
+
+```bash
+npm run eval:draco -- --sample 10 --seed draco-v1
+```
+
+`--sample N` is **domain-stratified** by default: it spreads N tasks evenly across
+the 10 domains (so `--sample 10` is one per domain). Pass `--stratify none` for a
+plain seeded global sample. The same seed always produces the same subset.
+
+Inspect the selection without calling any API:
+
+```bash
+npm run eval:draco -- --dry-run --sample 10 --seed draco-v1
+```
+
+Other useful flags: `--domain "Finance,Law"`, `--case-id <uuid>`, `--concurrency N`
+(parallel tasks), `--timeout` (per-task research seconds, default 900), `--team`,
+`--token-limit`, `--provider`/`--model` (research model). Run with `--help` for the
+full list.
+
+## Grading (LLM-as-judge)
+
+Grading replicates the open-source protocol DRACO uses
+([`The-LLM-Data-Company/rubric`](https://github.com/The-LLM-Data-Company/rubric)):
+the judge returns a binary **MET/UNMET** verdict per criterion, and scores aggregate
+by weight.
+
+- **Judge model** defaults to **`gemini-3.1-pro-preview`** — the paper's primary judge
+  was `gemini-3-pro-preview`, now retired on the Google API, so this is its current
+  Gemini-3-line successor. Needs `GOOGLE_GENERATIVE_AI_API_KEY`. The paper reports
+  rankings are stable across the Gemini-3-Pro / GPT-5.2 / Sonnet-4.5 judges, so without
+  a Google key you can fall back to `--judge-provider anthropic --judge-model
+  claude-sonnet-4-5` (or `--judge-provider openai`). The manifest records the judge
+  model so results are self-describing.
+- **Grader strategy**: `--grader per-criterion` (default) scores each criterion in an
+  isolated call (the paper grades "independently for each criterion"); `--grader
+  one-shot` scores all criteria in a single call — cheaper, good for smoke tests.
+- **Scores** (per the paper / repo): `normalized = clamp(Σ MET·weight / Σ positive
+  weight, 0, 1)`, and `pass rate = fraction of criteria where positive→MET or
+  negative→UNMET`. Both are reported overall, per domain, and per section.
+- **Reproducibility / coverage**: judge calls are pinned to `temperature 0`.
+  Criteria the judge fails to grade (timeout, rate-limit, or a missing index under
+  `one-shot`) are flagged with `judgeError` and **excluded from the score
+  denominator** rather than silently counted as UNMET; the run reports `grading
+  coverage` (graded / total criteria). A task whose criteria *all* error is left
+  unscored — kept in operational metrics but dropped from the scored set — instead
+  of being recorded as a misleading 0%.
+
+Tune the judge with `--judge-provider`, `--judge-model`, `--judge-base-url`,
+`--judge-timeout` (per-criterion seconds), and `--judge-concurrency` (parallel judge
+calls per task; per-criterion grading issues ~40 per task).
+
+## Output
+
+Results are written to `eval-runs/draco-<timestamp>.jsonl` unless `--out` is given:
+
+- `manifest`: seed, sample, stratification, grader, research + judge model, and the
+  selected `{id, domain, criteria}`.
+- one `result` per task: `domain`, `problem`, `markdown`, `score`
+  (`normalizedScore`, `passRate`, `rawScore`, per-section `sections[]`), the
+  per-criterion `report[]` (`verdict` + `reason`), plus `trace`, `diagnostics`, and
+  `metrics` (latency, tokens, cited sources).
+- `summary`: mean normalized score, mean pass rate, per-domain and per-section
+  breakdowns, `coverage`/`gradedCriteria`/`totalCriteria`/`ungraded` (judge grading
+  coverage), and operational metrics (median latency, tool calls, fetch health, choke).
+
+## Environment
+
+The eval reads keys from the environment (`STEEL_API_KEY`, the research provider key,
+and the judge key). If they live in `.env`, load them with Node's `--env-file`:
+
+```bash
+node --env-file=.env --import tsx evals/draco.ts --sample 10 --seed draco-v1
+```
