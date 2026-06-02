@@ -1,4 +1,4 @@
-import type { ModelProvider, UsageSummary } from "./model.js";
+import type { LanguageModel, ModelProvider, UsageSummary } from "./model.js";
 import type { FetchedSource, SourceDocument, CitedSource } from "./sources.js";
 import {
   resolveSearchProvider,
@@ -23,7 +23,7 @@ import {
 } from "./runtime.js";
 import { normalizeUrlForSource } from "./url.js";
 
-export type { ModelProvider, UsageSummary } from "./model.js";
+export type { LanguageModel, ModelProvider, UsageSummary } from "./model.js";
 export type { ResearchEffort } from "./defaults.js";
 export type { FetchedSource, SourceDocument, CitedSource } from "./sources.js";
 
@@ -66,12 +66,8 @@ export type ResearchEvent =
 
 export interface ResearchOptions {
   query: string;
-  provider?: ModelProvider;
-  model?: string;
-  summaryModel?: string;
-  anthropicApiKey?: string;
-  openaiApiKey?: string;
-  openaiBaseUrl?: string;
+  model: Exclude<LanguageModel, string>;
+  summaryModel?: Exclude<LanguageModel, string>;
   steelApiKey?: string;
   steelBaseUrl?: string;
   /** Search backend: a custom SearchProvider instance, or a built-in name
@@ -98,6 +94,11 @@ export interface ResearchOptions {
 export async function research(opts: ResearchOptions): Promise<ResearchResult> {
   if (!opts.query?.trim()) {
     throw new Error("research: query is required");
+  }
+  if (!opts.model) {
+    throw new Error(
+      'research: model is required (pass an AI SDK LanguageModel, e.g. openai("gpt-5.5"))',
+    );
   }
   const config = resolveRunConfig(opts);
   const runSignal = combineSignals(opts.signal, opts.timeoutMs);

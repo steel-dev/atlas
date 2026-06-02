@@ -46,12 +46,11 @@ Run `atlas --help` for the full option list.
 ## TypeScript
 
 ```ts
-import { research } from "@steel-dev/atlas";
+import { research, openai } from "@steel-dev/atlas";
 
 const result = await research({
   query: "What's changing in browser automation for AI agents?",
-  provider: "openai",
-  model: "gpt-5.5",
+  model: openai("gpt-5.5"), // openai + anthropic are re-exported for convenience
   useProxy: true,
 });
 
@@ -60,7 +59,23 @@ console.log(result.citedSources); // sources Atlas fetched and the report cited 
 console.log(result.citationsNotFetched); // cited URLs Atlas did not fetch
 ```
 
-Atlas supports Anthropic and OpenAI-compatible chat completions through a thin internal model adapter. The research loop stays the same: models can call `search` and `fetch`, then Atlas applies runtime limits, source tracking, and citation reconciliation.
+## Bring any model
+
+Atlas runs every model through the [Vercel AI SDK](https://ai-sdk.dev), so the research loop stays the same — models call `search` and `fetch`, then Atlas applies runtime limits, source tracking, and citation reconciliation — while you can reach any provider the AI SDK supports.
+
+`model` is a Vercel AI SDK `LanguageModel`. `openai` and `anthropic` are re-exported from this package, so the built-ins need no extra install; for any other provider, install its `@ai-sdk/*` package and pass that model:
+
+```ts
+import { research } from "@steel-dev/atlas";
+import { google } from "@ai-sdk/google";
+
+const result = await research({
+  query: "What's changing in browser automation for AI agents?",
+  model: google("gemini-3-pro"), // or bedrock(...), vertex(...), groq(...), …
+});
+```
+
+Bring your own key with the provider factory (`createOpenAI({ apiKey, baseURL })`, also re-exported) or the provider's standard env var. Atlas preserves provider-native capability through the same loop: Anthropic thinking signatures and OpenAI reasoning round-trip across tool turns, prompt caching stays on, and `ATLAS_THINKING_EFFORT` maps to each provider's effort knob. The CLI keeps the string flags (`--provider`, `--model`, `--base-url`).
 
 ## Search backends
 

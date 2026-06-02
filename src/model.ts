@@ -1,11 +1,26 @@
-import Anthropic from "@anthropic-ai/sdk";
-import OpenAI from "openai";
+import { createAnthropic } from "@ai-sdk/anthropic";
+import { createOpenAI } from "@ai-sdk/openai";
+import {
+  generateText,
+  generateObject,
+  jsonSchema,
+  tool,
+  type LanguageModel,
+  type ModelMessage as AiModelMessage,
+  type AssistantContent,
+  type ToolContent,
+  type ToolSet,
+  type LanguageModelUsage,
+  type JSONValue,
+} from "ai";
 import type { ResearchEffort } from "./defaults.js";
 import { errorMessage } from "./errors.js";
 import { sleep } from "./async.js";
 import type { AdaptiveConcurrencyGate, ConcurrencyGate } from "./runtime.js";
 
-export type ModelProvider = "anthropic" | "openai";
+export type { LanguageModel } from "ai";
+
+export type ModelProvider = "anthropic" | "openai" | (string & {});
 
 export interface UsageSummary {
   input_tokens: number;
@@ -49,11 +64,13 @@ export interface ModelThinkingBlock {
   type: "thinking";
   thinking: string;
   signature: string;
+  providerMetadata?: Record<string, unknown>;
 }
 
 export interface ModelRedactedThinkingBlock {
   type: "redacted_thinking";
   data: string;
+  providerMetadata?: Record<string, unknown>;
 }
 
 export type ModelAssistantBlock =
@@ -117,155 +134,72 @@ function addUsage(
   target.cache_read_input_tokens += usage.cache_read_input_tokens ?? 0;
 }
 
-export function createAnthropicModelAdapter(opts: {
-  apiKey: string;
-  model: string;
-  maxRetries?: number;
+const EPHEMERAL_CACHE: Record<string, JSONValue> = {
+  cacheControl: { type: "ephemeral" },
+};
+
+export function createAISdkModelAdapter(opts: {
+  model: LanguageModel;
+  provider: ModelProvider;
+  modelId: string;
 }): ModelAdapter {
-  const client = new Anthropic({
-    apiKey: opts.apiKey,
-    maxRetries: opts.maxRetries ?? 2,
-  });
   const usage = emptyUsageSummary();
   return {
-    provider: "anthropic",
-    model: opts.model,
+    provider: opts.provider,
+    model: opts.modelId,
     usage,
     async step(input) {
-      const resp = await client.messages.create(
-        {
+      const messages = withCacheBreakpoint(toAiMessages(input.messages));
+      const providerOptions = buildProviderOptions(input.effort);
+
+      if (input.outputSchema) {
+        const result = await generateObject({
           model: opts.model,
-          max_tokens: input.maxTokens,
           system: input.system,
-          tools: input.tools?.map(toAnthropicTool),
-          messages: input.messages.map(toAnthropicMessage),
-          cache_control: { type: "ephemeral" },
-          ...anthropicRequestConfig(input),
-        },
-        { signal: input.signal },
-      );
-      const inputTokens =
-        (resp.usage.input_tokens ?? 0) +
-        (resp.usage.cache_creation_input_tokens ?? 0) +
-        (resp.usage.cache_read_input_tokens ?? 0);
-      addUsage(usage, {
-        input_tokens: resp.usage.input_tokens ?? 0,
-        output_tokens: resp.usage.output_tokens ?? 0,
-        cache_creation_input_tokens:
-          resp.usage.cache_creation_input_tokens ?? 0,
-        cache_read_input_tokens: resp.usage.cache_read_input_tokens ?? 0,
+          messages,
+          schema: jsonSchema(input.outputSchema.schema),
+          maxOutputTokens: input.maxTokens,
+          maxRetries: 0,
+          abortSignal: input.signal,
+          ...(providerOptions ? { providerOptions } : {}),
+        });
+        addUsage(usage, fromAiUsage(result.usage));
+        return {
+          content: [{ type: "text", text: JSON.stringify(result.object) }],
+          inputTokens: totalInputTokens(result.usage),
+        };
+      }
+
+      const result = await generateText({
+        model: opts.model,
+        system: input.system,
+        messages,
+        ...(input.tools ? { tools: toAiTools(input.tools) } : {}),
+        maxOutputTokens: input.maxTokens,
+        maxRetries: 0,
+        abortSignal: input.signal,
+        ...(providerOptions ? { providerOptions } : {}),
       });
+      addUsage(usage, fromAiUsage(result.usage));
       return {
-        content: resp.content.flatMap(fromAnthropicBlock),
-        inputTokens,
+        content: fromAiContent(result.content),
+        inputTokens: totalInputTokens(result.usage),
       };
     },
   };
 }
 
-function anthropicRequestConfig(input: ModelStepInput): object {
-  const outputConfig = {
-    ...(input.effort ? { effort: input.effort } : {}),
-    ...(input.outputSchema
-      ? {
-          format: {
-            type: "json_schema" as const,
-            schema: input.outputSchema.schema,
-          },
-        }
-      : {}),
-  };
-  return {
-    ...(input.effort ? { thinking: { type: "adaptive" as const } } : {}),
-    ...(Object.keys(outputConfig).length > 0
-      ? { output_config: outputConfig }
-      : {}),
-  };
-}
-
-function toAnthropicTool(tool: ModelToolDefinition): Anthropic.Tool {
-  return {
-    name: tool.name,
-    description: tool.description,
-    input_schema: tool.input_schema as Anthropic.Tool["input_schema"],
-  };
-}
-
-function toAnthropicMessage(message: ModelMessage): Anthropic.MessageParam {
-  if (message.role === "user") {
-    if (typeof message.content === "string") {
-      return { role: "user", content: message.content };
-    }
-    return {
-      role: "user",
-      content: message.content.map(
-        (result): Anthropic.ToolResultBlockParam => ({
-          type: "tool_result",
-          tool_use_id: result.tool_call_id,
-          content: result.content,
-          is_error: result.is_error,
-        }),
-      ),
-    };
-  }
-
-  return {
-    role: "assistant",
-    content: message.content.map(toAnthropicAssistantBlock),
-  };
-}
-
-function toAnthropicAssistantBlock(
-  block: ModelAssistantBlock,
-): Anthropic.ContentBlockParam {
-  switch (block.type) {
-    case "text":
-      return { type: "text", text: block.text };
-    case "thinking":
-      return {
-        type: "thinking",
-        thinking: block.thinking,
-        signature: block.signature,
-      };
-    case "redacted_thinking":
-      return { type: "redacted_thinking", data: block.data };
-    case "tool_call":
-      return {
-        type: "tool_use",
-        id: block.id,
-        name: block.name,
-        input: block.input,
-      };
-  }
-}
-
-function fromAnthropicBlock(
-  block: Anthropic.Message["content"][number],
-): ModelAssistantBlock[] {
-  if (block.type === "text") return [{ type: "text", text: block.text }];
-  if (block.type === "tool_use") {
-    return [
-      {
-        type: "tool_call",
-        id: block.id,
-        name: block.name,
-        input: block.input,
-      },
-    ];
-  }
-  if (block.type === "thinking") {
-    return [
-      {
-        type: "thinking",
-        thinking: block.thinking,
-        signature: block.signature,
-      },
-    ];
-  }
-  if (block.type === "redacted_thinking") {
-    return [{ type: "redacted_thinking", data: block.data }];
-  }
-  return [];
+export function createAnthropicModelAdapter(opts: {
+  apiKey: string;
+  model: string;
+  maxRetries?: number;
+}): ModelAdapter {
+  const provider = createAnthropic({ apiKey: opts.apiKey });
+  return createAISdkModelAdapter({
+    model: provider(opts.model),
+    provider: "anthropic",
+    modelId: opts.model,
+  });
 }
 
 export function createOpenAIModelAdapter(opts: {
@@ -274,160 +208,192 @@ export function createOpenAIModelAdapter(opts: {
   model: string;
   maxRetries?: number;
 }): ModelAdapter {
-  const client = new OpenAI({
+  const provider = createOpenAI({
     apiKey: opts.apiKey,
-    baseURL: opts.baseUrl,
-    maxRetries: opts.maxRetries ?? 2,
+    ...(opts.baseUrl ? { baseURL: opts.baseUrl } : {}),
   });
-  const usage = emptyUsageSummary();
-  return {
+  return createAISdkModelAdapter({
+    model: provider(opts.model),
     provider: "openai",
-    model: opts.model,
-    usage,
-    async step(input) {
-      const resp = await client.chat.completions.create(
-        {
-          model: opts.model,
-          messages: toOpenAIMessages(input.system, input.messages),
-          tools: input.tools?.map(toOpenAITool),
-          tool_choice: input.tools?.length ? "auto" : undefined,
-          response_format: openAIResponseFormat(input.outputSchema),
-          max_completion_tokens: input.maxTokens,
-          ...(input.effort
-            ? { reasoning_effort: toOpenAIReasoningEffort(input.effort) }
-            : {}),
-        },
-        { signal: input.signal },
-      );
-      const inputTokens = resp.usage?.prompt_tokens ?? 0;
-      addUsage(usage, {
-        input_tokens: inputTokens,
-        output_tokens: resp.usage?.completion_tokens ?? 0,
-      });
-      const message = resp.choices[0]?.message;
-      if (!message) return { content: [], inputTokens };
-      return { content: fromOpenAIMessage(message), inputTokens };
-    },
+    modelId: opts.model,
+  });
+}
+
+function buildProviderOptions(
+  effort: ResearchEffort | undefined,
+): Record<string, Record<string, JSONValue>> | undefined {
+  if (!effort) return undefined;
+  return {
+    anthropic: { thinking: { type: "adaptive" }, effort },
+    openai: { reasoningEffort: effort === "max" ? "xhigh" : effort },
   };
 }
 
-function toOpenAIReasoningEffort(
-  effort: ResearchEffort,
-): "low" | "medium" | "high" | "xhigh" {
-  switch (effort) {
-    case "low":
-      return "low";
-    case "medium":
-      return "medium";
-    case "high":
-      return "high";
-    case "max":
-      return "xhigh";
+function toAiTools(tools: ModelToolDefinition[]): ToolSet {
+  const set: ToolSet = {};
+  for (const t of tools) {
+    set[t.name] = tool({
+      description: t.description,
+      inputSchema: jsonSchema(t.input_schema),
+    });
   }
+  return set;
 }
 
-function openAIResponseFormat(
-  outputSchema: ModelOutputSchema | undefined,
-): OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming["response_format"] {
-  if (!outputSchema) return undefined;
-  return {
-    type: "json_schema",
-    json_schema: {
-      name: outputSchema.name,
-      schema: outputSchema.schema,
-      strict: outputSchema.strict ?? true,
-    },
-  };
-}
-
-function toOpenAITool(
-  tool: ModelToolDefinition,
-): OpenAI.Chat.Completions.ChatCompletionTool {
-  return {
-    type: "function",
-    function: {
-      name: tool.name,
-      description: tool.description,
-      parameters: tool.input_schema,
-    },
-  };
-}
-
-function toOpenAIMessages(
-  system: string,
-  messages: ModelMessage[],
-): OpenAI.Chat.Completions.ChatCompletionMessageParam[] {
-  const out: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
-    { role: "system", content: system },
-  ];
+function toAiMessages(messages: ModelMessage[]): AiModelMessage[] {
+  const toolNameById = new Map<string, string>();
   for (const message of messages) {
+    if (message.role !== "assistant") continue;
+    for (const block of message.content) {
+      if (block.type === "tool_call") toolNameById.set(block.id, block.name);
+    }
+  }
+
+  return messages.map((message): AiModelMessage => {
     if (message.role === "user") {
       if (typeof message.content === "string") {
-        out.push({ role: "user", content: message.content });
-      } else {
-        for (const result of message.content) {
-          out.push({
-            role: "tool",
-            tool_call_id: result.tool_call_id,
-            content: result.content,
-          });
-        }
+        return { role: "user", content: message.content };
       }
-      continue;
+      const content: ToolContent = message.content.map((result) => ({
+        type: "tool-result",
+        toolCallId: result.tool_call_id,
+        toolName: toolNameById.get(result.tool_call_id) ?? "tool",
+        output: result.is_error
+          ? { type: "error-text", value: result.content }
+          : { type: "text", value: result.content },
+      }));
+      return { role: "tool", content };
     }
 
-    const text = message.content
-      .filter((block): block is ModelTextBlock => block.type === "text")
-      .map((block) => block.text)
-      .join("");
-    const toolCalls = message.content
-      .filter((block): block is ModelToolCall => block.type === "tool_call")
-      .map((call) => ({
-        id: call.id,
-        type: "function" as const,
-        function: {
-          name: call.name,
-          arguments:
-            typeof call.input === "string"
-              ? call.input
-              : JSON.stringify(call.input ?? {}),
-        },
-      }));
-    out.push({
-      role: "assistant",
-      content: text || null,
-      tool_calls: toolCalls.length > 0 ? toolCalls : undefined,
+    const content: AssistantContent = message.content.map((block) => {
+      switch (block.type) {
+        case "text":
+          return { type: "text", text: block.text };
+        case "tool_call":
+          return {
+            type: "tool-call",
+            toolCallId: block.id,
+            toolName: block.name,
+            input: block.input,
+          };
+        case "thinking":
+          return {
+            type: "reasoning",
+            text: block.thinking,
+            ...(reasoningProviderOptions(block.providerMetadata, {
+              signature: block.signature,
+            })
+              ? {
+                  providerOptions: reasoningProviderOptions(
+                    block.providerMetadata,
+                    { signature: block.signature },
+                  ),
+                }
+              : {}),
+          };
+        case "redacted_thinking":
+          return {
+            type: "reasoning",
+            text: "",
+            providerOptions: reasoningProviderOptions(block.providerMetadata, {
+              redactedData: block.data,
+            }) ?? { anthropic: { redactedData: block.data } },
+          };
+      }
     });
-  }
-  return out;
+    return { role: "assistant", content };
+  });
 }
 
-function fromOpenAIMessage(
-  message: OpenAI.Chat.Completions.ChatCompletionMessage,
-): ModelAssistantBlock[] {
-  const blocks: ModelAssistantBlock[] = [];
-  if (message.content) {
-    blocks.push({ type: "text", text: message.content });
+function reasoningProviderOptions(
+  providerMetadata: Record<string, unknown> | undefined,
+  fallbackAnthropic: Record<string, JSONValue>,
+): Record<string, Record<string, JSONValue>> | undefined {
+  if (providerMetadata && Object.keys(providerMetadata).length > 0) {
+    return providerMetadata as unknown as Record<
+      string,
+      Record<string, JSONValue>
+    >;
   }
-  for (const call of message.tool_calls ?? []) {
-    if (call.type !== "function") continue;
-    blocks.push({
-      type: "tool_call",
-      id: call.id,
-      name: call.function.name,
-      input: parseOpenAIArguments(call.function.arguments),
-    });
+  const hasValue = Object.values(fallbackAnthropic).some(
+    (v) => v !== undefined && v !== "",
+  );
+  return hasValue ? { anthropic: fallbackAnthropic } : undefined;
+}
+
+function withCacheBreakpoint(messages: AiModelMessage[]): AiModelMessage[] {
+  if (messages.length === 0) return messages;
+  const last = messages[messages.length - 1];
+  const withCache = {
+    ...last,
+    providerOptions: { ...last.providerOptions, anthropic: EPHEMERAL_CACHE },
+  } as AiModelMessage;
+  return [...messages.slice(0, -1), withCache];
+}
+
+type AiContentPart = Awaited<
+  ReturnType<typeof generateText>
+>["content"][number];
+
+function fromAiContent(content: AiContentPart[]): ModelAssistantBlock[] {
+  const blocks: ModelAssistantBlock[] = [];
+  for (const part of content) {
+    if (part.type === "text") {
+      if (part.text) blocks.push({ type: "text", text: part.text });
+    } else if (part.type === "reasoning") {
+      const meta = part.providerMetadata as
+        | Record<string, Record<string, unknown>>
+        | undefined;
+      const redactedData = meta?.anthropic?.redactedData;
+      if (typeof redactedData === "string") {
+        blocks.push({
+          type: "redacted_thinking",
+          data: redactedData,
+          ...(meta ? { providerMetadata: meta } : {}),
+        });
+      } else {
+        const signature = meta?.anthropic?.signature;
+        blocks.push({
+          type: "thinking",
+          thinking: part.text,
+          signature: typeof signature === "string" ? signature : "",
+          ...(meta ? { providerMetadata: meta } : {}),
+        });
+      }
+    } else if (part.type === "tool-call") {
+      blocks.push({
+        type: "tool_call",
+        id: part.toolCallId,
+        name: part.toolName,
+        input: part.input,
+      });
+    }
   }
   return blocks;
 }
 
-function parseOpenAIArguments(raw: string): unknown {
-  if (!raw.trim()) return {};
-  try {
-    return JSON.parse(raw);
-  } catch {
-    return {};
-  }
+function fromAiUsage(u: LanguageModelUsage): Partial<UsageSummary> {
+  const cacheRead =
+    u.inputTokenDetails?.cacheReadTokens ?? u.cachedInputTokens ?? 0;
+  const cacheWrite = u.inputTokenDetails?.cacheWriteTokens ?? 0;
+  const noCache =
+    u.inputTokenDetails?.noCacheTokens ??
+    Math.max(0, (u.inputTokens ?? 0) - cacheRead - cacheWrite);
+  return {
+    input_tokens: noCache,
+    output_tokens: u.outputTokens ?? 0,
+    cache_creation_input_tokens: cacheWrite,
+    cache_read_input_tokens: cacheRead,
+  };
+}
+
+function totalInputTokens(u: LanguageModelUsage): number {
+  if (typeof u.inputTokens === "number") return u.inputTokens;
+  return (
+    (u.inputTokenDetails?.noCacheTokens ?? 0) +
+    (u.inputTokenDetails?.cacheReadTokens ?? 0) +
+    (u.inputTokenDetails?.cacheWriteTokens ?? 0)
+  );
 }
 
 const MODEL_RETRY_MAX_ATTEMPTS = 8;
@@ -497,7 +463,12 @@ interface ModelErrorClassification {
 }
 
 function classifyModelError(err: unknown): ModelErrorClassification {
-  const status = (err as { status?: number })?.status;
+  const e = err as {
+    statusCode?: number;
+    status?: number;
+    isRetryable?: boolean;
+  };
+  const status = e?.statusCode ?? e?.status;
   const message = errorMessage(err);
   const concurrency = /concurrent connections/i.test(message);
   const rateLimited =
@@ -512,8 +483,15 @@ function classifyModelError(err: unknown): ModelErrorClassification {
     /(connection|econnreset|etimedout|epipe|socket|network|fetch failed|terminated|timeout)/i.test(
       message,
     );
+  const sdkRetryable =
+    typeof e?.isRetryable === "boolean" ? e.isRetryable : false;
   return {
-    retryable: rateLimited || overloaded || transientServer || connectionError,
+    retryable:
+      sdkRetryable ||
+      rateLimited ||
+      overloaded ||
+      transientServer ||
+      connectionError,
     concurrency,
     retryAfterMs: readRetryAfterMs(err),
   };
@@ -529,10 +507,10 @@ function retryDelayMs(attempt: number, retryAfterMs: number | null): number {
 }
 
 function readRetryAfterMs(err: unknown): number | null {
-  const raw = readHeaderValue(
-    (err as { headers?: unknown })?.headers,
-    "retry-after",
-  );
+  const headers =
+    (err as { responseHeaders?: unknown })?.responseHeaders ??
+    (err as { headers?: unknown })?.headers;
+  const raw = readHeaderValue(headers, "retry-after");
   if (!raw) return null;
   const seconds = Number(raw);
   if (Number.isFinite(seconds) && seconds >= 0) {
@@ -557,8 +535,8 @@ function readHeaderValue(headers: unknown, name: string): string | undefined {
 }
 
 export const __testing = {
-  toOpenAIMessages,
-  fromOpenAIMessage,
-  fromAnthropicBlock,
-  toAnthropicMessage,
+  toAiMessages,
+  fromAiContent,
+  fromAiUsage,
+  buildProviderOptions,
 };

@@ -2,10 +2,22 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { __testing } from "./research.js";
 import {
   emptyUsageSummary,
+  type LanguageModel,
   type ModelAdapter,
   type ModelAssistantBlock,
   type ModelStepInput,
 } from "./model.js";
+
+function fakeLanguageModel(
+  provider = "anthropic",
+  modelId = "m",
+): Exclude<LanguageModel, string> {
+  return {
+    specificationVersion: "v2",
+    provider,
+    modelId,
+  } as unknown as Exclude<LanguageModel, string>;
+}
 import {
   createAgentScope,
   createResearchCaches,
@@ -307,8 +319,7 @@ describe("resolveRunConfig", () => {
     clearAtlasEnv();
     const config = __testing.resolveRunConfig({
       query: "q",
-      provider: "anthropic",
-      model: "m",
+      model: fakeLanguageModel(),
       steelApiKey: "sk",
       tokenLimit: 800_000,
       suggestedTeamSize: 50,
@@ -320,7 +331,7 @@ describe("resolveRunConfig", () => {
     expect(config.suggestedTeamSize).toBe(8);
     expect(config.agent.maxConcurrentSubagents).toBe(8);
     expect(config.maxConcurrentModelCalls).toBe(9);
-    expect(config.summaryModel).toBe("claude-haiku-4-6");
+    expect(config.summaryModel).toBe("m");
     expect(config.timeoutDeadlineAt).toBeUndefined();
   });
 
@@ -328,8 +339,7 @@ describe("resolveRunConfig", () => {
     clearAtlasEnv();
     const config = __testing.resolveRunConfig({
       query: "q",
-      provider: "anthropic",
-      model: "m",
+      model: fakeLanguageModel(),
       steelApiKey: "sk",
       tokenLimit: 0,
     });
@@ -344,14 +354,15 @@ describe("resolveRunConfig", () => {
     const before = Date.now();
     const config = __testing.resolveRunConfig({
       query: "q",
-      provider: "anthropic",
-      model: "m",
+      model: fakeLanguageModel(),
       steelApiKey: "sk",
       timeoutMs: 60_000,
     });
 
     expect(config.synthesisReserveMs).toBe(15_000);
-    expect(config.timeoutDeadlineAt ?? 0).toBeGreaterThanOrEqual(before + 60_000);
+    expect(config.timeoutDeadlineAt ?? 0).toBeGreaterThanOrEqual(
+      before + 60_000,
+    );
   });
 
   it("requires a Steel API key", () => {
@@ -362,8 +373,7 @@ describe("resolveRunConfig", () => {
     expect(() =>
       __testing.resolveRunConfig({
         query: "q",
-        provider: "anthropic",
-        model: "m",
+        model: fakeLanguageModel(),
       }),
     ).toThrow(/STEEL_API_KEY/);
   });

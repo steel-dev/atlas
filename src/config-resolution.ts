@@ -1,7 +1,9 @@
+import { createAnthropic } from "@ai-sdk/anthropic";
+import { createOpenAI } from "@ai-sdk/openai";
 import {
-  createAnthropicModelAdapter,
-  createOpenAIModelAdapter,
+  createAISdkModelAdapter,
   wrapModelAdapterWithConcurrency,
+  type LanguageModel,
   type ModelAdapter,
   type ModelProvider,
   type ModelRetryInfo,
@@ -97,8 +99,7 @@ export interface RunResources {
 // source caps are derived from it and floored.
 export function resolveRunConfig(opts: ResearchOptions): ResolvedRunConfig {
   const limits = DEFAULT_RUNTIME_LIMITS;
-  const provider = resolveProvider(opts.provider);
-  const model = resolveModel(provider, opts.model);
+  const { provider, modelId: model } = modelLabel(opts.model);
   const steelApiKey =
     opts.steelApiKey ?? readEnv("ATLAS_STEEL_API_KEY", "STEEL_API_KEY");
   if (!steelApiKey) {
@@ -148,7 +149,9 @@ export function resolveRunConfig(opts: ResearchOptions): ResolvedRunConfig {
   return {
     provider,
     model,
-    summaryModel: resolveSummaryModel(provider, opts.summaryModel, model),
+    summaryModel: opts.summaryModel
+      ? modelLabel(opts.summaryModel).modelId
+      : model,
     steelApiKey,
     steelBaseUrl:
       opts.steelBaseUrl ?? readEnv("ATLAS_STEEL_BASE_URL", "STEEL_BASE_URL"),
@@ -210,11 +213,6 @@ export function createRunResources(
   runSignal: AbortSignal | undefined,
   emit: (event: ResearchEvent) => void,
 ): RunResources {
-  const modelKeys = {
-    anthropicApiKey: opts.anthropicApiKey,
-    openaiApiKey: opts.openaiApiKey,
-    openaiBaseUrl: opts.openaiBaseUrl,
-  };
   // Adaptive ceiling: starts at the configured width and shrinks under a
   // "concurrent connections exceeded" 429, so the run converges on the
   // concurrency the account actually allows instead of dying on it.
@@ -230,27 +228,26 @@ export function createRunResources(
         maxAttempts: info.maxAttempts,
       }),
   };
-  const modelAdapter = wrapModelAdapterWithConcurrency(
-    createModelAdapter({
-      provider: config.provider,
-      model: config.model,
-      ...modelKeys,
-    }),
-    modelCallGate,
-    concurrencyOptions,
-  );
-  const summaryAdapter =
-    config.summaryModel === config.model
-      ? modelAdapter
-      : wrapModelAdapterWithConcurrency(
-          createModelAdapter({
-            provider: config.provider,
-            model: config.summaryModel,
-            ...modelKeys,
-          }),
-          modelCallGate,
-          concurrencyOptions,
-        );
+  const wrap = (
+    model: Exclude<LanguageModel, string>,
+    label: { provider: ModelProvider; modelId: string },
+  ) =>
+    wrapModelAdapterWithConcurrency(
+      createAISdkModelAdapter({
+        model,
+        provider: label.provider,
+        modelId: label.modelId,
+      }),
+      modelCallGate,
+      concurrencyOptions,
+    );
+  const modelAdapter = wrap(opts.model, {
+    provider: config.provider,
+    modelId: config.model,
+  });
+  const summaryAdapter = opts.summaryModel
+    ? wrap(opts.summaryModel, modelLabel(opts.summaryModel))
+    : modelAdapter;
   const steel = createSteel({
     apiKey: config.steelApiKey,
     baseUrl: config.steelBaseUrl,
@@ -336,46 +333,49 @@ function resolveSummaryModel(
   return provider === "anthropic" ? DEFAULT_ANTHROPIC_SUMMARY_MODEL : mainModel;
 }
 
-function createModelAdapter(opts: {
+function modelLabel(model: Exclude<LanguageModel, string>): {
   provider: ModelProvider;
-  model: string;
-  anthropicApiKey?: string;
-  openaiApiKey?: string;
-  openaiBaseUrl?: string;
-}): ModelAdapter {
-  if (opts.provider === "anthropic") {
-    const apiKey =
-      opts.anthropicApiKey ??
-      readEnv("ATLAS_ANTHROPIC_API_KEY", "ANTHROPIC_API_KEY");
-    if (!apiKey) {
-      throw new Error(
-        "research: ANTHROPIC_API_KEY or ATLAS_ANTHROPIC_API_KEY is required for provider=anthropic",
-      );
-    }
-    // maxRetries: 0 — the resilience wrapper owns rate-limit/transient retries
-    // so a sleeping retry frees its gate slot instead of pinning a connection.
-    return createAnthropicModelAdapter({
-      apiKey,
-      model: opts.model,
-      maxRetries: 0,
-    });
-  }
+  modelId: string;
+} {
+  return { provider: model.provider.split(".")[0], modelId: model.modelId };
+}
 
-  const apiKey =
-    opts.openaiApiKey ?? readEnv("ATLAS_OPENAI_API_KEY", "OPENAI_API_KEY");
+export interface ModelSpecInput {
+  provider?: ModelProvider;
+  model?: string;
+  summaryModel?: string;
+  baseUrl?: string;
+}
+
+export function resolveModelSpec(opts: ModelSpecInput): {
+  model: Exclude<LanguageModel, string>;
+  summaryModel?: Exclude<LanguageModel, string>;
+} {
+  const provider = resolveProvider(opts.provider);
+  const modelId = resolveModel(provider, opts.model);
   const baseUrl =
-    opts.openaiBaseUrl ?? readEnv("ATLAS_OPENAI_BASE_URL", "OPENAI_BASE_URL");
-  if (!apiKey) {
-    throw new Error(
-      "research: OPENAI_API_KEY or ATLAS_OPENAI_API_KEY is required for provider=openai",
-    );
+    opts.baseUrl ?? readEnv("ATLAS_OPENAI_BASE_URL", "OPENAI_BASE_URL");
+  const model = buildLanguageModel(provider, modelId, baseUrl);
+  const summaryId = resolveSummaryModel(provider, opts.summaryModel, modelId);
+  return summaryId === modelId
+    ? { model }
+    : { model, summaryModel: buildLanguageModel(provider, summaryId, baseUrl) };
+}
+
+function buildLanguageModel(
+  provider: ModelProvider,
+  modelId: string,
+  baseUrl: string | undefined,
+): Exclude<LanguageModel, string> {
+  if (provider === "openai") {
+    return createOpenAI({
+      apiKey: readEnv("ATLAS_OPENAI_API_KEY", "OPENAI_API_KEY"),
+      ...(baseUrl ? { baseURL: baseUrl } : {}),
+    })(modelId);
   }
-  return createOpenAIModelAdapter({
-    apiKey,
-    baseUrl,
-    model: opts.model,
-    maxRetries: 0,
-  });
+  return createAnthropic({
+    apiKey: readEnv("ATLAS_ANTHROPIC_API_KEY", "ANTHROPIC_API_KEY"),
+  })(modelId);
 }
 
 function timeoutSynthesisReserveMs(

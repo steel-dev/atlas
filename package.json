@@ -34,10 +34,11 @@
     "node": ">=20.16.0"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.92.0",
+    "@ai-sdk/anthropic": "^3.0.81",
+    "@ai-sdk/openai": "^3.0.67",
     "@types/ws": "^8.18.1",
+    "ai": "^6.0.194",
     "cheerio": "^1.0.0",
-    "openai": "^6.39.0",
     "pdf-parse": "^2.4.5",
     "steel-sdk": "^0.18.0",
     "ws": "^8.21.0"

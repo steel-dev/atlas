@@ -6,6 +6,7 @@ import {
   type ModelProvider,
   type ResearchEvent,
 } from "./research.js";
+import { resolveModelSpec } from "./config-resolution.js";
 
 const USAGE = `atlas — deep research from your terminal
 
@@ -316,13 +317,17 @@ async function main(): Promise<void> {
       };
 
   try {
-    const result = await research({
-      query,
+    const { model, summaryModel } = resolveModelSpec({
       provider,
-      searchProvider: values["search-provider"],
       model: values.model,
       summaryModel: values["summary-model"],
-      openaiBaseUrl: values["base-url"],
+      baseUrl: values["base-url"],
+    });
+    const result = await research({
+      query,
+      searchProvider: values["search-provider"],
+      model,
+      summaryModel,
       tokenLimit,
       suggestedTeamSize: teamSize,
       useProxy,

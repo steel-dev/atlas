@@ -200,8 +200,8 @@ describe("totalUsageTokens", () => {
   });
 });
 
-describe("model adapter message mapping", () => {
-  it("maps Atlas tool-call transcripts to OpenAI chat messages", () => {
+describe("model message mapping (Atlas <-> AI SDK)", () => {
+  it("maps a tool-call transcript and recovers tool names for results", () => {
     const messages: ModelMessage[] = [
       { role: "user", content: "Research question: what changed?" },
       {
@@ -227,85 +227,64 @@ describe("model adapter message mapping", () => {
       },
     ];
 
-    const out = __testing.toOpenAIMessages("system prompt", messages);
-
-    expect(out).toMatchObject([
-      { role: "system", content: "system prompt" },
+    expect(__testing.toAiMessages(messages)).toMatchObject([
       { role: "user", content: "Research question: what changed?" },
       {
         role: "assistant",
-        tool_calls: [
+        content: [
           {
-            id: "call_1",
-            type: "function",
-            function: {
-              name: "search",
-              arguments: '{"query":"atlas research"}',
-            },
+            type: "tool-call",
+            toolCallId: "call_1",
+            toolName: "search",
+            input: { query: "atlas research" },
           },
         ],
       },
       {
         role: "tool",
-        tool_call_id: "call_1",
-        content: '{"results":[]}',
+        content: [
+          {
+            type: "tool-result",
+            toolCallId: "call_1",
+            toolName: "search",
+            output: { type: "text", value: '{"results":[]}' },
+          },
+        ],
       },
     ]);
   });
 
-  it("maps OpenAI function calls back to Atlas tool calls", () => {
-    const blocks = __testing.fromOpenAIMessage({
-      role: "assistant",
-      content: null,
-      refusal: null,
-      tool_calls: [
-        {
-          id: "call_1",
-          type: "function",
-          function: {
-            name: "fetch",
-            arguments: '{"url":"https://example.com"}',
-          },
-        },
-      ],
-    });
-
-    expect(blocks).toEqual([
+  it("marks an errored tool result as error-text", () => {
+    const messages: ModelMessage[] = [
       {
-        type: "tool_call",
-        id: "call_1",
-        name: "fetch",
-        input: { url: "https://example.com" },
+        role: "assistant",
+        content: [{ type: "tool_call", id: "c1", name: "fetch", input: {} }],
       },
-    ]);
+      {
+        role: "user",
+        content: [
+          {
+            type: "tool_result",
+            tool_call_id: "c1",
+            content: "boom",
+            is_error: true,
+          },
+        ],
+      },
+    ];
+    const out = __testing.toAiMessages(messages);
+    const toolMsg = out.find((m) => m.role === "tool") as {
+      content: Array<{ output: { type: string; value: string } }>;
+    };
+    expect(toolMsg.content[0].output).toEqual({
+      type: "error-text",
+      value: "boom",
+    });
   });
 });
 
-describe("anthropic extended-thinking preservation", () => {
-  it("keeps thinking and redacted_thinking blocks when reading a response", () => {
-    expect(
-      __testing.fromAnthropicBlock({
-        type: "thinking",
-        thinking: "Weigh the candidates before committing.",
-        signature: "sig-abc",
-      }),
-    ).toEqual([
-      {
-        type: "thinking",
-        thinking: "Weigh the candidates before committing.",
-        signature: "sig-abc",
-      },
-    ]);
-
-    expect(
-      __testing.fromAnthropicBlock({
-        type: "redacted_thinking",
-        data: "redacted-xyz",
-      }),
-    ).toEqual([{ type: "redacted_thinking", data: "redacted-xyz" }]);
-  });
-
-  it("passes thinking blocks back to Anthropic so reasoning carries across turns", () => {
+describe("reasoning round-trip (signature preservation)", () => {
+  it("sends thinking blocks back with their anthropic signature", () => {
     const message: ModelMessage = {
       role: "assistant",
       content: [
@@ -323,53 +302,142 @@ describe("anthropic extended-thinking preservation", () => {
       ],
     };
 
-    expect(__testing.toAnthropicMessage(message)).toEqual({
+    expect(__testing.toAiMessages([message])).toMatchObject([
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "reasoning",
+            text: "Outline the clues first.",
+            providerOptions: { anthropic: { signature: "sig-1" } },
+          },
+          { type: "tool-call", toolCallId: "call_1", toolName: "search" },
+        ],
+      },
+    ]);
+  });
+
+  it("reads reasoning + signature back out of a response, preserving order", () => {
+    const blocks = __testing.fromAiContent([
+      {
+        type: "reasoning",
+        text: "Outline the clues first.",
+        providerMetadata: { anthropic: { signature: "sig-1" } },
+      },
+      { type: "text", text: "the answer" },
+      {
+        type: "tool-call",
+        toolCallId: "call_1",
+        toolName: "search",
+        input: { q: 1 },
+      },
+    ] as unknown as Parameters<typeof __testing.fromAiContent>[0]);
+
+    expect(blocks).toMatchObject([
+      {
+        type: "thinking",
+        thinking: "Outline the clues first.",
+        signature: "sig-1",
+      },
+      { type: "text", text: "the answer" },
+      { type: "tool_call", id: "call_1", name: "search", input: { q: 1 } },
+    ]);
+  });
+
+  it("round-trips a signature through read-then-send unchanged", () => {
+    const blocks = __testing.fromAiContent([
+      {
+        type: "reasoning",
+        text: "weigh it",
+        providerMetadata: { anthropic: { signature: "sig-xyz" } },
+      },
+    ] as unknown as Parameters<typeof __testing.fromAiContent>[0]);
+
+    expect(__testing.toAiMessages([{ role: "assistant", content: blocks }])[0]).toMatchObject({
       role: "assistant",
       content: [
         {
-          type: "thinking",
-          thinking: "Outline the clues first.",
-          signature: "sig-1",
-        },
-        {
-          type: "tool_use",
-          id: "call_1",
-          name: "search",
-          input: { queries: ["clue"] },
+          type: "reasoning",
+          text: "weigh it",
+          providerOptions: { anthropic: { signature: "sig-xyz" } },
         },
       ],
     });
   });
 
-  it("omits thinking blocks from OpenAI chat messages", () => {
-    const messages: ModelMessage[] = [
+  it("preserves redacted reasoning", () => {
+    const blocks = __testing.fromAiContent([
       {
-        role: "assistant",
-        content: [
-          {
-            type: "thinking",
-            thinking: "internal reasoning",
-            signature: "sig",
-          },
-          { type: "text", text: "visible answer" },
-          {
-            type: "tool_call",
-            id: "call_1",
-            name: "search",
-            input: { queries: ["x"] },
-          },
-        ],
+        type: "reasoning",
+        text: "",
+        providerMetadata: { anthropic: { redactedData: "redacted-xyz" } },
       },
-    ];
+    ] as unknown as Parameters<typeof __testing.fromAiContent>[0]);
 
-    const out = __testing.toOpenAIMessages("system prompt", messages);
-    const assistant = out.find((m) => m.role === "assistant") as {
-      content: unknown;
-      tool_calls?: unknown[];
-    };
+    expect(blocks).toMatchObject([
+      { type: "redacted_thinking", data: "redacted-xyz" },
+    ]);
+  });
+});
 
-    expect(assistant.content).toBe("visible answer");
-    expect(assistant.tool_calls).toHaveLength(1);
-    expect(JSON.stringify(out)).not.toContain("internal reasoning");
+describe("usage mapping", () => {
+  it("splits Anthropic input tokens into fresh / cache-read / cache-write", () => {
+    expect(
+      __testing.fromAiUsage({
+        inputTokens: 1000,
+        inputTokenDetails: {
+          noCacheTokens: 200,
+          cacheReadTokens: 700,
+          cacheWriteTokens: 100,
+        },
+        outputTokens: 50,
+        outputTokenDetails: { textTokens: 50, reasoningTokens: 0 },
+        totalTokens: 1050,
+      } as unknown as Parameters<typeof __testing.fromAiUsage>[0]),
+    ).toEqual({
+      input_tokens: 200,
+      output_tokens: 50,
+      cache_creation_input_tokens: 100,
+      cache_read_input_tokens: 700,
+    });
+  });
+
+  it("derives non-cached input from cachedInputTokens when details are absent", () => {
+    expect(
+      __testing.fromAiUsage({
+        inputTokens: 100,
+        inputTokenDetails: {
+          noCacheTokens: undefined,
+          cacheReadTokens: undefined,
+          cacheWriteTokens: undefined,
+        },
+        outputTokens: 10,
+        outputTokenDetails: { textTokens: 10, reasoningTokens: 0 },
+        totalTokens: 110,
+        cachedInputTokens: 30,
+      } as unknown as Parameters<typeof __testing.fromAiUsage>[0]),
+    ).toEqual({
+      input_tokens: 70,
+      output_tokens: 10,
+      cache_creation_input_tokens: 0,
+      cache_read_input_tokens: 30,
+    });
+  });
+});
+
+describe("buildProviderOptions", () => {
+  it("maps effort to both provider namespaces (max -> xhigh on openai)", () => {
+    expect(__testing.buildProviderOptions("max")).toEqual({
+      anthropic: { thinking: { type: "adaptive" }, effort: "max" },
+      openai: { reasoningEffort: "xhigh" },
+    });
+    expect(__testing.buildProviderOptions("high")).toEqual({
+      anthropic: { thinking: { type: "adaptive" }, effort: "high" },
+      openai: { reasoningEffort: "high" },
+    });
+  });
+
+  it("returns undefined when no effort is set", () => {
+    expect(__testing.buildProviderOptions(undefined)).toBeUndefined();
   });
 });

@@ -14,6 +14,8 @@ import type { ResearchCtx } from "./runtime.js";
 import { normalizeUrlForSource } from "./url.js";
 
 const SEARCH_SNIPPET_CHARS = 500;
+const SEARCH_TRACE_RESULTS = 5;
+const SEARCH_TRACE_SNIPPET_CHARS = 200;
 const RRF_K = 60;
 
 export interface SearchToolInput {
@@ -208,15 +210,34 @@ async function collectSearchResults(opts: {
   }
 
   const distinctUrls = new Set<string>();
+  const tracedResults: Array<{
+    url: string;
+    domain: string;
+    title?: string;
+    snippet?: string;
+  }> = [];
   for (const source of outcome.sources) {
     for (const result of source.results) {
-      distinctUrls.add(normalizeUrlForSource(result.url));
+      const key = normalizeUrlForSource(result.url);
+      if (distinctUrls.has(key)) continue;
+      distinctUrls.add(key);
+      if (tracedResults.length < SEARCH_TRACE_RESULTS) {
+        tracedResults.push({
+          url: result.url,
+          domain: result.domain,
+          ...(result.title ? { title: result.title } : {}),
+          ...(result.snippet
+            ? { snippet: result.snippet.slice(0, SEARCH_TRACE_SNIPPET_CHARS) }
+            : {}),
+        });
+      }
     }
   }
   ctx.scope.emit({
     type: "search_results",
     index,
     count: Math.min(distinctUrls.size, limit),
+    ...(tracedResults.length > 0 ? { results: tracedResults } : {}),
   });
   return {
     query,

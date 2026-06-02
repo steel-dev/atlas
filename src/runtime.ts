@@ -296,6 +296,12 @@ export type ResearchLoopEvent = (
       type: "search_results";
       index: number;
       count: number;
+      results?: Array<{
+        url: string;
+        domain: string;
+        title?: string;
+        snippet?: string;
+      }>;
     }
   | {
       type: "search_failed";

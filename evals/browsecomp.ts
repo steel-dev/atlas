@@ -16,6 +16,7 @@ import {
   type ResearchEvent,
   type ResearchResult,
 } from "../src/research.js";
+import { resolveModelSpec } from "../src/config-resolution.js";
 import type { SourceDocument } from "../src/sources.js";
 import { normalizeUrlForSource } from "../src/url.js";
 
@@ -180,6 +181,12 @@ type EvalTraceEvent = {
   index?: number;
   query?: string;
   count?: number;
+  results?: Array<{
+    url: string;
+    domain: string;
+    title?: string;
+    snippet?: string;
+  }>;
   tasks?: string[];
   task?: string;
   url?: string;
@@ -1280,7 +1287,12 @@ function traceEvent(event: ResearchEvent, started: number): EvalTraceEvent {
     case "searching":
       return { ...base, index: event.index, query: event.query };
     case "search_results":
-      return { ...base, index: event.index, count: event.count };
+      return {
+        ...base,
+        index: event.index,
+        count: event.count,
+        ...(event.results ? { results: event.results } : {}),
+      };
     case "search_failed":
       return { ...base, index: event.index, error: event.error };
     case "fetching":
@@ -1365,9 +1377,11 @@ async function runCase(
   try {
     const result = await research({
       query: evalQuery(entry.query),
-      provider: opts.provider,
-      model: opts.model,
-      openaiBaseUrl: opts.openaiBaseUrl,
+      ...resolveModelSpec({
+        provider: opts.provider,
+        model: opts.model,
+        baseUrl: opts.openaiBaseUrl,
+      }),
       timeoutMs: opts.timeoutMs,
       tokenLimit: opts.tokenLimit,
       suggestedTeamSize: opts.teamSize,

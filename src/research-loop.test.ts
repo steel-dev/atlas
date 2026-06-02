@@ -591,16 +591,20 @@ describe("research loop cache integration", () => {
       url: "https://example.com/shared-paper",
       queries: ["alpha query", "beta query"],
     });
-    expect(ctx.emitSpy).toHaveBeenCalledWith({
-      type: "search_results",
-      index: 1,
-      count: 1,
-    });
-    expect(ctx.emitSpy).toHaveBeenCalledWith({
-      type: "search_results",
-      index: 2,
-      count: 1,
-    });
+    expect(ctx.emitSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "search_results",
+        index: 1,
+        count: 1,
+      }),
+    );
+    expect(ctx.emitSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "search_results",
+        index: 2,
+        count: 1,
+      }),
+    );
   });
 
   it("does not reserve search indexes for malformed search calls", async () => {
@@ -648,11 +652,13 @@ describe("research loop cache integration", () => {
       index: 1,
       query: "valid query",
     });
-    expect(ctx.emitSpy).toHaveBeenCalledWith({
-      type: "search_results",
-      index: 1,
-      count: 1,
-    });
+    expect(ctx.emitSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "search_results",
+        index: 1,
+        count: 1,
+      }),
+    );
   });
 
   it("normalizes stringified query arrays from model input", async () => {

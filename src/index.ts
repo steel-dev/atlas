@@ -1,6 +1,9 @@
 export { research } from "./research.js";
+export { openai, createOpenAI } from "@ai-sdk/openai";
+export { anthropic, createAnthropic } from "@ai-sdk/anthropic";
 export type {
   FetchedSource,
+  LanguageModel,
   ModelProvider,
   ResearchEvent,
   ResearchOptions,
