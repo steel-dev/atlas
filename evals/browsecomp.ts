@@ -1388,6 +1388,10 @@ async function runCase(
       output: browseCompOutput(),
       includeSourceDocuments: true,
       useProxy: opts.useProxy,
+      exploreProviderOptions: { anthropic: { thinking: { type: "adaptive" } } },
+      finalizeProviderOptions: {
+        anthropic: { thinking: { type: "adaptive" }, effort: "high" },
+      },
       onEvent: (event) => {
         trace.push(traceEvent(event, started));
         const line = progressLine(entry.id, event);

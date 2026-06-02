@@ -6,7 +6,6 @@ import {
   type ModelToolCall,
   type ModelToolResult,
 } from "./model.js";
-import type { ResearchEffort } from "./defaults.js";
 import {
   stopRequestedReason,
   tokenBudgetExhaustedReason,
@@ -167,7 +166,6 @@ export async function runResearchLoop(opts: {
   ctx: ResearchCtx;
   query: string;
   maxToolCalls?: number;
-  effort?: ResearchEffort;
   systemPrompt?: string;
   suggestedParallelism?: number;
 }): Promise<ResearchLoopResult> {
@@ -247,7 +245,7 @@ export async function runResearchLoop(opts: {
         tools,
         messages,
         maxTokens: ctx.config.maxOutputTokens ?? 2048,
-        effort: opts.effort,
+        providerOptions: ctx.config.exploreProviderOptions,
         signal: ctx.deps.signal,
       });
     } catch (err) {
@@ -407,7 +405,7 @@ export async function runResearchLoop(opts: {
         system: systemPrompt,
         messages,
         maxTokens: ctx.config.maxOutputTokens ?? 2048,
-        effort: opts.effort,
+        providerOptions: ctx.config.finalizeProviderOptions,
         signal: ctx.deps.signal,
       });
       messages.push({ role: "assistant", content: resp.content });

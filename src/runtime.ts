@@ -1,6 +1,9 @@
 import type Steel from "steel-sdk";
-import { totalUsageTokens, type ModelAdapter } from "./model.js";
-import type { ResearchEffort } from "./defaults.js";
+import {
+  totalUsageTokens,
+  type ModelAdapter,
+  type ProviderOptions,
+} from "./model.js";
 import type { WebSearchOutcome } from "./search.js";
 import type { SearchProvider } from "./search-provider.js";
 import type {
@@ -184,7 +187,8 @@ export interface ResearchConfig {
   readonly tokenLimit?: number;
   readonly maxDelegationDepth?: number;
   readonly maxConcurrentSubagents?: number;
-  readonly subagentEffort?: ResearchEffort;
+  readonly exploreProviderOptions?: ProviderOptions;
+  readonly finalizeProviderOptions?: ProviderOptions;
 }
 
 export interface ResearchDeps {

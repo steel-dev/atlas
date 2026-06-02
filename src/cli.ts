@@ -40,7 +40,6 @@ Environment:
   ATLAS_SUMMARY_MODEL                           optional (source digest + compaction model)
   ATLAS_TOKEN_LIMIT                             optional (total token budget; 0 = unlimited)
   ATLAS_TEAM_SIZE                               optional (suggested max parallel sub-agents; default 1 = no hint)
-  ATLAS_THINKING_EFFORT                         optional (low, medium, high, max; default high)
   ATLAS_COMPACTION_TRIGGER_TOKENS               optional (compact context above N tokens; 0 disables)
   ATLAS_MAX_DELEGATION_DEPTH                    optional (0 disables sub-agent delegation)
   ATLAS_MAX_SUBAGENTS                           optional (max concurrent sub-agents)
@@ -345,6 +344,14 @@ async function main(): Promise<void> {
       tokenLimit,
       suggestedTeamSize: teamSize,
       useProxy,
+      // Provider-native thinking options, written here at the edge — the
+      // research core only plumbs them opaquely. Adaptive thinking self-paces
+      // exploration; a high-effort pass is reserved for finalization. (Other
+      // providers ignore the anthropic namespace.)
+      exploreProviderOptions: { anthropic: { thinking: { type: "adaptive" } } },
+      finalizeProviderOptions: {
+        anthropic: { thinking: { type: "adaptive" }, effort: "high" },
+      },
       timeoutMs:
         timeoutSeconds !== undefined
           ? Math.floor(timeoutSeconds * 1000)

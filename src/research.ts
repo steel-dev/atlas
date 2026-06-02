@@ -1,4 +1,9 @@
-import type { LanguageModel, ModelProvider, UsageSummary } from "./model.js";
+import type {
+  LanguageModel,
+  ModelProvider,
+  ProviderOptions,
+  UsageSummary,
+} from "./model.js";
 import type { FetchedSource, SourceDocument, CitedSource } from "./sources.js";
 import {
   resolveSearchProvider,
@@ -23,8 +28,12 @@ import {
 } from "./runtime.js";
 import { normalizeUrlForSource } from "./url.js";
 
-export type { LanguageModel, ModelProvider, UsageSummary } from "./model.js";
-export type { ResearchEffort } from "./defaults.js";
+export type {
+  LanguageModel,
+  ModelProvider,
+  ProviderOptions,
+  UsageSummary,
+} from "./model.js";
 export type { FetchedSource, SourceDocument, CitedSource } from "./sources.js";
 
 export interface ResearchRun {
@@ -77,6 +86,8 @@ export interface ResearchOptions {
   timeoutMs?: number;
   tokenLimit?: number;
   suggestedTeamSize?: number;
+  exploreProviderOptions?: ProviderOptions;
+  finalizeProviderOptions?: ProviderOptions;
   output?: ResearchOutputOptions;
   includeSourceDocuments?: boolean;
   onEvent?: (event: ResearchEvent) => void;
@@ -128,7 +139,6 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
       ctx,
       query: opts.query,
       maxToolCalls: config.safetyMaxToolCalls,
-      effort: config.thinkingEffort,
       suggestedParallelism:
         config.suggestedTeamSize >= 2 ? config.suggestedTeamSize : undefined,
     });
@@ -165,7 +175,7 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
         output: opts.output,
         maxTokens:
           config.agent.maxOutputTokens ?? RUNTIME_LIMITS.maxOutputTokens,
-        effort: config.thinkingEffort,
+        providerOptions: ctx.config.finalizeProviderOptions,
         signal: runSignal,
       });
       structured = structuredResult.value;

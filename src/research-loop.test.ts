@@ -16,7 +16,6 @@ import {
   type ResearchCtx,
 } from "./runtime.js";
 import { SUBAGENT_SYSTEM_PROMPT } from "./tool-contract.js";
-import type { ResearchEffort } from "./defaults.js";
 import type { SourceDocument } from "./sources.js";
 
 vi.mock("./pdf-extract.js", () => ({
@@ -82,7 +81,6 @@ function createContext(opts: {
   tokenLimit?: number;
   maxDelegationDepth?: number;
   maxConcurrentSubagents?: number;
-  subagentEffort?: ResearchEffort;
   compactionTriggerTokens?: number;
   compactionKeepTokens?: number;
   subagentCompactionTriggerTokens?: number;
@@ -160,7 +158,6 @@ function createContext(opts: {
       tokenLimit: opts.tokenLimit,
       maxDelegationDepth: opts.maxDelegationDepth,
       maxConcurrentSubagents: opts.maxConcurrentSubagents,
-      subagentEffort: opts.subagentEffort,
       subagentCompactionTriggerTokens: opts.subagentCompactionTriggerTokens,
       subagentCompactionKeepTokens: opts.subagentCompactionKeepTokens,
     },
@@ -2506,9 +2503,7 @@ describe("spawn/join fan-out", () => {
     const ctx = createContext({
       messagesCreate,
       maxDelegationDepth: 1,
-      maxConcurrentSubagents: 2,
-      subagentEffort: "low",
-    });
+      maxConcurrentSubagents: 2,    });
 
     const result = await runResearchLoop({
       ctx,
@@ -2598,9 +2593,7 @@ describe("spawn/join fan-out", () => {
     const ctx = createContext({
       messagesCreate,
       maxDelegationDepth: 1,
-      maxConcurrentSubagents: 2,
-      subagentEffort: "low",
-    });
+      maxConcurrentSubagents: 2,    });
 
     const result = await runResearchLoop({
       ctx,
@@ -2654,9 +2647,7 @@ describe("spawn/join fan-out", () => {
     const ctx = createContext({
       messagesCreate,
       maxDelegationDepth: 1,
-      maxConcurrentSubagents: 2,
-      subagentEffort: "low",
-    });
+      maxConcurrentSubagents: 2,    });
 
     const pool = ctx.deps.browserSessionPool as unknown as {
       acquire: () => Promise<{ release: ReturnType<typeof vi.fn> }>;
@@ -2725,9 +2716,7 @@ describe("spawn/join fan-out", () => {
       messagesCreate,
       scrape,
       maxDelegationDepth: 1,
-      maxConcurrentSubagents: 2,
-      subagentEffort: "low",
-    });
+      maxConcurrentSubagents: 2,    });
 
     const result = await runResearchLoop({
       ctx,
@@ -2834,9 +2823,7 @@ describe("spawn/join fan-out", () => {
     const ctx = createContext({
       messagesCreate,
       maxDelegationDepth: 1,
-      maxConcurrentSubagents: 1,
-      subagentEffort: "low",
-      subagentCompactionTriggerTokens: 200,
+      maxConcurrentSubagents: 1,      subagentCompactionTriggerTokens: 200,
       subagentCompactionKeepTokens: 50,
     });
     ctx.deps.summaryModel = {
@@ -2894,9 +2881,7 @@ describe("emergent team via spawn/join", () => {
     const ctx = createContext({
       messagesCreate,
       maxDelegationDepth: 1,
-      maxConcurrentSubagents: 2,
-      subagentEffort: "low",
-    });
+      maxConcurrentSubagents: 2,    });
 
     const result = await runResearchLoop({
       ctx,

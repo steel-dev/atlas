@@ -182,9 +182,7 @@ describe("structured output finalization", () => {
       model: adapter,
       messages: [{ role: "user", content: "transcript" }],
       output,
-      maxTokens: 1024,
-      effort: "low",
-    });
+      maxTokens: 1024,    });
 
     const toolNames = (calls[0]?.tools ?? []).map((tool) => tool.name).sort();
     expect(toolNames).toEqual([
@@ -222,9 +220,7 @@ describe("structured output finalization", () => {
       model: adapter,
       messages: [{ role: "user", content: "transcript" }],
       output,
-      maxTokens: 1024,
-      effort: "low",
-    });
+      maxTokens: 1024,    });
 
     expect(result.value).toEqual({ final_answer: "2020", evidence: [] });
     expect(result.additionalRuns).toEqual([
@@ -275,9 +271,7 @@ describe("structured output finalization", () => {
       model: adapter,
       messages: [{ role: "user", content: "transcript" }],
       output,
-      maxTokens: 1024,
-      effort: "low",
-    });
+      maxTokens: 1024,    });
 
     expect(result).toEqual({
       final_answer: "Nicholas Munene Mutuma",
@@ -296,7 +290,6 @@ describe("resolveRunConfig", () => {
     "ATLAS_MAX_SUBAGENTS",
     "ATLAS_MAX_CONCURRENT_MODEL_CALLS",
     "ATLAS_MAX_DELEGATION_DEPTH",
-    "ATLAS_THINKING_EFFORT",
     "ATLAS_COMPACTION_TRIGGER_TOKENS",
     "ATLAS_COMPACTION_KEEP_TOKENS",
     "ATLAS_SUMMARY_MODEL",

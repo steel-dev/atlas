@@ -12,7 +12,6 @@ import {
   DEFAULT_ANTHROPIC_MODEL,
   DEFAULT_ANTHROPIC_SUMMARY_MODEL,
   DEFAULT_OPENAI_MODEL,
-  type ResearchEffort,
 } from "./defaults.js";
 import { createSteel } from "./steel.js";
 import type { SearchProviderResolution } from "./search-provider.js";
@@ -57,9 +56,6 @@ const TOKENS_PER_TOOL_CALL = 8_000;
 const TOKENS_PER_SOURCE = 20_000;
 const MIN_SAFETY_TOOL_CALLS = 40;
 const MIN_SAFETY_SOURCE_CAP = 80;
-// Thinking stays always-on adaptive; this is only the per-step effort hint.
-// Override with ATLAS_THINKING_EFFORT (e.g. =max for system-card parity).
-const DEFAULT_THINKING_EFFORT: ResearchEffort = "high";
 const MAX_TEAM_SIZE = 8;
 
 export const RUNTIME_LIMITS = DEFAULT_RUNTIME_LIMITS;
@@ -71,7 +67,6 @@ export interface ResolvedRunConfig {
   steelApiKey: string;
   steelBaseUrl?: string;
   useProxy: boolean;
-  thinkingEffort: ResearchEffort;
   safetyMaxToolCalls: number;
   suggestedTeamSize: number;
   maxConcurrentModelCalls: number;
@@ -109,7 +104,6 @@ export function resolveRunConfig(opts: ResearchOptions): ResolvedRunConfig {
   }
 
   const useProxy = opts.useProxy ?? false;
-  const thinkingEffort = resolveThinkingEffort();
   const tokenLimit =
     opts.tokenLimit ??
     readIntEnv("ATLAS_TOKEN_LIMIT", 0) ??
@@ -143,7 +137,8 @@ export function resolveRunConfig(opts: ResearchOptions): ResolvedRunConfig {
     maxDelegationDepth:
       readIntEnv("ATLAS_MAX_DELEGATION_DEPTH", 0) ?? limits.maxDelegationDepth,
     maxConcurrentSubagents,
-    subagentEffort: thinkingEffort,
+    exploreProviderOptions: opts.exploreProviderOptions,
+    finalizeProviderOptions: opts.finalizeProviderOptions,
   };
 
   return {
@@ -156,7 +151,6 @@ export function resolveRunConfig(opts: ResearchOptions): ResolvedRunConfig {
     steelBaseUrl:
       opts.steelBaseUrl ?? readEnv("ATLAS_STEEL_BASE_URL", "STEEL_BASE_URL"),
     useProxy,
-    thinkingEffort,
     safetyMaxToolCalls: Math.max(
       MIN_SAFETY_TOOL_CALLS,
       Math.ceil(effectiveLimitForCaps / TOKENS_PER_TOOL_CALL),
@@ -277,19 +271,6 @@ function readIntEnv(name: string, min: number): number | undefined {
   if (!raw?.trim()) return undefined;
   const n = Math.floor(Number(raw));
   return Number.isFinite(n) && n >= min ? n : undefined;
-}
-
-function resolveThinkingEffort(): ResearchEffort {
-  const raw = readEnv("ATLAS_THINKING_EFFORT");
-  if (raw === "low" || raw === "medium" || raw === "high" || raw === "max") {
-    return raw;
-  }
-  if (raw) {
-    throw new Error(
-      `research: ATLAS_THINKING_EFFORT must be one of: low, medium, high, max (got "${raw}")`,
-    );
-  }
-  return DEFAULT_THINKING_EFFORT;
 }
 
 function resolveProvider(provider: ModelProvider | undefined): ModelProvider {

@@ -1,4 +1,3 @@
-import type { ResearchEffort } from "./defaults.js";
 import {
   createConcurrencyGate,
   tokenBudgetExhaustedReason,
@@ -23,7 +22,6 @@ export type SubagentRunner = (opts: {
   ctx: ResearchCtx;
   query: string;
   maxToolCalls?: number;
-  effort?: ResearchEffort;
   systemPrompt?: string;
   suggestedParallelism?: number;
 }) => Promise<ResearchLoopResult>;
@@ -146,7 +144,6 @@ async function runSubagentTask(
       ctx: subagentCtx,
       query: question,
       maxToolCalls: perAgentMaxToolCalls,
-      effort: ctx.config.subagentEffort,
       systemPrompt: SUBAGENT_SYSTEM_PROMPT,
     });
     const findings = truncateFindings(run.markdown);

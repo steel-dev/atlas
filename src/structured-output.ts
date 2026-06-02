@@ -5,6 +5,7 @@ import type {
   ModelOutputSchema,
   ModelToolCall,
   ModelToolDefinition,
+  ProviderOptions,
 } from "./model.js";
 import {
   STRUCTURED_EMIT_SYSTEM_PROMPT,
@@ -14,7 +15,6 @@ import {
   executeFinalizeTool,
   finalizeToolDefinitions,
 } from "./tool-registry.js";
-import type { ResearchEffort } from "./defaults.js";
 import type { ResearchCtx } from "./runtime.js";
 import { runResearchLoop } from "./research-loop.js";
 import type { ResearchOutputOptions, ResearchRun } from "./research.js";
@@ -62,7 +62,7 @@ export async function generateStructuredOutput(opts: {
   messages: ModelMessage[];
   output: ResearchOutputOptions;
   maxTokens: number;
-  effort: ResearchEffort;
+  providerOptions?: ProviderOptions;
   signal?: AbortSignal;
 }): Promise<StructuredOutputResult> {
   let messages = opts.messages;
@@ -85,7 +85,6 @@ export async function generateStructuredOutput(opts: {
       ctx: { ...opts.ctx, scope },
       query: `Additional research requested while finalizing structured output: ${attempt.query}`,
       maxToolCalls: STRUCTURED_RESEARCH_MAX_TOOL_CALLS,
-      effort: opts.effort,
     });
     additionalRuns.push({
       fetchedUrls: run.fetchedUrls,
@@ -111,7 +110,7 @@ export async function generateStructuredOutput(opts: {
     messages,
     output: opts.output,
     maxTokens: opts.maxTokens,
-    effort: opts.effort,
+    providerOptions: opts.providerOptions,
     signal: opts.signal,
   });
   return { value, additionalRuns };
@@ -123,7 +122,7 @@ async function runStructuredFinalizeAttempt(opts: {
   messages: ModelMessage[];
   output: ResearchOutputOptions;
   maxTokens: number;
-  effort: ResearchEffort;
+  providerOptions?: ProviderOptions;
   signal?: AbortSignal;
   allowMoreResearch: boolean;
 }): Promise<StructuredFinalizeAttempt> {
@@ -143,7 +142,7 @@ async function runStructuredFinalizeAttempt(opts: {
       tools: finalizeTools,
       messages,
       maxTokens: opts.maxTokens,
-      effort: opts.effort,
+      providerOptions: opts.providerOptions,
       signal: opts.signal,
     });
     messages.push({ role: "assistant", content: resp.content });
@@ -178,7 +177,7 @@ async function runStructuredFinalizeAttempt(opts: {
     messages,
     output: opts.output,
     maxTokens: opts.maxTokens,
-    effort: opts.effort,
+    providerOptions: opts.providerOptions,
     signal: opts.signal,
   });
   return { kind: "value", value };
@@ -202,7 +201,7 @@ async function emitStructuredJson(opts: {
   messages: ModelMessage[];
   output: ResearchOutputOptions;
   maxTokens: number;
-  effort: ResearchEffort;
+  providerOptions?: ProviderOptions;
   signal?: AbortSignal;
 }): Promise<unknown> {
   const schema = modelOutputSchema(opts.output);
@@ -221,7 +220,7 @@ async function runStructuredEmitStep(opts: {
   model: ModelAdapter;
   messages: ModelMessage[];
   maxTokens: number;
-  effort: ResearchEffort;
+  providerOptions?: ProviderOptions;
   signal?: AbortSignal;
   schema?: ModelOutputSchema;
 }): Promise<unknown> {
@@ -229,7 +228,7 @@ async function runStructuredEmitStep(opts: {
     system: STRUCTURED_EMIT_SYSTEM_PROMPT,
     messages: opts.messages,
     maxTokens: opts.maxTokens,
-    effort: opts.effort,
+    providerOptions: opts.providerOptions,
     outputSchema: opts.schema,
     signal: opts.signal,
   });
