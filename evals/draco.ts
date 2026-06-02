@@ -32,7 +32,7 @@ interface DracoCriterion {
   requirement: string;
 }
 
-interface DracoCase {
+export interface DracoCase {
   id: string;
   domain: string;
   problem: string;
@@ -42,7 +42,7 @@ interface DracoCase {
   raw: Record<string, unknown>;
 }
 
-interface EvalOptions {
+export interface EvalOptions {
   casesPath: string;
   sample?: number;
   seed: string;
@@ -63,6 +63,8 @@ interface EvalOptions {
   judgeTimeoutMs: number;
   judgeConcurrency: number;
   concurrency: number;
+  retries: number;
+  regrade?: string;
   useProxy: boolean;
   dryRun: boolean;
 }
@@ -73,7 +75,7 @@ interface JudgeSpec {
   model: LanguageModel;
 }
 
-interface CriterionReport {
+export interface CriterionReport {
   sectionId: string;
   id: string;
   requirement: string;
@@ -471,7 +473,7 @@ Options:
       --case-id ID            Run one case ID; repeat or comma-separate
       --domain NAME           Restrict to domain(s); repeat or comma-separate
       --out <file>            Write manifest/results/summary JSONL
-      --timeout N             Per-task research timeout in seconds (default: ${DEFAULT_TIMEOUT_MS / 1000})
+      --timeout N             Per-task research timeout in seconds (default: ${DEFAULT_TIMEOUT_MS / 1000}; 0 = unlimited, like DRACO)
       --token-limit N         Total token budget per task (0 = unlimited)
       --team N                Suggest up to N parallel sub-agents per task (default: 1)
       --provider NAME         Research model provider: anthropic, openai
@@ -484,6 +486,8 @@ Options:
       --judge-timeout N       Per-criterion judge timeout in seconds (default: ${DEFAULT_JUDGE_TIMEOUT_MS / 1000})
       --judge-concurrency N   Parallel judge calls per task (default: ${DEFAULT_JUDGE_CONCURRENCY})
       --concurrency N         Parallel tasks (default: 1)
+      --retries N             Retry a task's research run on transient errors (default: 1)
+      --regrade <file>        Re-judge a prior results JSONL (no research); reuses saved reports
       --proxy                 Route Steel calls through proxy
       --dry-run               Print the selected tasks without calling APIs
       --help                  Show this help
@@ -528,6 +532,14 @@ function readNonNegativeInt(raw: string, name: string): number {
   return n;
 }
 
+function readNonNegativeNumber(raw: string, name: string): number {
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 0) {
+    fail(`${name} must be a non-negative number (got "${raw}")`);
+  }
+  return n;
+}
+
 function readProvider(raw: string): ModelProvider {
   if (raw === "anthropic" || raw === "openai") return raw;
   fail(`--provider must be one of: anthropic, openai (got "${raw}")`);
@@ -564,6 +576,7 @@ function parseArgs(argv: string[]): EvalOptions {
     judgeTimeoutMs: DEFAULT_JUDGE_TIMEOUT_MS,
     judgeConcurrency: DEFAULT_JUDGE_CONCURRENCY,
     concurrency: 1,
+    retries: 1,
     useProxy: false,
     dryRun: false,
   };
@@ -616,9 +629,8 @@ function parseArgs(argv: string[]): EvalOptions {
       continue;
     }
     if (arg === "--timeout") {
-      opts.timeoutMs = Math.floor(
-        readPositiveNumber(readValue(argv, i, arg), arg) * 1000,
-      );
+      const seconds = readNonNegativeNumber(readValue(argv, i, arg), arg);
+      opts.timeoutMs = seconds === 0 ? undefined : Math.floor(seconds * 1000);
       i++;
       continue;
     }
@@ -681,6 +693,16 @@ function parseArgs(argv: string[]): EvalOptions {
     }
     if (arg === "--concurrency") {
       opts.concurrency = readPositiveInt(readValue(argv, i, arg), arg);
+      i++;
+      continue;
+    }
+    if (arg === "--retries") {
+      opts.retries = readNonNegativeInt(readValue(argv, i, arg), arg);
+      i++;
+      continue;
+    }
+    if (arg === "--regrade") {
+      opts.regrade = readValue(argv, i, arg);
       i++;
       continue;
     }
@@ -931,7 +953,7 @@ function sortBySeed(cases: DracoCase[], seed: string): DracoCase[] {
   });
 }
 
-function selectCases(cases: DracoCase[], opts: EvalOptions): DracoCase[] {
+export function selectCases(cases: DracoCase[], opts: EvalOptions): DracoCase[] {
   let filtered = cases;
   if (opts.domains.size > 0) {
     filtered = filtered.filter((entry) =>
@@ -983,7 +1005,7 @@ function selectCases(cases: DracoCase[], opts: EvalOptions): DracoCase[] {
 
 const clamp01 = (value: number): number => Math.max(0, Math.min(1, value));
 
-function scoreReports(reports: CriterionReport[]): {
+export function scoreReports(reports: CriterionReport[]): {
   criteria: number;
   rawScore: number;
   positiveWeight: number;
@@ -1027,7 +1049,10 @@ function scoreReports(reports: CriterionReport[]): {
   };
 }
 
-function buildScore(report: CriterionReport[], entry: DracoCase): RubricScore {
+export function buildScore(
+  report: CriterionReport[],
+  entry: DracoCase,
+): RubricScore {
   const graded = report.filter((r) => !r.judgeError);
   const overall = scoreReports(graded);
   const titleById = new Map(entry.sections.map((s) => [s.id, s.title]));
@@ -1617,6 +1642,57 @@ function buildDiagnostics(opts: {
   };
 }
 
+function isTransientResearchError(message: string): boolean {
+  return /rate limit|concurrent connections|overloaded|temporarily|ETIMEDOUT|ECONNRESET|ECONNREFUSED|ENOTFOUND|EAI_AGAIN|fetch failed|socket hang up|\b(408|429|500|502|503|504)\b/i.test(
+    message,
+  );
+}
+
+async function runResearch(
+  entry: DracoCase,
+  opts: EvalOptions,
+  trace: EvalTraceEvent[],
+  started: number,
+): Promise<ResearchResult> {
+  const attempts = opts.retries + 1;
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      return await research({
+        query: entry.problem,
+        ...resolveModelSpec({
+          provider: opts.provider,
+          model: opts.model,
+          baseUrl: opts.openaiBaseUrl,
+        }),
+        timeoutMs: opts.timeoutMs,
+        tokenLimit: opts.tokenLimit,
+        suggestedTeamSize: opts.teamSize,
+        includeSourceDocuments: true,
+        browser: steel({ proxy: opts.useProxy }),
+        onEvent: (event) => {
+          trace.push(traceEvent(event, started));
+          const line = progressLine(entry.id, event);
+          if (line) process.stderr.write(`eval:draco: ${line}\n`);
+        },
+      });
+    } catch (err) {
+      lastError = err;
+      const message = err instanceof Error ? err.message : String(err);
+      if (attempt < attempts && isTransientResearchError(message)) {
+        const backoffMs = Math.min(30_000, 5_000 * attempt);
+        process.stderr.write(
+          `eval:draco: ${entry.id}: research attempt ${attempt}/${attempts} failed (${message.slice(0, 80)}); retrying in ${Math.round(backoffMs / 1000)}s\n`,
+        );
+        await new Promise((delay) => setTimeout(delay, backoffMs));
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw lastError;
+}
+
 async function runCase(
   entry: DracoCase,
   opts: EvalOptions,
@@ -1633,24 +1709,7 @@ async function runCase(
     );
   }, 30_000);
   try {
-    const result = await research({
-      query: entry.problem,
-      ...resolveModelSpec({
-        provider: opts.provider,
-        model: opts.model,
-        baseUrl: opts.openaiBaseUrl,
-      }),
-      timeoutMs: opts.timeoutMs,
-      tokenLimit: opts.tokenLimit,
-      suggestedTeamSize: opts.teamSize,
-      includeSourceDocuments: true,
-      browser: steel({ proxy: opts.useProxy }),
-      onEvent: (event) => {
-        trace.push(traceEvent(event, started));
-        const line = progressLine(entry.id, event);
-        if (line) process.stderr.write(`eval:draco: ${line}\n`);
-      },
-    });
+    const result = await runResearch(entry, opts, trace, started);
     clearInterval(heartbeat);
     process.stderr.write(
       `eval:draco: ${entry.id}: judging ${entry.criteria.length} criteria (${opts.grader}, ${judge.provider}/${judge.modelId})\n`,
@@ -1871,6 +1930,18 @@ function summarize(results: EvalResult[]) {
     (sum, result) => sum + (result.metrics?.subagentToolCalls ?? 0),
     0,
   );
+  const totalInputTokens = completed.reduce(
+    (sum, result) => sum + (result.metrics?.inputTokens ?? 0),
+    0,
+  );
+  const totalOutputTokens = completed.reduce(
+    (sum, result) => sum + (result.metrics?.outputTokens ?? 0),
+    0,
+  );
+  const totalLatencyMs = completed.reduce(
+    (sum, result) => sum + result.latencyMs,
+    0,
+  );
   const gradedCriteria = scored.reduce(
     (sum, result) => sum + result.score.gradedCriteria,
     0,
@@ -1904,14 +1975,14 @@ function summarize(results: EvalResult[]) {
       completed.length === 0 ? 0 : totalLeadToolCalls / completed.length,
     averageSubagentToolCalls:
       completed.length === 0 ? 0 : totalSubagentToolCalls / completed.length,
-    totalInputTokens: completed.reduce(
-      (sum, result) => sum + (result.metrics?.inputTokens ?? 0),
-      0,
-    ),
-    totalOutputTokens: completed.reduce(
-      (sum, result) => sum + (result.metrics?.outputTokens ?? 0),
-      0,
-    ),
+    averageLatencyMs:
+      completed.length === 0 ? 0 : totalLatencyMs / completed.length,
+    averageInputTokens:
+      completed.length === 0 ? 0 : totalInputTokens / completed.length,
+    averageOutputTokens:
+      completed.length === 0 ? 0 : totalOutputTokens / completed.length,
+    totalInputTokens,
+    totalOutputTokens,
     totalCitedSources: completed.reduce(
       (sum, result) => sum + (result.metrics?.citedSources ?? 0),
       0,
@@ -1963,8 +2034,158 @@ function printDryRun(selected: DracoCase[], opts: EvalOptions): void {
   process.stdout.write(`${lines.join("\n")}\n`);
 }
 
+function printSummary(
+  summary: ReturnType<typeof summarize>,
+  judge: JudgeSpec,
+  grader: GraderStrategy,
+  outPath: string,
+): void {
+  process.stdout.write(
+    [
+      `cases: ${summary.total} (scored ${summary.scored}, errors ${summary.errors})`,
+      `normalized score: ${(summary.normalizedScore * 100).toFixed(1)}%`,
+      `pass rate: ${(summary.passRate * 100).toFixed(1)}%`,
+      `judge: ${judge.provider}/${judge.modelId} (${grader})`,
+      ...(summary.judgeErrors ? [`judge errors: ${summary.judgeErrors}`] : []),
+      `grading coverage: ${(summary.coverage * 100).toFixed(1)}% (${summary.gradedCriteria}/${summary.totalCriteria} criteria graded${
+        summary.ungraded ? `, ${summary.ungraded} task(s) ungraded` : ""
+      })`,
+      "by domain:",
+      ...summary.domains.map(
+        (d) =>
+          `  ${d.domain}: ${(d.normalizedScore * 100).toFixed(1)}% (pass ${(d.passRate * 100).toFixed(1)}%, n=${d.tasks})`,
+      ),
+      "by section:",
+      ...summary.sections.map(
+        (s) =>
+          `  ${s.title}: ${(s.normalizedScore * 100).toFixed(1)}% (pass ${(s.passRate * 100).toFixed(1)}%)`,
+      ),
+      `avg latency: ${(summary.averageLatencyMs / 1000).toFixed(1)}s, avg input tokens: ${Math.round(summary.averageInputTokens).toLocaleString("en-US")}, avg output tokens: ${Math.round(summary.averageOutputTokens).toLocaleString("en-US")}`,
+      `median latency: ${(summary.medianLatencyMs / 1000).toFixed(1)}s`,
+      `avg tool calls: ${summary.averageToolCalls.toFixed(1)} (lead ${summary.averageLeadToolCalls.toFixed(1)}, subagent ${summary.averageSubagentToolCalls.toFixed(1)})`,
+      `cited sources: ${summary.totalCitedSources}, citations not fetched: ${summary.totalCitationsNotFetched}`,
+      `fetch health: fetched=${summary.fetchHealth.fetched}, rejected=${summary.fetchHealth.rejected}, methods=${formatCountMap(summary.fetchHealth.fetchedByMethod)}`,
+      `choke: budget_subagents=${summary.chokeDiagnostics.budgetExhaustedSubagents}, timeout_subagents=${summary.chokeDiagnostics.timeoutSubagents}, source_errors=${summary.chokeDiagnostics.sourceErrors}, blocked_or_thin=${summary.chokeDiagnostics.blockedOrThinSources}`,
+      `results: ${outPath}`,
+    ].join("\n") + "\n",
+  );
+}
+
+async function regradeCase(
+  prior: EvalResult,
+  opts: EvalOptions,
+  judge: JudgeSpec,
+): Promise<EvalResult> {
+  if (
+    !prior.markdown ||
+    !Array.isArray(prior.report) ||
+    prior.report.length === 0
+  ) {
+    return prior;
+  }
+  const criteria: DracoCriterion[] = prior.report.map((c) => ({
+    sectionId: c.sectionId,
+    sectionTitle: titleFromId(c.sectionId),
+    id: c.id,
+    weight: c.weight,
+    requirement: c.requirement,
+  }));
+  const sectionIds = [...new Set(criteria.map((c) => c.sectionId))];
+  const entry: DracoCase = {
+    id: prior.id,
+    domain: prior.domain,
+    problem: prior.problem,
+    rubricId: prior.id,
+    sections: sectionIds.map((id) => ({ id, title: titleFromId(id) })),
+    criteria,
+    raw: {},
+  };
+  process.stderr.write(
+    `eval:draco: ${prior.id} [${prior.domain}]: regrading ${criteria.length} criteria (${opts.grader}, ${judge.provider}/${judge.modelId})\n`,
+  );
+  const report = await gradeRubric({
+    judge,
+    grader: opts.grader,
+    criteria,
+    response: prior.markdown,
+    query: prior.problem,
+    concurrency: opts.judgeConcurrency,
+    timeoutMs: opts.judgeTimeoutMs,
+  });
+  const judgeErrors = report.filter((r) => r.judgeError).length;
+  const score =
+    judgeErrors < report.length ? buildScore(report, entry) : undefined;
+  if (score) {
+    process.stderr.write(
+      `eval:draco: ${prior.id} [${prior.domain}]: score ${(score.normalizedScore * 100).toFixed(1)}% pass ${(score.passRate * 100).toFixed(1)}% (${score.gradedCriteria}/${score.criteria} criteria graded)\n`,
+    );
+  }
+  return {
+    type: "result",
+    id: prior.id,
+    domain: prior.domain,
+    problem: prior.problem,
+    ...(score ? { score } : {}),
+    report,
+    ...(judgeErrors ? { judgeErrors } : {}),
+    ...(prior.finishReason ? { finishReason: prior.finishReason } : {}),
+    ...(prior.markdown ? { markdown: prior.markdown } : {}),
+    latencyMs: prior.latencyMs ?? 0,
+    trace: prior.trace ?? [],
+    ...(prior.diagnostics ? { diagnostics: prior.diagnostics } : {}),
+    ...(prior.metrics ? { metrics: prior.metrics } : {}),
+  };
+}
+
+async function runRegrade(opts: EvalOptions): Promise<void> {
+  const text = await readText(opts.regrade as string);
+  const rows = text
+    .trim()
+    .split(/\r?\n/)
+    .filter(Boolean)
+    .map((line) => JSON.parse(line) as Record<string, unknown>);
+  const priorResults = rows.filter(
+    (row) => row.type === "result",
+  ) as unknown as EvalResult[];
+  if (priorResults.length === 0) {
+    fail(`no result rows found in ${opts.regrade}`);
+  }
+  const priorManifest = rows.find((row) => row.type === "manifest");
+  const judge = buildJudgeSpec(opts);
+  const manifest = {
+    type: "manifest" as const,
+    suite: "draco",
+    mode: "regrade" as const,
+    regradedFrom: opts.regrade,
+    grader: opts.grader,
+    judge: { provider: judge.provider, model: judge.modelId },
+    research: priorManifest?.research ?? null,
+    casesRevision: priorManifest?.casesRevision ?? null,
+    seed: priorManifest?.seed ?? null,
+    cases: priorResults.map((r) => ({
+      id: r.id,
+      domain: r.domain,
+      criteria: r.report?.length ?? 0,
+    })),
+  };
+  const results = await mapWithConcurrency(
+    priorResults,
+    opts.concurrency,
+    (prior) => regradeCase(prior, opts, judge),
+  );
+  const summary = summarize(results);
+  const outPath =
+    opts.outPath ?? defaultOutPath().replace("draco-", "draco-regrade-");
+  await writeJsonl(outPath, [manifest, ...results, summary]);
+  printSummary(summary, judge, opts.grader, outPath);
+}
+
 async function main(): Promise<void> {
   const opts = parseArgs(process.argv.slice(2));
+  if (opts.regrade) {
+    await runRegrade(opts);
+    return;
+  }
   const cases = await readCases(opts.casesPath);
   const selected = selectCases(cases, opts);
   if (selected.length === 0) fail("no cases selected");
@@ -2007,34 +2228,7 @@ async function main(): Promise<void> {
   const outPath = opts.outPath ?? defaultOutPath();
   await writeJsonl(outPath, [manifest, ...results, summary]);
 
-  process.stdout.write(
-    [
-      `cases: ${summary.total} (scored ${summary.scored}, errors ${summary.errors})`,
-      `normalized score: ${(summary.normalizedScore * 100).toFixed(1)}%`,
-      `pass rate: ${(summary.passRate * 100).toFixed(1)}%`,
-      `judge: ${judge.provider}/${judge.modelId} (${opts.grader})`,
-      ...(summary.judgeErrors ? [`judge errors: ${summary.judgeErrors}`] : []),
-      `grading coverage: ${(summary.coverage * 100).toFixed(1)}% (${summary.gradedCriteria}/${summary.totalCriteria} criteria graded${
-        summary.ungraded ? `, ${summary.ungraded} task(s) ungraded` : ""
-      })`,
-      "by domain:",
-      ...summary.domains.map(
-        (d) =>
-          `  ${d.domain}: ${(d.normalizedScore * 100).toFixed(1)}% (pass ${(d.passRate * 100).toFixed(1)}%, n=${d.tasks})`,
-      ),
-      "by section:",
-      ...summary.sections.map(
-        (s) =>
-          `  ${s.title}: ${(s.normalizedScore * 100).toFixed(1)}% (pass ${(s.passRate * 100).toFixed(1)}%)`,
-      ),
-      `median latency: ${(summary.medianLatencyMs / 1000).toFixed(1)}s`,
-      `avg tool calls: ${summary.averageToolCalls.toFixed(1)} (lead ${summary.averageLeadToolCalls.toFixed(1)}, subagent ${summary.averageSubagentToolCalls.toFixed(1)})`,
-      `cited sources: ${summary.totalCitedSources}, citations not fetched: ${summary.totalCitationsNotFetched}`,
-      `fetch health: fetched=${summary.fetchHealth.fetched}, rejected=${summary.fetchHealth.rejected}, methods=${formatCountMap(summary.fetchHealth.fetchedByMethod)}`,
-      `choke: budget_subagents=${summary.chokeDiagnostics.budgetExhaustedSubagents}, timeout_subagents=${summary.chokeDiagnostics.timeoutSubagents}, source_errors=${summary.chokeDiagnostics.sourceErrors}, blocked_or_thin=${summary.chokeDiagnostics.blockedOrThinSources}`,
-      `results: ${outPath}`,
-    ].join("\n") + "\n",
-  );
+  printSummary(summary, judge, opts.grader, outPath);
 }
 
 const isEntrypoint =

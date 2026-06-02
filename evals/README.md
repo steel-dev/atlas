@@ -119,9 +119,10 @@ npm run eval:draco -- --dry-run --sample 10 --seed draco-v1
 ```
 
 Other useful flags: `--domain "Finance,Law"`, `--case-id <uuid>`, `--concurrency N`
-(parallel tasks), `--timeout` (per-task research seconds, default 900), `--team`,
-`--token-limit`, `--provider`/`--model` (research model). Run with `--help` for the
-full list.
+(parallel tasks), `--timeout` (per-task research seconds, default 900; `0` = unlimited,
+matching DRACO's no-limit protocol), `--retries N` (retry a task's research run on
+transient errors like rate limits, default 1), `--team`, `--token-limit`,
+`--provider`/`--model` (research model). Run with `--help` for the full list.
 
 ## Grading (LLM-as-judge)
 
@@ -155,6 +156,23 @@ Tune the judge with `--judge-provider`, `--judge-model`, `--judge-base-url`,
 `--judge-timeout` (per-criterion seconds), and `--judge-concurrency` (parallel judge
 calls per task; per-criterion grading issues ~40 per task).
 
+## Re-grading saved reports (`--regrade`)
+
+Research is the expensive, slow part; judging is cheap. `--regrade` decouples them —
+it re-judges the saved reports in a prior results JSONL **without re-running any
+research**, reusing each task's stored `markdown` + rubric:
+
+```bash
+npm run eval:draco -- --regrade eval-runs/draco-<timestamp>.jsonl --grader per-criterion
+```
+
+Use it to iterate on the grader/judge for the cost of judge calls only — e.g. upgrade
+a cheap `one-shot` run to the faithful `per-criterion` grader, swap judge models, or
+re-judge a task that failed its judge. Operational metrics (latency, tokens, fetch
+health) carry over from the original run; tasks that errored during research (no saved
+report) pass through untouched. Output goes to `eval-runs/draco-regrade-<timestamp>.jsonl`
+unless `--out` is given, and the manifest records `mode: "regrade"` + `regradedFrom`.
+
 ## Output
 
 Results are written to `eval-runs/draco-<timestamp>.jsonl` unless `--out` is given:
@@ -167,7 +185,9 @@ Results are written to `eval-runs/draco-<timestamp>.jsonl` unless `--out` is giv
   `metrics` (latency, tokens, cited sources).
 - `summary`: mean normalized score, mean pass rate, per-domain and per-section
   breakdowns, `coverage`/`gradedCriteria`/`totalCriteria`/`ungraded` (judge grading
-  coverage), and operational metrics (median latency, tool calls, fetch health, choke).
+  coverage), efficiency metrics matching the paper's Table 10 (`averageLatencyMs`,
+  `averageInputTokens`, `averageOutputTokens`), plus median latency, tool calls, fetch
+  health, and choke diagnostics.
 
 ## Environment
 
