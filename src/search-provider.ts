@@ -9,6 +9,7 @@ import {
 } from "./search.js";
 import { extractHtmlWithBrowser } from "./browser-extract.js";
 import { errorMessage } from "./errors.js";
+import { readEnv } from "./env.js";
 import type { ResearchCtx } from "./runtime.js";
 
 export interface SearchProvider {
@@ -379,45 +380,33 @@ function parseBraveResults(data: unknown, limit: number): SearchResult[] {
   return results;
 }
 
-export type SearchProviderKind = "web" | "exa" | "brave";
+export function exa(
+  opts: Partial<ExaSearchProviderOptions> = {},
+): SearchProvider {
+  const apiKey = opts.apiKey ?? readEnv("ATLAS_EXA_API_KEY", "EXA_API_KEY");
+  if (!apiKey) {
+    throw new Error(
+      "exa() requires an apiKey (or set ATLAS_EXA_API_KEY / EXA_API_KEY)",
+    );
+  }
+  return createExaSearchProvider({ ...opts, apiKey });
+}
 
-export interface SearchProviderResolution {
-  instance?: SearchProvider;
-  kind?: string;
-  exaApiKey?: string;
-  braveApiKey?: string;
+export function brave(
+  opts: Partial<BraveSearchProviderOptions> = {},
+): SearchProvider {
+  const apiKey = opts.apiKey ?? readEnv("ATLAS_BRAVE_API_KEY", "BRAVE_API_KEY");
+  if (!apiKey) {
+    throw new Error(
+      "brave() requires an apiKey (or set ATLAS_BRAVE_API_KEY / BRAVE_API_KEY)",
+    );
+  }
+  return createBraveSearchProvider({ ...opts, apiKey });
 }
 
 export function resolveSearchProvider(
   ctx: ResearchCtx,
-  opts: SearchProviderResolution,
+  search: SearchProvider | undefined,
 ): SearchProvider {
-  if (opts.instance) return opts.instance;
-  const kind = (opts.kind?.trim() || "web").toLowerCase();
-  switch (kind) {
-    case "web":
-    case "scraping":
-    case "serp":
-      return createScrapingSearchProvider(ctx);
-    case "exa": {
-      if (!opts.exaApiKey) {
-        throw new Error(
-          "search provider exa requires ATLAS_EXA_API_KEY or EXA_API_KEY",
-        );
-      }
-      return createExaSearchProvider({ apiKey: opts.exaApiKey });
-    }
-    case "brave": {
-      if (!opts.braveApiKey) {
-        throw new Error(
-          "search provider brave requires ATLAS_BRAVE_API_KEY or BRAVE_API_KEY",
-        );
-      }
-      return createBraveSearchProvider({ apiKey: opts.braveApiKey });
-    }
-    default:
-      throw new Error(
-        `unknown search provider "${kind}" (expected web, exa, or brave)`,
-      );
-  }
+  return search ?? createScrapingSearchProvider(ctx);
 }

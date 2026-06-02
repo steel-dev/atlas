@@ -7,6 +7,8 @@ import {
   type ResearchEvent,
 } from "./research.js";
 import { resolveModelSpec } from "./config-resolution.js";
+import { steel } from "./steel.js";
+import { exa, brave, type SearchProvider } from "./search-provider.js";
 
 const USAGE = `atlas — deep research from your terminal
 
@@ -33,7 +35,6 @@ Options:
 
 Environment:
   ATLAS_PROVIDER                                optional (anthropic, openai)
-  ATLAS_SEARCH_PROVIDER                         optional (web, exa, brave; default web)
   ATLAS_EXA_API_KEY       or EXA_API_KEY        required for --search-provider exa
   ATLAS_BRAVE_API_KEY     or BRAVE_API_KEY      required for --search-provider brave
   ATLAS_MODEL                                   optional
@@ -105,6 +106,14 @@ function parseProvider(raw: string | undefined): ModelProvider | undefined {
   if (raw === undefined) return undefined;
   if (MODEL_PROVIDERS.has(raw as ModelProvider)) return raw as ModelProvider;
   fail(`--provider must be one of: anthropic, openai (got "${raw}")`);
+}
+
+function resolveSearch(raw: string | undefined): SearchProvider | undefined {
+  const kind = (raw ?? "").trim().toLowerCase();
+  if (!kind || kind === "web") return undefined;
+  if (kind === "exa") return exa();
+  if (kind === "brave") return brave();
+  fail(`--search-provider must be one of: web, exa, brave (got "${raw}")`);
 }
 
 const DIM = "\x1b[2m";
@@ -338,16 +347,12 @@ async function main(): Promise<void> {
     });
     const result = await research({
       query,
-      searchProvider: values["search-provider"],
+      search: resolveSearch(values["search-provider"]),
       model,
       summaryModel,
       tokenLimit,
       suggestedTeamSize: teamSize,
-      useProxy,
-      // Provider-native thinking options, written here at the edge — the
-      // research core only plumbs them opaquely. Adaptive thinking self-paces
-      // exploration; a high-effort pass is reserved for finalization. (Other
-      // providers ignore the anthropic namespace.)
+      ...(useProxy ? { browser: steel({ proxy: true }) } : {}),
       exploreProviderOptions: { anthropic: { thinking: { type: "adaptive" } } },
       finalizeProviderOptions: {
         anthropic: { thinking: { type: "adaptive" }, effort: "high" },

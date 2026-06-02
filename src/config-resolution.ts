@@ -14,7 +14,8 @@ import {
   DEFAULT_OPENAI_MODEL,
 } from "./defaults.js";
 import { createSteel } from "./steel.js";
-import type { SearchProviderResolution } from "./search-provider.js";
+import type { SearchProvider } from "./search-provider.js";
+import { readEnv } from "./env.js";
 import {
   createAdaptiveConcurrencyGate,
   type ResearchConfig,
@@ -77,7 +78,7 @@ export interface ResolvedRunConfig {
   synthesisReserveMs?: number;
   browserMaxSessions: number;
   browserIdleTtlMs?: number | null;
-  searchProvider: SearchProviderResolution;
+  search?: SearchProvider;
   agent: ResearchConfig;
 }
 
@@ -88,22 +89,19 @@ export interface RunResources {
   browserSessionPool: BrowserSessionPool;
 }
 
-// Resolves every knob from explicit options then environment then defaults, with
-// no side effects (no clients, gates, or pools) so the resolution can be tested
-// in isolation. The token budget is the single scaling knob; tool-call and
-// source caps are derived from it and floored.
 export function resolveRunConfig(opts: ResearchOptions): ResolvedRunConfig {
   const limits = DEFAULT_RUNTIME_LIMITS;
   const { provider, modelId: model } = modelLabel(opts.model);
+  const browser = opts.browser;
   const steelApiKey =
-    opts.steelApiKey ?? readEnv("ATLAS_STEEL_API_KEY", "STEEL_API_KEY");
+    browser?.apiKey ?? readEnv("ATLAS_STEEL_API_KEY", "STEEL_API_KEY");
   if (!steelApiKey) {
     throw new Error(
-      "research: STEEL_API_KEY or ATLAS_STEEL_API_KEY is required",
+      "research: STEEL_API_KEY or ATLAS_STEEL_API_KEY is required (or pass browser: steel({ apiKey }))",
     );
   }
 
-  const useProxy = opts.useProxy ?? false;
+  const useProxy = browser?.proxy ?? false;
   const tokenLimit =
     opts.tokenLimit ??
     readIntEnv("ATLAS_TOKEN_LIMIT", 0) ??
@@ -149,7 +147,7 @@ export function resolveRunConfig(opts: ResearchOptions): ResolvedRunConfig {
       : model,
     steelApiKey,
     steelBaseUrl:
-      opts.steelBaseUrl ?? readEnv("ATLAS_STEEL_BASE_URL", "STEEL_BASE_URL"),
+      browser?.baseUrl ?? readEnv("ATLAS_STEEL_BASE_URL", "STEEL_BASE_URL"),
     useProxy,
     safetyMaxToolCalls: Math.max(
       MIN_SAFETY_TOOL_CALLS,
@@ -182,19 +180,7 @@ export function resolveRunConfig(opts: ResearchOptions): ResolvedRunConfig {
       readBrowserMaxSessionsFromEnv() ??
       defaultBrowserMaxSessions(maxConcurrentSubagents),
     browserIdleTtlMs: readBrowserIdleTtlMsFromEnv(),
-    searchProvider: {
-      instance:
-        opts.searchProvider && typeof opts.searchProvider !== "string"
-          ? opts.searchProvider
-          : undefined,
-      kind:
-        (typeof opts.searchProvider === "string"
-          ? opts.searchProvider
-          : undefined) ?? readEnv("ATLAS_SEARCH_PROVIDER"),
-      exaApiKey: opts.exaApiKey ?? readEnv("ATLAS_EXA_API_KEY", "EXA_API_KEY"),
-      braveApiKey:
-        opts.braveApiKey ?? readEnv("ATLAS_BRAVE_API_KEY", "BRAVE_API_KEY"),
-    },
+    search: opts.search,
   };
 }
 
@@ -256,14 +242,6 @@ export function createRunResources(
     idleTtlMs: config.browserIdleTtlMs,
   });
   return { modelAdapter, summaryAdapter, steel, browserSessionPool };
-}
-
-function readEnv(...keys: string[]): string | undefined {
-  for (const key of keys) {
-    const value = process.env[key];
-    if (value?.trim()) return value.trim();
-  }
-  return undefined;
 }
 
 function readIntEnv(name: string, min: number): number | undefined {

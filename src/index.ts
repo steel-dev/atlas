@@ -1,6 +1,8 @@
 export { research } from "./research.js";
 export { openai, createOpenAI } from "@ai-sdk/openai";
 export { anthropic, createAnthropic } from "@ai-sdk/anthropic";
+export { steel } from "./steel.js";
+export type { BrowserProvider, SteelBrowserOptions } from "./steel.js";
 export type {
   FetchedSource,
   LanguageModel,
@@ -13,10 +15,7 @@ export type {
   UsageSummary,
   CitedSource,
 } from "./research.js";
-export {
-  createExaSearchProvider,
-  createBraveSearchProvider,
-} from "./search-provider.js";
+export { exa, brave } from "./search-provider.js";
 export type {
   SearchProvider,
   SearchProviderQuery,

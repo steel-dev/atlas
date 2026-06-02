@@ -9,6 +9,7 @@ import {
   resolveSearchProvider,
   type SearchProvider,
 } from "./search-provider.js";
+import type { BrowserProvider } from "./steel.js";
 import { runResearchLoop } from "./research-loop.js";
 import { generateStructuredOutput } from "./structured-output.js";
 import {
@@ -77,12 +78,8 @@ export interface ResearchOptions {
   query: string;
   model: Exclude<LanguageModel, string>;
   summaryModel?: Exclude<LanguageModel, string>;
-  steelApiKey?: string;
-  steelBaseUrl?: string;
-  searchProvider?: SearchProvider | string;
-  exaApiKey?: string;
-  braveApiKey?: string;
-  useProxy?: boolean;
+  browser?: BrowserProvider;
+  search?: SearchProvider;
   timeoutMs?: number;
   tokenLimit?: number;
   suggestedTeamSize?: number;
@@ -241,7 +238,7 @@ function buildResearchCtx(args: {
     },
     scope: leadScope,
   };
-  ctx.deps.searchProvider = resolveSearchProvider(ctx, config.searchProvider);
+  ctx.deps.searchProvider = resolveSearchProvider(ctx, config.search);
   return ctx;
 }
 

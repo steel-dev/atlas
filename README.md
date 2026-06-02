@@ -53,7 +53,25 @@ const result = await research({
 });
 ```
 
-Bring your own key with the provider factory (`createOpenAI({ apiKey, baseURL })`, also re-exported) or the provider's standard env var. Atlas preserves provider-native capability through the same loop: Anthropic thinking signatures and OpenAI reasoning round-trip across tool turns, prompt caching stays on, and `ATLAS_THINKING_EFFORT` maps to each provider's effort knob. The CLI keeps the string flags (`--provider`, `--model`, `--base-url`).
+Bring your own key with the provider factory (`createOpenAI({ apiKey, baseURL })`, also re-exported) or the provider's standard env var. Atlas preserves provider-native capability through the same loop: Anthropic thinking signatures and OpenAI reasoning round-trip across tool turns, prompt caching stays on, and provider-native knobs like reasoning effort pass through as opaque `providerOptions`. The CLI keeps the string flags (`--provider`, `--model`, `--base-url`).
+
+## Search and browser
+
+Atlas fetches every page — and, by default, scrapes search-engine results — through a browser substrate. Steel reads its config from the environment, so the zero-config path needs nothing; reach for `browser` and `search` only to override a knob or swap the search backend. They mirror the `model: openai(...)` shape — a re-exported factory with sensible env defaults:
+
+```ts
+import { research, steel, exa } from "@steel-dev/atlas";
+import { openai } from "@ai-sdk/openai";
+
+const result = await research({
+  query: "What's changing in browser automation for AI agents?",
+  model: openai("gpt-5.5"),
+  browser: steel({ proxy: true }), // apiKey/baseUrl still fall back to env
+  search: exa(), // bypass the browser for search; omit to scrape SERPs
+});
+```
+
+`search` accepts any provider that bypasses the browser — `exa(...)`, `brave(...)` (both re-exported, keys default to env), or your own `SearchProvider`. Omit it and Atlas scrapes SERPs through `browser`, so a `proxy` set on the browser also covers the default search. The CLI exposes the same choices through `--proxy` and `--search-provider web|exa|brave`.
 
 ## Development
 

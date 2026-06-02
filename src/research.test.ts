@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { __testing } from "./research.js";
+import { steel } from "./steel.js";
+import type { SearchProvider } from "./search-provider.js";
 import {
   emptyUsageSummary,
   type LanguageModel,
@@ -293,7 +295,6 @@ describe("resolveRunConfig", () => {
     "ATLAS_COMPACTION_TRIGGER_TOKENS",
     "ATLAS_COMPACTION_KEEP_TOKENS",
     "ATLAS_SUMMARY_MODEL",
-    "ATLAS_SEARCH_PROVIDER",
     "ATLAS_EXA_API_KEY",
     "EXA_API_KEY",
     "ATLAS_BRAVE_API_KEY",
@@ -313,7 +314,7 @@ describe("resolveRunConfig", () => {
     const config = __testing.resolveRunConfig({
       query: "q",
       model: fakeLanguageModel(),
-      steelApiKey: "sk",
+      browser: steel({ apiKey: "sk" }),
       tokenLimit: 800_000,
       suggestedTeamSize: 50,
     });
@@ -333,7 +334,7 @@ describe("resolveRunConfig", () => {
     const config = __testing.resolveRunConfig({
       query: "q",
       model: fakeLanguageModel(),
-      steelApiKey: "sk",
+      browser: steel({ apiKey: "sk" }),
       tokenLimit: 0,
     });
 
@@ -342,13 +343,54 @@ describe("resolveRunConfig", () => {
     expect(config.agent.sourceCap).toBe(100);
   });
 
+  it("maps the browser provider onto resolved steel config", () => {
+    clearAtlasEnv();
+    vi.stubEnv("ATLAS_STEEL_API_KEY", "env-steel");
+    const config = __testing.resolveRunConfig({
+      query: "q",
+      model: fakeLanguageModel(),
+      browser: steel({ proxy: true, baseUrl: "https://steel.local" }),
+    });
+
+    // apiKey omitted on the provider still falls back to env — zero-config intact
+    expect(config.steelApiKey).toBe("env-steel");
+    expect(config.steelBaseUrl).toBe("https://steel.local");
+    expect(config.useProxy).toBe(true);
+  });
+
+  it("prefers an explicit browser apiKey and defaults proxy off", () => {
+    clearAtlasEnv();
+    vi.stubEnv("ATLAS_STEEL_API_KEY", "env-steel");
+    const config = __testing.resolveRunConfig({
+      query: "q",
+      model: fakeLanguageModel(),
+      browser: steel({ apiKey: "explicit" }),
+    });
+
+    expect(config.steelApiKey).toBe("explicit");
+    expect(config.useProxy).toBe(false);
+  });
+
+  it("passes an explicit search provider through to the run config", () => {
+    clearAtlasEnv();
+    const search: SearchProvider = { name: "fake", searchQuery: vi.fn() };
+    const config = __testing.resolveRunConfig({
+      query: "q",
+      model: fakeLanguageModel(),
+      browser: steel({ apiKey: "sk" }),
+      search,
+    });
+
+    expect(config.search).toBe(search);
+  });
+
   it("reserves finalization time from the wall-clock timeout", () => {
     clearAtlasEnv();
     const before = Date.now();
     const config = __testing.resolveRunConfig({
       query: "q",
       model: fakeLanguageModel(),
-      steelApiKey: "sk",
+      browser: steel({ apiKey: "sk" }),
       timeoutMs: 60_000,
     });
 
@@ -369,5 +411,20 @@ describe("resolveRunConfig", () => {
         model: fakeLanguageModel(),
       }),
     ).toThrow(/STEEL_API_KEY/);
+  });
+
+  it("resolves Steel from the environment when no browser is given", () => {
+    clearAtlasEnv();
+    vi.stubEnv("ATLAS_STEEL_API_KEY", "env-steel");
+
+    // The headline zero-config call: research({ query, model }) with no browser.
+    const config = __testing.resolveRunConfig({
+      query: "q",
+      model: fakeLanguageModel(),
+    });
+
+    expect(config.steelApiKey).toBe("env-steel");
+    expect(config.useProxy).toBe(false);
+    expect(config.search).toBeUndefined();
   });
 });

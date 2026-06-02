@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  brave,
   createBraveSearchProvider,
   createExaSearchProvider,
+  exa,
   resolveSearchProvider,
   type SearchProvider,
 } from "./search-provider.js";
@@ -10,6 +12,7 @@ import { createAgentScope, type ResearchCtx } from "./runtime.js";
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
 });
 
 function ctxWithProvider(provider: SearchProvider): ResearchCtx {
@@ -204,36 +207,37 @@ describe("Brave provider", () => {
 describe("resolveSearchProvider", () => {
   const ctx = {} as ResearchCtx;
 
-  it("defaults to the scraping provider", () => {
-    expect(resolveSearchProvider(ctx, {}).name).toBe("web");
-    expect(resolveSearchProvider(ctx, { kind: "web" }).name).toBe("web");
+  it("defaults to the scraping provider when none is supplied", () => {
+    expect(resolveSearchProvider(ctx, undefined).name).toBe("web");
   });
 
-  it("returns an explicit instance over a named kind", () => {
+  it("returns the explicit provider instance", () => {
     const fake = { name: "fake", searchQuery: vi.fn() } as SearchProvider;
-    expect(resolveSearchProvider(ctx, { instance: fake, kind: "exa" })).toBe(
-      fake,
-    );
+    expect(resolveSearchProvider(ctx, fake)).toBe(fake);
+  });
+});
+
+describe("exa()/brave() factories", () => {
+  it("reads the api key from the environment when omitted", () => {
+    vi.stubEnv("ATLAS_EXA_API_KEY", "");
+    vi.stubEnv("EXA_API_KEY", "env-key");
+    expect(exa().name).toBe("exa");
+    vi.stubEnv("ATLAS_BRAVE_API_KEY", "");
+    vi.stubEnv("BRAVE_API_KEY", "env-key");
+    expect(brave().name).toBe("brave");
   });
 
-  it("constructs named API providers when keys are present", () => {
-    expect(
-      resolveSearchProvider(ctx, { kind: "exa", exaApiKey: "k" }).name,
-    ).toBe("exa");
-    expect(
-      resolveSearchProvider(ctx, { kind: "brave", braveApiKey: "k" }).name,
-    ).toBe("brave");
+  it("prefers an explicit api key", () => {
+    expect(exa({ apiKey: "k" }).name).toBe("exa");
+    expect(brave({ apiKey: "k" }).name).toBe("brave");
   });
 
-  it("throws on missing keys and unknown providers", () => {
-    expect(() => resolveSearchProvider(ctx, { kind: "exa" })).toThrow(
-      /EXA_API_KEY/,
-    );
-    expect(() => resolveSearchProvider(ctx, { kind: "brave" })).toThrow(
-      /BRAVE_API_KEY/,
-    );
-    expect(() => resolveSearchProvider(ctx, { kind: "nope" })).toThrow(
-      /unknown search provider/,
-    );
+  it("throws when no api key is available", () => {
+    vi.stubEnv("ATLAS_EXA_API_KEY", "");
+    vi.stubEnv("EXA_API_KEY", "");
+    expect(() => exa()).toThrow(/EXA_API_KEY/);
+    vi.stubEnv("ATLAS_BRAVE_API_KEY", "");
+    vi.stubEnv("BRAVE_API_KEY", "");
+    expect(() => brave()).toThrow(/BRAVE_API_KEY/);
   });
 });

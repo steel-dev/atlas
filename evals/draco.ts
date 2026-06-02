@@ -17,6 +17,7 @@ import {
   type ResearchEvent,
   type ResearchResult,
 } from "../src/research.js";
+import { steel } from "../src/steel.js";
 import { resolveModelSpec } from "../src/config-resolution.js";
 
 type JudgeProvider = "google" | "anthropic" | "openai";
@@ -1643,7 +1644,7 @@ async function runCase(
       tokenLimit: opts.tokenLimit,
       suggestedTeamSize: opts.teamSize,
       includeSourceDocuments: true,
-      useProxy: opts.useProxy,
+      browser: steel({ proxy: opts.useProxy }),
       onEvent: (event) => {
         trace.push(traceEvent(event, started));
         const line = progressLine(entry.id, event);

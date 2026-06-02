@@ -16,6 +16,7 @@ import {
   type ResearchEvent,
   type ResearchResult,
 } from "../src/research.js";
+import { steel } from "../src/steel.js";
 import { resolveModelSpec } from "../src/config-resolution.js";
 import type { SourceDocument } from "../src/sources.js";
 import { normalizeUrlForSource } from "../src/url.js";
@@ -1387,7 +1388,7 @@ async function runCase(
       suggestedTeamSize: opts.teamSize,
       output: browseCompOutput(),
       includeSourceDocuments: true,
-      useProxy: opts.useProxy,
+      browser: steel({ proxy: opts.useProxy }),
       exploreProviderOptions: { anthropic: { thinking: { type: "adaptive" } } },
       finalizeProviderOptions: {
         anthropic: { thinking: { type: "adaptive" }, effort: "high" },

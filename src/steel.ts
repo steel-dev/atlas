@@ -16,6 +16,28 @@ export function createSteel(opts: SteelOptions): Steel {
   });
 }
 
+export interface BrowserProvider {
+  readonly kind: "steel";
+  readonly apiKey?: string;
+  readonly baseUrl?: string;
+  readonly proxy?: boolean;
+}
+
+export interface SteelBrowserOptions {
+  apiKey?: string;
+  baseUrl?: string;
+  proxy?: boolean;
+}
+
+export function steel(opts: SteelBrowserOptions = {}): BrowserProvider {
+  return {
+    kind: "steel",
+    ...(opts.apiKey !== undefined ? { apiKey: opts.apiKey } : {}),
+    ...(opts.baseUrl !== undefined ? { baseUrl: opts.baseUrl } : {}),
+    ...(opts.proxy !== undefined ? { proxy: opts.proxy } : {}),
+  };
+}
+
 const ANTI_BOT_MARKERS = [
   "just a moment",
   "verifying you are human",
