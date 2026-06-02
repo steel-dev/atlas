@@ -27,7 +27,7 @@ export interface FetchToolInput {
   max_chars?: number;
 }
 
-export interface FetchOutcome {
+interface FetchOutcome {
   text: string;
   fetchedUrl?: string;
   fetchedUrls?: string[];

@@ -13,7 +13,7 @@ export interface HtmlPageMetadata {
   jsonLd?: unknown;
 }
 
-export interface HtmlMarkdownExtraction {
+interface HtmlMarkdownExtraction {
   title: string;
   markdown: string;
   links: SourceDiscoveredLink[];

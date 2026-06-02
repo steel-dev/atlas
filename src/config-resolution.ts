@@ -8,11 +8,7 @@ import {
   type ModelProvider,
   type ModelRetryInfo,
 } from "./model.js";
-import {
-  DEFAULT_ANTHROPIC_MODEL,
-  DEFAULT_ANTHROPIC_SUMMARY_MODEL,
-  DEFAULT_OPENAI_MODEL,
-} from "./defaults.js";
+import { DEFAULT_ANTHROPIC_MODEL, DEFAULT_OPENAI_MODEL } from "./defaults.js";
 import { createSteel } from "./steel.js";
 import type { SearchProvider } from "./search-provider.js";
 import { readEnv } from "./env.js";
@@ -283,13 +279,12 @@ function resolveModel(
 }
 
 function resolveSummaryModel(
-  provider: ModelProvider,
   summaryModel: string | undefined,
   mainModel: string,
 ): string {
   const raw = summaryModel ?? readEnv("ATLAS_SUMMARY_MODEL");
   if (raw?.trim()) return raw.trim();
-  return provider === "anthropic" ? DEFAULT_ANTHROPIC_SUMMARY_MODEL : mainModel;
+  return mainModel;
 }
 
 function modelLabel(model: Exclude<LanguageModel, string>): {
@@ -299,7 +294,7 @@ function modelLabel(model: Exclude<LanguageModel, string>): {
   return { provider: model.provider.split(".")[0], modelId: model.modelId };
 }
 
-export interface ModelSpecInput {
+interface ModelSpecInput {
   provider?: ModelProvider;
   model?: string;
   summaryModel?: string;
@@ -315,7 +310,7 @@ export function resolveModelSpec(opts: ModelSpecInput): {
   const baseUrl =
     opts.baseUrl ?? readEnv("ATLAS_OPENAI_BASE_URL", "OPENAI_BASE_URL");
   const model = buildLanguageModel(provider, modelId, baseUrl);
-  const summaryId = resolveSummaryModel(provider, opts.summaryModel, modelId);
+  const summaryId = resolveSummaryModel(opts.summaryModel, modelId);
   return summaryId === modelId
     ? { model }
     : { model, summaryModel: buildLanguageModel(provider, summaryId, baseUrl) };

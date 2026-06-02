@@ -17,7 +17,7 @@ const SESSION_RELEASE_TIMEOUT_MS = 10_000;
 
 type SteelSession = Awaited<ReturnType<Steel["sessions"]["create"]>>;
 
-export interface BrowserSessionResource {
+interface BrowserSessionResource {
   session: SteelSession;
   client: BrowserCdpClient;
   cdpSessionId?: string;
@@ -35,7 +35,7 @@ interface Waiter {
   timeout: NodeJS.Timeout;
 }
 
-export interface BrowserSessionPoolOptions {
+interface BrowserSessionPoolOptions {
   steel: Steel;
   useProxy: boolean;
   namespace: string;

@@ -1,6 +1,6 @@
 import { PDFParse } from "pdf-parse";
 
-export interface PdfTextExtraction {
+interface PdfTextExtraction {
   text: string;
 }
 

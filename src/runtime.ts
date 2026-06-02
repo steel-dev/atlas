@@ -25,7 +25,7 @@ export interface AdaptiveConcurrencyGate extends ConcurrencyGate {
   readonly limit: number;
 }
 
-export interface SourceReservations {
+interface SourceReservations {
   urls: Set<string>;
   sourceSlots: number;
   nextSourceNumber: number;
@@ -38,7 +38,7 @@ export interface SourceCacheEntry {
   metadata: SourceExtractionMetadata;
 }
 
-export interface ResearchCaches {
+interface ResearchCaches {
   serp: Map<string, Promise<WebSearchOutcome>>;
   sources: Map<string, Promise<SourceCacheEntry>>;
   summaries: Map<string, Promise<string>>;
@@ -191,7 +191,7 @@ export interface ResearchConfig {
   readonly finalizeProviderOptions?: ProviderOptions;
 }
 
-export interface ResearchDeps {
+interface ResearchDeps {
   model: ModelAdapter;
   summaryModel?: ModelAdapter;
   steel: Steel;
@@ -204,14 +204,14 @@ export interface ResearchDeps {
   browserSessionPool: BrowserSessionPool;
 }
 
-export interface SourceStore {
+interface SourceStore {
   fetchedSources: FetchedSource[];
   sourceDocuments: Map<string, SourceDocument>;
   sourceReservations: SourceReservations;
   caches: ResearchCaches;
 }
 
-export interface AgentScopeOverrides {
+interface AgentScopeOverrides {
   query?: string;
   depth?: number;
   deadlineAt?: number;
@@ -220,11 +220,11 @@ export interface AgentScopeOverrides {
   compactionKeepTokens?: number;
 }
 
-export interface AgentScopeInit extends AgentScopeOverrides {
+interface AgentScopeInit extends AgentScopeOverrides {
   sink: (event: ResearchLoopEvent) => void;
 }
 
-export interface AgentScope extends AsyncDisposable {
+interface AgentScope extends AsyncDisposable {
   query?: string;
   depth: number;
   deadlineAt?: number;

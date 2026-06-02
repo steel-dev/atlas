@@ -1,3 +1,5 @@
+import { createAnthropic } from "@ai-sdk/anthropic";
+import { createOpenAI } from "@ai-sdk/openai";
 import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
@@ -6,8 +8,7 @@ import {
   DEFAULT_OPENAI_MODEL,
 } from "../src/defaults.js";
 import {
-  createAnthropicModelAdapter,
-  createOpenAIModelAdapter,
+  createAISdkModelAdapter,
   type ModelAdapter,
 } from "../src/model.js";
 import {
@@ -465,6 +466,34 @@ function resolveEvalModel(
   return provider === "anthropic"
     ? DEFAULT_ANTHROPIC_MODEL
     : DEFAULT_OPENAI_MODEL;
+}
+
+function createAnthropicModelAdapter(opts: {
+  apiKey: string;
+  model: string;
+}): ModelAdapter {
+  const provider = createAnthropic({ apiKey: opts.apiKey });
+  return createAISdkModelAdapter({
+    model: provider(opts.model),
+    provider: "anthropic",
+    modelId: opts.model,
+  });
+}
+
+function createOpenAIModelAdapter(opts: {
+  apiKey: string;
+  baseUrl?: string;
+  model: string;
+}): ModelAdapter {
+  const provider = createOpenAI({
+    apiKey: opts.apiKey,
+    ...(opts.baseUrl ? { baseURL: opts.baseUrl } : {}),
+  });
+  return createAISdkModelAdapter({
+    model: provider(opts.model),
+    provider: "openai",
+    modelId: opts.model,
+  });
 }
 
 function createJudgeAdapter(opts: EvalOptions): ModelAdapter {

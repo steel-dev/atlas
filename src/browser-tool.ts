@@ -158,13 +158,6 @@ export async function execBrowserExtract(
   return formatSourceCard(document, maxChars);
 }
 
-export async function closeBrowserLease(ctx: ResearchCtx): Promise<void> {
-  const lease = ctx.scope.browserSessionLease;
-  if (!lease) return;
-  ctx.scope.browserSessionLease = undefined;
-  await lease.release();
-}
-
 async function ensureBrowserLease(ctx: ResearchCtx) {
   if (ctx.scope.browserSessionLease) return ctx.scope.browserSessionLease;
   ctx.scope.browserSessionLease = await ctx.deps.browserSessionPool.acquire();

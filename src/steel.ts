@@ -1,6 +1,6 @@
 import Steel from "steel-sdk";
 
-export interface SteelOptions {
+interface SteelOptions {
   apiKey: string;
   baseUrl?: string;
 }

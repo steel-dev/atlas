@@ -21,7 +21,7 @@ const RENDER_TOOL_INPUT_CHAR_CAP = 1_000;
  *  enough to be worth reclaiming. */
 const MIN_FOLD_TOKENS = 2_000;
 
-export const COMPACTION_SYSTEM_PROMPT =
+const COMPACTION_SYSTEM_PROMPT =
   "You compress the older portion of a research agent's transcript into a faithful progress note so the agent can keep working within a smaller context. " +
   "Preserve concrete facts, names, numbers, dates, and the source_id that established each one. Capture the current best hypothesis, what has been ruled out, dead-end queries or URLs already tried, and the open gaps that still need work. " +
   "Be strictly faithful: never invent facts, sources, or source_ids, and never claim something was found that was not. Do not restate raw page text — reference evidence by source_id. Write tight prose or bullet points with no preamble.";
@@ -47,7 +47,7 @@ function toolResultChars(result: ModelToolResult): number {
   return result.content.length;
 }
 
-export function estimateMessageTokens(message: ModelMessage): number {
+function estimateMessageTokens(message: ModelMessage): number {
   if (message.role === "user") {
     if (typeof message.content === "string") {
       return estimateTextTokens(message.content);

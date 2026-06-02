@@ -18,7 +18,7 @@ const SUBAGENT_SYNTHESIS_RESERVE_MS = 45_000;
 const SUBAGENT_FINDINGS_MAX_CHARS = 4_000;
 const SUBAGENT_FALLBACK_MAX_SOURCES = 12;
 
-export type SubagentRunner = (opts: {
+type SubagentRunner = (opts: {
   ctx: ResearchCtx;
   query: string;
   maxToolCalls?: number;

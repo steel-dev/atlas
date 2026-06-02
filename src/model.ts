@@ -1,5 +1,3 @@
-import { createAnthropic } from "@ai-sdk/anthropic";
-import { createOpenAI } from "@ai-sdk/openai";
 import {
   generateText,
   generateObject,
@@ -45,7 +43,7 @@ export interface ModelOutputSchema {
   strict?: boolean;
 }
 
-export interface ModelTextBlock {
+interface ModelTextBlock {
   type: "text";
   text: string;
 }
@@ -64,14 +62,14 @@ export interface ModelToolResult {
   is_error?: boolean;
 }
 
-export interface ModelThinkingBlock {
+interface ModelThinkingBlock {
   type: "thinking";
   thinking: string;
   signature: string;
   providerMetadata?: Record<string, unknown>;
 }
 
-export interface ModelRedactedThinkingBlock {
+interface ModelRedactedThinkingBlock {
   type: "redacted_thinking";
   data: string;
   providerMetadata?: Record<string, unknown>;
@@ -193,36 +191,6 @@ export function createAISdkModelAdapter(opts: {
       };
     },
   };
-}
-
-export function createAnthropicModelAdapter(opts: {
-  apiKey: string;
-  model: string;
-  maxRetries?: number;
-}): ModelAdapter {
-  const provider = createAnthropic({ apiKey: opts.apiKey });
-  return createAISdkModelAdapter({
-    model: provider(opts.model),
-    provider: "anthropic",
-    modelId: opts.model,
-  });
-}
-
-export function createOpenAIModelAdapter(opts: {
-  apiKey: string;
-  baseUrl?: string;
-  model: string;
-  maxRetries?: number;
-}): ModelAdapter {
-  const provider = createOpenAI({
-    apiKey: opts.apiKey,
-    ...(opts.baseUrl ? { baseURL: opts.baseUrl } : {}),
-  });
-  return createAISdkModelAdapter({
-    model: provider(opts.model),
-    provider: "openai",
-    modelId: opts.model,
-  });
 }
 
 function toAiTools(tools: ModelToolDefinition[]): ToolSet {
@@ -403,7 +371,7 @@ export interface ModelRetryInfo {
   concurrency: boolean;
 }
 
-export interface ModelConcurrencyOptions {
+interface ModelConcurrencyOptions {
   onRetry?: (info: ModelRetryInfo) => void;
 }
 

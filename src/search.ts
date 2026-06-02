@@ -2,7 +2,7 @@ import * as cheerio from "cheerio";
 import { looksBlocked } from "./steel.js";
 import { normalizeUrlForSource } from "./url.js";
 
-export const ENGINES = ["ddg", "bing", "google"] as const;
+const ENGINES = ["ddg", "bing", "google"] as const;
 export type Engine = (typeof ENGINES)[number];
 export const DEFAULT_SEARCH_ENGINE: Engine = "ddg";
 const SEARCH_USER_AGENT =
@@ -17,7 +17,7 @@ export interface SearchResult {
   domain: string;
 }
 
-export interface WebSearchError {
+interface WebSearchError {
   code: "E_STEEL_TIMEOUT" | "E_STEEL_UNAVAILABLE";
   message: string;
 }

@@ -30,31 +30,31 @@ import {
 
 export const SPAWN_MAX_TASKS = 4;
 
-export interface ToolExecution {
+interface ToolExecution {
   toolResult: ModelToolResult;
   fetchedUrl?: string;
   fetchedUrls?: string[];
 }
 
-export interface ToolHandlerResult {
+interface ToolHandlerResult {
   content: string;
   isError?: boolean;
   fetchedUrl?: string;
   fetchedUrls?: string[];
 }
 
-export interface ToolHandlerExtras {
+interface ToolHandlerExtras {
   subagents: SubagentScope;
   searchIndex?: number;
 }
 
-export type ToolHandler = (
+type ToolHandler = (
   input: unknown,
   ctx: ResearchCtx,
   extras: ToolHandlerExtras,
 ) => ToolHandlerResult | Promise<ToolHandlerResult>;
 
-export interface ResearchTool {
+interface ResearchTool {
   definition: ModelToolDefinition;
   /** Counts against the action-tool-call budget. Navigation/bookkeeping tools
    *  (plan, join, the read-only source tools) are free. */
@@ -74,12 +74,12 @@ export interface SubagentSummary {
   error?: string;
 }
 
-export interface SpawnResult {
+interface SpawnResult {
   handles: Array<{ handle: string; task: string }>;
   error?: string;
 }
 
-export interface JoinResult {
+interface JoinResult {
   summaries: SubagentSummary[];
   fetchedUrls: string[];
   error?: string;
@@ -127,7 +127,7 @@ function readJoinHandles(input: unknown): string[] | undefined {
   return handles.length > 0 ? handles : undefined;
 }
 
-export const RESEARCH_TOOL_REGISTRY: ResearchTool[] = [
+const RESEARCH_TOOL_REGISTRY: ResearchTool[] = [
   {
     definition: {
       name: "search",
@@ -567,7 +567,7 @@ export async function executeResearchTool(
   }
 }
 
-export const FINALIZE_TOOL_NAMES = new Set(["read_source", "search_sources"]);
+const FINALIZE_TOOL_NAMES = new Set(["read_source", "search_sources"]);
 
 export function finalizeToolDefinitions(): ModelToolDefinition[] {
   return RESEARCH_TOOL_REGISTRY.filter((tool) =>
