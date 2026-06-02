@@ -7,6 +7,7 @@ export type Engine = (typeof ENGINES)[number];
 export const DEFAULT_SEARCH_ENGINE: Engine = "ddg";
 const SEARCH_USER_AGENT =
   "Mozilla/5.0 (compatible; AtlasResearchBot/0.1; +https://github.com/steel-experiments/atlas)";
+const PLAIN_FETCH_TIMEOUT_MS = 10_000;
 
 export interface SearchResult {
   position: number;
@@ -112,35 +113,35 @@ async function fetchPlainSerpHtml(
   url: string,
   signal?: AbortSignal,
 ): Promise<PlainSerpOutcome> {
-  let response: Response;
   try {
-    response = await fetch(url, {
-      signal,
+    const timeout = AbortSignal.timeout(PLAIN_FETCH_TIMEOUT_MS);
+    const response = await fetch(url, {
+      signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
       headers: {
         "user-agent": SEARCH_USER_AGENT,
         accept: "text/html,application/xhtml+xml,text/plain;q=0.8,*/*;q=0.5",
       },
     });
+
+    if (!response.ok) return { ok: false, reason: `HTTP ${response.status}` };
+
+    const contentType = response.headers.get("content-type") ?? "";
+    if (contentType && !/html|text/i.test(contentType)) {
+      return { ok: false, reason: `Unsupported content-type: ${contentType}` };
+    }
+
+    const html = await response.text();
+    if (!html.trim()) return { ok: false, reason: "Empty body" };
+    if (looksBlocked(html))
+      return { ok: false, reason: "Blocked or challenge page" };
+
+    return { ok: true, html };
   } catch (err) {
     return {
       ok: false,
       reason: err instanceof Error ? err.message : String(err),
     };
   }
-
-  if (!response.ok) return { ok: false, reason: `HTTP ${response.status}` };
-
-  const contentType = response.headers.get("content-type") ?? "";
-  if (contentType && !/html|text/i.test(contentType)) {
-    return { ok: false, reason: `Unsupported content-type: ${contentType}` };
-  }
-
-  const html = await response.text();
-  if (!html.trim()) return { ok: false, reason: "Empty body" };
-  if (looksBlocked(html))
-    return { ok: false, reason: "Blocked or challenge page" };
-
-  return { ok: true, html };
 }
 
 function buildSerpUrl(

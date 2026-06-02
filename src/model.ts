@@ -150,7 +150,11 @@ export function createAISdkModelAdapter(opts: {
     usage,
     async step(input) {
       const messages = withCacheBreakpoint(toAiMessages(input.messages));
-      const providerOptions = buildProviderOptions(input.effort);
+      const providerOptions = buildProviderOptions(
+        input.effort,
+        opts.provider,
+        opts.modelId,
+      );
 
       if (input.outputSchema) {
         const result = await generateObject({
@@ -221,12 +225,21 @@ export function createOpenAIModelAdapter(opts: {
 
 function buildProviderOptions(
   effort: ResearchEffort | undefined,
+  provider: ModelProvider,
+  modelId: string,
 ): Record<string, Record<string, JSONValue>> | undefined {
   if (!effort) return undefined;
-  return {
-    anthropic: { thinking: { type: "adaptive" }, effort },
-    openai: { reasoningEffort: effort === "max" ? "xhigh" : effort },
-  };
+  if (provider === "anthropic") {
+    return { anthropic: { thinking: { type: "adaptive" }, effort } };
+  }
+  if (provider === "openai" && isOpenAiReasoningModel(modelId)) {
+    return { openai: { reasoningEffort: effort === "max" ? "xhigh" : effort } };
+  }
+  return undefined;
+}
+
+function isOpenAiReasoningModel(modelId: string): boolean {
+  return /^(?:o\d|gpt-5)/i.test(modelId.trim());
 }
 
 function toAiTools(tools: ModelToolDefinition[]): ToolSet {
@@ -539,4 +552,5 @@ export const __testing = {
   fromAiContent,
   fromAiUsage,
   buildProviderOptions,
+  isOpenAiReasoningModel,
 };

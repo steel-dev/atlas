@@ -426,18 +426,59 @@ describe("usage mapping", () => {
 });
 
 describe("buildProviderOptions", () => {
-  it("maps effort to both provider namespaces (max -> xhigh on openai)", () => {
-    expect(__testing.buildProviderOptions("max")).toEqual({
+  it("emits anthropic thinking + effort for anthropic", () => {
+    expect(
+      __testing.buildProviderOptions("max", "anthropic", "claude-opus-4-8"),
+    ).toEqual({
       anthropic: { thinking: { type: "adaptive" }, effort: "max" },
+    });
+  });
+
+  it("maps openai reasoning effort for reasoning models (max -> xhigh)", () => {
+    expect(__testing.buildProviderOptions("max", "openai", "gpt-5.5")).toEqual({
       openai: { reasoningEffort: "xhigh" },
     });
-    expect(__testing.buildProviderOptions("high")).toEqual({
-      anthropic: { thinking: { type: "adaptive" }, effort: "high" },
+    expect(__testing.buildProviderOptions("high", "openai", "o3")).toEqual({
       openai: { reasoningEffort: "high" },
     });
   });
 
+  it("omits reasoning effort for non-reasoning / compatible openai models", () => {
+    expect(
+      __testing.buildProviderOptions("high", "openai", "gpt-4o"),
+    ).toBeUndefined();
+    expect(
+      __testing.buildProviderOptions("max", "openai", "llama-3.1-70b-instruct"),
+    ).toBeUndefined();
+    expect(
+      __testing.buildProviderOptions("high", "openai", "qwen2.5-72b"),
+    ).toBeUndefined();
+  });
+
   it("returns undefined when no effort is set", () => {
-    expect(__testing.buildProviderOptions(undefined)).toBeUndefined();
+    expect(
+      __testing.buildProviderOptions(undefined, "anthropic", "claude-opus-4-8"),
+    ).toBeUndefined();
+  });
+});
+
+describe("isOpenAiReasoningModel", () => {
+  it("matches OpenAI reasoning families", () => {
+    for (const id of ["o1", "o3", "o3-mini", "o4-mini", "gpt-5", "gpt-5.5"]) {
+      expect(__testing.isOpenAiReasoningModel(id)).toBe(true);
+    }
+  });
+
+  it("rejects non-reasoning and compatible-endpoint model ids", () => {
+    for (const id of [
+      "gpt-4o",
+      "gpt-4.1",
+      "llama-3.1-70b-instruct",
+      "mixtral-8x7b",
+      "deepseek-chat",
+      "openrouter/auto",
+    ]) {
+      expect(__testing.isOpenAiReasoningModel(id)).toBe(false);
+    }
   });
 });

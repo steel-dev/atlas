@@ -45,6 +45,7 @@ interface SourceReservation {
 
 const DIRECT_PDF_MAX_BYTES = 25 * 1024 * 1024;
 const DIRECT_HTML_MAX_BYTES = 5 * 1024 * 1024;
+const DIRECT_FETCH_TIMEOUT_MS = 15_000;
 const DIRECT_HTML_MIN_CHARS = 100;
 const MIN_SOURCE_MARKDOWN_CHARS = 20;
 const THIN_SOURCE_MARKDOWN_CHARS = 300;
@@ -137,8 +138,11 @@ async function tryDirectExtraction(
   url: string,
 ): Promise<DirectExtractionOutcome> {
   try {
+    const timeout = AbortSignal.timeout(DIRECT_FETCH_TIMEOUT_MS);
     const response = await fetch(url, {
-      signal: ctx.deps.signal,
+      signal: ctx.deps.signal
+        ? AbortSignal.any([ctx.deps.signal, timeout])
+        : timeout,
       headers: {
         accept: "application/pdf,*/*;q=0.8",
         "user-agent": DIRECT_FETCH_USER_AGENT,
