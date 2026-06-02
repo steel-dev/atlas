@@ -7,7 +7,11 @@ import {
   type ModelToolResult,
 } from "./model.js";
 import type { ResearchEffort } from "./defaults.js";
-import { tokenBudgetExhaustedReason, type ResearchCtx } from "./runtime.js";
+import {
+  stopRequestedReason,
+  tokenBudgetExhaustedReason,
+  type ResearchCtx,
+} from "./runtime.js";
 import {
   estimateMessagesTokens,
   maybeCompactResearchContext,
@@ -70,6 +74,7 @@ function shouldAttemptFinalSynthesis(finishReason: string): boolean {
     finishReason === "tool call budget exhausted" ||
     finishReason === "tool execution safety budget exhausted" ||
     finishReason === "token budget exhausted" ||
+    finishReason === "stop requested" ||
     finishReason.startsWith("timeout approaching")
   );
 }
@@ -211,6 +216,11 @@ export async function runResearchLoop(opts: {
     totalToolExecutions < maxTotalToolExecutions
   ) {
     ctx.deps.abort();
+    const preStepStopReason = stopRequestedReason(ctx);
+    if (preStepStopReason) {
+      finishReason = preStepStopReason;
+      break;
+    }
     const preStepTimeoutReason = timeoutSynthesisReason(ctx);
     if (preStepTimeoutReason) {
       finishReason = preStepTimeoutReason;
@@ -277,6 +287,11 @@ export async function runResearchLoop(opts: {
       break;
     }
 
+    const postStepStopReason = stopRequestedReason(ctx);
+    if (postStepStopReason) {
+      finishReason = postStepStopReason;
+      break;
+    }
     const postStepTimeoutReason = timeoutSynthesisReason(ctx);
     if (postStepTimeoutReason) {
       finishReason = postStepTimeoutReason;

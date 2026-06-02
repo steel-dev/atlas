@@ -3009,6 +3009,78 @@ describe("api error recovery", () => {
   });
 });
 
+describe("graceful stop", () => {
+  it("salvages a report from gathered evidence when a soft stop is requested", async () => {
+    const stopController = new AbortController();
+    const scrape = vi.fn(async () => {
+      stopController.abort();
+      return {
+        content: { markdown: "# Doc\n\nThe answer is 42." },
+        metadata: { title: "Doc" },
+      };
+    });
+    const messagesCreate = vi
+      .fn()
+      .mockResolvedValueOnce(
+        messageWith([toolUse("f1", "fetch", { url: "https://example.com/a" })]),
+      )
+      .mockResolvedValueOnce(
+        messageWith([
+          {
+            type: "text",
+            text: "# Report\n\nThe answer is 42, per https://example.com/a.",
+          },
+        ]),
+      );
+    const ctx = createContext({ messagesCreate, scrape });
+    ctx.deps.stopSignal = stopController.signal;
+
+    const result = await runResearchLoop({
+      ctx,
+      query: "What is the answer?",
+      maxToolCalls: 20,
+    });
+
+    const steps = messagesCreate.mock.calls.map(
+      ([input]) => input as ModelStepInput,
+    );
+    expect(scrape).toHaveBeenCalledTimes(1);
+    expect(result.finishReason).toBe("final report after stop requested");
+    expect(result.markdown).toContain("# Report");
+    expect(messagesCreate).toHaveBeenCalledTimes(2);
+    expect(steps.at(-1)?.tools).toBeUndefined();
+    expect(JSON.stringify(steps.at(-1)?.messages)).toContain(
+      "Runtime limit reached: stop requested",
+    );
+  });
+
+  it("attempts a final synthesis even if the soft stop arrives before any step", async () => {
+    const stopController = new AbortController();
+    stopController.abort();
+    const messagesCreate = vi.fn(async (_input: ModelStepInput) =>
+      messageWith([
+        { type: "text", text: "# Report\n\nNo sources were gathered." },
+      ]),
+    );
+    const ctx = createContext({ messagesCreate });
+    ctx.deps.stopSignal = stopController.signal;
+
+    const result = await runResearchLoop({
+      ctx,
+      query: "What is the answer?",
+      maxToolCalls: 20,
+    });
+
+    const steps = messagesCreate.mock.calls.map(
+      ([input]) => input as ModelStepInput,
+    );
+    expect(messagesCreate).toHaveBeenCalledTimes(1);
+    expect(steps[0]?.tools).toBeUndefined();
+    expect(result.finishReason).toBe("final report after stop requested");
+    expect(result.markdown).toContain("# Report");
+  });
+});
+
 describe("empty final response", () => {
   it("nudges once then accepts the report the model writes next", async () => {
     const messagesCreate = vi

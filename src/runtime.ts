@@ -192,6 +192,7 @@ export interface ResearchDeps {
   summaryModel?: ModelAdapter;
   steel: Steel;
   signal?: AbortSignal;
+  stopSignal?: AbortSignal;
   abort: () => void;
   searchProvider?: SearchProvider;
   /** Bounds concurrent Steel/network requests (web search + browser fetch). */
@@ -243,6 +244,10 @@ export function tokenBudgetExhaustedReason(ctx: ResearchCtx): string | null {
   if (totalUsageTokens(ctx.deps.model.usage) < ctx.config.tokenLimit)
     return null;
   return "token budget exhausted";
+}
+
+export function stopRequestedReason(ctx: ResearchCtx): string | null {
+  return ctx.deps.stopSignal?.aborted ? "stop requested" : null;
 }
 
 export function createAgentScope(init: AgentScopeInit): AgentScope {

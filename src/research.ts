@@ -70,25 +70,18 @@ export interface ResearchOptions {
   summaryModel?: Exclude<LanguageModel, string>;
   steelApiKey?: string;
   steelBaseUrl?: string;
-  /** Search backend: a custom SearchProvider instance, or a built-in name
-   *  ("web" = SERP scraping via Steel (default), "exa", "brave"). Defaults from
-   *  ATLAS_SEARCH_PROVIDER, else "web". */
   searchProvider?: SearchProvider | string;
-  /** API key for the built-in Exa provider. Env: ATLAS_EXA_API_KEY / EXA_API_KEY. */
   exaApiKey?: string;
-  /** API key for the built-in Brave provider. Env: ATLAS_BRAVE_API_KEY / BRAVE_API_KEY. */
   braveApiKey?: string;
   useProxy?: boolean;
   timeoutMs?: number;
-  /** Total token budget for the run (test-time compute limit), shared across
-   *  the lead and all sub-agents. Omit to use the default; set to 0 for
-   *  unlimited. Per-step thinking is controlled by ATLAS_THINKING_EFFORT. */
   tokenLimit?: number;
   suggestedTeamSize?: number;
   output?: ResearchOutputOptions;
   includeSourceDocuments?: boolean;
   onEvent?: (event: ResearchEvent) => void;
   signal?: AbortSignal;
+  stopSignal?: AbortSignal;
 }
 
 export async function research(opts: ResearchOptions): Promise<ResearchResult> {
@@ -127,6 +120,7 @@ export async function research(opts: ResearchOptions): Promise<ResearchResult> {
       resources,
       leadScope,
       runSignal,
+      stopSignal: opts.stopSignal,
       abort,
     });
 
@@ -213,9 +207,10 @@ function buildResearchCtx(args: {
   resources: RunResources;
   leadScope: ResearchCtx["scope"];
   runSignal: AbortSignal | undefined;
+  stopSignal: AbortSignal | undefined;
   abort: () => void;
 }): ResearchCtx {
-  const { config, resources, leadScope, runSignal, abort } = args;
+  const { config, resources, leadScope, runSignal, stopSignal, abort } = args;
   const ctx: ResearchCtx = {
     config: config.agent,
     deps: {
@@ -223,6 +218,7 @@ function buildResearchCtx(args: {
       summaryModel: resources.summaryAdapter,
       steel: resources.steel,
       signal: runSignal,
+      stopSignal,
       abort,
       ioGate: createConcurrencyGate(config.maxConcurrentSteelCalls),
       browserSessionPool: resources.browserSessionPool,

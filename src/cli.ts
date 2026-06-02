@@ -276,12 +276,26 @@ async function main(): Promise<void> {
   }
 
   const controller = new AbortController();
+  const softController = new AbortController();
+  let softStopRequested = false;
   const onSigint = () => {
-    process.stderr.write("\natlas: cancelling…\n");
+    if (!softStopRequested) {
+      softStopRequested = true;
+      softController.abort();
+      process.stderr.write(
+        "\natlas: finishing up with sources gathered so far — Ctrl-C again to force quit\n",
+      );
+      return;
+    }
+    process.stderr.write("\natlas: forcing quit…\n");
+    controller.abort();
+  };
+  const onSigterm = () => {
+    process.stderr.write("\natlas: terminating…\n");
     controller.abort();
   };
   process.on("SIGINT", onSigint);
-  process.on("SIGTERM", onSigint);
+  process.on("SIGTERM", onSigterm);
 
   const timeoutSeconds = parseNumber(values.timeout, "--timeout");
   if (timeoutSeconds !== undefined && timeoutSeconds <= 0) {
@@ -337,6 +351,7 @@ async function main(): Promise<void> {
           : undefined,
       onEvent,
       signal,
+      stopSignal: softController.signal,
     });
 
     if (values.out) {
@@ -365,10 +380,16 @@ async function main(): Promise<void> {
       }
       process.exit(130);
     }
+    if (softController.signal.aborted) {
+      process.stderr.write(
+        "atlas: stopped before a report could be produced\n",
+      );
+      process.exit(130);
+    }
     fail(err instanceof Error ? err.message : String(err));
   } finally {
     process.off("SIGINT", onSigint);
-    process.off("SIGTERM", onSigint);
+    process.off("SIGTERM", onSigterm);
   }
 }
 
