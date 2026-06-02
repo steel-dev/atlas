@@ -19,7 +19,12 @@ import type { AdaptiveConcurrencyGate, ConcurrencyGate } from "./runtime.js";
 
 export type { LanguageModel } from "ai";
 
-export type ModelProvider = "anthropic" | "openai" | (string & {});
+/**
+ * Provider label for a model, derived from the AI SDK model's `provider`
+ * (e.g. "anthropic", "openai", "google"). Not a closed set — any AI SDK
+ * provider is accepted; the string is used only as a human-readable label.
+ */
+export type ModelProvider = string;
 
 export interface UsageSummary {
   input_tokens: number;

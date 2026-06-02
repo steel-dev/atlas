@@ -44,6 +44,9 @@
     "steel-sdk": "^0.18.0",
     "ws": "^8.21.0"
   },
+  "peerDependencies": {
+    "ai": "^6.0.0"
+  },
   "devDependencies": {
     "@ai-sdk/google": "^3.0.80",
     "@types/node": "^22.0.0",
