@@ -157,6 +157,8 @@ function prettyEventBody(e: ResearchEvent): string {
         (detail ? ` ${truncate(detail, 80)}` : "")
       );
     }
+    case "message_sent":
+      return paint(DIM, `    ✉ ${e.from} → ${e.to} (${e.chars} chars)`);
     case "research_started":
       return paint(DIM, "  →") + " research started";
     case "research_finished":

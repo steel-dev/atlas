@@ -37,6 +37,12 @@ import {
   researchQuestionPrompt,
 } from "./tool-contract.js";
 import { createSubagentScope, SUBAGENT_MAX_TOOL_CALLS } from "./subagents.js";
+import {
+  createMessageBroker,
+  LEAD_ADDRESS,
+  type MailboxMessage,
+  type MessageBroker,
+} from "./messaging.js";
 
 const DEFAULT_MAX_TOOL_CALLS = 12;
 const DEFAULT_MAX_CONCURRENT_TOOLS = 4;
@@ -164,32 +170,45 @@ async function mapWithConcurrency<T, R>(
   return results;
 }
 
+function inboundMessagesNote(messages: MailboxMessage[]): string {
+  return [
+    "Messages received while you were working:",
+    ...messages.map((message) => `[from ${message.from}] ${message.content}`),
+  ].join("\n");
+}
+
 export async function runResearchLoop(opts: {
   ctx: ResearchCtx;
   query: string;
   maxToolCalls?: number;
   systemPrompt?: string;
   suggestedParallelism?: number;
+  messaging?: { broker: MessageBroker; address: string };
 }): Promise<ResearchLoopResult> {
   const { ctx, query } = opts;
   const baseSystemPrompt = opts.systemPrompt ?? RESEARCH_SYSTEM_PROMPT;
   const systemPrompt = ctx.config.instructions
     ? `${baseSystemPrompt}\n\n${ctx.config.instructions}`
     : baseSystemPrompt;
+  const isSubagent = (ctx.scope.depth ?? 0) > 0;
+  const includeDelegation =
+    (ctx.scope.depth ?? 0) < (ctx.config.maxDelegationDepth ?? 0);
   const tools = [
     ...researchToolDefinitions({
-      includeDelegation:
-        (ctx.scope.depth ?? 0) < (ctx.config.maxDelegationDepth ?? 0),
+      includeDelegation,
+      includeMessaging: includeDelegation || isSubagent,
     }),
     ...userToolDefinitions(ctx),
   ];
-  const isSubagent = (ctx.scope.depth ?? 0) > 0;
   const maxToolCalls = opts.maxToolCalls ?? DEFAULT_MAX_TOOL_CALLS;
-  const maxTotalToolExecutions = maxToolCalls * 2;
+  const maxTotalToolExecutions = maxToolCalls * 3;
+  const broker = opts.messaging?.broker ?? createMessageBroker();
+  const mailbox = broker.mailbox(opts.messaging?.address ?? LEAD_ADDRESS, ctx);
   const subagents = createSubagentScope(
     ctx,
     SUBAGENT_MAX_TOOL_CALLS,
     runResearchLoop,
+    broker,
   );
 
   const streamReportStep = (
@@ -358,6 +377,7 @@ export async function runResearchLoop(opts: {
       (tu, index) =>
         executeResearchTool(tu, ctx, {
           subagents,
+          messaging: mailbox,
           searchIndex: searchIndexes[index],
         }),
     );
@@ -395,6 +415,10 @@ export async function runResearchLoop(opts: {
         content: budgetStatus,
       });
     }
+    const inbound = mailbox.drain();
+    if (inbound.length > 0) {
+      messages.push({ role: "user", content: inboundMessagesNote(inbound) });
+    }
 
     if (totalToolExecutions >= maxTotalToolExecutions) {
       finishReason = "tool execution safety budget exhausted";
@@ -414,6 +438,13 @@ export async function runResearchLoop(opts: {
     (shouldAttemptFinalSynthesis(finishReason) || canSalvageAfterApiError)
   ) {
     ctx.deps.abort();
+    const lastInbound = mailbox.drain();
+    if (lastInbound.length > 0) {
+      messages.push({
+        role: "user",
+        content: inboundMessagesNote(lastInbound),
+      });
+    }
     messages.push({
       role: "user",
       content: finalSynthesisPrompt(finishReason),

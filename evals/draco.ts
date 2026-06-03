@@ -225,6 +225,9 @@ type EvalTraceEvent = {
   tokensBefore?: number;
   tokensAfter?: number;
   foldedMessages?: number;
+  from?: string;
+  to?: string;
+  chars?: number;
   result?: {
     citedSources: number;
     citationsNotFetched: number;
@@ -1348,6 +1351,8 @@ function progressLine(caseId: string, event: ResearchEvent): string | null {
       return `${caseId}: ${event.count} citation(s) not fetched`;
     case "written":
       return `${caseId}: wrote ${event.markdownChars} markdown chars`;
+    case "message_sent":
+      return `${caseId}: message ${event.from} -> ${event.to} (${event.chars} chars)`;
     case "completed":
     case "research_started":
     case "report-boundary":
@@ -1434,6 +1439,8 @@ function traceEvent(event: ResearchEvent, started: number): EvalTraceEvent {
           markdownChars: event.result.markdown.length,
         },
       };
+    case "message_sent":
+      return { ...base, from: event.from, to: event.to, chars: event.chars };
     case "research_started":
     case "report-boundary":
     case "report-delta":

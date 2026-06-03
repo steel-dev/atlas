@@ -3019,6 +3019,366 @@ describe("spawn/join fan-out", () => {
   });
 });
 
+describe("lead↔sub-agent messaging", () => {
+  it("offers messaging tools to both sides and injects a lead redirect into the sub-agent", async () => {
+    let subCalls = 0;
+    let leadCalls = 0;
+    const messagesCreate = vi.fn(async (input: ModelStepInput) => {
+      if (input.system === SUBAGENT_SYSTEM_PROMPT) {
+        subCalls += 1;
+        if (subCalls === 1) {
+          await new Promise((resolve) => setTimeout(resolve, 50));
+          return messageWith([
+            toolUse("sub_plan_1", "plan", { thought: "scoping" }),
+          ]);
+        }
+        return messageWith([
+          { type: "text", text: "Findings: narrowed per the lead's note." },
+        ]);
+      }
+      leadCalls += 1;
+      if (leadCalls === 1) {
+        return messageWith([
+          toolUse("spawn_1", "spawn", {
+            tasks: ["Investigate the founding year."],
+          }),
+        ]);
+      }
+      if (leadCalls === 2) {
+        return messageWith([
+          toolUse("send_1", "send_message", {
+            to: "agent_1",
+            content: "Focus only on the 1887 charter.",
+          }),
+        ]);
+      }
+      if (leadCalls === 3) {
+        return messageWith([toolUse("join_1", "join", {})]);
+      }
+      return finalReport();
+    });
+    const ctx = createContext({ messagesCreate, maxDelegationDepth: 1 });
+
+    const result = await runResearchLoop({
+      ctx,
+      query: "Profile this town.",
+      maxToolCalls: 20,
+    });
+
+    const calls = messagesCreate.mock.calls.map(
+      ([input]) => input as ModelStepInput,
+    );
+    const leadFirst = calls[0] as ModelStepInput;
+    const subagentCalls = calls.filter(
+      (call) => call.system === SUBAGENT_SYSTEM_PROMPT,
+    );
+    const leadNames = leadFirst.tools?.map((tool) => tool.name) ?? [];
+    const subagentNames =
+      subagentCalls[0]?.tools?.map((tool) => tool.name) ?? [];
+
+    expect(leadNames).toContain("send_message");
+    expect(leadNames).toContain("wait_for_message");
+    expect(subagentNames).toContain("send_message");
+    expect(subagentNames).toContain("wait_for_message");
+    expect(subagentNames).not.toContain("spawn");
+    expect(subagentNames).not.toContain("join");
+
+    const subagentSecond = JSON.stringify(subagentCalls[1]?.messages ?? []);
+    expect(subagentSecond).toContain(
+      "Messages received while you were working:",
+    );
+    expect(subagentSecond).toContain(
+      "[from lead] Focus only on the 1887 charter.",
+    );
+    expect(result.finishReason).toBe("final report");
+    expect(ctx.emitSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "message_sent",
+        from: "lead",
+        to: "agent_1",
+      }),
+    );
+  });
+
+  it("delivers a sub-agent's interim message to the lead between tool calls", async () => {
+    let subCalls = 0;
+    let leadCalls = 0;
+    const messagesCreate = vi.fn(async (input: ModelStepInput) => {
+      if (input.system === SUBAGENT_SYSTEM_PROMPT) {
+        subCalls += 1;
+        if (subCalls === 1) {
+          return messageWith([
+            toolUse("sub_send_1", "send_message", {
+              to: "lead",
+              content: "Interim: found the 1887 charter.",
+            }),
+          ]);
+        }
+        return messageWith([
+          { type: "text", text: "Findings: charter confirmed." },
+        ]);
+      }
+      leadCalls += 1;
+      if (leadCalls === 1) {
+        return messageWith([
+          toolUse("spawn_1", "spawn", { tasks: ["Find the charter."] }),
+        ]);
+      }
+      if (leadCalls === 2) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        return messageWith([
+          toolUse("plan_1", "plan", { thought: "keep working" }),
+        ]);
+      }
+      if (leadCalls === 3) {
+        return messageWith([toolUse("join_1", "join", {})]);
+      }
+      return finalReport();
+    });
+    const ctx = createContext({ messagesCreate, maxDelegationDepth: 1 });
+
+    await runResearchLoop({
+      ctx,
+      query: "Profile this town.",
+      maxToolCalls: 20,
+    });
+
+    const calls = messagesCreate.mock.calls.map(
+      ([input]) => input as ModelStepInput,
+    );
+    const leadThird = calls.filter(
+      (call) => call.system !== SUBAGENT_SYSTEM_PROMPT,
+    )[2] as ModelStepInput;
+    const leadThirdJson = JSON.stringify(leadThird.messages);
+    expect(leadThirdJson).toContain("Messages received while you were working:");
+    expect(leadThirdJson).toContain(
+      "[from agent_1] Interim: found the 1887 charter.",
+    );
+    expect(ctx.emitSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "message_sent",
+        from: "agent_1",
+        to: "lead",
+        depth: 1,
+      }),
+    );
+  });
+
+  it("wakes a lead parked in wait_for_message when a sub-agent sends", async () => {
+    let subCalls = 0;
+    let leadCalls = 0;
+    const messagesCreate = vi.fn(async (input: ModelStepInput) => {
+      if (input.system === SUBAGENT_SYSTEM_PROMPT) {
+        subCalls += 1;
+        if (subCalls === 1) {
+          await new Promise((resolve) => setTimeout(resolve, 50));
+          return messageWith([
+            toolUse("sub_send_1", "send_message", {
+              to: "lead",
+              content: "Found it: 42.",
+            }),
+          ]);
+        }
+        return messageWith([{ type: "text", text: "Findings: it is 42." }]);
+      }
+      leadCalls += 1;
+      if (leadCalls === 1) {
+        return messageWith([
+          toolUse("spawn_1", "spawn", { tasks: ["Send me what you find."] }),
+        ]);
+      }
+      if (leadCalls === 2) {
+        return messageWith([
+          toolUse("wait_1", "wait_for_message", { timeout_ms: 600000 }),
+        ]);
+      }
+      if (leadCalls === 3) {
+        return messageWith([toolUse("join_1", "join", {})]);
+      }
+      return finalReport();
+    });
+    const ctx = createContext({ messagesCreate, maxDelegationDepth: 1 });
+
+    const result = await runResearchLoop({
+      ctx,
+      query: "Answer via sub-agent.",
+      maxToolCalls: 20,
+    });
+
+    const calls = messagesCreate.mock.calls.map(
+      ([input]) => input as ModelStepInput,
+    );
+    const leadThird = calls.filter(
+      (call) => call.system !== SUBAGENT_SYSTEM_PROMPT,
+    )[2] as ModelStepInput;
+    expect(toolResultText(leadThird)).toContain('"from": "agent_1"');
+    expect(toolResultText(leadThird)).toContain("Found it: 42.");
+    expect(result.finishReason).toBe("final report");
+  });
+
+  it("times out a parked wait while sub-agents are still working", async () => {
+    let leadCalls = 0;
+    const messagesCreate = vi.fn(async (input: ModelStepInput) => {
+      if (input.system === SUBAGENT_SYSTEM_PROMPT) {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        return messageWith([{ type: "text", text: "Findings: slow work." }]);
+      }
+      leadCalls += 1;
+      if (leadCalls === 1) {
+        return messageWith([
+          toolUse("spawn_1", "spawn", { tasks: ["Take your time."] }),
+        ]);
+      }
+      if (leadCalls === 2) {
+        return messageWith([
+          toolUse("wait_1", "wait_for_message", { timeout_ms: 10 }),
+        ]);
+      }
+      if (leadCalls === 3) {
+        return messageWith([toolUse("join_1", "join", {})]);
+      }
+      return finalReport();
+    });
+    const ctx = createContext({ messagesCreate, maxDelegationDepth: 1 });
+
+    await runResearchLoop({
+      ctx,
+      query: "Patience test.",
+      maxToolCalls: 20,
+    });
+
+    const calls = messagesCreate.mock.calls.map(
+      ([input]) => input as ModelStepInput,
+    );
+    const leadThird = calls.filter(
+      (call) => call.system !== SUBAGENT_SYSTEM_PROMPT,
+    )[2] as ModelStepInput;
+    expect(toolResultText(leadThird)).toContain('"timed_out": true');
+  });
+
+  it("resolves a parked wait with no_more_senders when the last sub-agent finishes silently", async () => {
+    let leadCalls = 0;
+    const messagesCreate = vi.fn(async (input: ModelStepInput) => {
+      if (input.system === SUBAGENT_SYSTEM_PROMPT) {
+        return messageWith([{ type: "text", text: "Findings: quick check." }]);
+      }
+      leadCalls += 1;
+      if (leadCalls === 1) {
+        return messageWith([
+          toolUse("spawn_1", "spawn", { tasks: ["Quick check."] }),
+        ]);
+      }
+      if (leadCalls === 2) {
+        return messageWith([
+          toolUse("wait_1", "wait_for_message", { timeout_ms: 600000 }),
+        ]);
+      }
+      if (leadCalls === 3) {
+        return messageWith([toolUse("join_1", "join", {})]);
+      }
+      return finalReport();
+    });
+    const ctx = createContext({ messagesCreate, maxDelegationDepth: 1 });
+
+    const result = await runResearchLoop({
+      ctx,
+      query: "Quick delegation.",
+      maxToolCalls: 20,
+    });
+
+    const calls = messagesCreate.mock.calls.map(
+      ([input]) => input as ModelStepInput,
+    );
+    const leadThird = calls.filter(
+      (call) => call.system !== SUBAGENT_SYSTEM_PROMPT,
+    )[2] as ModelStepInput;
+    expect(toolResultText(leadThird)).toContain('"no_more_senders": true');
+    expect(result.finishReason).toBe("final report");
+  });
+
+  it("frees a sub-agent parked in wait_for_message when the lead joins", async () => {
+    let subCalls = 0;
+    let leadCalls = 0;
+    const messagesCreate = vi.fn(async (input: ModelStepInput) => {
+      if (input.system === SUBAGENT_SYSTEM_PROMPT) {
+        subCalls += 1;
+        if (subCalls === 1) {
+          return messageWith([
+            toolUse("sub_wait_1", "wait_for_message", { timeout_ms: 600000 }),
+          ]);
+        }
+        return messageWith([
+          { type: "text", text: "Done after the collect note." },
+        ]);
+      }
+      leadCalls += 1;
+      if (leadCalls === 1) {
+        return messageWith([
+          toolUse("spawn_1", "spawn", {
+            tasks: ["Wait for instructions, then report."],
+          }),
+        ]);
+      }
+      if (leadCalls === 2) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        return messageWith([toolUse("join_1", "join", {})]);
+      }
+      return finalReport();
+    });
+    const ctx = createContext({ messagesCreate, maxDelegationDepth: 1 });
+
+    const result = await runResearchLoop({
+      ctx,
+      query: "Coordination test.",
+      maxToolCalls: 20,
+    });
+
+    const calls = messagesCreate.mock.calls.map(
+      ([input]) => input as ModelStepInput,
+    );
+    const subagentSecond = calls.filter(
+      (call) => call.system === SUBAGENT_SYSTEM_PROMPT,
+    )[1] as ModelStepInput;
+    expect(toolResultText(subagentSecond)).toContain(
+      "the lead is collecting findings now",
+    );
+    const leadFinal = calls
+      .filter((call) => call.system !== SUBAGENT_SYSTEM_PROMPT)
+      .at(-1) as ModelStepInput;
+    expect(toolResultText(leadFinal)).toContain("Done after the collect note.");
+    expect(result.finishReason).toBe("final report");
+  });
+
+  it("rejects messages to unknown recipients", async () => {
+    let leadCalls = 0;
+    const messagesCreate = vi.fn(async (_input: ModelStepInput) => {
+      leadCalls += 1;
+      if (leadCalls === 1) {
+        return messageWith([
+          toolUse("send_1", "send_message", { to: "agent_9", content: "hi" }),
+        ]);
+      }
+      return finalReport();
+    });
+    const ctx = createContext({ messagesCreate, maxDelegationDepth: 1 });
+
+    await runResearchLoop({
+      ctx,
+      query: "Misaddressed message.",
+      maxToolCalls: 20,
+    });
+
+    const second = messagesCreate.mock.calls[1]?.[0] as ModelStepInput;
+    expect(toolResultText(second)).toContain(
+      "Error: unknown recipient 'agent_9'",
+    );
+    expect(toolResultText(second)).toContain("Known recipients: lead");
+    expect(ctx.emitSpy).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: "message_sent" }),
+    );
+  });
+});
+
 describe("emergent team via spawn/join", () => {
   it("spawns breadth in one turn, joins all, and merges a report", async () => {
     let leadCalls = 0;

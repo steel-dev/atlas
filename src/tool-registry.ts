@@ -30,6 +30,11 @@ import {
 } from "./evidence-tool.js";
 import { execRunCode, type RunCodeToolInput } from "./code-tool.js";
 import {
+  MAX_WAIT_TIMEOUT_MS,
+  NO_MESSAGING,
+  type MessagingScope,
+} from "./messaging.js";
+import {
   execBrowserCdp,
   execBrowserExtract,
   execBrowserOpen,
@@ -55,6 +60,7 @@ interface ToolHandlerResult {
 
 interface ToolHandlerExtras {
   subagents: SubagentScope;
+  messaging: MessagingScope;
   searchIndex?: number;
 }
 
@@ -72,6 +78,7 @@ interface RegisteredTool {
   /** Only offered to the lead (and above the max delegation depth); filtered
    *  out for the deepest agents, which research directly. */
   delegationOnly?: boolean;
+  messagingOnly?: boolean;
   handler: ToolHandler;
 }
 
@@ -135,6 +142,21 @@ function readJoinHandles(input: unknown): string[] | undefined {
     .map((handle) => (typeof handle === "string" ? handle.trim() : ""))
     .filter((handle) => handle.length > 0);
   return handles.length > 0 ? handles : undefined;
+}
+
+function readSendMessageInput(input: unknown): { to: string; content: string } {
+  const obj = (input ?? {}) as { to?: unknown; content?: unknown };
+  return {
+    to: typeof obj.to === "string" ? obj.to.trim() : "",
+    content: typeof obj.content === "string" ? obj.content : "",
+  };
+}
+
+function readWaitTimeoutMs(input: unknown): number | undefined {
+  if (!input || typeof input !== "object") return undefined;
+  const raw = (input as { timeout_ms?: unknown }).timeout_ms;
+  if (typeof raw !== "number" || !Number.isFinite(raw)) return undefined;
+  return Math.max(1, Math.min(MAX_WAIT_TIMEOUT_MS, Math.floor(raw)));
 }
 
 function runCodeContentIsError(content: string): boolean {
@@ -552,6 +574,78 @@ const RESEARCH_TOOL_REGISTRY: RegisteredTool[] = [
       };
     },
   },
+  {
+    definition: {
+      name: "send_message",
+      description:
+        'Send a short message to another running agent without waiting for a reply. As the lead, message a running sub-agent (a handle returned by spawn, such as agent_1) to redirect, narrow, or extend its task mid-flight. As a sub-agent, message "lead" to report a significant interim finding or to surface a blocking ambiguity. Delivery is asynchronous: the recipient sees the message after its next tool call, or immediately if it is blocked in wait_for_message. Messages are capped at 8000 characters. Does not consume the action budget.',
+      input_schema: {
+        type: "object",
+        properties: {
+          to: {
+            type: "string",
+            description:
+              'Recipient address: "lead" for the lead researcher, or a sub-agent handle returned by spawn, such as agent_1.',
+          },
+          content: {
+            type: "string",
+            description: "The message text.",
+          },
+        },
+        required: ["to", "content"],
+      },
+    },
+    spendsActionBudget: false,
+    messagingOnly: true,
+    handler: (input, ctx, { messaging }) => {
+      const { to, content } = readSendMessageInput(input);
+      if (!to || !content.trim()) {
+        return {
+          content:
+            'send_message requires `to` (an agent handle or "lead") and a non-empty `content`.',
+          isError: true,
+        };
+      }
+      const outcome = messaging.send(to, content);
+      if (typeof outcome === "string") {
+        return { content: outcome, isError: true };
+      }
+      ctx.scope.emit({
+        type: "message_sent",
+        from: messaging.address,
+        to,
+        chars: content.length,
+      });
+      return { content: JSON.stringify(outcome, null, 2) };
+    },
+  },
+  {
+    definition: {
+      name: "wait_for_message",
+      description:
+        "Block until at least one message arrives in your inbox, then return every queued message. Resolves early when nothing can message you anymore (no_more_senders) or when the timeout passes (timed_out) — both are normal outcomes, not errors. Call it alone on its own turn: a parked wait holds one tool slot until it resolves, so do not batch it with other tool calls. The wait never eats into the time reserved for writing findings. Does not consume the action budget.",
+      input_schema: {
+        type: "object",
+        properties: {
+          timeout_ms: {
+            type: "integer",
+            minimum: 1,
+            maximum: 600000,
+            description: "Max time to wait for a message. Default 120000.",
+          },
+        },
+      },
+    },
+    spendsActionBudget: false,
+    messagingOnly: true,
+    handler: async (input, _ctx, { messaging }) => {
+      const timeoutMs = readWaitTimeoutMs(input);
+      const outcome = await messaging.receive(
+        timeoutMs === undefined ? undefined : { timeoutMs },
+      );
+      return { content: JSON.stringify(outcome, null, 2) };
+    },
+  },
 ];
 
 const researchToolByName = new Map(
@@ -661,11 +755,14 @@ function registerToolSource(
 /** The tool definitions offered to a model step. Delegation tools (spawn/join)
  *  are dropped for agents at the deepest allowed depth. */
 export function researchToolDefinitions(
-  opts: { includeDelegation?: boolean } = {},
+  opts: { includeDelegation?: boolean; includeMessaging?: boolean } = {},
 ): ModelToolDefinition[] {
   const includeDelegation = opts.includeDelegation ?? true;
+  const includeMessaging = opts.includeMessaging ?? true;
   return RESEARCH_TOOL_REGISTRY.filter(
-    (tool) => includeDelegation || !tool.delegationOnly,
+    (tool) =>
+      (includeDelegation || !tool.delegationOnly) &&
+      (includeMessaging || !tool.messagingOnly),
   ).map((tool) => tool.definition);
 }
 
@@ -764,5 +861,8 @@ export async function executeFinalizeTool(
       },
     };
   }
-  return executeResearchTool(tu, ctx, { subagents: NO_SUBAGENTS });
+  return executeResearchTool(tu, ctx, {
+    subagents: NO_SUBAGENTS,
+    messaging: NO_MESSAGING,
+  });
 }

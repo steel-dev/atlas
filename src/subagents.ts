@@ -11,12 +11,15 @@ import {
 } from "./tool-registry.js";
 import { SUBAGENT_SYSTEM_PROMPT } from "./tool-contract.js";
 import type { ResearchLoopResult } from "./research-loop.js";
+import type { MessageBroker } from "./messaging.js";
 
 export const SUBAGENT_MAX_TOOL_CALLS = 40;
 const SUBAGENT_MIN_RUNTIME_MS = 30_000;
 const SUBAGENT_SYNTHESIS_RESERVE_MS = 45_000;
 const SUBAGENT_FINDINGS_MAX_CHARS = 16_000;
 const SUBAGENT_FALLBACK_MAX_SOURCES = 12;
+const COLLECTING_NOTE =
+  "the lead is collecting findings now — finish and write your findings";
 
 type SubagentRunner = (opts: {
   ctx: ResearchCtx;
@@ -24,6 +27,7 @@ type SubagentRunner = (opts: {
   maxToolCalls?: number;
   systemPrompt?: string;
   suggestedParallelism?: number;
+  messaging?: { broker: MessageBroker; address: string };
 }) => Promise<ResearchLoopResult>;
 
 interface SubagentTiming {
@@ -129,50 +133,57 @@ async function runSubagentTask(
   timing: SubagentTiming,
   perAgentMaxToolCalls: number,
   runLoop: SubagentRunner,
+  broker: MessageBroker,
+  handle: string,
 ): Promise<SubagentOutcome> {
-  await using scope = ctx.scope.derive({
-    query: question,
-    depth: ctx.scope.depth + 1,
-    deadlineAt: timing.deadlineAt,
-    synthesisReserveMs: timing.synthesisReserveMs,
-    compactionTriggerTokens: ctx.config.subagentCompactionTriggerTokens,
-    compactionKeepTokens: ctx.config.subagentCompactionKeepTokens,
-  });
-  const subagentCtx: ResearchCtx = { ...ctx, scope };
   try {
-    const run = await runLoop({
-      ctx: subagentCtx,
+    await using scope = ctx.scope.derive({
       query: question,
-      maxToolCalls: perAgentMaxToolCalls,
-      systemPrompt: SUBAGENT_SYSTEM_PROMPT,
+      depth: ctx.scope.depth + 1,
+      deadlineAt: timing.deadlineAt,
+      synthesisReserveMs: timing.synthesisReserveMs,
+      compactionTriggerTokens: ctx.config.subagentCompactionTriggerTokens,
+      compactionKeepTokens: ctx.config.subagentCompactionKeepTokens,
     });
-    const findings = truncateFindings(run.markdown);
-    ctx.scope.emit({
-      type: "subagent_finished",
-      task: question,
-      sourcesFetched: run.fetchedUrls.length,
-      toolCalls: run.toolCalls,
-      finishReason: run.finishReason,
-    });
-    return {
-      summary: {
+    const subagentCtx: ResearchCtx = { ...ctx, scope };
+    try {
+      const run = await runLoop({
+        ctx: subagentCtx,
+        query: question,
+        maxToolCalls: perAgentMaxToolCalls,
+        systemPrompt: SUBAGENT_SYSTEM_PROMPT,
+        messaging: { broker, address: handle },
+      });
+      const findings = truncateFindings(run.markdown);
+      ctx.scope.emit({
+        type: "subagent_finished",
         task: question,
-        findings: findings || subagentFallbackFindings(ctx, run),
-        sources: subagentSources(ctx, run.fetchedUrls),
-        tool_calls: run.toolCalls,
-        finish_reason: run.finishReason,
-      },
-      fetchedUrls: run.fetchedUrls,
-    };
-  } catch (err) {
-    ctx.deps.abort();
-    return {
-      summary: {
-        task: question,
-        error: err instanceof Error ? err.message : String(err),
-      },
-      fetchedUrls: [],
-    };
+        sourcesFetched: run.fetchedUrls.length,
+        toolCalls: run.toolCalls,
+        finishReason: run.finishReason,
+      });
+      return {
+        summary: {
+          task: question,
+          findings: findings || subagentFallbackFindings(ctx, run),
+          sources: subagentSources(ctx, run.fetchedUrls),
+          tool_calls: run.toolCalls,
+          finish_reason: run.finishReason,
+        },
+        fetchedUrls: run.fetchedUrls,
+      };
+    } catch (err) {
+      ctx.deps.abort();
+      return {
+        summary: {
+          task: question,
+          error: err instanceof Error ? err.message : String(err),
+        },
+        fetchedUrls: [],
+      };
+    }
+  } finally {
+    broker.close(handle);
   }
 }
 
@@ -188,6 +199,7 @@ export function createSubagentScope(
   ctx: ResearchCtx,
   perAgentMaxToolCalls: number,
   runLoop: SubagentRunner,
+  broker: MessageBroker,
 ): SubagentScope {
   const registry = new Map<string, SubagentEntry>();
   const gate = createConcurrencyGate(ctx.config.maxConcurrentSubagents ?? 1);
@@ -247,9 +259,18 @@ export function createSubagentScope(
       for (const task of accepted) {
         counter += 1;
         const handle = `agent_${counter}`;
+        broker.register(handle);
         ctx.scope.emit({ type: "subagent_started", task });
         const promise = gate.run(() =>
-          runSubagentTask(ctx, task, timing, perAgentMaxToolCalls, runLoop),
+          runSubagentTask(
+            ctx,
+            task,
+            timing,
+            perAgentMaxToolCalls,
+            runLoop,
+            broker,
+            handle,
+          ),
         );
         const entry: SubagentEntry = {
           handle,
@@ -288,6 +309,7 @@ export function createSubagentScope(
             "No outstanding sub-agents to join. Spawn sub-agents first, or write your report if you have enough evidence.",
         };
       }
+      broker.broadcastCollecting(COLLECTING_NOTE);
       const outcomes = await collect(targets);
       return {
         summaries: outcomes.map((outcome) => outcome.summary),
@@ -298,6 +320,7 @@ export function createSubagentScope(
     async settle() {
       const targets = uncollected();
       if (targets.length === 0) return [];
+      broker.broadcastCollecting(COLLECTING_NOTE);
       const outcomes = await collect(targets);
       return outcomes.flatMap((outcome) => outcome.fetchedUrls);
     },
