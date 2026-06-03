@@ -11,12 +11,12 @@ import {
   DEFAULT_OPENAI_MODEL,
 } from "../src/defaults.js";
 import {
-  research,
   type LanguageModel,
   type ModelProvider,
   type ResearchEvent,
   type ResearchResult,
 } from "../src/research.js";
+import { Researcher } from "../src/researcher.js";
 import { steel } from "../src/steel.js";
 import { resolveModelSpec } from "../src/config-resolution.js";
 
@@ -54,11 +54,9 @@ export interface EvalOptions {
   tokenLimit?: number;
   provider?: ModelProvider;
   model?: string;
-  openaiBaseUrl?: string;
   grader: GraderStrategy;
   judgeProvider?: JudgeProvider;
   judgeModel?: string;
-  judgeBaseUrl?: string;
   judgeTimeoutMs: number;
   judgeConcurrency: number;
   concurrency: number;
@@ -482,11 +480,9 @@ Options:
       --token-limit N         Total token budget per task (0 = unlimited)
       --provider NAME         Research model provider: anthropic, openai
       --model NAME            Research model name
-      --base-url URL          OpenAI-compatible base URL for the research model
       --grader MODE           per-criterion | one-shot (default: per-criterion)
       --judge-provider P      Judge provider: google, anthropic, openai (default: google)
       --judge-model MODEL     Judge model (default: gemini-3.1-pro-preview / claude-sonnet-4-5 / gpt-5.2)
-      --judge-base-url URL    OpenAI-compatible base URL for the judge
       --judge-timeout N       Per-criterion judge timeout in seconds (default: ${DEFAULT_JUDGE_TIMEOUT_MS / 1000})
       --judge-concurrency N   Parallel judge calls per task (default: ${DEFAULT_JUDGE_CONCURRENCY})
       --concurrency N         Parallel tasks (default: 1)
@@ -653,11 +649,6 @@ function parseArgs(argv: string[]): EvalOptions {
       i++;
       continue;
     }
-    if (arg === "--base-url") {
-      opts.openaiBaseUrl = readValue(argv, i, arg);
-      i++;
-      continue;
-    }
     if (arg === "--grader") {
       opts.grader = readGrader(readValue(argv, i, arg));
       i++;
@@ -670,11 +661,6 @@ function parseArgs(argv: string[]): EvalOptions {
     }
     if (arg === "--judge-model") {
       opts.judgeModel = readValue(argv, i, arg);
-      i++;
-      continue;
-    }
-    if (arg === "--judge-base-url") {
-      opts.judgeBaseUrl = readValue(argv, i, arg);
       i++;
       continue;
     }
@@ -808,12 +794,10 @@ export function buildJudgeSpec(opts: EvalOptions): JudgeSpec {
   const apiKey = readEnv("ATLAS_OPENAI_API_KEY", "OPENAI_API_KEY");
   if (!apiKey)
     fail("judge: OPENAI_API_KEY is required for --judge-provider openai");
-  const baseURL =
-    opts.judgeBaseUrl ?? readEnv("ATLAS_OPENAI_BASE_URL", "OPENAI_BASE_URL");
   return {
     provider,
     modelId,
-    model: createOpenAI({ apiKey, ...(baseURL ? { baseURL } : {}) })(modelId),
+    model: createOpenAI({ apiKey })(modelId),
   };
 }
 
@@ -1675,17 +1659,17 @@ async function runResearch(
   let lastError: unknown;
   for (let attempt = 1; attempt <= attempts; attempt++) {
     try {
-      const run = research.stream({
-        query: entry.problem,
+      const researcher = new Researcher({
         ...(await resolveModelSpec({
           provider: opts.provider,
           model: opts.model,
-          baseUrl: opts.openaiBaseUrl,
         })),
+        browser: steel({ proxy: opts.useProxy }),
+      });
+      const run = researcher.stream(entry.problem, {
         timeoutMs: opts.timeoutMs,
         tokenLimit: opts.tokenLimit,
         includeSourceDocuments: true,
-        browser: steel({ proxy: opts.useProxy }),
         exploreProviderOptions: {
           anthropic: { thinking: { type: "adaptive" }, effort: "max" },
           openai: { reasoningEffort: "high" },

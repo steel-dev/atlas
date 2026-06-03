@@ -26,7 +26,7 @@ npm run eval:browsecomp:official -- --sample 25 --seed pr-smoke-v1 --judge
 ```
 
 The judge defaults to the run provider/model. Override it with
-`--judge-provider`, `--judge-model`, `--judge-base-url`, and `--judge-timeout`.
+`--judge-provider`, `--judge-model`, and `--judge-timeout`.
 
 ## Run
 
@@ -152,9 +152,9 @@ by weight.
   unscored — kept in operational metrics but dropped from the scored set — instead
   of being recorded as a misleading 0%.
 
-Tune the judge with `--judge-provider`, `--judge-model`, `--judge-base-url`,
-`--judge-timeout` (per-criterion seconds), and `--judge-concurrency` (parallel judge
-calls per task; per-criterion grading issues ~40 per task).
+Tune the judge with `--judge-provider`, `--judge-model`, `--judge-timeout`
+(per-criterion seconds), and `--judge-concurrency` (parallel judge calls per task;
+per-criterion grading issues ~40 per task).
 
 ## Re-grading saved reports (`--regrade`)
 

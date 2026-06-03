@@ -1,14 +1,8 @@
-export { research } from "./research.js";
-export { createResearcher } from "./researcher.js";
+export { Researcher } from "./researcher.js";
 export { researchTool } from "./research-tool.js";
 export { steel } from "./steel.js";
 export type { BrowserProvider, SteelBrowserOptions } from "./steel.js";
-export type {
-  Researcher,
-  ResearcherConfig,
-  ResearcherResearch,
-  ResearcherStream,
-} from "./researcher.js";
+export type { ResearcherConfig } from "./researcher.js";
 export type { ResearchTool, ResearchToolContext } from "./research-tool.js";
 export type {
   FetchedSource,
@@ -16,8 +10,6 @@ export type {
   ModelProvider,
   QueryOptions,
   ResearchEvent,
-  ResearchFunction,
-  ResearchOptions,
   ResearchOutputOptions,
   ResearchResult,
   ResearchRun,

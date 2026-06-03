@@ -114,19 +114,6 @@ export interface ResearchStream {
   stop(): void;
 }
 
-export interface ResearchFunction {
-  (opts: ResearchOptions): Promise<ResearchResult>;
-  stream(opts: ResearchOptions): ResearchStream;
-}
-
-export const research: ResearchFunction = Object.assign(
-  (opts: ResearchOptions): Promise<ResearchResult> =>
-    startResearchStream(opts).result,
-  {
-    stream: (opts: ResearchOptions): ResearchStream => startResearchStream(opts),
-  },
-);
-
 export function startResearchStream(input: RunInput): ResearchStream {
   if (!input.query?.trim()) {
     throw new Error("research: query is required");

@@ -22,45 +22,79 @@ export interface ResearcherConfig {
   defaults?: RunOptions;
 }
 
-export interface ResearcherStream {
-  (query: string, opts?: RunOptions): ResearchStream;
-  (opts: QueryOptions): ResearchStream;
-}
+/**
+ * A configured research client. Binds the model, browser, search, instructions,
+ * and tools once, then runs many queries against that configuration. Reserved
+ * tool names are validated at construction; resources for a run are created per
+ * call, so concurrent runs stay isolated.
+ */
+export class Researcher {
+  readonly #config: ResearcherConfig;
+  readonly #userTools?: ReadonlyMap<string, CompiledUserTool>;
+  #closed = false;
+  readonly #inflight = new Set<Promise<unknown>>();
 
-interface ResearcherResearchCall {
-  (query: string, opts?: RunOptions): Promise<ResearchResult>;
-  (opts: QueryOptions): Promise<ResearchResult>;
-}
+  constructor(config: ResearcherConfig) {
+    this.#config = config;
+    this.#userTools =
+      config.tools && Object.keys(config.tools).length > 0
+        ? compileUserTools(config.tools)
+        : undefined;
+  }
 
-export interface ResearcherResearch {
-  (query: string, opts?: RunOptions): Promise<ResearchResult>;
-  (opts: QueryOptions): Promise<ResearchResult>;
-  stream: ResearcherStream;
-}
-
-export interface Researcher {
-  research: ResearcherResearch;
-  close(): Promise<void>;
-  [Symbol.asyncDispose](): Promise<void>;
-}
-
-export function createResearcher(config: ResearcherConfig): Researcher {
-  const userTools: ReadonlyMap<string, CompiledUserTool> | undefined =
-    config.tools && Object.keys(config.tools).length > 0
-      ? compileUserTools(config.tools)
-      : undefined;
-  let closed = false;
-  const inflight = new Set<Promise<unknown>>();
-
-  const buildInput = (
+  research(query: string, opts?: RunOptions): Promise<ResearchResult>;
+  research(opts: QueryOptions): Promise<ResearchResult>;
+  research(
     queryOrOpts: string | QueryOptions,
     maybeOpts?: RunOptions,
-  ): RunInput => {
+  ): Promise<ResearchResult> {
+    return this.#start(queryOrOpts, maybeOpts).result;
+  }
+
+  stream(query: string, opts?: RunOptions): ResearchStream;
+  stream(opts: QueryOptions): ResearchStream;
+  stream(
+    queryOrOpts: string | QueryOptions,
+    maybeOpts?: RunOptions,
+  ): ResearchStream {
+    return this.#start(queryOrOpts, maybeOpts);
+  }
+
+  /** Marks the researcher closed and waits for in-flight runs to settle. */
+  async close(): Promise<void> {
+    this.#closed = true;
+    await Promise.allSettled([...this.#inflight]);
+  }
+
+  [Symbol.asyncDispose](): Promise<void> {
+    return this.close();
+  }
+
+  #start(
+    queryOrOpts: string | QueryOptions,
+    maybeOpts?: RunOptions,
+  ): ResearchStream {
+    if (this.#closed) throw new Error("Researcher is closed");
+    const handle = startResearchStream(this.#buildInput(queryOrOpts, maybeOpts));
+    const tracked = handle.result.then(
+      () => undefined,
+      () => undefined,
+    );
+    this.#inflight.add(tracked);
+    void tracked.finally(() => this.#inflight.delete(tracked));
+    return handle;
+  }
+
+  #buildInput(
+    queryOrOpts: string | QueryOptions,
+    maybeOpts?: RunOptions,
+  ): RunInput {
     const isPositional = typeof queryOrOpts === "string";
     const query = isPositional ? queryOrOpts : queryOrOpts.query;
     const overrides: RunOptions = isPositional
       ? (maybeOpts ?? {})
       : stripQuery(queryOrOpts);
+    const config = this.#config;
     return {
       query,
       model: config.model,
@@ -70,45 +104,9 @@ export function createResearcher(config: ResearcherConfig): Researcher {
       ...config.defaults,
       ...overrides,
       ...(config.instructions ? { instructions: config.instructions } : {}),
-      ...(userTools ? { userTools } : {}),
+      ...(this.#userTools ? { userTools: this.#userTools } : {}),
     };
-  };
-
-  const streamImpl = (
-    queryOrOpts: string | QueryOptions,
-    maybeOpts?: RunOptions,
-  ): ResearchStream => {
-    if (closed) throw new Error("createResearcher: researcher is closed");
-    const handle = startResearchStream(buildInput(queryOrOpts, maybeOpts));
-    const tracked = handle.result.then(
-      () => undefined,
-      () => undefined,
-    );
-    inflight.add(tracked);
-    void tracked.finally(() => inflight.delete(tracked));
-    return handle;
-  };
-  const stream = streamImpl as ResearcherStream;
-
-  const research = Object.assign(
-    ((
-      queryOrOpts: string | QueryOptions,
-      maybeOpts?: RunOptions,
-    ): Promise<ResearchResult> =>
-      streamImpl(queryOrOpts, maybeOpts).result) as ResearcherResearchCall,
-    { stream },
-  );
-
-  const close = async (): Promise<void> => {
-    closed = true;
-    await Promise.allSettled([...inflight]);
-  };
-
-  return {
-    research,
-    close,
-    [Symbol.asyncDispose]: close,
-  };
+  }
 }
 
 function stripQuery(opts: QueryOptions): RunOptions {

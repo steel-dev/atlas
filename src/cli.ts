@@ -2,11 +2,12 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 import {
-  research,
   type ModelProvider,
   type ResearchEvent,
   type ResearchResult,
+  type ResearchStream,
 } from "./research.js";
+import { Researcher } from "./researcher.js";
 import { resolveModelSpec } from "./config-resolution.js";
 import { steel } from "./steel.js";
 import { exa, brave, type SearchProvider } from "./search-provider.js";
@@ -26,7 +27,6 @@ Options:
       --search-provider NAME  Search backend: web, exa, brave (default: web)
       --model MODEL           Model name (default: provider-specific)
       --summary-model MODEL   Model for source digests and compaction (default: the main model)
-      --base-url URL          OpenAI-compatible base URL (provider=openai)
       --proxy                 Route Steel search and fetch requests through proxy
       --json                  Emit one JSON event per line on stderr
   -q, --quiet                 Suppress progress events on stderr
@@ -46,7 +46,6 @@ Environment:
   ATLAS_BROWSER_IDLE_TTL_MS                     optional (default 120000; <=0 disables)
   ATLAS_ANTHROPIC_API_KEY or ANTHROPIC_API_KEY  required for provider=anthropic
   ATLAS_OPENAI_API_KEY    or OPENAI_API_KEY     required for provider=openai
-  ATLAS_OPENAI_BASE_URL   or OPENAI_BASE_URL    optional (OpenAI-compatible)
   ATLAS_STEEL_API_KEY      or STEEL_API_KEY       required
   ATLAS_STEEL_BASE_URL     or STEEL_BASE_URL      optional (self-hosted Steel)
 
@@ -257,7 +256,6 @@ async function main(): Promise<void> {
           "search-provider": { type: "string" },
           model: { type: "string" },
           "summary-model": { type: "string" },
-          "base-url": { type: "string" },
           proxy: { type: "boolean" },
           json: { type: "boolean" },
           quiet: { type: "boolean", short: "q" },
@@ -301,21 +299,21 @@ async function main(): Promise<void> {
   let hardAborted = false;
   let timedOut = false;
 
-  let run!: ReturnType<(typeof research)["stream"]>;
+  let run!: ResearchStream;
   try {
     const { model, summaryModel } = await resolveModelSpec({
       provider,
       model: values.model,
       summaryModel: values["summary-model"],
-      baseUrl: values["base-url"],
     });
-    run = research.stream({
-      query,
-      search: resolveSearch(values["search-provider"]),
+    const researcher = new Researcher({
       model,
       summaryModel,
-      tokenLimit,
+      search: resolveSearch(values["search-provider"]),
       ...(useProxy ? { browser: steel({ proxy: true }) } : {}),
+    });
+    run = researcher.stream(query, {
+      tokenLimit,
       exploreProviderOptions: { anthropic: { thinking: { type: "adaptive" } } },
       finalizeProviderOptions: {
         anthropic: { thinking: { type: "adaptive" }, effort: "high" },

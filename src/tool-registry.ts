@@ -673,7 +673,7 @@ export function compileUserTools(
   for (const [name, spec] of Object.entries(tools)) {
     if (RESERVED_TOOL_NAMES.has(name)) {
       throw new Error(
-        `createResearcher: tool name "${name}" is reserved by a built-in tool. Choose a different name.`,
+        `Researcher: tool name "${name}" is reserved by a built-in tool. Choose a different name.`,
       );
     }
     compiled.set(name, compileUserTool(name, spec));

@@ -10,7 +10,7 @@ import {
 } from "./runtime.js";
 import { compileUserTools } from "./tool-registry.js";
 import { researchTool, type CompiledUserTool } from "./research-tool.js";
-import { createResearcher } from "./researcher.js";
+import { Researcher } from "./researcher.js";
 import type {
   LanguageModel,
   ModelAssistantBlock,
@@ -109,29 +109,30 @@ describe("researchTool / compileUserTools", () => {
   });
 });
 
-describe("createResearcher", () => {
+describe("Researcher", () => {
   const fakeModel = {} as unknown as Exclude<LanguageModel, string>;
 
-  it("validates reserved tool names eagerly at creation", () => {
-    expect(() =>
-      createResearcher({
-        model: fakeModel,
-        tools: {
-          search: researchTool({
-            description: "x",
-            inputSchema: jsonSchema({ type: "object" }),
-            execute: () => "y",
-          }),
-        },
-      }),
+  it("validates reserved tool names eagerly at construction", () => {
+    expect(
+      () =>
+        new Researcher({
+          model: fakeModel,
+          tools: {
+            search: researchTool({
+              description: "x",
+              inputSchema: jsonSchema({ type: "object" }),
+              execute: () => "y",
+            }),
+          },
+        }),
     ).toThrow(/reserved/);
   });
 
-  it("exposes the researcher surface and a disposable close", async () => {
-    const researcher = createResearcher({ model: fakeModel });
+  it("exposes the research surface and a disposable close", async () => {
+    const researcher = new Researcher({ model: fakeModel });
     expect(typeof researcher.research).toBe("function");
-    expect(typeof researcher.research.stream).toBe("function");
-    expect(researcher[Symbol.asyncDispose]).toBe(researcher.close);
+    expect(typeof researcher.stream).toBe("function");
+    expect(typeof researcher[Symbol.asyncDispose]).toBe("function");
     await expect(researcher.close()).resolves.toBeUndefined();
   });
 });

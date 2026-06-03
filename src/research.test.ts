@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { __testing, research } from "./research.js";
+import { __testing } from "./research.js";
 import { steel } from "./steel.js";
 import type { SearchProvider } from "./search-provider.js";
 import {
@@ -27,13 +27,6 @@ import {
   type ResearchCtx,
 } from "./runtime.js";
 import type { SourceDocument } from "./sources.js";
-
-describe("research API", () => {
-  it("exposes streaming as research.stream", () => {
-    expect(typeof research).toBe("function");
-    expect(typeof research.stream).toBe("function");
-  });
-});
 
 function fakeModel(scriptedSteps: ModelAssistantBlock[][]): {
   adapter: ModelAdapter;
@@ -422,7 +415,7 @@ describe("resolveRunConfig", () => {
     clearAtlasEnv();
     vi.stubEnv("ATLAS_STEEL_API_KEY", "env-steel");
 
-    // The headline zero-config call: research({ query, model }) with no browser.
+    // The headline zero-config call: new Researcher({ model }).research(query) with no browser.
     const config = __testing.resolveRunConfig({
       query: "q",
       model: fakeLanguageModel(),

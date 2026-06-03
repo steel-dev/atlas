@@ -37,13 +37,14 @@ npm install @steel-dev/atlas ai @ai-sdk/anthropic
 ## Usage
 
 ```ts
-import { research } from "@steel-dev/atlas";
+import { Researcher } from "@steel-dev/atlas";
 import { anthropic } from "@ai-sdk/anthropic";
 
-const result = await research({
-  query: "What's changing in browser automation for AI agents?",
-  model: anthropic("claude-sonnet-4-6"),
-});
+const researcher = new Researcher({ model: anthropic("claude-sonnet-4-6") });
+
+const result = await researcher.research(
+  "What's changing in browser automation for AI agents?",
+);
 
 console.log(result.markdown);
 console.log(result.citedSources);
@@ -51,16 +52,17 @@ console.log(result.citedSources);
 
 ## Streaming
 
-`research()` resolves once, at the end. For a live UI, `research.stream()` returns a handle you can iterate while the run is in flight; its promise fields still resolve at the end whether or not you read the stream.
+`researcher.research()` resolves once, at the end. For a live UI, `researcher.stream()` returns a handle you can iterate while the run is in flight; its promise fields still resolve at the end whether or not you read the stream.
 
 ```ts
-import { research } from "@steel-dev/atlas";
+import { Researcher } from "@steel-dev/atlas";
 import { anthropic } from "@ai-sdk/anthropic";
 
-const run = research.stream({
-  query: "What's changing in browser automation for AI agents?",
-  model: anthropic("claude-sonnet-4-6"),
-});
+const researcher = new Researcher({ model: anthropic("claude-sonnet-4-6") });
+
+const run = researcher.stream(
+  "What's changing in browser automation for AI agents?",
+);
 
 for await (const part of run.fullStream) {
   if (part.type === "fetching") process.stderr.write(`reading ${part.url}\n`);
@@ -75,13 +77,16 @@ const { citedSources } = await run.result;
 Atlas runs every model through the [Vercel AI SDK](https://ai-sdk.dev), so the research loop stays the same, models call `search` and `fetch`, then Atlas applies runtime limits, source tracking, and citation reconciliation, while you can reach any provider the AI SDK supports. Install the provider package you need (`@ai-sdk/google`, `@ai-sdk/openai`, …).
 
 ```ts
-import { research } from "@steel-dev/atlas";
+import { Researcher } from "@steel-dev/atlas";
 import { google } from "@ai-sdk/google";
 
-const result = await research({
-  query: "What's changing in browser automation for AI agents?",
+const researcher = new Researcher({
   model: google("gemini-3-pro"), // or bedrock(...), vertex(...), groq(...), …
 });
+
+const result = await researcher.research(
+  "What's changing in browser automation for AI agents?",
+);
 ```
 
 ## Search and browser
@@ -89,15 +94,18 @@ const result = await research({
 Atlas fetches every page and, by default, scrapes search-engine results through a browser substrate. Steel reads `STEEL_API_KEY` from the environment, so you can omit `browser: steel()` unless you want to override a knob. Pass `browser` and `search` only to customize behavior or swap the search backend.
 
 ```ts
-import { research, steel, exa } from "@steel-dev/atlas";
+import { Researcher, steel, exa } from "@steel-dev/atlas";
 import { anthropic } from "@ai-sdk/anthropic";
 
-const result = await research({
-  query: "What's changing in browser automation for AI agents?",
+const researcher = new Researcher({
   model: anthropic("claude-sonnet-4-6"),
   browser: steel({ proxy: true }),
   search: exa(), // bypass the browser for search; omit to scrape SERPs
 });
+
+const result = await researcher.research(
+  "What's changing in browser automation for AI agents?",
+);
 ```
 
 ## Reusable researchers
@@ -105,10 +113,10 @@ const result = await research({
 Define a researcher once then reuse it across many queries. This fits long-lived processes such as a server handling many requests: resources are created lazily on the first query, and concurrent runs stay isolated. Pass the query positionally; everything else is bound.
 
 ```ts
-import { createResearcher } from "@steel-dev/atlas";
+import { Researcher } from "@steel-dev/atlas";
 import { anthropic } from "@ai-sdk/anthropic";
 
-const researcher = createResearcher({
+const researcher = new Researcher({
   model: anthropic("claude-sonnet-4-6"),
   instructions:
     "You are a clinical evidence analyst. Prefer RCTs and meta-analyses.",
@@ -117,28 +125,26 @@ const researcher = createResearcher({
 
 const result = await researcher.research("SGLT2 inhibitors for HFpEF?");
 
-const run = researcher.research.stream(
-  "GLP-1 agonists and cardiovascular outcomes?",
-);
+const run = researcher.stream("GLP-1 agonists and cardiovascular outcomes?");
 for await (const part of run.fullStream) {
   if (part.type === "report_delta") process.stdout.write(part.text);
 }
 
-await researcher.close(); // drains in-flight runs; or `await using researcher = createResearcher({ … })`
+await researcher.close(); // drains in-flight runs; or `await using researcher = new Researcher({ … })`
 ```
 
-`instructions` is appended to the system prompt rather than replacing it, and `defaults` set per-call options you can still override on each `researcher.research()` / `researcher.research.stream()` call. One-shot `research()` and `research.stream()` calls accept `instructions` too.
+`instructions` is appended to the system prompt rather than replacing it, and `defaults` set per-call options you can still override on each `researcher.research()` / `researcher.stream()` call.
 
 ## Custom tools
 
 Give the model domain-specific tools alongside the built-ins. `researchTool` takes an `inputSchema` (Zod, or any AI SDK schema) and an `execute`; anything you register with `ctx.addSource` becomes a citable source in the report, exactly like a fetched page.
 
 ```ts
-import { createResearcher, researchTool } from "@steel-dev/atlas";
+import { Researcher, researchTool } from "@steel-dev/atlas";
 import { anthropic } from "@ai-sdk/anthropic";
 import { z } from "zod";
 
-const researcher = createResearcher({
+const researcher = new Researcher({
   model: anthropic("claude-sonnet-4-6"),
   tools: {
     pubmedSearch: researchTool({

@@ -286,7 +286,6 @@ interface ModelSpecInput {
   provider?: ModelProvider;
   model?: string;
   summaryModel?: string;
-  baseUrl?: string;
 }
 
 export async function resolveModelSpec(opts: ModelSpecInput): Promise<{
@@ -295,28 +294,24 @@ export async function resolveModelSpec(opts: ModelSpecInput): Promise<{
 }> {
   const provider = resolveProvider(opts.provider);
   const modelId = resolveModel(provider, opts.model);
-  const baseUrl =
-    opts.baseUrl ?? readEnv("ATLAS_OPENAI_BASE_URL", "OPENAI_BASE_URL");
-  const model = await buildLanguageModel(provider, modelId, baseUrl);
+  const model = await buildLanguageModel(provider, modelId);
   const summaryId = resolveSummaryModel(opts.summaryModel, modelId);
   return summaryId === modelId
     ? { model }
     : {
         model,
-        summaryModel: await buildLanguageModel(provider, summaryId, baseUrl),
+        summaryModel: await buildLanguageModel(provider, summaryId),
       };
 }
 
 async function buildLanguageModel(
   provider: ModelProvider,
   modelId: string,
-  baseUrl: string | undefined,
 ): Promise<Exclude<LanguageModel, string>> {
   if (provider === "openai") {
     const { createOpenAI } = await import("@ai-sdk/openai");
     return createOpenAI({
       apiKey: readEnv("ATLAS_OPENAI_API_KEY", "OPENAI_API_KEY"),
-      ...(baseUrl ? { baseURL: baseUrl } : {}),
     })(modelId);
   }
   const { createAnthropic } = await import("@ai-sdk/anthropic");

@@ -9,11 +9,11 @@ import {
 } from "../src/defaults.js";
 import { createAISdkModelAdapter, type ModelAdapter } from "../src/model.js";
 import {
-  research,
   type ModelProvider,
   type ResearchEvent,
   type ResearchResult,
 } from "../src/research.js";
+import { Researcher } from "../src/researcher.js";
 import { steel } from "../src/steel.js";
 import { resolveModelSpec } from "../src/config-resolution.js";
 import type { SourceDocument } from "../src/sources.js";
@@ -36,11 +36,9 @@ interface EvalOptions {
   tokenLimit?: number;
   provider?: ModelProvider;
   model?: string;
-  openaiBaseUrl?: string;
   judge: boolean;
   judgeProvider?: ModelProvider;
   judgeModel?: string;
-  judgeBaseUrl?: string;
   judgeTimeoutMs: number;
   concurrency: number;
   useProxy: boolean;
@@ -239,11 +237,9 @@ Options:
       --token-limit N      Total token budget per case (e.g. 1000000, 3000000, 10000000)
       --provider NAME      Model provider: anthropic, openai
       --model NAME         Model name
-      --base-url URL       OpenAI-compatible base URL
       --judge              Grade responses with an LLM judge
       --judge-provider P   Judge provider: anthropic, openai (default: run provider/env)
       --judge-model MODEL  Judge model (default: provider-specific/env)
-      --judge-base-url URL OpenAI-compatible base URL for judge
       --judge-timeout N    Per-judge timeout in seconds (default: 60)
       --concurrency N      Parallel cases (default: 1)
       --proxy              Route Steel calls through proxy
@@ -368,11 +364,6 @@ function parseArgs(argv: string[]): EvalOptions {
       i++;
       continue;
     }
-    if (arg === "--base-url") {
-      opts.openaiBaseUrl = readValue(argv, i, arg);
-      i++;
-      continue;
-    }
     if (arg === "--judge") {
       opts.judge = true;
       continue;
@@ -384,11 +375,6 @@ function parseArgs(argv: string[]): EvalOptions {
     }
     if (arg === "--judge-model") {
       opts.judgeModel = readValue(argv, i, arg);
-      i++;
-      continue;
-    }
-    if (arg === "--judge-base-url") {
-      opts.judgeBaseUrl = readValue(argv, i, arg);
       i++;
       continue;
     }
@@ -477,12 +463,10 @@ function createAnthropicModelAdapter(opts: {
 
 function createOpenAIModelAdapter(opts: {
   apiKey: string;
-  baseUrl?: string;
   model: string;
 }): ModelAdapter {
   const provider = createOpenAI({
     apiKey: opts.apiKey,
-    ...(opts.baseUrl ? { baseURL: opts.baseUrl } : {}),
   });
   return createAISdkModelAdapter({
     model: provider(opts.model),
@@ -510,11 +494,7 @@ function createJudgeAdapter(opts: EvalOptions): ModelAdapter {
       "judge: OPENAI_API_KEY or ATLAS_OPENAI_API_KEY is required for provider=openai",
     );
   }
-  const baseUrl =
-    opts.judgeBaseUrl ??
-    opts.openaiBaseUrl ??
-    readEnv("ATLAS_OPENAI_BASE_URL", "OPENAI_BASE_URL");
-  return createOpenAIModelAdapter({ apiKey, baseUrl, model });
+  return createOpenAIModelAdapter({ apiKey, model });
 }
 
 function deriveKey(password: string, length: number): Buffer {
@@ -1415,18 +1395,18 @@ async function runCase(
     );
   }, 30_000);
   try {
-    const run = research.stream({
-      query: evalQuery(entry.query),
+    const researcher = new Researcher({
       ...(await resolveModelSpec({
         provider: opts.provider,
         model: opts.model,
-        baseUrl: opts.openaiBaseUrl,
       })),
+      browser: steel({ proxy: opts.useProxy }),
+    });
+    const run = researcher.stream(evalQuery(entry.query), {
       timeoutMs: opts.timeoutMs,
       tokenLimit: opts.tokenLimit,
       output: browseCompOutput(),
       includeSourceDocuments: true,
-      browser: steel({ proxy: opts.useProxy }),
       exploreProviderOptions: {
         anthropic: { thinking: { type: "adaptive" }, effort: "max" },
         openai: { reasoningEffort: "high" },
