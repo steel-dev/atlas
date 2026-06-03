@@ -149,6 +149,11 @@ function prettyEventBody(e: ResearchEvent): string {
       return paint(DIM, `    ✉ ${e.from} → ${e.to} (${e.chars} chars)`);
     case "research_started":
       return paint(DIM, "  →") + " research started";
+    case "scope_completed":
+      return (
+        paint(DIM, "  →") +
+        ` scoped into ${e.angles.length} angle${e.angles.length === 1 ? "" : "s"}: ${e.angles.map((angle) => angle.label).join(", ")}`
+      );
     case "research_finished":
       return (
         paint(DIM, "  ✓") +

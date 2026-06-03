@@ -57,7 +57,7 @@ interface SourceResultList {
   results: SearchResult[];
 }
 
-interface MergedSearchResult {
+export interface MergedSearchResult {
   title: string;
   url: string;
   snippet: string;
@@ -248,25 +248,27 @@ async function collectSearchResults(opts: {
   };
 }
 
-export async function execSearch(
-  args: SearchToolInput,
-  ctx: ResearchCtx,
-  searchIndex: number,
-): Promise<string> {
-  const queries = readSearchQueries(args);
-  if (queries.length === 0) {
-    return "Error: search requires `queries` to be an array of non-empty strings.";
-  }
+export interface SearchRunOutcome {
+  providerName: string;
+  results: MergedSearchResult[];
+  successfulEngines: string[];
+  searchedEngines: string[];
+  warnings: string[];
+  sawEmptyResults: boolean;
+}
 
-  const rawLimit = args.limit ?? ctx.config.defaultSearchLimit ?? 5;
-  const limit = Math.min(Math.max(1, Math.floor(Number(rawLimit))), 20);
+export async function runSearchQueries(
+  ctx: ResearchCtx,
+  queries: string[],
+  opts: { limit: number; searchIndexStart: number },
+): Promise<SearchRunOutcome> {
   const provider = ctx.deps.searchProvider ?? createScrapingSearchProvider(ctx);
   const collections = await Promise.all(
     queries.map((query, offset) =>
       collectSearchResults({
         query,
-        limit,
-        index: searchIndex + offset,
+        limit: opts.limit,
+        index: opts.searchIndexStart + offset,
         ctx,
         provider,
       }),
@@ -280,46 +282,64 @@ export async function execSearch(
       results: source.results,
     })),
   );
-  const results = mergeSearchResults(sourceLists, limit);
-  if (results.length > 0) {
-    const successfulEngines = unique(
-      sourceLists.map((source) => source.source),
-    );
-    const searchedEngines = unique(
+  return {
+    providerName: provider.name,
+    results: mergeSearchResults(sourceLists, opts.limit),
+    successfulEngines: unique(sourceLists.map((source) => source.source)),
+    searchedEngines: unique(
       collections.flatMap((collection) => collection.searchedSources),
-    );
-    const warnings = formatWarnings(collections, queries.length > 1);
+    ),
+    warnings: formatWarnings(collections, queries.length > 1),
+    sawEmptyResults: collections.some(
+      (collection) => collection.sawEmptyResults,
+    ),
+  };
+}
+
+export async function execSearch(
+  args: SearchToolInput,
+  ctx: ResearchCtx,
+  searchIndex: number,
+): Promise<string> {
+  const queries = readSearchQueries(args);
+  if (queries.length === 0) {
+    return "Error: search requires `queries` to be an array of non-empty strings.";
+  }
+
+  const rawLimit = args.limit ?? ctx.config.defaultSearchLimit ?? 5;
+  const limit = Math.min(Math.max(1, Math.floor(Number(rawLimit))), 20);
+  const outcome = await runSearchQueries(ctx, queries, {
+    limit,
+    searchIndexStart: searchIndex,
+  });
+  if (outcome.results.length > 0) {
     return JSON.stringify(
       {
         ...(queries.length === 1 ? { query: queries[0] } : { queries }),
-        provider: provider.name,
-        engines: successfulEngines,
-        searched_engines: searchedEngines,
-        results: compactSearchResults(results),
-        warnings: warnings.length > 0 ? warnings : undefined,
+        provider: outcome.providerName,
+        engines: outcome.successfulEngines,
+        searched_engines: outcome.searchedEngines,
+        results: compactSearchResults(outcome.results),
+        warnings: outcome.warnings.length > 0 ? outcome.warnings : undefined,
       },
       null,
       2,
     );
   }
 
-  const warnings = formatWarnings(collections, queries.length > 1);
-  const sawEmptyResults = collections.some(
-    (collection) => collection.sawEmptyResults,
-  );
-  if (sawEmptyResults) {
+  if (outcome.sawEmptyResults) {
     return JSON.stringify(
       {
         ...(queries.length === 1 ? { query: queries[0] } : { queries }),
-        provider: provider.name,
+        provider: outcome.providerName,
         results: [],
-        warnings: warnings.length > 0 ? warnings : undefined,
+        warnings: outcome.warnings.length > 0 ? outcome.warnings : undefined,
       },
       null,
       2,
     );
   }
-  const error = warnings.join("; ") || "all sources failed";
+  const error = outcome.warnings.join("; ") || "all sources failed";
   ctx.scope.emit({
     type: "search_failed",
     index: searchIndex,

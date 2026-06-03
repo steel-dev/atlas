@@ -314,6 +314,11 @@ export function createAgentScope(init: AgentScopeInit): AgentScope {
 export type ResearchLoopEvent = (
   | { type: "research_started" }
   | {
+      type: "scope_completed";
+      strategy: string;
+      angles: Array<{ label: string; query: string }>;
+    }
+  | {
       type: "searching";
       index: number;
       query: string;
