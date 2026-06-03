@@ -359,6 +359,20 @@ export type ResearchLoopEvent = (
       unsupported: number;
       error?: string;
     }
+  | { type: "verify_started"; claims: number }
+  | {
+      type: "claim_verified";
+      id: string;
+      claim: string;
+      vote: string;
+      status: string;
+    }
+  | {
+      type: "verify_finished";
+      confirmed: number;
+      refuted: number;
+      unverified: number;
+    }
   | { type: "research_finished"; sourcesFetched: number }
   | {
       type: "context_compacted";

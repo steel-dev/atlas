@@ -1,0 +1,382 @@
+import type {
+  ModelAssistantBlock,
+  ModelMessage,
+  ModelOutputSchema,
+  ModelToolCall,
+  ModelToolDefinition,
+  ModelToolResult,
+} from "./model.js";
+import {
+  createConcurrencyGate,
+  tokenBudgetExhaustedReason,
+  type ResearchCtx,
+} from "./runtime.js";
+import type { ClaimVote, ResearchClaim } from "./claims.js";
+import { execSearch } from "./search-tool.js";
+import { execReadSource, execSearchSources } from "./evidence-tool.js";
+import { execRunCode } from "./code-tool.js";
+import { errorMessage } from "./errors.js";
+
+export const VOTES_PER_CLAIM = 3;
+export const REFUTATIONS_REQUIRED = 2;
+export const MAX_VERIFY_CLAIMS = 25;
+const MAX_VOTER_TOOL_TURNS = 2;
+const VOTER_STEP_MAX_TOKENS = 1_200;
+const VERDICT_MAX_TOKENS = 600;
+const VERIFY_CONCURRENCY = 8;
+
+export type VerifierLens = "quote-fidelity" | "contradiction" | "source-strength";
+
+export const VERIFIER_LENSES: readonly VerifierLens[] = [
+  "quote-fidelity",
+  "contradiction",
+  "source-strength",
+];
+
+export interface VerifySummary {
+  verified: number;
+  confirmed: number;
+  refuted: number;
+  unverified: number;
+  beyondCap: number;
+}
+
+const VERDICT_OUTPUT_SCHEMA: ModelOutputSchema = {
+  name: "claim_verdict",
+  schema: {
+    type: "object",
+    required: ["refuted", "evidence", "confidence"],
+    properties: {
+      refuted: { type: "boolean" },
+      evidence: { type: "string" },
+      confidence: { type: "string", enum: ["high", "medium", "low"] },
+    },
+  },
+};
+
+const IMPORTANCE_RANK = { central: 0, supporting: 1, tangential: 2 } as const;
+const QUALITY_RANK = {
+  primary: 0,
+  secondary: 1,
+  blog: 2,
+  forum: 3,
+  unreliable: 4,
+} as const;
+
+export function rankClaimsForVerification(
+  claims: ResearchClaim[],
+): ResearchClaim[] {
+  return claims
+    .filter((claim) => claim.status === "quoted")
+    .sort(
+      (a, b) =>
+        IMPORTANCE_RANK[a.importance] - IMPORTANCE_RANK[b.importance] ||
+        QUALITY_RANK[a.sourceQuality] - QUALITY_RANK[b.sourceQuality],
+    );
+}
+
+const SEARCH_TOOL: ModelToolDefinition = {
+  name: "search",
+  description:
+    "Search the web for evidence about the claim. `queries` runs 1-2 query variants in parallel and returns one ranked result list with snippets.",
+  input_schema: {
+    type: "object",
+    properties: {
+      queries: {
+        type: "array",
+        minItems: 1,
+        maxItems: 2,
+        items: { type: "string" },
+      },
+    },
+    required: ["queries"],
+  },
+};
+
+const READ_SOURCE_TOOL: ModelToolDefinition = {
+  name: "read_source",
+  description:
+    "Read exact text from the stored source document. Pass `chunk_index` to read a chunk, or `start`/`end` for an exact character span.",
+  input_schema: {
+    type: "object",
+    properties: {
+      source_id: { type: "string" },
+      chunk_index: { type: "integer", minimum: 0 },
+      start: { type: "integer", minimum: 0 },
+      end: { type: "integer", minimum: 0 },
+    },
+    required: ["source_id"],
+  },
+};
+
+const SEARCH_SOURCES_TOOL: ModelToolDefinition = {
+  name: "search_sources",
+  description:
+    "Keyword-search the stored source documents and return matching snippets with source_id, chunk_index, and character spans for read_source.",
+  input_schema: {
+    type: "object",
+    properties: {
+      query: { type: "string" },
+      source_ids: { type: "array", items: { type: "string" } },
+      max_results: { type: "integer", minimum: 1, maximum: 10 },
+    },
+    required: ["query"],
+  },
+};
+
+const RUN_CODE_TOOL: ModelToolDefinition = {
+  name: "run_code",
+  description:
+    "Run synchronous JavaScript over stored source text to check exact values. In scope: `sources`, `grep(pattern, {source_ids?, ignore_case?, context?, max?})`, `print`. The final expression is returned.",
+  input_schema: {
+    type: "object",
+    properties: {
+      code: { type: "string" },
+      source_ids: { type: "array", items: { type: "string" } },
+    },
+    required: ["code"],
+  },
+};
+
+const LENS_TOOLS: Record<VerifierLens, ModelToolDefinition[]> = {
+  "quote-fidelity": [READ_SOURCE_TOOL, SEARCH_SOURCES_TOOL, RUN_CODE_TOOL],
+  contradiction: [SEARCH_TOOL],
+  "source-strength": [READ_SOURCE_TOOL, SEARCH_SOURCES_TOOL],
+};
+
+const LENS_INSTRUCTIONS: Record<VerifierLens, string> = {
+  "quote-fidelity":
+    "Does the quote, in its surrounding context, actually support the claim — or is it an overreach, misread, or out-of-context fragment? " +
+    "Use search_sources to locate the quote span, read_source to read the text around it, and run_code to check exact values. " +
+    "refuted=true if the claim overstates, misreads, or cherry-picks the quote. refuted=false ONLY if the full context supports the claim as stated.",
+  contradiction:
+    "Search the web for evidence that contradicts or heavily qualifies this claim. " +
+    "Run 1-2 targeted queries: counterclaims, more recent figures, disputes, corrections. " +
+    "refuted=true if any credible result contradicts or heavily qualifies the claim, or shows it is outdated. refuted=false ONLY if you find no credible contradiction.",
+  "source-strength":
+    "Is this source strong enough for this claim, and is the claim current? " +
+    "Extraordinary claims need primary sources; marketing copy, press releases, cherry-picked benchmarks, and forum speculation are weak; stale claims about fast-moving topics are suspect. " +
+    "Use read_source around the quote to judge the page's nature and date. " +
+    "refuted=true if the source quality is insufficient for the claim's strength or the claim is likely stale. refuted=false ONLY if quality and recency match the claim.",
+};
+
+const VERIFIER_SYSTEM_PROMPT =
+  `You are one adversarial verifier on a ${VOTES_PER_CLAIM}-voter panel judging one claim from a research run. ` +
+  `Be SKEPTICAL: try to REFUTE the claim through your assigned lens. ${REFUTATIONS_REQUIRED} of ${VOTES_PER_CLAIM} refutations kill the claim. ` +
+  "Default to refuted=true if uncertain. Evidence must be specific — quote or cite what you checked.";
+
+function voterPrompt(
+  question: string,
+  claim: ResearchClaim,
+  lens: VerifierLens,
+): string {
+  return (
+    "## Claim under review\n" +
+    `"${claim.text}"\n\n` +
+    `Source: ${claim.url} (${claim.sourceQuality}, published ${claim.publishedTime ?? "unknown"}) · source_id ${claim.sourceId}\n` +
+    `Supporting quote (mechanically verified to appear verbatim in the stored source text):\n"${claim.quote}"\n\n` +
+    `Research question: "${question}"\n\n` +
+    `## Your lens: ${lens}\n` +
+    LENS_INSTRUCTIONS[lens] +
+    "\n\n" +
+    `You may use at most ${MAX_VOTER_TOOL_TURNS} tool turns before returning your verdict. Structured output only.`
+  );
+}
+
+async function executeVoterTool(
+  ctx: ResearchCtx,
+  call: ModelToolCall,
+  searchIndexRef: { next: number },
+): Promise<ModelToolResult> {
+  try {
+    let content: string;
+    if (call.name === "search") {
+      const index = searchIndexRef.next;
+      const input = (call.input ?? {}) as { queries?: string[] };
+      searchIndexRef.next += Array.isArray(input.queries)
+        ? input.queries.length
+        : 1;
+      content = await execSearch(input, ctx, index);
+    } else if (call.name === "read_source") {
+      content = execReadSource(call.input ?? {}, ctx);
+    } else if (call.name === "search_sources") {
+      content = execSearchSources(call.input ?? {}, ctx);
+    } else if (call.name === "run_code") {
+      content = execRunCode((call.input ?? {}) as { code?: string }, ctx);
+    } else {
+      return {
+        type: "tool_result",
+        tool_call_id: call.id,
+        content: `Unknown tool: ${call.name}. Return your verdict.`,
+        is_error: true,
+      };
+    }
+    return { type: "tool_result", tool_call_id: call.id, content };
+  } catch (err) {
+    if (ctx.deps.signal?.aborted) throw err;
+    return {
+      type: "tool_result",
+      tool_call_id: call.id,
+      content: `Tool error: ${errorMessage(err)}`,
+      is_error: true,
+    };
+  }
+}
+
+interface RawVerdict {
+  refuted?: unknown;
+  evidence?: unknown;
+  confidence?: unknown;
+}
+
+function parseVerdict(content: ModelAssistantBlock[]): ClaimVote | null {
+  const textBlock = content.find(
+    (block): block is { type: "text"; text: string } => block.type === "text",
+  );
+  if (!textBlock) return null;
+  try {
+    const raw = JSON.parse(textBlock.text) as RawVerdict;
+    if (typeof raw.refuted !== "boolean") return null;
+    return {
+      lens: "",
+      refuted: raw.refuted,
+      evidence: typeof raw.evidence === "string" ? raw.evidence : "",
+      confidence:
+        raw.confidence === "high" || raw.confidence === "medium"
+          ? raw.confidence
+          : "low",
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function castVote(
+  ctx: ResearchCtx,
+  question: string,
+  claim: ResearchClaim,
+  lens: VerifierLens,
+  searchIndexRef: { next: number },
+): Promise<ClaimVote | null> {
+  const model = ctx.deps.summaryModel ?? ctx.deps.model;
+  const tools = LENS_TOOLS[lens];
+  const messages: ModelMessage[] = [
+    { role: "user", content: voterPrompt(question, claim, lens) },
+  ];
+
+  for (let turn = 0; turn < MAX_VOTER_TOOL_TURNS; turn++) {
+    if (tokenBudgetExhaustedReason(ctx)) return null;
+    const result = await model.step({
+      system: VERIFIER_SYSTEM_PROMPT,
+      tools,
+      messages,
+      maxTokens: VOTER_STEP_MAX_TOKENS,
+      signal: ctx.deps.signal,
+    });
+    const toolCalls = result.content.filter(
+      (block): block is ModelToolCall => block.type === "tool_call",
+    );
+    if (toolCalls.length === 0) break;
+    messages.push({ role: "assistant", content: result.content });
+    const toolResults = await Promise.all(
+      toolCalls.map((call) => executeVoterTool(ctx, call, searchIndexRef)),
+    );
+    messages.push({ role: "user", content: toolResults });
+  }
+
+  if (tokenBudgetExhaustedReason(ctx)) return null;
+  messages.push({
+    role: "user",
+    content:
+      "Return your verdict now as structured output: refuted, evidence, confidence.",
+  });
+  const verdictResult = await model.step({
+    system: VERIFIER_SYSTEM_PROMPT,
+    messages,
+    maxTokens: VERDICT_MAX_TOKENS,
+    outputSchema: VERDICT_OUTPUT_SCHEMA,
+    signal: ctx.deps.signal,
+  });
+  const vote = parseVerdict(verdictResult.content);
+  return vote ? { ...vote, lens } : null;
+}
+
+function settleClaim(claim: ResearchClaim, votes: ClaimVote[]): void {
+  claim.votes = votes;
+  const refutedVotes = votes.filter((vote) => vote.refuted).length;
+  if (votes.length < REFUTATIONS_REQUIRED) {
+    claim.status = "unverified";
+  } else if (refutedVotes >= REFUTATIONS_REQUIRED) {
+    claim.status = "refuted";
+  } else {
+    claim.status = "confirmed";
+  }
+}
+
+export function voteSplit(claim: ResearchClaim): string {
+  const refuted = claim.votes.filter((vote) => vote.refuted).length;
+  return `${claim.votes.length - refuted}-${refuted}`;
+}
+
+export async function verifyClaims(
+  ctx: ResearchCtx,
+  question: string,
+): Promise<VerifySummary> {
+  const ranked = rankClaimsForVerification(ctx.store.claims.claims);
+  const selected = ranked.slice(0, MAX_VERIFY_CLAIMS);
+  const beyondCap = ranked.length - selected.length;
+  if (selected.length === 0) {
+    return {
+      verified: 0,
+      confirmed: 0,
+      refuted: 0,
+      unverified: 0,
+      beyondCap,
+    };
+  }
+
+  ctx.scope.emit({ type: "verify_started", claims: selected.length });
+  const gate = createConcurrencyGate(VERIFY_CONCURRENCY);
+  const searchIndexRef = { next: 0 };
+
+  await Promise.all(
+    selected.map(async (claim) => {
+      const votes = (
+        await Promise.all(
+          VERIFIER_LENSES.map((lens) =>
+            gate
+              .run(() => castVote(ctx, question, claim, lens, searchIndexRef))
+              .catch((err: unknown) => {
+                if (ctx.deps.signal?.aborted) throw err;
+                return null;
+              }),
+          ),
+        )
+      ).filter((vote): vote is ClaimVote => vote !== null);
+      settleClaim(claim, votes);
+      ctx.scope.emit({
+        type: "claim_verified",
+        id: claim.id,
+        claim: claim.text,
+        vote: voteSplit(claim),
+        status: claim.status,
+      });
+    }),
+  );
+
+  const summary: VerifySummary = {
+    verified: selected.length,
+    confirmed: selected.filter((claim) => claim.status === "confirmed").length,
+    refuted: selected.filter((claim) => claim.status === "refuted").length,
+    unverified: selected.filter((claim) => claim.status === "unverified")
+      .length,
+    beyondCap,
+  };
+  ctx.scope.emit({
+    type: "verify_finished",
+    confirmed: summary.confirmed,
+    refuted: summary.refuted,
+    unverified: summary.unverified,
+  });
+  return summary;
+}

@@ -210,6 +210,23 @@ function prettyEventBody(e: ResearchEvent): string {
             DIM,
             `      ↳ ${e.count} claim${e.count === 1 ? "" : "s"}${e.unsupported > 0 ? ` (${e.unsupported} unsupported)` : ""}`,
           );
+    case "verify_started":
+      return (
+        paint(DIM, "  →") +
+        ` verifying ${e.claims} claim${e.claims === 1 ? "" : "s"}`
+      );
+    case "claim_verified":
+      return (
+        paint(e.status === "confirmed" ? GREEN : YELLOW, "    ✓") +
+        ` ${truncate(e.claim, 64)} ` +
+        paint(DIM, `(${e.vote} ${e.status})`)
+      );
+    case "verify_finished":
+      return (
+        paint(DIM, "  ✓") +
+        ` verified — ${e.confirmed} confirmed, ${e.refuted} refuted` +
+        (e.unverified > 0 ? `, ${e.unverified} unverified` : "")
+      );
     case "citations_not_fetched":
       return (
         paint(YELLOW, "    ! citations not fetched:") +
