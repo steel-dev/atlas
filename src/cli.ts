@@ -26,7 +26,7 @@ Options:
       --provider PROVIDER     Model provider: anthropic, openai (default: auto)
       --search-provider NAME  Search backend: web, exa, brave (default: web)
       --model MODEL           Model name (default: provider-specific)
-      --summary-model MODEL   Model for optional source digests (default: haiku on anthropic)
+      --summary-model MODEL   Model for source digests and compaction (default: the main model)
       --base-url URL          OpenAI-compatible base URL (provider=openai)
       --proxy                 Route Steel search and fetch requests through proxy
       --json                  Emit one JSON event per line on stderr
@@ -333,6 +333,7 @@ async function main(): Promise<void> {
       exploreProviderOptions: { anthropic: { thinking: { type: "adaptive" } } },
       finalizeProviderOptions: {
         anthropic: { thinking: { type: "adaptive" }, effort: "high" },
+        openai: { reasoningEffort: "high" },
       },
       timeoutMs:
         timeoutSeconds !== undefined

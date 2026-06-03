@@ -1437,9 +1437,11 @@ async function runCase(
       browser: steel({ proxy: opts.useProxy }),
       exploreProviderOptions: {
         anthropic: { thinking: { type: "adaptive" }, effort: "max" },
+        openai: { reasoningEffort: "high" },
       },
       finalizeProviderOptions: {
         anthropic: { thinking: { type: "adaptive" }, effort: "max" },
+        openai: { reasoningEffort: "high" },
       },
     });
     for await (const event of run.events) {
