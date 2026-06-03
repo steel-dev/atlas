@@ -25,23 +25,11 @@ import type { ResearchEvent, RunInput } from "./research.js";
 const DEFAULT_RUNTIME_LIMITS = {
   maxConcurrentTools: 8,
   maxConcurrentSteelCalls: 10,
-  maxDelegationDepth: 1,
-  maxConcurrentSubagents: 3,
+  maxConcurrentModelCalls: 8,
   defaultSearchLimit: 8,
   maxOutputTokens: 16_384,
   timeoutSynthesisReserveMs: 180_000,
-  compactionTriggerTokens: 200_000,
-  compactionKeepTokens: 100_000,
-  subagentCompactionTriggerTokens: 100_000,
-  subagentCompactionKeepTokens: 50_000,
 };
-
-// Caps total in-flight model connections across the lead, every sub-agent, and
-// their compaction/digest calls. A dedicated sub-agent semaphore bounds fan-out
-// to maxConcurrentSubagents live sub-agents; this adds headroom on top so the
-// lead is never starved while that many sub-agents call the model. Derived from
-// the fan-out width unless ATLAS_MAX_CONCURRENT_MODEL_CALLS overrides it.
-const MODEL_CALL_HEADROOM = 1;
 
 // Total token budget = the single test-time compute knob. Tool-call and source
 // safety caps are derived from it (and floored) so the token budget — not a
@@ -57,15 +45,13 @@ export const RUNTIME_LIMITS = DEFAULT_RUNTIME_LIMITS;
 export interface ResolvedRunConfig {
   provider: ModelProvider;
   model: string;
-  summaryModel: string;
+  leafModel: string;
   steelApiKey: string;
   steelBaseUrl?: string;
   useProxy: boolean;
   safetyMaxToolCalls: number;
   maxConcurrentModelCalls: number;
   maxConcurrentSteelCalls: number;
-  compactionTriggerTokens: number;
-  compactionKeepTokens: number;
   timeoutDeadlineAt?: number;
   synthesisReserveMs?: number;
   browserMaxSessions: number;
@@ -76,7 +62,7 @@ export interface ResolvedRunConfig {
 
 export interface RunResources {
   modelAdapter: ModelAdapter;
-  summaryAdapter: ModelAdapter;
+  leafAdapter: ModelAdapter;
   steel: ReturnType<typeof createSteel>;
   browserSessionPool: BrowserSessionPool;
 }
@@ -100,8 +86,6 @@ export function resolveRunConfig(opts: RunInput): ResolvedRunConfig {
     DEFAULT_TOKEN_LIMIT;
   const effectiveLimitForCaps =
     tokenLimit > 0 ? tokenLimit : DEFAULT_TOKEN_LIMIT;
-  const maxConcurrentSubagents =
-    readIntEnv("ATLAS_MAX_SUBAGENTS", 1) ?? limits.maxConcurrentSubagents;
 
   const agent: ResearchConfig = {
     useProxy,
@@ -112,24 +96,16 @@ export function resolveRunConfig(opts: RunInput): ResolvedRunConfig {
     maxOutputTokens: limits.maxOutputTokens,
     defaultSearchLimit: limits.defaultSearchLimit,
     maxConcurrentTools: limits.maxConcurrentTools,
-    subagentCompactionTriggerTokens: limits.subagentCompactionTriggerTokens,
-    subagentCompactionKeepTokens: limits.subagentCompactionKeepTokens,
     tokenLimit,
-    maxDelegationDepth:
-      readIntEnv("ATLAS_MAX_DELEGATION_DEPTH", 0) ?? limits.maxDelegationDepth,
-    maxConcurrentSubagents,
     exploreProviderOptions: opts.exploreProviderOptions,
     finalizeProviderOptions: opts.finalizeProviderOptions,
     instructions: opts.instructions,
-    userTools: opts.userTools,
   };
 
   return {
     provider,
     model,
-    summaryModel: opts.summaryModel
-      ? modelLabel(opts.summaryModel).modelId
-      : model,
+    leafModel: opts.leafModel ? modelLabel(opts.leafModel).modelId : model,
     steelApiKey,
     steelBaseUrl:
       browser?.baseUrl ?? readEnv("ATLAS_STEEL_BASE_URL", "STEEL_BASE_URL"),
@@ -140,14 +116,8 @@ export function resolveRunConfig(opts: RunInput): ResolvedRunConfig {
     ),
     maxConcurrentModelCalls:
       readIntEnv("ATLAS_MAX_CONCURRENT_MODEL_CALLS", 1) ??
-      maxConcurrentSubagents + MODEL_CALL_HEADROOM,
+      limits.maxConcurrentModelCalls,
     maxConcurrentSteelCalls: limits.maxConcurrentSteelCalls,
-    compactionTriggerTokens:
-      readIntEnv("ATLAS_COMPACTION_TRIGGER_TOKENS", 0) ??
-      limits.compactionTriggerTokens,
-    compactionKeepTokens:
-      readIntEnv("ATLAS_COMPACTION_KEEP_TOKENS", 0) ??
-      limits.compactionKeepTokens,
     agent,
     timeoutDeadlineAt:
       opts.timeoutMs === undefined
@@ -161,16 +131,15 @@ export function resolveRunConfig(opts: RunInput): ResolvedRunConfig {
             limits.timeoutSynthesisReserveMs,
           ),
     browserMaxSessions:
-      readBrowserMaxSessionsFromEnv() ??
-      defaultBrowserMaxSessions(maxConcurrentSubagents),
+      readBrowserMaxSessionsFromEnv() ?? defaultBrowserMaxSessions(0),
     browserIdleTtlMs: readBrowserIdleTtlMsFromEnv(),
     search: opts.search,
   };
 }
 
 // Creates the long-lived clients, gates, and the browser pool the run owns. The
-// lead and summary models share one concurrency gate so the total in-flight
-// model connections stay bounded across the whole run.
+// lead and leaf models share one concurrency gate so the total in-flight model
+// connections stay bounded across the whole run.
 export function createRunResources(
   opts: RunInput,
   config: ResolvedRunConfig,
@@ -209,8 +178,8 @@ export function createRunResources(
     provider: config.provider,
     modelId: config.model,
   });
-  const summaryAdapter = opts.summaryModel
-    ? wrap(opts.summaryModel, modelLabel(opts.summaryModel))
+  const leafAdapter = opts.leafModel
+    ? wrap(opts.leafModel, modelLabel(opts.leafModel))
     : modelAdapter;
   const steel = createSteel({
     apiKey: config.steelApiKey,
@@ -225,7 +194,7 @@ export function createRunResources(
     maxSessions: config.browserMaxSessions,
     idleTtlMs: config.browserIdleTtlMs,
   });
-  return { modelAdapter, summaryAdapter, steel, browserSessionPool };
+  return { modelAdapter, leafAdapter, steel, browserSessionPool };
 }
 
 function readIntEnv(name: string, min: number): number | undefined {
@@ -266,11 +235,11 @@ function resolveModel(
     : DEFAULT_OPENAI_MODEL;
 }
 
-function resolveSummaryModel(
-  summaryModel: string | undefined,
+function resolveLeafModel(
+  leafModel: string | undefined,
   mainModel: string,
 ): string {
-  const raw = summaryModel ?? readEnv("ATLAS_SUMMARY_MODEL");
+  const raw = leafModel ?? readEnv("ATLAS_LEAF_MODEL");
   if (raw?.trim()) return raw.trim();
   return mainModel;
 }
@@ -285,22 +254,22 @@ function modelLabel(model: Exclude<LanguageModel, string>): {
 interface ModelSpecInput {
   provider?: ModelProvider;
   model?: string;
-  summaryModel?: string;
+  leafModel?: string;
 }
 
 export async function resolveModelSpec(opts: ModelSpecInput): Promise<{
   model: Exclude<LanguageModel, string>;
-  summaryModel?: Exclude<LanguageModel, string>;
+  leafModel?: Exclude<LanguageModel, string>;
 }> {
   const provider = resolveProvider(opts.provider);
   const modelId = resolveModel(provider, opts.model);
   const model = await buildLanguageModel(provider, modelId);
-  const summaryId = resolveSummaryModel(opts.summaryModel, modelId);
-  return summaryId === modelId
+  const leafId = resolveLeafModel(opts.leafModel, modelId);
+  return leafId === modelId
     ? { model }
     : {
         model,
-        summaryModel: await buildLanguageModel(provider, summaryId),
+        leafModel: await buildLanguageModel(provider, leafId),
       };
 }
 

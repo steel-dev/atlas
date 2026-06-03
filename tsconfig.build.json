@@ -3,5 +3,11 @@
   "compilerOptions": {
     "noEmit": false
   },
-  "exclude": ["node_modules", "dist", "refs", "src/**/*.test.ts"]
+  "exclude": [
+    "node_modules",
+    "dist",
+    "refs",
+    "src/**/*.test.ts",
+    "src/test-harness.ts"
+  ]
 }

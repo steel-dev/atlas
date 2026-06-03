@@ -81,13 +81,17 @@ function makeCtx(
         nextSourceNumber: 1,
         documents: new Map(),
       },
-      caches: { serp: new Map(), sources: new Map(), summaries: new Map() },
-      claims: { claims: [], queue: () => {}, settle: async () => {} },
+      caches: { serp: new Map(), sources: new Map() },
+      claims: {
+        claims: [],
+        unsupportedCount: 0,
+        queue: () => {},
+        settle: async () => {},
+      },
     },
     scope: createAgentScope({
       sink: (event) => events.push(event),
       query: "test question",
-      depth: 0,
     }),
     events,
   } as ResearchCtx & { events: unknown[] };

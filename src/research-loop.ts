@@ -1,58 +1,41 @@
 import {
-  totalUsageTokens,
   type ModelAssistantBlock,
   type ModelMessage,
-  type ModelStepInput,
-  type ModelStepResult,
   type ModelToolCall,
   type ModelToolResult,
 } from "./model.js";
 import {
   stopRequestedReason,
+  timeoutSynthesisReason,
   tokenBudgetExhaustedReason,
   type ResearchCtx,
 } from "./runtime.js";
 import {
-  estimateMessagesTokens,
-  maybeCompactResearchContext,
-} from "./compaction.js";
-import { errorMessage } from "./errors.js";
-import { parseRetryAfterSeconds } from "./steel-runtime.js";
-import { normalizeUrlForSource } from "./url.js";
-import {
-  searchQueryCount,
-  searchEnginesForFusion,
-  type SearchToolInput,
-} from "./search-tool.js";
-import {
   executeResearchTool,
   researchToolDefinitions,
   toolSpendsActionBudget,
-  userToolDefinitions,
+  type ToolHandlerExtras,
 } from "./tool-registry.js";
 import {
-  EMPTY_RESPONSE_PROMPT,
-  finalSynthesisPrompt,
-  RESEARCH_SYSTEM_PROMPT,
-  researchQuestionPrompt,
+  EMPTY_GAP_NOTE_PROMPT,
+  LEAD_SYSTEM_PROMPT,
+  leadAnchorPrompt,
 } from "./tool-contract.js";
-import { createSubagentScope, SUBAGENT_MAX_TOOL_CALLS } from "./subagents.js";
-import {
-  createMessageBroker,
-  LEAD_ADDRESS,
-  type MailboxMessage,
-  type MessageBroker,
-} from "./messaging.js";
+import type { RecallOutcome } from "./recall.js";
+import type { ResearchClaim } from "./claims.js";
 
 const DEFAULT_MAX_CONCURRENT_TOOLS = 4;
-const BUDGET_STATUS_REMAINING_RATIO = 0.3;
+const REANCHOR_TRIGGER_TOKENS = 150_000;
+const LEDGER_DIGEST_MAX_CLAIMS = 60;
+const CHARS_PER_TOKEN = 4;
 
-export interface ResearchLoopResult {
-  fetchedUrls: string[];
+export interface GapLoopResult {
+  gapsNote: string;
   toolCalls: number;
+  totalToolExecutions: number;
+  surveys: number;
+  reanchors: number;
   finishReason: string;
-  messages: ModelMessage[];
-  markdown: string;
 }
 
 function textFromContent(content: ModelAssistantBlock[]): string {
@@ -62,93 +45,67 @@ function textFromContent(content: ModelAssistantBlock[]): string {
     .trim();
 }
 
-function timeoutSynthesisReason(ctx: ResearchCtx): string | null {
-  if (
-    ctx.scope.deadlineAt === undefined ||
-    ctx.scope.synthesisReserveMs === undefined
-  ) {
-    return null;
+function shortHost(url: string): string {
+  try {
+    return new URL(url).hostname.replace(/^www\./, "");
+  } catch {
+    return url;
   }
-  const remainingMs = ctx.scope.deadlineAt - Date.now();
-  if (remainingMs > ctx.scope.synthesisReserveMs) return null;
-  const remainingSeconds = Math.max(0, Math.ceil(remainingMs / 1000));
-  return `timeout approaching (${remainingSeconds}s remaining)`;
 }
 
-function shouldAttemptFinalSynthesis(finishReason: string): boolean {
-  return (
-    finishReason === "tool call budget exhausted" ||
-    finishReason === "tool execution safety budget exhausted" ||
-    finishReason === "token budget exhausted" ||
-    finishReason === "stop requested" ||
-    finishReason.startsWith("timeout approaching")
-  );
+export function renderLedgerDigest(
+  claims: ResearchClaim[],
+  maxClaims = LEDGER_DIGEST_MAX_CLAIMS,
+): string {
+  const lines = claims
+    .slice(0, maxClaims)
+    .map(
+      (claim) =>
+        `[${claim.id}·${claim.importance}·${claim.sourceQuality}] ${claim.text} — ${shortHost(claim.url)} (${claim.sourceId})`,
+    );
+  if (claims.length > maxClaims) {
+    lines.push(
+      `…and ${claims.length - maxClaims} more claims (inspect their sources with search_sources/read_source)`,
+    );
+  }
+  return lines.join("\n");
+}
+
+function estimateMessagesTokens(messages: ModelMessage[]): number {
+  let chars = 0;
+  for (const message of messages) {
+    if (message.role === "user") {
+      chars +=
+        typeof message.content === "string"
+          ? message.content.length
+          : message.content.reduce(
+              (sum, result) => sum + result.content.length,
+              0,
+            );
+      continue;
+    }
+    for (const block of message.content) {
+      switch (block.type) {
+        case "text":
+          chars += block.text.length;
+          break;
+        case "thinking":
+          chars += block.thinking.length;
+          break;
+        case "redacted_thinking":
+          chars += block.data.length;
+          break;
+        case "tool_call":
+          chars += block.name.length + JSON.stringify(block.input ?? {}).length;
+          break;
+      }
+    }
+  }
+  return Math.ceil(chars / CHARS_PER_TOKEN);
 }
 
 function spendsActionBudget(tu: ModelToolCall): boolean {
   return toolSpendsActionBudget(tu.name);
-}
-
-function actionToolCallCount(toolUses: ModelToolCall[]): number {
-  return toolUses.filter(spendsActionBudget).length;
-}
-
-function budgetStatusMessage(opts: {
-  actionToolCalls: number;
-  maxActionToolCalls: number;
-  totalToolExecutions: number;
-  maxTotalToolExecutions: number;
-  freeToolNames: string[];
-  ctx: ResearchCtx;
-}): string | null {
-  const actionRemaining = Math.max(
-    0,
-    opts.maxActionToolCalls - opts.actionToolCalls,
-  );
-  const totalRemaining = Math.max(
-    0,
-    opts.maxTotalToolExecutions - opts.totalToolExecutions,
-  );
-  const sourcesRemaining = Math.max(
-    0,
-    opts.ctx.config.sourceCap - opts.ctx.store.fetchedSources.length,
-  );
-  const tokenLimit = opts.ctx.config.tokenLimit ?? 0;
-  const tokensUsed =
-    tokenLimit > 0 ? totalUsageTokens(opts.ctx.deps.model.usage) : 0;
-  const tokenRatio =
-    tokenLimit > 0
-      ? Math.max(0, (tokenLimit - tokensUsed) / tokenLimit)
-      : Number.POSITIVE_INFINITY;
-  const actionRatio =
-    opts.maxActionToolCalls > 0
-      ? actionRemaining / opts.maxActionToolCalls
-      : Number.POSITIVE_INFINITY;
-  const totalRatio =
-    opts.maxTotalToolExecutions > 0
-      ? totalRemaining / opts.maxTotalToolExecutions
-      : Number.POSITIVE_INFINITY;
-  const shouldShow =
-    actionRatio <= BUDGET_STATUS_REMAINING_RATIO ||
-    totalRatio <= BUDGET_STATUS_REMAINING_RATIO ||
-    tokenRatio <= BUDGET_STATUS_REMAINING_RATIO;
-
-  if (!shouldShow) return null;
-
-  return [
-    "Budget status:",
-    `action_tool_calls=${opts.actionToolCalls}/${opts.maxActionToolCalls}`,
-    `action_tool_calls_remaining=${actionRemaining}`,
-    `tool_execution_safety_remaining=${totalRemaining}`,
-    `sources=${opts.ctx.store.fetchedSources.length}/${opts.ctx.config.sourceCap}`,
-    `sources_remaining=${sourcesRemaining}`,
-    ...(tokenLimit > 0 ? [`tokens_used=${tokensUsed}/${tokenLimit}`] : []),
-    ...(opts.freeToolNames.length > 0
-      ? [
-          `${opts.freeToolNames.join("/")} do not spend action_tool_calls.`,
-        ]
-      : []),
-  ].join(" ");
 }
 
 async function mapWithConcurrency<T, R>(
@@ -174,112 +131,76 @@ async function mapWithConcurrency<T, R>(
   return results;
 }
 
-function inboundMessagesNote(messages: MailboxMessage[]): string {
-  return [
-    "Messages received while you were working:",
-    ...messages.map((message) => `[from ${message.from}] ${message.content}`),
-  ].join("\n");
-}
-
-export async function runResearchLoop(opts: {
+export async function runGapLoop(opts: {
   ctx: ResearchCtx;
-  query: string;
+  question: string;
+  recall: RecallOutcome;
   maxToolCalls: number;
-  systemPrompt?: string;
-  messaging?: { broker: MessageBroker; address: string };
-}): Promise<ResearchLoopResult> {
-  const { ctx, query } = opts;
-  const baseSystemPrompt = opts.systemPrompt ?? RESEARCH_SYSTEM_PROMPT;
+}): Promise<GapLoopResult> {
+  const { ctx, question, recall } = opts;
   const systemPrompt = ctx.config.instructions
-    ? `${baseSystemPrompt}\n\n${ctx.config.instructions}`
-    : baseSystemPrompt;
-  const isSubagent = (ctx.scope.depth ?? 0) > 0;
-  const includeDelegation =
-    (ctx.scope.depth ?? 0) < (ctx.config.maxDelegationDepth ?? 0);
-  const tools = [
-    ...researchToolDefinitions({
-      includeDelegation,
-      includeMessaging: includeDelegation || isSubagent,
-    }),
-    ...userToolDefinitions(ctx),
-  ];
-  const freeToolNames = tools
-    .map((tool) => tool.name)
-    .filter((name) => !toolSpendsActionBudget(name));
+    ? `${LEAD_SYSTEM_PROMPT}\n\n${ctx.config.instructions}`
+    : LEAD_SYSTEM_PROMPT;
+  const tools = researchToolDefinitions();
   const maxToolCalls = opts.maxToolCalls;
   const maxTotalToolExecutions = maxToolCalls * 3;
-  const broker = opts.messaging?.broker ?? createMessageBroker();
-  const mailbox = broker.mailbox(opts.messaging?.address ?? LEAD_ADDRESS, ctx);
-  const subagents = createSubagentScope(
-    ctx,
-    SUBAGENT_MAX_TOOL_CALLS,
-    runResearchLoop,
-    broker,
-  );
-
-  const streamReportStep = (
-    input: ModelStepInput,
-  ): Promise<ModelStepResult> => {
-    const stepStream = ctx.deps.model.stepStream;
-    if (isSubagent || !stepStream) return ctx.deps.model.step(input);
-    return stepStream(input, {
-      onStart: () => ctx.scope.emit({ type: "report_boundary" }),
-      onText: (text) => ctx.scope.emit({ type: "report_delta", text }),
-    });
+  const extras: ToolHandlerExtras = {
+    searchIndexRef: { next: recall.searchQueriesRun },
+    surveyedGoals: [],
   };
 
-  if (!isSubagent) ctx.scope.emit({ type: "research_started" });
+  const buildAnchor = (reanchored: boolean): ModelMessage => ({
+    role: "user",
+    content: leadAnchorPrompt({
+      question,
+      strategy: recall.strategy,
+      angles: recall.angles.map(({ label, query }) => ({ label, query })),
+      ledgerDigest: renderLedgerDigest(ctx.store.claims.claims),
+      claimCount: ctx.store.claims.claims.length,
+      sourceCount: ctx.store.sourceDocuments.size,
+      surveyedGoals: extras.surveyedGoals,
+      reanchored,
+    }),
+  });
 
-  const fetchedUrls: string[] = [];
+  let messages: ModelMessage[] = [buildAnchor(false)];
   let toolCalls = 0;
   let totalToolExecutions = 0;
+  let surveys = 0;
+  let reanchors = 0;
+  let gapsNote = "";
   let finishReason = "tool call budget exhausted";
-  let markdown = "";
-  let searchIndex = 0;
   let nudgedEmptyResponse = false;
-  // Real-tokens-per-(char/4)-estimate ratio, updated from each step's reported
-  // prompt size so compaction tracks true context cost (CJK/JSON cost more).
-  let tokenCalibration = 1;
-
-  const messages: ModelMessage[] = [
-    {
-      role: "user",
-      content: researchQuestionPrompt(query),
-    },
-  ];
 
   while (
     toolCalls < maxToolCalls &&
     totalToolExecutions < maxTotalToolExecutions
   ) {
     ctx.deps.throwIfAborted();
-    const preStepStopReason = stopRequestedReason(ctx);
-    if (preStepStopReason) {
-      finishReason = preStepStopReason;
-      break;
-    }
-    const preStepTimeoutReason = timeoutSynthesisReason(ctx);
-    if (preStepTimeoutReason) {
-      finishReason = preStepTimeoutReason;
-      break;
-    }
-
-    const tokenBudgetReason = tokenBudgetExhaustedReason(ctx);
-    if (tokenBudgetReason) {
-      finishReason = tokenBudgetReason;
+    const breakReason =
+      stopRequestedReason(ctx) ??
+      timeoutSynthesisReason(ctx) ??
+      tokenBudgetExhaustedReason(ctx);
+    if (breakReason) {
+      finishReason = breakReason;
       break;
     }
 
-    await maybeCompactResearchContext({
-      ctx,
-      messages,
-      calibration: tokenCalibration,
-    });
+    if (estimateMessagesTokens(messages) > REANCHOR_TRIGGER_TOKENS) {
+      const tokensBefore = estimateMessagesTokens(messages);
+      const droppedMessages = messages.length;
+      messages = [buildAnchor(true)];
+      reanchors++;
+      ctx.scope.emit({
+        type: "context_reanchored",
+        tokensBefore,
+        droppedMessages,
+      });
+    }
 
-    const promptTokenEstimate = estimateMessagesTokens(messages);
-    let resp: ModelStepResult;
+    let content: ModelAssistantBlock[];
     try {
-      resp = await streamReportStep({
+      const resp = await ctx.deps.model.step({
         system: systemPrompt,
         tools,
         messages,
@@ -287,55 +208,34 @@ export async function runResearchLoop(opts: {
         providerOptions: ctx.config.exploreProviderOptions,
         signal: ctx.deps.signal,
       });
+      content = resp.content;
     } catch (err) {
       if (ctx.deps.signal?.aborted) throw err;
-      const message = errorMessage(err);
-      finishReason = `api error: ${message}`;
+      finishReason = `api error: ${err instanceof Error ? err.message : String(err)}`;
       break;
     }
-    if (promptTokenEstimate > 0 && (resp.inputTokens ?? 0) > 0) {
-      tokenCalibration = Math.min(
-        8,
-        Math.max(1, (resp.inputTokens as number) / promptTokenEstimate),
-      );
-    }
 
-    const toolUses = resp.content.filter(
-      (c): c is ModelToolCall => c.type === "tool_call",
+    const toolUses = content.filter(
+      (block): block is ModelToolCall => block.type === "tool_call",
     );
     if (toolUses.length === 0) {
-      const text = textFromContent(resp.content);
+      const text = textFromContent(content);
       if (text) {
-        messages.push({ role: "assistant", content: resp.content });
-        markdown = text;
-        finishReason = "final report";
+        gapsNote = text;
+        finishReason = "gaps assessed";
         break;
       }
-      if (!nudgedEmptyResponse && resp.content.length > 0) {
+      if (!nudgedEmptyResponse && content.length > 0) {
         nudgedEmptyResponse = true;
-        messages.push({ role: "assistant", content: resp.content });
-        messages.push({ role: "user", content: EMPTY_RESPONSE_PROMPT });
+        messages.push({ role: "assistant", content });
+        messages.push({ role: "user", content: EMPTY_GAP_NOTE_PROMPT });
         continue;
       }
-      if (resp.content.length > 0) {
-        messages.push({ role: "assistant", content: resp.content });
-      }
-      finishReason = "empty final response";
+      finishReason = "empty response";
       break;
     }
 
-    const postStepStopReason = stopRequestedReason(ctx);
-    if (postStepStopReason) {
-      finishReason = postStepStopReason;
-      break;
-    }
-    const postStepTimeoutReason = timeoutSynthesisReason(ctx);
-    if (postStepTimeoutReason) {
-      finishReason = postStepTimeoutReason;
-      break;
-    }
-
-    messages.push({ role: "assistant", content: resp.content });
+    messages.push({ role: "assistant", content });
 
     let remainingActionToolCalls = maxToolCalls - toolCalls;
     let remainingTotalToolExecutions =
@@ -362,138 +262,44 @@ export async function runResearchLoop(opts: {
       remainingTotalToolExecutions--;
       if (spendsActionBudget(toolUse)) remainingActionToolCalls--;
     }
-    const searchIndexes = activeToolUses.map((tu) => {
-      if (tu.name !== "search") return undefined;
-      const start = searchIndex + 1;
-      searchIndex += searchQueryCount((tu.input as SearchToolInput) ?? {});
-      return start;
-    });
-    const actionCallsThisStep = actionToolCallCount(activeToolUses);
-    toolCalls += actionCallsThisStep;
+    toolCalls += activeToolUses.filter(spendsActionBudget).length;
     totalToolExecutions += activeToolUses.length;
+    surveys += activeToolUses.filter((tu) => tu.name === "survey").length;
 
     const executions = await mapWithConcurrency(
       activeToolUses,
       ctx.config.maxConcurrentTools ?? DEFAULT_MAX_CONCURRENT_TOOLS,
-      (tu, index) =>
-        executeResearchTool(tu, ctx, {
-          subagents,
-          messaging: mailbox,
-          searchIndex: searchIndexes[index],
-        }),
+      (tu) => executeResearchTool(tu, ctx, extras),
     );
-    const toolResults = [
-      ...executions.map((e) => e.toolResult),
+    const toolResults: ModelToolResult[] = [
+      ...executions.map((execution) => execution.toolResult),
       ...skippedToolUses.map(
         ({ toolUse, reason }): ModelToolResult => ({
           type: "tool_result",
           tool_call_id: toolUse.id,
-          content: `Tool not run: ${reason}.`,
+          content: `Tool not run: ${reason}. Stop calling tools and write your gap note.`,
           is_error: true,
         }),
       ),
     ];
-    for (const execution of executions) {
-      if (execution.fetchedUrl !== undefined) {
-        fetchedUrls.push(execution.fetchedUrl);
-      }
-      if (execution.fetchedUrls) {
-        fetchedUrls.push(...execution.fetchedUrls);
-      }
-    }
-
     messages.push({ role: "user", content: toolResults });
-    const budgetStatus = budgetStatusMessage({
-      actionToolCalls: toolCalls,
-      maxActionToolCalls: maxToolCalls,
-      totalToolExecutions,
-      maxTotalToolExecutions,
-      freeToolNames,
-      ctx,
-    });
-    if (budgetStatus) {
-      messages.push({
-        role: "user",
-        content: budgetStatus,
-      });
-    }
-    const inbound = mailbox.drain();
-    if (inbound.length > 0) {
-      messages.push({ role: "user", content: inboundMessagesNote(inbound) });
-    }
 
     if (totalToolExecutions >= maxTotalToolExecutions) {
       finishReason = "tool execution safety budget exhausted";
       break;
     }
-
     if (toolCalls >= maxToolCalls) {
       finishReason = "tool call budget exhausted";
       break;
     }
   }
 
-  const canSalvageAfterApiError =
-    finishReason.startsWith("api error") && ctx.store.fetchedSources.length > 0;
-  if (
-    !markdown &&
-    (shouldAttemptFinalSynthesis(finishReason) || canSalvageAfterApiError)
-  ) {
-    ctx.deps.throwIfAborted();
-    const lastInbound = mailbox.drain();
-    if (lastInbound.length > 0) {
-      messages.push({
-        role: "user",
-        content: inboundMessagesNote(lastInbound),
-      });
-    }
-    messages.push({
-      role: "user",
-      content: finalSynthesisPrompt(finishReason),
-    });
-
-    try {
-      const resp = await streamReportStep({
-        system: systemPrompt,
-        messages,
-        maxTokens: ctx.config.maxOutputTokens ?? 2048,
-        providerOptions: ctx.config.finalizeProviderOptions,
-        signal: ctx.deps.signal,
-      });
-      messages.push({ role: "assistant", content: resp.content });
-      const text = textFromContent(resp.content);
-      markdown = text;
-      finishReason = text
-        ? `final report after ${finishReason}`
-        : `empty final synthesis after ${finishReason}`;
-    } catch (err) {
-      if (ctx.deps.signal?.aborted) throw err;
-      const message = errorMessage(err);
-      finishReason = `final synthesis api error after ${finishReason}: ${message}`;
-    }
-  }
-
-  const leftoverFetchedUrls = await subagents.settle();
-  if (leftoverFetchedUrls.length > 0) fetchedUrls.push(...leftoverFetchedUrls);
-
-  if (!isSubagent) {
-    ctx.scope.emit({
-      type: "research_finished",
-      sourcesFetched: ctx.store.fetchedSources.length,
-    });
-  }
-
   return {
-    fetchedUrls: [...fetchedUrls],
+    gapsNote,
     toolCalls,
+    totalToolExecutions,
+    surveys,
+    reanchors,
     finishReason,
-    messages: [...messages],
-    markdown,
   };
 }
-
-export const __testing = {
-  normalizeUrlForSource,
-  parseRetryAfterSeconds,
-  searchEnginesForFusion,
-};

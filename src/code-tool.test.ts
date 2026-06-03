@@ -6,6 +6,7 @@ import type { ClaimLedger } from "./claims.js";
 
 const stubClaims: ClaimLedger = {
   claims: [],
+  unsupportedCount: 0,
   queue: () => {},
   settle: async () => {},
 };

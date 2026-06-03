@@ -8,6 +8,7 @@ import type {
 } from "./model.js";
 import {
   createConcurrencyGate,
+  timeoutSynthesisReason,
   tokenBudgetExhaustedReason,
   type ResearchCtx,
 } from "./runtime.js";
@@ -258,14 +259,16 @@ async function castVote(
   lens: VerifierLens,
   searchIndexRef: { next: number },
 ): Promise<ClaimVote | null> {
-  const model = ctx.deps.summaryModel ?? ctx.deps.model;
+  const model = ctx.deps.leafModel ?? ctx.deps.model;
   const tools = LENS_TOOLS[lens];
   const messages: ModelMessage[] = [
     { role: "user", content: voterPrompt(question, claim, lens) },
   ];
 
   for (let turn = 0; turn < MAX_VOTER_TOOL_TURNS; turn++) {
-    if (tokenBudgetExhaustedReason(ctx)) return null;
+    if (tokenBudgetExhaustedReason(ctx) || timeoutSynthesisReason(ctx)) {
+      return null;
+    }
     const result = await model.step({
       system: VERIFIER_SYSTEM_PROMPT,
       tools,
@@ -284,7 +287,9 @@ async function castVote(
     messages.push({ role: "user", content: toolResults });
   }
 
-  if (tokenBudgetExhaustedReason(ctx)) return null;
+  if (tokenBudgetExhaustedReason(ctx) || timeoutSynthesisReason(ctx)) {
+    return null;
+  }
   messages.push({
     role: "user",
     content:

@@ -371,8 +371,8 @@ export class BrowserSessionPool {
   }
 }
 
-export function defaultBrowserMaxSessions(maxConcurrentSubagents = 0): number {
-  const agents = 1 + Math.max(0, Math.floor(maxConcurrentSubagents));
+export function defaultBrowserMaxSessions(extraAgents = 0): number {
+  const agents = 1 + Math.max(0, Math.floor(extraAgents));
   return Math.max(
     MIN_DEFAULT_BROWSER_SESSIONS,
     agents * DEFAULT_BROWSER_SESSIONS_PER_AGENT,

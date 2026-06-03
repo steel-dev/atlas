@@ -17,7 +17,9 @@ const USAGE = `atlas — deep research from your terminal
 Usage:
   atlas "<question>" [options]
 
-A research loop searches, fetches sources, and writes a cited Markdown report.
+A research lifecycle scopes the question, searches it from several angles,
+extracts verbatim-quoted claims, chases gaps, adversarially verifies every
+claim, and synthesizes a cited Markdown report from the survivors.
 
 Options:
   -o, --out <file>            Write the markdown report to <file> (default: stdout)
@@ -26,7 +28,7 @@ Options:
       --provider PROVIDER     Model provider: anthropic, openai (default: auto)
       --search-provider NAME  Search backend: web, exa, brave (default: web)
       --model MODEL           Model name (default: provider-specific)
-      --summary-model MODEL   Model for source digests and compaction (default: the main model)
+      --leaf-model MODEL      Model for claim extraction and verification voters (default: the main model)
       --proxy                 Route Steel search and fetch requests through proxy
       --json                  Emit one JSON event per line on stderr
   -q, --quiet                 Suppress progress events on stderr
@@ -38,11 +40,9 @@ Environment:
   ATLAS_EXA_API_KEY       or EXA_API_KEY        required for --search-provider exa
   ATLAS_BRAVE_API_KEY     or BRAVE_API_KEY      required for --search-provider brave
   ATLAS_MODEL                                   optional
-  ATLAS_SUMMARY_MODEL                           optional (source digest + compaction model)
+  ATLAS_LEAF_MODEL                              optional (claim extraction + verifier model)
   ATLAS_TOKEN_LIMIT                             optional (total token budget; 0 = unlimited)
-  ATLAS_COMPACTION_TRIGGER_TOKENS               optional (compact context above N tokens; 0 disables)
-  ATLAS_MAX_DELEGATION_DEPTH                    optional (0 disables sub-agent delegation)
-  ATLAS_MAX_SUBAGENTS                           optional (max concurrent sub-agents)
+  ATLAS_MAX_CONCURRENT_MODEL_CALLS              optional (leaf fan-out width, default 8)
   ATLAS_BROWSER_IDLE_TTL_MS                     optional (default 120000; <=0 disables)
   ATLAS_ANTHROPIC_API_KEY or ANTHROPIC_API_KEY  required for provider=anthropic
   ATLAS_OPENAI_API_KEY    or OPENAI_API_KEY     required for provider=openai
@@ -124,8 +124,7 @@ function truncate(text: string, max: number): string {
 }
 
 function prettyEvent(e: ResearchEvent): string {
-  const pad = "  ".repeat(Math.max(0, e.depth ?? 0));
-  return pad + prettyEventBody(e);
+  return prettyEventBody(e);
 }
 
 function prettyEventBody(e: ResearchEvent): string {
@@ -145,8 +144,6 @@ function prettyEventBody(e: ResearchEvent): string {
         (detail ? ` ${truncate(detail, 80)}` : "")
       );
     }
-    case "message_sent":
-      return paint(DIM, `    ✉ ${e.from} → ${e.to} (${e.chars} chars)`);
     case "research_started":
       return paint(DIM, "  →") + " research started";
     case "scope_completed":
@@ -159,26 +156,10 @@ function prettyEventBody(e: ResearchEvent): string {
         paint(DIM, "  ✓") +
         ` research done — ${e.sourcesFetched} source${e.sourcesFetched === 1 ? "" : "s"} fetched`
       );
-    case "context_compacted":
+    case "context_reanchored":
       return paint(
         DIM,
-        `    ⤵ context compacted — ~${Math.round(e.tokensBefore / 1000)}k → ~${Math.round(e.tokensAfter / 1000)}k tok`,
-      );
-    case "delegation_started":
-      return (
-        paint(DIM, "    ⇣") +
-        ` delegating ${e.tasks.length} sub-agent${e.tasks.length === 1 ? "" : "s"}`
-      );
-    case "subagent_started":
-      return paint(DIM, "      ↳ sub-agent:") + ` ${truncate(e.task, 80)}`;
-    case "subagent_finished":
-      return (
-        paint(GREEN, "      ✓ sub-agent:") +
-        ` ${truncate(e.task, 64)}` +
-        paint(
-          DIM,
-          ` (${e.sourcesFetched} source${e.sourcesFetched === 1 ? "" : "s"}, ${e.toolCalls} call${e.toolCalls === 1 ? "" : "s"})`,
-        )
+        `    ⤵ context re-anchored — dropped ${e.droppedMessages} message${e.droppedMessages === 1 ? "" : "s"} (~${Math.round(e.tokensBefore / 1000)}k tok)`,
       );
     case "searching":
       return paint(DIM, `    search:`) + ` ${e.query}`;
@@ -256,7 +237,7 @@ function prettyEventBody(e: ResearchEvent): string {
       );
       return (
         paint(GREEN, "✓") +
-        ` done — ${e.result.citedSources.length} documents\n` +
+        ` done — ${e.result.claims.confirmed.length} verified claim${e.result.claims.confirmed.length === 1 ? "" : "s"} from ${e.result.citedSources.length} cited source${e.result.citedSources.length === 1 ? "" : "s"}\n` +
         tokenLine
       );
     }
@@ -284,7 +265,7 @@ async function main(): Promise<void> {
           provider: { type: "string" },
           "search-provider": { type: "string" },
           model: { type: "string" },
-          "summary-model": { type: "string" },
+          "leaf-model": { type: "string" },
           proxy: { type: "boolean" },
           json: { type: "boolean" },
           quiet: { type: "boolean", short: "q" },
@@ -330,14 +311,14 @@ async function main(): Promise<void> {
 
   let run!: ResearchStream;
   try {
-    const { model, summaryModel } = await resolveModelSpec({
+    const { model, leafModel } = await resolveModelSpec({
       provider,
       model: values.model,
-      summaryModel: values["summary-model"],
+      leafModel: values["leaf-model"],
     });
     const researcher = new Researcher({
       model,
-      summaryModel,
+      ...(leafModel ? { leafModel } : {}),
       search: resolveSearch(values["search-provider"]),
       ...(useProxy ? { browser: steel({ proxy: true }) } : {}),
     });

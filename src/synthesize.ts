@@ -1,7 +1,7 @@
 import type { ModelStepInput, ModelStepResult } from "./model.js";
 import type { ResearchCtx } from "./runtime.js";
 import type { ResearchClaim } from "./claims.js";
-import { voteSplit } from "./verify.js";
+import { voteSplit, type VerifySummary } from "./verify.js";
 
 const SYNTHESIS_MAX_TOKENS = 8_192;
 
@@ -70,6 +70,55 @@ export function synthesisPrompt(opts: {
     "7. Cite every claim inline with its source URL as a Markdown link. Cite only the URLs listed above.\n\n" +
     "Write the report as Markdown."
   );
+}
+
+export function inconclusiveReport(opts: {
+  question: string;
+  verify: VerifySummary;
+  refuted: ResearchClaim[];
+  sourcesFetched: number;
+  claimsUnsupported: number;
+  gapsNote: string;
+}): string {
+  const lines = [
+    `# Research inconclusive`,
+    "",
+    `**Question:** ${opts.question}`,
+    "",
+    `No claims survived adversarial verification. ${opts.sourcesFetched} source${opts.sourcesFetched === 1 ? "" : "s"} fetched, ${opts.verify.verified} claim${opts.verify.verified === 1 ? "" : "s"} verified, ${opts.verify.refuted} refuted, ${opts.verify.unverified} unverified${opts.claimsUnsupported > 0 ? `, ${opts.claimsUnsupported} dropped for unsupported quotes` : ""}.`,
+  ];
+  if (opts.gapsNote) {
+    lines.push("", "## Gap assessment", opts.gapsNote);
+  }
+  if (opts.refuted.length > 0) {
+    lines.push(
+      "",
+      "## Refuted claims",
+      ...opts.refuted.map(
+        (claim) =>
+          `- "${claim.text}" (${claim.url}, vote ${voteSplit(claim)})`,
+      ),
+    );
+  }
+  return lines.join("\n");
+}
+
+export function fallbackReportFromClaims(
+  question: string,
+  confirmed: ResearchClaim[],
+): string {
+  return [
+    `# Verified findings (synthesis unavailable)`,
+    "",
+    `**Question:** ${question}`,
+    "",
+    `Synthesis failed or returned nothing; the ${confirmed.length} adversarially verified claim${confirmed.length === 1 ? "" : "s"} below are reported unmerged.`,
+    "",
+    ...confirmed.map(
+      (claim) =>
+        `- ${claim.text} — [${claim.title || claim.url}](${claim.url}) (vote ${voteSplit(claim)}, "${claim.quote}")`,
+    ),
+  ].join("\n");
 }
 
 export async function synthesizeReport(

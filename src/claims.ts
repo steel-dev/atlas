@@ -48,6 +48,7 @@ export interface ResearchClaim {
 
 export interface ClaimLedger {
   readonly claims: ResearchClaim[];
+  readonly unsupportedCount: number;
   queue(ctx: ResearchCtx, document: SourceDocument): void;
   settle(): Promise<void>;
 }
@@ -190,7 +191,7 @@ async function extractClaims(
   ctx: ResearchCtx,
   document: SourceDocument,
 ): Promise<ExtractionOutcome> {
-  const model = ctx.deps.summaryModel ?? ctx.deps.model;
+  const model = ctx.deps.leafModel ?? ctx.deps.model;
   const result = await model.step({
     system: EXTRACTION_SYSTEM_PROMPT,
     messages: [
@@ -258,6 +259,7 @@ export function createClaimLedger(): ClaimLedger {
   const pending = new Set<Promise<void>>();
   const gate = createConcurrencyGate(EXTRACTION_CONCURRENCY);
   let nextClaimNumber = 1;
+  let unsupportedCount = 0;
 
   function queue(ctx: ResearchCtx, document: SourceDocument): void {
     if (queuedSourceIds.has(document.sourceId)) return;
@@ -272,6 +274,7 @@ export function createClaimLedger(): ClaimLedger {
           claim.id = `claim_${nextClaimNumber++}`;
           claims.push(claim);
         }
+        unsupportedCount += unsupported;
         ctx.scope.emit({
           type: "claims_extracted",
           sourceId: document.sourceId,
@@ -301,5 +304,12 @@ export function createClaimLedger(): ClaimLedger {
     }
   }
 
-  return { claims, queue, settle };
+  return {
+    claims,
+    get unsupportedCount() {
+      return unsupportedCount;
+    },
+    queue,
+    settle,
+  };
 }

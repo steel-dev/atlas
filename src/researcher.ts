@@ -9,37 +9,28 @@ import {
   type RunInput,
   type RunOptions,
 } from "./research.js";
-import type { CompiledUserTool, ResearchTool } from "./research-tool.js";
-import { compileUserTools } from "./tool-registry.js";
 
 export interface ResearcherConfig {
   model: Exclude<LanguageModel, string>;
-  summaryModel?: Exclude<LanguageModel, string>;
+  leafModel?: Exclude<LanguageModel, string>;
   browser?: BrowserProvider;
   search?: SearchProvider;
   instructions?: string;
-  tools?: Record<string, ResearchTool>;
   defaults?: RunOptions;
 }
 
 /**
- * A configured research client. Binds the model, browser, search, instructions,
- * and tools once, then runs many queries against that configuration. Reserved
- * tool names are validated at construction; resources for a run are created per
- * call, so concurrent runs stay isolated.
+ * A configured research client. Binds the model, browser, search, and
+ * instructions once, then runs many queries against that configuration.
+ * Resources for a run are created per call, so concurrent runs stay isolated.
  */
 export class Researcher {
   readonly #config: ResearcherConfig;
-  readonly #userTools?: ReadonlyMap<string, CompiledUserTool>;
   #closed = false;
   readonly #inflight = new Set<Promise<unknown>>();
 
   constructor(config: ResearcherConfig) {
     this.#config = config;
-    this.#userTools =
-      config.tools && Object.keys(config.tools).length > 0
-        ? compileUserTools(config.tools)
-        : undefined;
   }
 
   research(query: string, opts?: RunOptions): Promise<ResearchResult>;
@@ -98,13 +89,12 @@ export class Researcher {
     return {
       query,
       model: config.model,
-      ...(config.summaryModel ? { summaryModel: config.summaryModel } : {}),
+      ...(config.leafModel ? { leafModel: config.leafModel } : {}),
       ...(config.browser ? { browser: config.browser } : {}),
       ...(config.search ? { search: config.search } : {}),
       ...config.defaults,
       ...overrides,
       ...(config.instructions ? { instructions: config.instructions } : {}),
-      ...(this.#userTools ? { userTools: this.#userTools } : {}),
     };
   }
 }

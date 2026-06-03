@@ -282,7 +282,7 @@ export function sourceCardData(
       ? { preview: document.markdown.slice(0, previewEnd) }
       : {}),
     raw_access:
-      "Stored as a source document. Use search_sources to find relevant passages across stored sources, read_source to read a chunk or quote an exact span, or digest_source for an optional goal-focused map.",
+      "Stored as a source document. Use search_sources to find relevant passages across stored sources, and read_source to read a chunk or quote an exact span.",
   };
   return result;
 }

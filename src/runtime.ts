@@ -14,7 +14,6 @@ import type {
 } from "./sources.js";
 import type { BrowserSessionPool } from "./browser-session-pool.js";
 import type { BrowserSessionLease } from "./browser-session-pool.js";
-import type { CompiledUserTool } from "./research-tool.js";
 import type { ClaimLedger } from "./claims.js";
 
 export interface ConcurrencyGate {
@@ -43,7 +42,6 @@ export interface SourceCacheEntry {
 interface ResearchCaches {
   serp: Map<string, Promise<WebSearchOutcome>>;
   sources: Map<string, Promise<SourceCacheEntry>>;
-  summaries: Map<string, Promise<string>>;
 }
 
 class Semaphore implements ConcurrencyGate {
@@ -165,7 +163,6 @@ export function createResearchCaches(): ResearchCaches {
   return {
     serp: new Map<string, Promise<WebSearchOutcome>>(),
     sources: new Map<string, Promise<SourceCacheEntry>>(),
-    summaries: new Map<string, Promise<string>>(),
   };
 }
 
@@ -184,20 +181,15 @@ export interface ResearchConfig {
   readonly maxOutputTokens?: number;
   readonly defaultSearchLimit?: number;
   readonly maxConcurrentTools?: number;
-  readonly subagentCompactionTriggerTokens?: number;
-  readonly subagentCompactionKeepTokens?: number;
   readonly tokenLimit?: number;
-  readonly maxDelegationDepth?: number;
-  readonly maxConcurrentSubagents?: number;
   readonly exploreProviderOptions?: ProviderOptions;
   readonly finalizeProviderOptions?: ProviderOptions;
   readonly instructions?: string;
-  readonly userTools?: ReadonlyMap<string, CompiledUserTool>;
 }
 
 interface ResearchDeps {
   model: ModelAdapter;
-  summaryModel?: ModelAdapter;
+  leafModel?: ModelAdapter;
   steel: Steel;
   signal?: AbortSignal;
   stopSignal?: AbortSignal;
@@ -228,29 +220,19 @@ export function createSourceStore(claims: ClaimLedger): SourceStore {
   };
 }
 
-interface AgentScopeOverrides {
+interface AgentScopeInit {
+  sink: (event: ResearchLoopEvent) => void;
   query?: string;
-  depth?: number;
   deadlineAt?: number;
   synthesisReserveMs?: number;
-  compactionTriggerTokens?: number;
-  compactionKeepTokens?: number;
-}
-
-interface AgentScopeInit extends AgentScopeOverrides {
-  sink: (event: ResearchLoopEvent) => void;
 }
 
 interface AgentScope extends AsyncDisposable {
   query?: string;
-  depth: number;
   deadlineAt?: number;
   synthesisReserveMs?: number;
-  compactionTriggerTokens?: number;
-  compactionKeepTokens?: number;
   browserSessionLease?: BrowserSessionLease;
   emit(event: ResearchLoopEvent): void;
-  derive(overrides: AgentScopeOverrides): AgentScope;
 }
 
 export interface ResearchCtx {
@@ -275,32 +257,11 @@ export function createAgentScope(init: AgentScopeInit): AgentScope {
   const sink = init.sink;
   const scope: AgentScope = {
     query: init.query,
-    depth: init.depth ?? 0,
     deadlineAt: init.deadlineAt,
     synthesisReserveMs: init.synthesisReserveMs,
-    compactionTriggerTokens: init.compactionTriggerTokens,
-    compactionKeepTokens: init.compactionKeepTokens,
     browserSessionLease: undefined,
     emit(event) {
-      sink(
-        scope.depth > 0 && event.depth === undefined
-          ? { ...event, depth: scope.depth }
-          : event,
-      );
-    },
-    derive(overrides) {
-      return createAgentScope({
-        sink,
-        query: overrides.query ?? scope.query,
-        depth: overrides.depth ?? scope.depth,
-        deadlineAt: overrides.deadlineAt ?? scope.deadlineAt,
-        synthesisReserveMs:
-          overrides.synthesisReserveMs ?? scope.synthesisReserveMs,
-        compactionTriggerTokens:
-          overrides.compactionTriggerTokens ?? scope.compactionTriggerTokens,
-        compactionKeepTokens:
-          overrides.compactionKeepTokens ?? scope.compactionKeepTokens,
-      });
+      sink(event);
     },
     async [Symbol.asyncDispose]() {
       const lease = scope.browserSessionLease;
@@ -311,7 +272,20 @@ export function createAgentScope(init: AgentScopeInit): AgentScope {
   return scope;
 }
 
-export type ResearchLoopEvent = (
+export function timeoutSynthesisReason(ctx: ResearchCtx): string | null {
+  if (
+    ctx.scope.deadlineAt === undefined ||
+    ctx.scope.synthesisReserveMs === undefined
+  ) {
+    return null;
+  }
+  const remainingMs = ctx.scope.deadlineAt - Date.now();
+  if (remainingMs > ctx.scope.synthesisReserveMs) return null;
+  const remainingSeconds = Math.max(0, Math.ceil(remainingMs / 1000));
+  return `timeout approaching (${remainingSeconds}s remaining)`;
+}
+
+export type ResearchLoopEvent =
   | { type: "research_started" }
   | {
       type: "scope_completed";
@@ -380,24 +354,10 @@ export type ResearchLoopEvent = (
     }
   | { type: "research_finished"; sourcesFetched: number }
   | {
-      type: "context_compacted";
+      type: "context_reanchored";
       tokensBefore: number;
-      tokensAfter: number;
-      foldedMessages: number;
-    }
-  | { type: "delegation_started"; tasks: string[] }
-  | { type: "subagent_started"; task: string }
-  | {
-      type: "subagent_finished";
-      task: string;
-      sourcesFetched: number;
-      toolCalls: number;
-      finishReason: string;
+      droppedMessages: number;
     }
   | { type: "report_boundary" }
   | { type: "report_delta"; text: string }
-  | { type: "tool_event"; tool: string; data: unknown }
-  | { type: "message_sent"; from: string; to: string; chars: number }
-) & {
-  depth?: number;
-};
+  | { type: "tool_event"; tool: string; data: unknown };

@@ -1,23 +1,27 @@
 export { Researcher } from "./researcher.js";
-export { researchTool } from "./research-tool.js";
 export { steel } from "./steel.js";
 export type { BrowserProvider, SteelBrowserOptions } from "./steel.js";
 export type { ResearcherConfig } from "./researcher.js";
-export type { ResearchTool, ResearchToolContext } from "./research-tool.js";
 export type {
+  ClaimConfidence,
+  ClaimImportance,
+  ClaimSourceQuality,
+  ClaimStatus,
+  ClaimVote,
+  CitedSource,
   FetchedSource,
   LanguageModel,
   ModelProvider,
   QueryOptions,
+  ResearchClaim,
+  ResearchClaims,
   ResearchEvent,
-  ResearchOutputOptions,
   ResearchResult,
-  ResearchRun,
+  ResearchStats,
   ResearchStream,
   RunOptions,
   SourceDocument,
   UsageSummary,
-  CitedSource,
 } from "./research.js";
 export { exa, brave } from "./search-provider.js";
 export type {

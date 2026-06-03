@@ -10,12 +10,19 @@ import {
   type SearchProvider,
 } from "./search-provider.js";
 import type { BrowserProvider } from "./steel.js";
-import { runResearchLoop } from "./research-loop.js";
-import { generateStructuredOutput } from "./structured-output.js";
+import { runGapLoop } from "./research-loop.js";
+import { runRecall, type RecallOutcome } from "./recall.js";
+import { verifyClaims, type VerifySummary } from "./verify.js";
+import {
+  fallbackReportFromClaims,
+  inconclusiveReport,
+  synthesizeReport,
+} from "./synthesize.js";
+import type { ResearchClaim } from "./claims.js";
+import { createClaimLedger } from "./claims.js";
 import {
   resolveRunConfig,
   createRunResources,
-  RUNTIME_LIMITS,
   type ResolvedRunConfig,
   type RunResources,
 } from "./config-resolution.js";
@@ -26,10 +33,8 @@ import {
   type ResearchCtx,
   type ResearchLoopEvent,
 } from "./runtime.js";
-import { createClaimLedger } from "./claims.js";
 import { normalizeUrlForSource } from "./url.js";
 import { createResearchStreamController } from "./research-stream.js";
-import type { CompiledUserTool } from "./research-tool.js";
 
 export type {
   LanguageModel,
@@ -38,29 +43,50 @@ export type {
   UsageSummary,
 } from "./model.js";
 export type { FetchedSource, SourceDocument, CitedSource } from "./sources.js";
+export type {
+  ClaimConfidence,
+  ClaimImportance,
+  ClaimSourceQuality,
+  ClaimStatus,
+  ClaimVote,
+  ResearchClaim,
+} from "./claims.js";
 
-export interface ResearchRun {
-  fetchedUrls: string[];
-  toolCalls: number;
-  finishReason: string;
+export interface ResearchClaims {
+  confirmed: ResearchClaim[];
+  refuted: ResearchClaim[];
+  unverified: ResearchClaim[];
+}
+
+export interface ResearchStats {
+  angles: number;
+  sourcesFetched: number;
+  claimsExtracted: number;
+  claimsUnsupported: number;
+  claimsVerified: number;
+  confirmed: number;
+  refuted: number;
+  unverified: number;
+  beyondVerifyCap: number;
+  recallUrlDupes: number;
+  recallBudgetDropped: number;
+  leadToolCalls: number;
+  surveys: number;
+  reanchors: number;
 }
 
 export interface ResearchResult {
   query: string;
   provider: ModelProvider;
   model: string;
-  runs: ResearchRun[];
+  markdown: string;
+  claims: ResearchClaims;
+  stats: ResearchStats;
   citedSources: CitedSource[];
   citationsNotFetched: string[];
-  markdown: string;
-  structured?: unknown;
+  finishReason: string;
   sourceDocuments?: SourceDocument[];
   usage: UsageSummary;
-}
-
-export interface ResearchOutputOptions {
-  schema: Record<string, unknown>;
-  name?: string;
 }
 
 type LeadResearchEvent =
@@ -68,27 +94,20 @@ type LeadResearchEvent =
   | { type: "written"; markdownChars: number }
   | { type: "completed"; result: ResearchResult };
 
-export type ResearchEvent =
-  | ResearchLoopEvent
-  | (LeadResearchEvent & {
-      /** Set on events emitted by a sub-agent (1 for the first level of
-       *  delegation). Absent/0 for the lead agent. */
-      depth?: number;
-    });
+export type ResearchEvent = ResearchLoopEvent | LeadResearchEvent;
 
 export interface RunOptions {
   timeoutMs?: number;
   tokenLimit?: number;
   exploreProviderOptions?: ProviderOptions;
   finalizeProviderOptions?: ProviderOptions;
-  output?: ResearchOutputOptions;
   includeSourceDocuments?: boolean;
 }
 
 export interface ResearchOptions extends RunOptions {
   query: string;
   model: Exclude<LanguageModel, string>;
-  summaryModel?: Exclude<LanguageModel, string>;
+  leafModel?: Exclude<LanguageModel, string>;
   browser?: BrowserProvider;
   search?: SearchProvider;
   instructions?: string;
@@ -98,9 +117,7 @@ export interface QueryOptions extends RunOptions {
   query: string;
 }
 
-export interface RunInput extends ResearchOptions {
-  userTools?: ReadonlyMap<string, CompiledUserTool>;
-}
+export type RunInput = ResearchOptions;
 
 export interface ResearchStream {
   readonly fullStream: AsyncIterable<ResearchEvent>;
@@ -153,11 +170,8 @@ async function runResearch(
     await using leadScope = createAgentScope({
       sink: emit,
       query: opts.query,
-      depth: 0,
       deadlineAt: config.timeoutDeadlineAt,
       synthesisReserveMs: config.synthesisReserveMs,
-      compactionTriggerTokens: config.compactionTriggerTokens,
-      compactionKeepTokens: config.compactionKeepTokens,
     });
     const ctx = buildResearchCtx({
       config,
@@ -168,27 +182,27 @@ async function runResearch(
       throwIfAborted,
     });
 
-    const run = await runResearchLoop({
+    ctx.scope.emit({ type: "research_started" });
+    const recall = await runRecall(ctx, opts.query);
+    const loop = await runGapLoop({
       ctx,
-      query: opts.query,
+      question: opts.query,
+      recall,
       maxToolCalls: config.safetyMaxToolCalls,
     });
-    const runs: ResearchRun[] = [
-      {
-        fetchedUrls: run.fetchedUrls,
-        toolCalls: run.toolCalls,
-        finishReason: run.finishReason,
-      },
-    ];
+    await ctx.store.claims.settle();
 
     throwIfAborted();
-    await ctx.store.claims.settle();
-    const markdown = run.markdown.trim();
-    if (!markdown) {
-      throw new Error(
-        `research: loop did not produce a final report (${run.finishReason})`,
-      );
-    }
+    const verify = await verifyClaims(ctx, opts.query);
+    const claims = partitionClaims(ctx);
+    ctx.scope.emit({
+      type: "research_finished",
+      sourcesFetched: ctx.store.fetchedSources.length,
+    });
+
+    throwIfAborted();
+    const markdown = await buildReport(ctx, opts.query, claims, verify, loop.gapsNote);
+
     const citations = reconcileCitations(markdown, ctx.store.fetchedSources);
     if (citations.citationsNotFetched.length > 0) {
       emit({
@@ -198,40 +212,26 @@ async function runResearch(
       });
     }
     emit({ type: "written", markdownChars: markdown.length });
-    let structured: unknown;
-    if (opts.output !== undefined) {
-      const structuredResult = await generateStructuredOutput({
-        ctx,
-        model: resources.modelAdapter,
-        messages: run.messages,
-        output: opts.output,
-        maxTokens:
-          config.agent.maxOutputTokens ?? RUNTIME_LIMITS.maxOutputTokens,
-        providerOptions: ctx.config.finalizeProviderOptions,
-        signal: runSignal,
-      });
-      structured = structuredResult.value;
-      runs.push(...structuredResult.additionalRuns);
-    }
 
     const result: ResearchResult = {
       query: opts.query,
       provider: config.provider,
       model: config.model,
-      runs,
+      markdown,
+      claims,
+      stats: buildStats(ctx, recall, verify, loop),
       citedSources: citations.citedSources,
       citationsNotFetched: citations.citationsNotFetched,
-      markdown,
-      ...(structured !== undefined ? { structured } : {}),
+      finishReason: loop.finishReason,
       ...(opts.includeSourceDocuments
         ? { sourceDocuments: [...ctx.store.sourceDocuments.values()] }
         : {}),
       usage:
-        resources.summaryAdapter === resources.modelAdapter
+        resources.leafAdapter === resources.modelAdapter
           ? { ...resources.modelAdapter.usage }
           : sumUsage(
               resources.modelAdapter.usage,
-              resources.summaryAdapter.usage,
+              resources.leafAdapter.usage,
             ),
     };
 
@@ -240,6 +240,76 @@ async function runResearch(
   } finally {
     await resources.browserSessionPool.closeAll();
   }
+}
+
+function partitionClaims(ctx: ResearchCtx): ResearchClaims {
+  const all = ctx.store.claims.claims;
+  return {
+    confirmed: all.filter((claim) => claim.status === "confirmed"),
+    refuted: all.filter((claim) => claim.status === "refuted"),
+    unverified: all.filter(
+      (claim) => claim.status === "unverified" || claim.status === "quoted",
+    ),
+  };
+}
+
+async function buildReport(
+  ctx: ResearchCtx,
+  question: string,
+  claims: ResearchClaims,
+  verify: VerifySummary,
+  gapsNote: string,
+): Promise<string> {
+  if (claims.confirmed.length === 0) {
+    return inconclusiveReport({
+      question,
+      verify,
+      refuted: claims.refuted,
+      sourcesFetched: ctx.store.fetchedSources.length,
+      claimsUnsupported: ctx.store.claims.unsupportedCount,
+      gapsNote,
+    });
+  }
+  try {
+    const markdown = await synthesizeReport(ctx, {
+      question,
+      confirmed: claims.confirmed,
+      refuted: claims.refuted,
+      ...(gapsNote ? { gapsNote } : {}),
+    });
+    if (markdown) return markdown;
+  } catch (err) {
+    if (ctx.deps.signal?.aborted) throw err;
+  }
+  return fallbackReportFromClaims(question, claims.confirmed);
+}
+
+function buildStats(
+  ctx: ResearchCtx,
+  recall: RecallOutcome,
+  verify: VerifySummary,
+  loop: {
+    toolCalls: number;
+    surveys: number;
+    reanchors: number;
+  },
+): ResearchStats {
+  return {
+    angles: recall.angles.length,
+    sourcesFetched: ctx.store.fetchedSources.length,
+    claimsExtracted: ctx.store.claims.claims.length,
+    claimsUnsupported: ctx.store.claims.unsupportedCount,
+    claimsVerified: verify.verified,
+    confirmed: verify.confirmed,
+    refuted: verify.refuted,
+    unverified: verify.unverified,
+    beyondVerifyCap: verify.beyondCap,
+    recallUrlDupes: recall.urlDupes,
+    recallBudgetDropped: recall.budgetDropped,
+    leadToolCalls: loop.toolCalls,
+    surveys: loop.surveys,
+    reanchors: loop.reanchors,
+  };
 }
 
 // Assembles the per-run context (config/deps/store/scope) and wires the search
@@ -258,7 +328,7 @@ function buildResearchCtx(args: {
     config: config.agent,
     deps: {
       model: resources.modelAdapter,
-      summaryModel: resources.summaryAdapter,
+      leafModel: resources.leafAdapter,
       steel: resources.steel,
       signal: runSignal,
       stopSignal,
@@ -353,9 +423,4 @@ function combineSignals(
 
 export const __testing = {
   reconcileCitations,
-  resolveRunConfig,
-  generateStructuredOutput: async (
-    opts: Parameters<typeof generateStructuredOutput>[0],
-  ) => (await generateStructuredOutput(opts)).value,
-  generateStructuredOutputWithRuns: generateStructuredOutput,
 };
