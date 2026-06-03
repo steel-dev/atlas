@@ -51,13 +51,13 @@ console.log(result.citedSources);
 
 ## Streaming
 
-`research()` resolves once, at the end. For a live UI, `streamResearch()` returns a handle you can iterate while the run is in flight; its promise fields still resolve at the end whether or not you read the stream.
+`research()` resolves once, at the end. For a live UI, `research.stream()` returns a handle you can iterate while the run is in flight; its promise fields still resolve at the end whether or not you read the stream.
 
 ```ts
-import { streamResearch } from "@steel-dev/atlas";
+import { research } from "@steel-dev/atlas";
 import { anthropic } from "@ai-sdk/anthropic";
 
-const run = streamResearch({
+const run = research.stream({
   query: "What's changing in browser automation for AI agents?",
   model: anthropic("claude-sonnet-4-6"),
 });
@@ -117,7 +117,9 @@ const researcher = createResearcher({
 
 const result = await researcher.research("SGLT2 inhibitors for HFpEF?");
 
-const run = researcher.stream("GLP-1 agonists and cardiovascular outcomes?");
+const run = researcher.research.stream(
+  "GLP-1 agonists and cardiovascular outcomes?",
+);
 for await (const part of run.fullStream) {
   if (part.type === "report_delta") process.stdout.write(part.text);
 }
@@ -125,7 +127,7 @@ for await (const part of run.fullStream) {
 await researcher.close(); // drains in-flight runs; or `await using researcher = createResearcher({ … })`
 ```
 
-`instructions` is appended to the system prompt rather than replacing it, and `defaults` set per-call options you can still override on each `research()` / `stream()` call. One-shot `research()` and `streamResearch()` calls accept `instructions` too.
+`instructions` is appended to the system prompt rather than replacing it, and `defaults` set per-call options you can still override on each `researcher.research()` / `researcher.research.stream()` call. One-shot `research()` and `research.stream()` calls accept `instructions` too.
 
 ## Custom tools
 

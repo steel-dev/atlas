@@ -114,13 +114,18 @@ export interface ResearchStream {
   stop(): void;
 }
 
-export function streamResearch(opts: ResearchOptions): ResearchStream {
-  return startResearchStream(opts);
+export interface ResearchFunction {
+  (opts: ResearchOptions): Promise<ResearchResult>;
+  stream(opts: ResearchOptions): ResearchStream;
 }
 
-export async function research(opts: ResearchOptions): Promise<ResearchResult> {
-  return startResearchStream(opts).result;
-}
+export const research: ResearchFunction = Object.assign(
+  (opts: ResearchOptions): Promise<ResearchResult> =>
+    startResearchStream(opts).result,
+  {
+    stream: (opts: ResearchOptions): ResearchStream => startResearchStream(opts),
+  },
+);
 
 export function startResearchStream(input: RunInput): ResearchStream {
   if (!input.query?.trim()) {

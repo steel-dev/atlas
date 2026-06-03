@@ -22,11 +22,24 @@ export interface ResearcherConfig {
   defaults?: RunOptions;
 }
 
+export interface ResearcherStream {
+  (query: string, opts?: RunOptions): ResearchStream;
+  (opts: QueryOptions): ResearchStream;
+}
+
+interface ResearcherResearchCall {
+  (query: string, opts?: RunOptions): Promise<ResearchResult>;
+  (opts: QueryOptions): Promise<ResearchResult>;
+}
+
+export interface ResearcherResearch {
+  (query: string, opts?: RunOptions): Promise<ResearchResult>;
+  (opts: QueryOptions): Promise<ResearchResult>;
+  stream: ResearcherStream;
+}
+
 export interface Researcher {
-  research(query: string, opts?: RunOptions): Promise<ResearchResult>;
-  research(opts: QueryOptions): Promise<ResearchResult>;
-  stream(query: string, opts?: RunOptions): ResearchStream;
-  stream(opts: QueryOptions): ResearchStream;
+  research: ResearcherResearch;
   close(): Promise<void>;
   [Symbol.asyncDispose](): Promise<void>;
 }
@@ -61,7 +74,7 @@ export function createResearcher(config: ResearcherConfig): Researcher {
     };
   };
 
-  const stream = (
+  const streamImpl = (
     queryOrOpts: string | QueryOptions,
     maybeOpts?: RunOptions,
   ): ResearchStream => {
@@ -75,11 +88,16 @@ export function createResearcher(config: ResearcherConfig): Researcher {
     void tracked.finally(() => inflight.delete(tracked));
     return handle;
   };
+  const stream = streamImpl as ResearcherStream;
 
-  const research = (
-    queryOrOpts: string | QueryOptions,
-    maybeOpts?: RunOptions,
-  ): Promise<ResearchResult> => stream(queryOrOpts, maybeOpts).result;
+  const research = Object.assign(
+    ((
+      queryOrOpts: string | QueryOptions,
+      maybeOpts?: RunOptions,
+    ): Promise<ResearchResult> =>
+      streamImpl(queryOrOpts, maybeOpts).result) as ResearcherResearchCall,
+    { stream },
+  );
 
   const close = async (): Promise<void> => {
     closed = true;
@@ -88,7 +106,6 @@ export function createResearcher(config: ResearcherConfig): Researcher {
 
   return {
     research,
-    stream,
     close,
     [Symbol.asyncDispose]: close,
   };

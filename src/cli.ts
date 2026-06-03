@@ -2,7 +2,7 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 import {
-  streamResearch,
+  research,
   type ModelProvider,
   type ResearchEvent,
   type ResearchResult,
@@ -301,7 +301,7 @@ async function main(): Promise<void> {
   let hardAborted = false;
   let timedOut = false;
 
-  let run!: ReturnType<typeof streamResearch>;
+  let run!: ReturnType<(typeof research)["stream"]>;
   try {
     const { model, summaryModel } = await resolveModelSpec({
       provider,
@@ -309,7 +309,7 @@ async function main(): Promise<void> {
       summaryModel: values["summary-model"],
       baseUrl: values["base-url"],
     });
-    run = streamResearch({
+    run = research.stream({
       query,
       search: resolveSearch(values["search-provider"]),
       model,

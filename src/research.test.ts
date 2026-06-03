@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { __testing } from "./research.js";
+import { __testing, research } from "./research.js";
 import { steel } from "./steel.js";
 import type { SearchProvider } from "./search-provider.js";
 import {
@@ -27,6 +27,13 @@ import {
   type ResearchCtx,
 } from "./runtime.js";
 import type { SourceDocument } from "./sources.js";
+
+describe("research API", () => {
+  it("exposes streaming as research.stream", () => {
+    expect(typeof research).toBe("function");
+    expect(typeof research.stream).toBe("function");
+  });
+});
 
 function fakeModel(scriptedSteps: ModelAssistantBlock[][]): {
   adapter: ModelAdapter;

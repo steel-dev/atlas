@@ -11,7 +11,7 @@ import {
   DEFAULT_OPENAI_MODEL,
 } from "../src/defaults.js";
 import {
-  streamResearch,
+  research,
   type LanguageModel,
   type ModelProvider,
   type ResearchEvent,
@@ -1675,7 +1675,7 @@ async function runResearch(
   let lastError: unknown;
   for (let attempt = 1; attempt <= attempts; attempt++) {
     try {
-      const run = streamResearch({
+      const run = research.stream({
         query: entry.problem,
         ...(await resolveModelSpec({
           provider: opts.provider,

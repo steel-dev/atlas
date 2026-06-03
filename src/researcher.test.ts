@@ -130,7 +130,7 @@ describe("createResearcher", () => {
   it("exposes the researcher surface and a disposable close", async () => {
     const researcher = createResearcher({ model: fakeModel });
     expect(typeof researcher.research).toBe("function");
-    expect(typeof researcher.stream).toBe("function");
+    expect(typeof researcher.research.stream).toBe("function");
     expect(researcher[Symbol.asyncDispose]).toBe(researcher.close);
     await expect(researcher.close()).resolves.toBeUndefined();
   });

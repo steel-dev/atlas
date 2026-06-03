@@ -9,7 +9,7 @@ import {
 } from "../src/defaults.js";
 import { createAISdkModelAdapter, type ModelAdapter } from "../src/model.js";
 import {
-  streamResearch,
+  research,
   type ModelProvider,
   type ResearchEvent,
   type ResearchResult,
@@ -1415,7 +1415,7 @@ async function runCase(
     );
   }, 30_000);
   try {
-    const run = streamResearch({
+    const run = research.stream({
       query: evalQuery(entry.query),
       ...(await resolveModelSpec({
         provider: opts.provider,
