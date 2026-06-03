@@ -12,10 +12,10 @@ import {
 import { SUBAGENT_SYSTEM_PROMPT } from "./tool-contract.js";
 import type { ResearchLoopResult } from "./research-loop.js";
 
-export const SUBAGENT_MAX_TOOL_CALLS = 20;
+export const SUBAGENT_MAX_TOOL_CALLS = 40;
 const SUBAGENT_MIN_RUNTIME_MS = 30_000;
 const SUBAGENT_SYNTHESIS_RESERVE_MS = 45_000;
-const SUBAGENT_FINDINGS_MAX_CHARS = 4_000;
+const SUBAGENT_FINDINGS_MAX_CHARS = 16_000;
 const SUBAGENT_FALLBACK_MAX_SOURCES = 12;
 
 type SubagentRunner = (opts: {
