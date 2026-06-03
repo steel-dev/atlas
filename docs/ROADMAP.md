@@ -47,13 +47,19 @@ Reframed after code exploration: browser escalation already exists
 (`extractSourceWithFallbacks` routes every failed direct fetch to the browser);
 the gap is proxy and the silent acceptance of blocked browser results.
 
-- **1b-1 (no code):** run the measurement protocol once with `--proxy` on the same
-  seed; compare `choke.blocked_or_thin` (91) and factual accuracy. Proceed only if
-  proxy helps materially.
-- **1b-2 (code, gated on 1b-1):** per-flavor session pooling —
-  `BrowserSessionPool.acquire({useProxy?})` with separate idle lists for proxy vs
-  direct sessions — plus a one-shot proxy retry at the blocked/thin quality check
-  in `fetch-tool.ts` (`assessSourceQuality` site), taking the better result.
+- **1b-2 (DONE, landed ahead of 1b-1):** `--proxy` now means *all* traffic. When
+  `useProxy` is on, the direct tier routes through server-side
+  `steel.scrape({useProxy: true})` (`scrape_proxy` in fetch diagnostics) instead
+  of a bare `fetch()`; the browser fallback was already pool-proxied and search
+  already renders via the browser when proxied. Exception: PDF-like URLs stay on
+  direct fetch (scrape returns no binary; all 43 baseline pdf_direct fetches
+  succeeded unproxied). The earlier per-flavor session-pool + blocked-retry design
+  is dropped as unnecessary complexity — a single, total switch is the simpler
+  mechanism-layer opinion.
+- **1b-1 (measurement):** one run with `--proxy` on the same seed — now with
+  honest total-proxy semantics — paired against the no-proxy run. Compare
+  `choke.blocked_or_thin` (91) and factual accuracy; watch geo-sensitive domains
+  (Shopping, Personalized Assistant) for regressions from proxy exit location.
 
 ### Phase 2 — messaging harness (gated on Phase 1 results)
 

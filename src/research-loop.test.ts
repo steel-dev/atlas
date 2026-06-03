@@ -177,7 +177,7 @@ function createContext(opts: {
         ) => Promise<{ content: ModelAssistantBlock[] }>,
       } satisfies ModelAdapter,
       summaryModel: opts.summaryModel,
-      steel: { sessions: {} } as unknown as Steel,
+      steel: { sessions: {}, scrape } as unknown as Steel,
       abort: vi.fn(),
       ioGate: createConcurrencyGate(2),
       browserSessionPool:
@@ -2219,10 +2219,13 @@ describe("research loop cache integration", () => {
     );
   });
 
-  it("passes proxy preference to Steel fetches", async () => {
+  it("routes direct fetches through proxied steel scrape when proxy is on", async () => {
+    const body = "Rendered proxied evidence paragraph. ".repeat(10);
     const scrape = vi.fn(async () => ({
-      content: { markdown: "# Proxied Fetch\n\nRendered browser content." },
-      metadata: { title: "Proxied Fetch" },
+      content: {
+        html: `<html><head><title>Proxied Fetch</title></head><body><main><h1>Proxied Fetch</h1><p>${body}</p></main></body></html>`,
+      },
+      metadata: { statusCode: 200, title: "Proxied Fetch" },
     }));
     const messagesCreate = vi
       .fn()
@@ -2241,13 +2244,49 @@ describe("research loop cache integration", () => {
     });
 
     expect(result.finishReason).toBe("final report");
+    expect(scrape).toHaveBeenCalledTimes(1);
     expect(scrape).toHaveBeenCalledWith(
       {
         url: "https://example.com/proxy",
-        format: ["markdown"],
+        format: ["html"],
         useProxy: true,
       },
-      expect.any(Object),
+      expect.objectContaining({ timeout: 30_000 }),
+    );
+    expect(
+      ctx.store.sourceDocuments.get("https://example.com/proxy")?.metadata
+        .method,
+    ).toBe("scrape_proxy");
+    expect(ctx.deps.browserSessionPool.acquire).not.toHaveBeenCalled();
+  });
+
+  it("keeps pdf urls on direct fetch even when proxy is on", async () => {
+    const scrape = vi.fn(async () => ({
+      content: { html: "<html><body>should not be used</body></html>" },
+      metadata: { statusCode: 200 },
+    }));
+    const messagesCreate = vi
+      .fn()
+      .mockResolvedValueOnce(
+        messageWith([
+          toolUse("fetch_1", "fetch", {
+            url: "https://example.com/whitepaper.pdf",
+          }),
+        ]),
+      )
+      .mockResolvedValueOnce(finalReport());
+    const ctx = createContext({ messagesCreate, scrape, useProxy: true });
+
+    const result = await runResearchLoop({
+      ctx,
+      query: "What is Atlas?",
+      maxToolCalls: 2,
+    });
+
+    expect(result.finishReason).toBe("final report");
+    expect(scrape).not.toHaveBeenCalledWith(
+      expect.objectContaining({ format: ["html"] }),
+      expect.anything(),
     );
   });
 

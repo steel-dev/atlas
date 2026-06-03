@@ -4,6 +4,7 @@ import {
   createSourceDocument,
   extractionMetadataFromHtml,
   extractionMetadataFromPdf,
+  extractionMetadataFromScrape,
   extractionMetadataFromText,
   findSourceDocumentByUrl,
   formatSourceCard,
@@ -46,6 +47,7 @@ interface SourceReservation {
 const DIRECT_PDF_MAX_BYTES = 25 * 1024 * 1024;
 const DIRECT_HTML_MAX_BYTES = 5 * 1024 * 1024;
 const DIRECT_FETCH_TIMEOUT_MS = 15_000;
+const SCRAPE_TIMEOUT_MS = 30_000;
 const DIRECT_HTML_MIN_CHARS = 100;
 const MIN_SOURCE_MARKDOWN_CHARS = 20;
 const THIN_SOURCE_MARKDOWN_CHARS = 300;
@@ -126,11 +128,130 @@ async function extractSourceWithFallbacks(
   url: string,
 ): Promise<SourceCacheEntry> {
   const attempts: SourceExtractionAttempt[] = [];
-  const direct = await tryDirectExtraction(ctx, url);
+  const direct =
+    ctx.config.useProxy && !isLikelyPdfUrl(url)
+      ? await tryScrapeExtraction(ctx, url)
+      : await tryDirectExtraction(ctx, url);
   attempts.push(direct.attempt);
   if (direct.entry) return direct.entry;
 
   return extractSourceWithBrowser(ctx, url, attempts);
+}
+
+async function tryScrapeExtraction(
+  ctx: ResearchCtx,
+  url: string,
+): Promise<DirectExtractionOutcome> {
+  try {
+    const response = await ctx.deps.steel.scrape(
+      { url, format: ["html"], useProxy: true },
+      { signal: ctx.deps.signal, timeout: SCRAPE_TIMEOUT_MS },
+    );
+    const status = response.metadata?.statusCode;
+    if (status !== undefined && status >= 400) {
+      return failedDirectAttempt(
+        "scrape_proxy",
+        `http_error: proxied scrape returned HTTP ${status}`,
+      );
+    }
+    const finalUrl = response.metadata?.canonical || url;
+    const html = response.content?.html;
+    if (html) return extractScrapeHtml(html, { finalUrl });
+    const markdown = response.content?.markdown?.trim();
+    if (markdown) {
+      return extractScrapeMarkdown(markdown, {
+        finalUrl,
+        title: response.metadata?.title,
+      });
+    }
+    return failedDirectAttempt(
+      "scrape_proxy",
+      "empty_content: proxied scrape returned no content",
+    );
+  } catch (err) {
+    if (ctx.deps.signal?.aborted) throw err;
+    return failedDirectAttempt(
+      "scrape_proxy",
+      `network_error: proxied scrape failed: ${errorMessage(err)}`,
+    );
+  }
+}
+
+function extractScrapeHtml(
+  html: string,
+  opts: { finalUrl: string },
+): DirectExtractionOutcome {
+  if (looksBlocked(html)) {
+    return failedDirectAttempt(
+      "scrape_proxy",
+      "blocked_or_challenge: proxied scrape HTML looked blocked",
+    );
+  }
+
+  const extracted = htmlToMarkdown(html, opts.finalUrl);
+  if (extracted.markdown.length < DIRECT_HTML_MIN_CHARS) {
+    return failedDirectAttempt(
+      "scrape_proxy",
+      `thin_content: proxied scrape extracted ${extracted.markdown.length} chars`,
+    );
+  }
+
+  const attempt = {
+    method: "scrape_proxy",
+    ok: true,
+    note: `scrape_proxy: extracted ${extracted.markdown.length} text chars`,
+  };
+  return {
+    entry: {
+      markdown: extracted.markdown,
+      title: extracted.title,
+      metadata: extractionMetadataFromScrape({
+        markdownChars: extracted.markdown.length,
+        contentType: "text/html",
+        finalUrl: opts.finalUrl,
+        attempts: [attempt],
+        discoveredLinks: extracted.links,
+        pageMetadata: extracted.metadata,
+      }),
+    },
+    attempt,
+  };
+}
+
+function extractScrapeMarkdown(
+  markdown: string,
+  opts: { finalUrl: string; title?: string },
+): DirectExtractionOutcome {
+  if (looksBlocked(markdown)) {
+    return failedDirectAttempt(
+      "scrape_proxy",
+      "blocked_or_challenge: proxied scrape content looked blocked",
+    );
+  }
+  if (markdown.length < DIRECT_HTML_MIN_CHARS) {
+    return failedDirectAttempt(
+      "scrape_proxy",
+      `thin_content: proxied scrape extracted ${markdown.length} chars`,
+    );
+  }
+
+  const attempt = {
+    method: "scrape_proxy",
+    ok: true,
+    note: `scrape_proxy: extracted ${markdown.length} text chars`,
+  };
+  return {
+    entry: {
+      markdown,
+      title: opts.title?.trim() || titleFromTextUrl(opts.finalUrl),
+      metadata: extractionMetadataFromScrape({
+        markdownChars: markdown.length,
+        finalUrl: opts.finalUrl,
+        attempts: [attempt],
+      }),
+    },
+    attempt,
+  };
 }
 
 async function tryDirectExtraction(

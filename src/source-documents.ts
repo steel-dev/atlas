@@ -158,6 +158,24 @@ export function extractionMetadataFromText(opts: {
   });
 }
 
+export function extractionMetadataFromScrape(opts: {
+  markdownChars: number;
+  contentType?: string;
+  finalUrl?: string;
+  notes?: string[];
+  attempts?: SourceExtractionAttempt[];
+  qualityWarnings?: string[];
+  discoveredLinks?: SourceDiscoveredLink[];
+  pageMetadata?: HtmlPageMetadata;
+}): SourceExtractionMetadata {
+  return buildExtractionMetadata({
+    ...opts,
+    method: "scrape_proxy",
+    leadNote:
+      "Fetched server-side with Steel scrape through the residential proxy.",
+  });
+}
+
 export function extractionMetadataFromHtml(opts: {
   markdownChars: number;
   contentType?: string;
