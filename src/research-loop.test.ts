@@ -1079,7 +1079,7 @@ describe("research loop cache integration", () => {
     expect(toolResultText(followupRequest)).toContain(
       '"canonical_url": "https://example.com/source"',
     );
-    expect(toolResultText(followupRequest)).toContain('"chunks"');
+    expect(toolResultText(followupRequest)).toContain('"chunk_chars"');
     expect(toolResultText(followupRequest)).not.toContain(
       '"extraction_method"',
     );

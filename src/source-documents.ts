@@ -270,11 +270,7 @@ export function formatSourceCard(
     original_chars: document.originalChars,
     truncated: document.truncated,
     chunk_count: document.chunks.length,
-    chunks: document.chunks.map((chunk) => ({
-      index: chunk.index,
-      start: chunk.start,
-      end: chunk.end,
-    })),
+    chunk_chars: SOURCE_CHUNK_CHARS,
     ...(previewEnd > 0
       ? { preview: document.markdown.slice(0, previewEnd) }
       : {}),

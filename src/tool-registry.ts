@@ -211,7 +211,7 @@ const RESEARCH_TOOL_REGISTRY: RegisteredTool[] = [
     definition: {
       name: "fetch",
       description:
-        "Fetch one or more URLs, store each page's full extracted text as a source document, and return a compact source card per page (source_id, metadata, chunk map, and a short preview). Raw text is not returned: use search_sources to find the relevant passages across stored sources, and read_source to read a chunk or pull an exact quote. Pass `url` for a single page, or `urls` to fetch several in parallel; multiple fetch calls in the same turn also run in parallel.",
+        "Fetch one or more URLs, store each page's full extracted text as a source document, and return a compact source card per page (source_id, metadata, chunk count and uniform chunk size, and a short preview). Raw text is not returned: use search_sources to find the relevant passages across stored sources, and read_source to read a chunk by index or pull an exact quote. Pass `url` for a single page, or `urls` to fetch several in parallel; multiple fetch calls in the same turn also run in parallel.",
       input_schema: {
         type: "object",
         properties: {
