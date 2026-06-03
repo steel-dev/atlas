@@ -133,11 +133,11 @@ export function createResearchStreamController(): ResearchStreamController {
 
   const textStream: AsyncIterable<string> = {
     [Symbol.asyncIterator](): AsyncIterator<string> {
-      const iterator = subscribe((event) => event.type === "report-delta");
+      const iterator = subscribe((event) => event.type === "report_delta");
       return {
         async next(): Promise<IteratorResult<string>> {
           const result = await iterator.next();
-          if (result.done || result.value.type !== "report-delta") {
+          if (result.done || result.value.type !== "report_delta") {
             return { value: undefined, done: true };
           }
           return { value: result.value.text, done: false };
@@ -154,7 +154,7 @@ export function createResearchStreamController(): ResearchStreamController {
     [Symbol.asyncIterator]: () =>
       subscribe(
         (event) =>
-          event.type !== "report-delta" && event.type !== "report-boundary",
+          event.type !== "report_delta" && event.type !== "report_boundary",
       ),
   };
 

@@ -329,13 +329,13 @@ describe("report streaming", () => {
       (call) => call[0] as { type: string; text?: string },
     );
     const types = emitted.map((event) => event.type);
-    const boundaryIndex = types.indexOf("report-boundary");
-    const firstDeltaIndex = types.indexOf("report-delta");
+    const boundaryIndex = types.indexOf("report_boundary");
+    const firstDeltaIndex = types.indexOf("report_delta");
     expect(boundaryIndex).toBeGreaterThanOrEqual(0);
     expect(boundaryIndex).toBeLessThan(firstDeltaIndex);
 
     const deltas = emitted
-      .filter((event) => event.type === "report-delta")
+      .filter((event) => event.type === "report_delta")
       .map((event) => event.text ?? "");
     expect(deltas.join("")).toBe(reportText);
     expect(messagesCreate).not.toHaveBeenCalled();
@@ -369,8 +369,8 @@ describe("report streaming", () => {
     const types = ctx.emitSpy.mock.calls.map(
       (call) => (call[0] as { type: string }).type,
     );
-    expect(types).not.toContain("report-delta");
-    expect(types).not.toContain("report-boundary");
+    expect(types).not.toContain("report_delta");
+    expect(types).not.toContain("report_boundary");
     expect(messagesCreate).toHaveBeenCalled();
   });
 });

@@ -51,7 +51,7 @@ const run = streamResearch({
 
 for await (const part of run.fullStream) {
   if (part.type === "fetching") process.stderr.write(`reading ${part.url}\n`);
-  else if (part.type === "report-delta") process.stdout.write(part.text);
+  else if (part.type === "report_delta") process.stdout.write(part.text);
 }
 
 const { citedSources } = await run.result;
@@ -106,7 +106,7 @@ const result = await researcher.research("SGLT2 inhibitors for HFpEF?");
 
 const run = researcher.stream("GLP-1 agonists and cardiovascular outcomes?");
 for await (const part of run.fullStream) {
-  if (part.type === "report-delta") process.stdout.write(part.text);
+  if (part.type === "report_delta") process.stdout.write(part.text);
 }
 
 await researcher.close(); // drains in-flight runs; or `await using researcher = createResearcher({ … })`

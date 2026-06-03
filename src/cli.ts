@@ -142,8 +142,8 @@ function prettyEvent(e: ResearchEvent): string {
 
 function prettyEventBody(e: ResearchEvent): string {
   switch (e.type) {
-    case "report-boundary":
-    case "report-delta":
+    case "report_boundary":
+    case "report_delta":
       return "";
     case "tool_event": {
       const detail =

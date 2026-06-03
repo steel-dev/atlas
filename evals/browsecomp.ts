@@ -1307,8 +1307,8 @@ function progressLine(caseId: string, event: ResearchEvent): string | null {
       return `${caseId}: message ${event.from} -> ${event.to} (${event.chars} chars)`;
     case "completed":
     case "research_started":
-    case "report-boundary":
-    case "report-delta":
+    case "report_boundary":
+    case "report_delta":
     case "tool_event":
       return null;
   }
@@ -1400,8 +1400,8 @@ function traceEvent(event: ResearchEvent, started: number): EvalTraceEvent {
         ...(event.data !== undefined ? { data: event.data } : {}),
       };
     case "research_started":
-    case "report-boundary":
-    case "report-delta":
+    case "report_boundary":
+    case "report_delta":
       return base;
   }
 }

@@ -217,8 +217,8 @@ export async function runResearchLoop(opts: {
     const stepStream = ctx.deps.model.stepStream;
     if (isSubagent || !stepStream) return ctx.deps.model.step(input);
     return stepStream(input, {
-      onStart: () => ctx.scope.emit({ type: "report-boundary" }),
-      onText: (text) => ctx.scope.emit({ type: "report-delta", text }),
+      onStart: () => ctx.scope.emit({ type: "report_boundary" }),
+      onText: (text) => ctx.scope.emit({ type: "report_delta", text }),
     });
   };
 

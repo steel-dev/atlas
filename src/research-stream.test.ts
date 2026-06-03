@@ -27,8 +27,8 @@ describe("research stream controller", () => {
 
     controller.emit({ type: "research_started" });
     controller.emit({ type: "fetching", url: "https://example.com" });
-    controller.emit({ type: "report-boundary" });
-    controller.emit({ type: "report-delta", text: "Hello" });
+    controller.emit({ type: "report_boundary" });
+    controller.emit({ type: "report_delta", text: "Hello" });
     const result = fakeResult("# Report");
     controller.resolve(result);
     controller.close();
@@ -60,9 +60,9 @@ describe("research stream controller", () => {
     await Promise.resolve();
 
     controller.emit({ type: "research_started" });
-    controller.emit({ type: "report-boundary" });
-    controller.emit({ type: "report-delta", text: "Hel" });
-    controller.emit({ type: "report-delta", text: "lo" });
+    controller.emit({ type: "report_boundary" });
+    controller.emit({ type: "report_delta", text: "Hel" });
+    controller.emit({ type: "report_delta", text: "lo" });
     controller.emit({ type: "written", markdownChars: 5 });
     controller.resolve(fakeResult("Hello"));
     controller.close();
@@ -70,9 +70,9 @@ describe("research stream controller", () => {
 
     expect(fullSeen).toEqual([
       "research_started",
-      "report-boundary",
-      "report-delta",
-      "report-delta",
+      "report_boundary",
+      "report_delta",
+      "report_delta",
       "written",
     ]);
     expect(eventSeen).toEqual(["research_started", "written"]);

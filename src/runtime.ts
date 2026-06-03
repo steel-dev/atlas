@@ -364,8 +364,8 @@ export type ResearchLoopEvent = (
       toolCalls: number;
       finishReason: string;
     }
-  | { type: "report-boundary" }
-  | { type: "report-delta"; text: string }
+  | { type: "report_boundary" }
+  | { type: "report_delta"; text: string }
   | { type: "tool_event"; tool: string; data: unknown }
   | { type: "message_sent"; from: string; to: string; chars: number }
 ) & {
