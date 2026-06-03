@@ -98,6 +98,7 @@ function budgetStatusMessage(opts: {
   maxActionToolCalls: number;
   totalToolExecutions: number;
   maxTotalToolExecutions: number;
+  freeToolNames: string[];
   ctx: ResearchCtx;
 }): string | null {
   const actionRemaining = Math.max(
@@ -142,7 +143,11 @@ function budgetStatusMessage(opts: {
     `sources=${opts.ctx.store.fetchedSources.length}/${opts.ctx.config.sourceCap}`,
     `sources_remaining=${sourcesRemaining}`,
     ...(tokenLimit > 0 ? [`tokens_used=${tokensUsed}/${tokenLimit}`] : []),
-    "plan/read_source/search_sources/digest_source do not spend action_tool_calls.",
+    ...(opts.freeToolNames.length > 0
+      ? [
+          `${opts.freeToolNames.join("/")} do not spend action_tool_calls.`,
+        ]
+      : []),
   ].join(" ");
 }
 
@@ -199,6 +204,9 @@ export async function runResearchLoop(opts: {
     }),
     ...userToolDefinitions(ctx),
   ];
+  const freeToolNames = tools
+    .map((tool) => tool.name)
+    .filter((name) => !toolSpendsActionBudget(name));
   const maxToolCalls = opts.maxToolCalls;
   const maxTotalToolExecutions = maxToolCalls * 3;
   const broker = opts.messaging?.broker ?? createMessageBroker();
@@ -406,6 +414,7 @@ export async function runResearchLoop(opts: {
       maxActionToolCalls: maxToolCalls,
       totalToolExecutions,
       maxTotalToolExecutions,
+      freeToolNames,
       ctx,
     });
     if (budgetStatus) {
