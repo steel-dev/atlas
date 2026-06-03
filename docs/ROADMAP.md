@@ -79,10 +79,12 @@ provider-symmetric, no Anthropic-native lock-in.
   `no_more_senders` (every possible sender finished), on timeout (default 120s,
   clamped so a sub-agent can never park through its own synthesis reserve), on
   soft stop (resolve with note), or on hard abort (reject through the normal
-  tool-error path). `join` and `settle` both broadcast a collecting note that
-  frees parked sub-agents, so the lead can never deadlock against a waiting
-  worker. Both tools are action-budget-free; the runaway ceiling moved from
-  `maxToolCalls × 2` to `× 3` so coordination chatter cannot end a run early.
+  tool-error path). `join` broadcasts a collecting note that frees parked
+  sub-agents, so the lead can never deadlock against a waiting worker; `settle`
+  aborts the sub-agents the lead never joined, since their findings can no
+  longer reach the already-final report. Both tools are action-budget-free; the
+  runaway ceiling moved from `maxToolCalls × 2` to `× 3` so coordination
+  chatter cannot end a run early.
 - spawn/join remain the lifecycle; messaging adds the mid-flight channel
   (redirects, incremental findings, blocking questions). Peer-to-peer sub-agent
   messaging already works mechanically — any registered handle is addressable —

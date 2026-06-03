@@ -135,6 +135,7 @@ async function runSubagentTask(
   runLoop: SubagentRunner,
   broker: MessageBroker,
   handle: string,
+  signal: AbortSignal,
 ): Promise<SubagentOutcome> {
   try {
     await using scope = ctx.scope.derive({
@@ -145,7 +146,15 @@ async function runSubagentTask(
       compactionTriggerTokens: ctx.config.subagentCompactionTriggerTokens,
       compactionKeepTokens: ctx.config.subagentCompactionKeepTokens,
     });
-    const subagentCtx: ResearchCtx = { ...ctx, scope };
+    const subagentCtx: ResearchCtx = {
+      ...ctx,
+      deps: {
+        ...ctx.deps,
+        signal,
+        throwIfAborted: () => signal.throwIfAborted(),
+      },
+      scope,
+    };
     try {
       const run = await runLoop({
         ctx: subagentCtx,
@@ -193,6 +202,7 @@ interface SubagentEntry {
   status: "running" | "done" | "error";
   collected: boolean;
   promise: Promise<SubagentOutcome>;
+  abandon: () => void;
 }
 
 export function createSubagentScope(
@@ -261,6 +271,10 @@ export function createSubagentScope(
         const handle = `agent_${counter}`;
         broker.register(handle);
         ctx.scope.emit({ type: "subagent_started", task });
+        const controller = new AbortController();
+        const signal = ctx.deps.signal
+          ? AbortSignal.any([ctx.deps.signal, controller.signal])
+          : controller.signal;
         const promise = gate.run(() =>
           runSubagentTask(
             ctx,
@@ -270,6 +284,7 @@ export function createSubagentScope(
             runLoop,
             broker,
             handle,
+            signal,
           ),
         );
         const entry: SubagentEntry = {
@@ -278,6 +293,10 @@ export function createSubagentScope(
           status: "running",
           collected: false,
           promise,
+          abandon: () =>
+            controller.abort(
+              new Error("research finished; sub-agent abandoned"),
+            ),
         };
         promise.then(
           (outcome) => {
@@ -323,10 +342,7 @@ export function createSubagentScope(
     async settle() {
       const targets = uncollected();
       if (targets.length === 0) return [];
-      broker.wake(
-        targets.map((entry) => entry.handle),
-        COLLECTING_NOTE,
-      );
+      for (const entry of targets) entry.abandon();
       const outcomes = await collect(targets);
       return outcomes.flatMap((outcome) => outcome.fetchedUrls);
     },
