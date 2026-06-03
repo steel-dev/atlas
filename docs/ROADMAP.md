@@ -140,10 +140,23 @@ provider options at the time, so it ran at default effort while Anthropic's
 change on top of the code deltas; if attribution gets muddy, re-running the
 baseline commit at max effort isolates the effort term.
 
+Token budget: `--token-limit 4000000` is not comparable to the system card's
+"1M token limit". Atlas counts every token including cache reads
+(`totalUsageTokens`); baseline tasks spent 1.02–3.94M by that accounting
+(median 2.3M, all 10 over 1M) yet the 4M ceiling never bound (10/10 finished
+with a voluntary final report). Anthropic's 1M cannot be cache-inclusive for
+their own run shape (≈200k context × dozens of steps); by a fresh-token
+estimate (~23% of raw, from smoke-run cache ratios) Atlas spends roughly
+0.4–0.7M fresh per task — likely inside their budget. Do not lower the limit
+for nominal parity: it would cut every run mid-flight and shrink the derived
+sourceCap/lead budgets. Timeout raised 1800→2700s for the max-effort runs:
+baseline peaked at 1017s, max effort runs slower, and the ceiling is free when
+unused (0/10 baseline tasks came within 10% of 1800s).
+
 Measurement command:
 
 ```bash
-npm run eval:draco -- --sample 10 --seed draco-v1 --timeout 1800 --token-limit 4000000 --team 1 \
+npm run eval:draco -- --sample 10 --seed draco-v1 --timeout 2700 --token-limit 4000000 --team 1 \
   --judge-provider anthropic --judge-model claude-opus-4-6 --judge-concurrency 2 \
   --out eval-runs/draco-v3-cumulative.jsonl
 ```
