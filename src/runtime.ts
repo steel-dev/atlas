@@ -15,6 +15,7 @@ import type {
 import type { BrowserSessionPool } from "./browser-session-pool.js";
 import type { BrowserSessionLease } from "./browser-session-pool.js";
 import type { CompiledUserTool } from "./research-tool.js";
+import type { ClaimLedger } from "./claims.js";
 
 export interface ConcurrencyGate {
   run<T>(fn: () => Promise<T>): Promise<T>;
@@ -213,15 +214,17 @@ interface SourceStore {
   sourceDocumentsById: Map<string, SourceDocument>;
   sourceReservations: SourceReservations;
   caches: ResearchCaches;
+  claims: ClaimLedger;
 }
 
-export function createSourceStore(): SourceStore {
+export function createSourceStore(claims: ClaimLedger): SourceStore {
   return {
     fetchedSources: [],
     sourceDocuments: new Map(),
     sourceDocumentsById: new Map(),
     sourceReservations: createSourceReservations(),
     caches: createResearchCaches(),
+    claims,
   };
 }
 
@@ -348,6 +351,14 @@ export type ResearchLoopEvent = (
       qualityWarnings?: string[];
     }
   | { type: "source_error"; url: string; error: string }
+  | {
+      type: "claims_extracted";
+      sourceId: string;
+      url: string;
+      count: number;
+      unsupported: number;
+      error?: string;
+    }
   | { type: "research_finished"; sourcesFetched: number }
   | {
       type: "context_compacted";

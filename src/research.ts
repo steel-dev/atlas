@@ -26,6 +26,7 @@ import {
   type ResearchCtx,
   type ResearchLoopEvent,
 } from "./runtime.js";
+import { createClaimLedger } from "./claims.js";
 import { normalizeUrlForSource } from "./url.js";
 import { createResearchStreamController } from "./research-stream.js";
 import type { CompiledUserTool } from "./research-tool.js";
@@ -181,6 +182,7 @@ async function runResearch(
     ];
 
     throwIfAborted();
+    await ctx.store.claims.settle();
     const markdown = run.markdown.trim();
     if (!markdown) {
       throw new Error(
@@ -264,7 +266,7 @@ function buildResearchCtx(args: {
       ioGate: createConcurrencyGate(config.maxConcurrentSteelCalls),
       browserSessionPool: resources.browserSessionPool,
     },
-    store: createSourceStore(),
+    store: createSourceStore(createClaimLedger()),
     scope: leadScope,
   };
   ctx.deps.searchProvider = resolveSearchProvider(ctx, config.search);

@@ -71,7 +71,11 @@ function buildCtx(opts: {
       browserSessionPool:
         {} as unknown as ResearchCtx["deps"]["browserSessionPool"],
     },
-    store: createSourceStore(),
+    store: createSourceStore({
+      claims: [],
+      queue: () => {},
+      settle: async () => {},
+    }),
     scope: createAgentScope({ sink: (event) => events.push(event), depth: 0 }),
   };
   return { ctx, events };

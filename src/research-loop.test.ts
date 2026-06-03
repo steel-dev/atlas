@@ -193,6 +193,7 @@ function createContext(opts: {
       ),
       sourceReservations: createSourceReservations(),
       caches: createResearchCaches(),
+      claims: { claims: [], queue: () => {}, settle: async () => {} },
     },
     scope: createAgentScope({
       sink: emit,

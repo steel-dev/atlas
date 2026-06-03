@@ -2,11 +2,18 @@ import { describe, it, expect } from "vitest";
 import { execRunCode } from "./code-tool.js";
 import { createSourceStore, type ResearchCtx } from "./runtime.js";
 import { createSourceDocument } from "./source-documents.js";
+import type { ClaimLedger } from "./claims.js";
+
+const stubClaims: ClaimLedger = {
+  claims: [],
+  queue: () => {},
+  settle: async () => {},
+};
 
 function ctxWithSources(
   docs: Array<{ id: string; url: string; title: string; markdown: string }>,
 ): ResearchCtx {
-  const store = createSourceStore();
+  const store = createSourceStore(stubClaims);
   for (const doc of docs) {
     const document = createSourceDocument(
       doc.url,

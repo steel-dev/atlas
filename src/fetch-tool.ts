@@ -655,6 +655,7 @@ async function fetchSourceDocument(
   });
   ctx.store.sourceDocuments.set(normalizeUrlForSource(url), document);
   ctx.store.sourceDocumentsById.set(document.sourceId, document);
+  ctx.store.claims.queue(ctx, document);
 
   ctx.scope.emit({
     type: "source_fetched",

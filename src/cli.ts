@@ -203,6 +203,13 @@ function prettyEventBody(e: ResearchEvent): string {
       );
     case "source_error":
       return paint(YELLOW, `    ! ${e.url} — ${e.error}`);
+    case "claims_extracted":
+      return e.error
+        ? paint(YELLOW, `      ! claims: ${e.url} — ${e.error}`)
+        : paint(
+            DIM,
+            `      ↳ ${e.count} claim${e.count === 1 ? "" : "s"}${e.unsupported > 0 ? ` (${e.unsupported} unsupported)` : ""}`,
+          );
     case "citations_not_fetched":
       return (
         paint(YELLOW, "    ! citations not fetched:") +
