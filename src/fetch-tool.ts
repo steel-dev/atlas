@@ -57,7 +57,7 @@ const DIRECT_FETCH_USER_AGENT =
 const ERROR_TITLE_PATTERN =
   /\b(?:404|not found|access denied|forbidden|error report|captcha|just a moment|sorry)\b/i;
 const SEARCH_LISTING_TITLE_PATTERN =
-  /\b(?:search results?|advanced search|site search)\b|검색/i;
+  /\b(?:search results?|advanced search|site search)\b/i;
 const FETCH_MANY_MAX_URLS = 12;
 
 function totalSourceSlots(ctx: ResearchCtx): number {
