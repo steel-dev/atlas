@@ -1,7 +1,7 @@
 import type { ResearchCtx } from "./runtime.js";
 
 export const LEAD_ADDRESS = "lead";
-export const DEFAULT_WAIT_TIMEOUT_MS = 120_000;
+const DEFAULT_WAIT_TIMEOUT_MS = 120_000;
 export const MAX_WAIT_TIMEOUT_MS = 600_000;
 const MESSAGE_MAX_CHARS = 8_000;
 const MESSAGE_TRUNCATE_MARKER = "\n... [message truncated]";
@@ -34,7 +34,7 @@ export interface MessageBroker {
   register(address: string): void;
   mailbox(address: string, ctx: ResearchCtx): MessagingScope;
   close(address: string): void;
-  broadcastCollecting(note: string): void;
+  wake(addresses: string[], note: string): void;
 }
 
 interface Waiter {
@@ -94,9 +94,10 @@ export function createMessageBroker(): MessageBroker {
     }
   }
 
-  function broadcastCollecting(note: string): void {
-    for (const [name, box] of boxes) {
-      if (name === LEAD_ADDRESS || !box.open || !box.waiter) continue;
+  function wake(addresses: string[], note: string): void {
+    for (const address of addresses) {
+      const box = boxes.get(address);
+      if (!box || !box.open || !box.waiter) continue;
       box.waiter.deliver({ messages: box.queue.splice(0), note });
     }
   }
@@ -223,7 +224,7 @@ export function createMessageBroker(): MessageBroker {
     return { address, send, receive, drain };
   }
 
-  return { register, mailbox, close, broadcastCollecting };
+  return { register, mailbox, close, wake };
 }
 
 export const NO_MESSAGING: MessagingScope = {

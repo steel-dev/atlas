@@ -166,20 +166,43 @@ describe("messaging broker", () => {
     expect(outcome.note).toContain("not enough time remains");
   });
 
-  it("broadcastCollecting wakes parked sub-agents but not the lead", async () => {
+  it("wake frees only the addressed parked agents", async () => {
     const broker = createMessageBroker();
     const lead = broker.mailbox("lead", fakeCtx());
+    const first = broker.mailbox("agent_1", fakeCtx());
+    const second = broker.mailbox("agent_2", fakeCtx());
+
+    const firstPending = first.receive({ timeoutMs: 5_000 });
+    const secondPending = second.receive({ timeoutMs: 5_000 });
+    broker.wake(["agent_1"], "the lead is collecting findings now");
+
+    const firstOutcome = await firstPending;
+    expect(firstOutcome.note).toBe("the lead is collecting findings now");
+
+    lead.send("agent_2", "still with you");
+    const secondOutcome = await secondPending;
+    expect(secondOutcome.note).toBeUndefined();
+    expect(secondOutcome.messages).toEqual([
+      { from: "lead", content: "still with you" },
+    ]);
+  });
+
+  it("returns queued messages immediately when stop was already requested", async () => {
+    const broker = createMessageBroker();
+    const controller = new AbortController();
+    controller.abort();
+    const lead = broker.mailbox(
+      "lead",
+      fakeCtx({ stopSignal: controller.signal }),
+    );
     const agent = broker.mailbox("agent_1", fakeCtx());
 
-    const agentPending = agent.receive({ timeoutMs: 5_000 });
-    const leadPending = lead.receive({ timeoutMs: 50 });
-    broker.broadcastCollecting("the lead is collecting findings now");
-
-    const agentOutcome = await agentPending;
-    expect(agentOutcome.note).toBe("the lead is collecting findings now");
-
-    const leadOutcome = await leadPending;
-    expect(leadOutcome.timed_out).toBe(true);
+    agent.send("lead", "last words");
+    const outcome = await lead.receive({ timeoutMs: 5_000 });
+    expect(outcome.note).toBe("stop requested");
+    expect(outcome.messages).toEqual([
+      { from: "agent_1", content: "last words" },
+    ]);
   });
 
   it("validates recipients", () => {

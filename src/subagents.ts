@@ -309,7 +309,10 @@ export function createSubagentScope(
             "No outstanding sub-agents to join. Spawn sub-agents first, or write your report if you have enough evidence.",
         };
       }
-      broker.broadcastCollecting(COLLECTING_NOTE);
+      broker.wake(
+        targets.map((entry) => entry.handle),
+        COLLECTING_NOTE,
+      );
       const outcomes = await collect(targets);
       return {
         summaries: outcomes.map((outcome) => outcome.summary),
@@ -320,7 +323,10 @@ export function createSubagentScope(
     async settle() {
       const targets = uncollected();
       if (targets.length === 0) return [];
-      broker.broadcastCollecting(COLLECTING_NOTE);
+      broker.wake(
+        targets.map((entry) => entry.handle),
+        COLLECTING_NOTE,
+      );
       const outcomes = await collect(targets);
       return outcomes.flatMap((outcome) => outcome.fetchedUrls);
     },
