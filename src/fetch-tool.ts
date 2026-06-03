@@ -14,6 +14,7 @@ import { extractSourceWithBrowser } from "./browser-extract.js";
 import { errorMessage } from "./errors.js";
 import { extractPdfText } from "./pdf-extract.js";
 import { looksBlocked } from "./steel.js";
+import { runSteelRequest } from "./steel-runtime.js";
 import {
   DEFAULT_FETCH_PREVIEW_CHARS,
   MAX_FETCH_PREVIEW_CHARS,
@@ -143,9 +144,11 @@ async function tryScrapeExtraction(
   url: string,
 ): Promise<DirectExtractionOutcome> {
   try {
-    const response = await ctx.deps.steel.scrape(
-      { url, format: ["html"], useProxy: true },
-      { signal: ctx.deps.signal, timeout: SCRAPE_TIMEOUT_MS },
+    const response = await runSteelRequest(ctx, () =>
+      ctx.deps.steel.scrape(
+        { url, format: ["html"], useProxy: true },
+        { signal: ctx.deps.signal, timeout: SCRAPE_TIMEOUT_MS },
+      ),
     );
     const status = response.metadata?.statusCode;
     if (status !== undefined && status >= 400) {
