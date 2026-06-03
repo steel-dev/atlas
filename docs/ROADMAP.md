@@ -145,7 +145,7 @@ Measurement command:
 ```bash
 npm run eval:draco -- --sample 10 --seed draco-v1 --timeout 1800 --token-limit 4000000 --team 1 \
   --judge-provider anthropic --judge-model claude-opus-4-6 --judge-concurrency 2 \
-  --out eval-runs/draco-v3-runcode.jsonl
+  --out eval-runs/draco-v3-cumulative.jsonl
 ```
 
 ## Design constitution
