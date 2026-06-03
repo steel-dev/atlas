@@ -87,6 +87,10 @@ provider-symmetric, no Anthropic-native lock-in.
   (redirects, incremental findings, blocking questions). Peer-to-peer sub-agent
   messaging already works mechanically — any registered handle is addressable —
   it just requires the lead to share handles. Prompts stay advisory.
+- Known limitation: addressing is a flat star centered on the top lead. `lead`
+  is a global reserved address, so with `ATLAS_MAX_DELEGATION_DEPTH` ≥ 2 a
+  grandchild messages the top lead, not its own parent. Accepted while the
+  default depth is 1.
 
 ## Decided against
 
