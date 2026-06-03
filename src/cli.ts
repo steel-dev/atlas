@@ -22,7 +22,6 @@ Options:
   -o, --out <file>            Write the markdown report to <file> (default: stdout)
       --timeout N             Overall wall-clock budget in seconds (default: none)
       --token-limit N         Total token budget for the run (default: 2000000; 0 = unlimited)
-      --team N                Suggest the lead may spawn up to N parallel sub-agents (default: 1 = no hint)
       --provider PROVIDER     Model provider: anthropic, openai (default: auto)
       --search-provider NAME  Search backend: web, exa, brave (default: web)
       --model MODEL           Model name (default: provider-specific)
@@ -41,7 +40,6 @@ Environment:
   ATLAS_MODEL                                   optional
   ATLAS_SUMMARY_MODEL                           optional (source digest + compaction model)
   ATLAS_TOKEN_LIMIT                             optional (total token budget; 0 = unlimited)
-  ATLAS_TEAM_SIZE                               optional (suggested max parallel sub-agents; default 1 = no hint)
   ATLAS_COMPACTION_TRIGGER_TOKENS               optional (compact context above N tokens; 0 disables)
   ATLAS_MAX_DELEGATION_DEPTH                    optional (0 disables sub-agent delegation)
   ATLAS_MAX_SUBAGENTS                           optional (max concurrent sub-agents)
@@ -90,15 +88,6 @@ function parseTokenLimit(raw: string | undefined): number | undefined {
   if (n === undefined) return undefined;
   if (!Number.isInteger(n) || n < 0) {
     fail(`--token-limit must be a non-negative integer (got "${raw}")`);
-  }
-  return n;
-}
-
-function parseTeam(raw: string | undefined): number | undefined {
-  const n = parseNumber(raw, "--team");
-  if (n === undefined) return undefined;
-  if (!Number.isInteger(n) || n < 1) {
-    fail(`--team must be an integer >= 1 (got "${raw}")`);
   }
   return n;
 }
@@ -264,7 +253,6 @@ async function main(): Promise<void> {
           out: { type: "string", short: "o" },
           timeout: { type: "string" },
           "token-limit": { type: "string" },
-          team: { type: "string" },
           provider: { type: "string" },
           "search-provider": { type: "string" },
           model: { type: "string" },
@@ -303,7 +291,6 @@ async function main(): Promise<void> {
     fail(`--timeout must be > 0 (got ${timeoutSeconds})`);
   }
   const tokenLimit = parseTokenLimit(values["token-limit"]);
-  const teamSize = parseTeam(values.team);
   const provider = parseProvider(values.provider);
 
   const json = values.json === true;
@@ -328,7 +315,6 @@ async function main(): Promise<void> {
       model,
       summaryModel,
       tokenLimit,
-      suggestedTeamSize: teamSize,
       ...(useProxy ? { browser: steel({ proxy: true }) } : {}),
       exploreProviderOptions: { anthropic: { thinking: { type: "adaptive" } } },
       finalizeProviderOptions: {

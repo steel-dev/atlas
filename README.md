@@ -72,7 +72,7 @@ const { citedSources } = await run.result;
 
 ## Bring any model
 
-Atlas runs every model through the [Vercel AI SDK](https://ai-sdk.dev), so the research loop stays the same — models call `search` and `fetch`, then Atlas applies runtime limits, source tracking, and citation reconciliation, while you can reach any provider the AI SDK supports. Install the provider package you need (`@ai-sdk/google`, `@ai-sdk/openai`, …).
+Atlas runs every model through the [Vercel AI SDK](https://ai-sdk.dev), so the research loop stays the same, models call `search` and `fetch`, then Atlas applies runtime limits, source tracking, and citation reconciliation, while you can reach any provider the AI SDK supports. Install the provider package you need (`@ai-sdk/google`, `@ai-sdk/openai`, …).
 
 ```ts
 import { research } from "@steel-dev/atlas";
@@ -112,7 +112,7 @@ const researcher = createResearcher({
   model: anthropic("claude-sonnet-4-6"),
   instructions:
     "You are a clinical evidence analyst. Prefer RCTs and meta-analyses.",
-  defaults: { timeoutMs: 180_000, suggestedTeamSize: 3 },
+  defaults: { timeoutMs: 180_000 },
 });
 
 const result = await researcher.research("SGLT2 inhibitors for HFpEF?");

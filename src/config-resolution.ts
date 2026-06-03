@@ -51,7 +51,6 @@ const TOKENS_PER_TOOL_CALL = 8_000;
 const TOKENS_PER_SOURCE = 20_000;
 const MIN_SAFETY_TOOL_CALLS = 40;
 const MIN_SAFETY_SOURCE_CAP = 80;
-const MAX_TEAM_SIZE = 8;
 
 export const RUNTIME_LIMITS = DEFAULT_RUNTIME_LIMITS;
 
@@ -63,7 +62,6 @@ export interface ResolvedRunConfig {
   steelBaseUrl?: string;
   useProxy: boolean;
   safetyMaxToolCalls: number;
-  suggestedTeamSize: number;
   maxConcurrentModelCalls: number;
   maxConcurrentSteelCalls: number;
   compactionTriggerTokens: number;
@@ -102,17 +100,8 @@ export function resolveRunConfig(opts: RunInput): ResolvedRunConfig {
     DEFAULT_TOKEN_LIMIT;
   const effectiveLimitForCaps =
     tokenLimit > 0 ? tokenLimit : DEFAULT_TOKEN_LIMIT;
-  const suggestedTeamSize = Math.min(
-    MAX_TEAM_SIZE,
-    Math.max(
-      1,
-      opts.suggestedTeamSize ?? readIntEnv("ATLAS_TEAM_SIZE", 1) ?? 1,
-    ),
-  );
-  const maxConcurrentSubagents = Math.max(
-    readIntEnv("ATLAS_MAX_SUBAGENTS", 1) ?? limits.maxConcurrentSubagents,
-    suggestedTeamSize,
-  );
+  const maxConcurrentSubagents =
+    readIntEnv("ATLAS_MAX_SUBAGENTS", 1) ?? limits.maxConcurrentSubagents;
 
   const agent: ResearchConfig = {
     useProxy,
@@ -149,7 +138,6 @@ export function resolveRunConfig(opts: RunInput): ResolvedRunConfig {
       MIN_SAFETY_TOOL_CALLS,
       Math.ceil(effectiveLimitForCaps / TOKENS_PER_TOOL_CALL),
     ),
-    suggestedTeamSize,
     maxConcurrentModelCalls:
       readIntEnv("ATLAS_MAX_CONCURRENT_MODEL_CALLS", 1) ??
       maxConcurrentSubagents + MODEL_CALL_HEADROOM,

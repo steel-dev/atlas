@@ -23,17 +23,8 @@ export const STRUCTURED_FINALIZE_SYSTEM_PROMPT =
 export const STRUCTURED_EMIT_SYSTEM_PROMPT =
   "You format a completed research run into JSON. Use only evidence already gathered in the conversation. Return only the JSON object matching the requested schema.";
 
-export function researchQuestionPrompt(opts: {
-  query: string;
-  suggestedParallelism?: number;
-}): string {
-  const lines = [`Research question: ${opts.query}`];
-  if (opts.suggestedParallelism && opts.suggestedParallelism >= 2) {
-    lines.push(
-      `You may run up to ${opts.suggestedParallelism} sub-agents in parallel with spawn. If this question splits into independent parts, spawn that breadth early and join before writing.`,
-    );
-  }
-  return lines.join("\n\n");
+export function researchQuestionPrompt(query: string): string {
+  return `Research question: ${query}`;
 }
 
 export const EMPTY_RESPONSE_PROMPT =

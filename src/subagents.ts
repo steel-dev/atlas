@@ -26,7 +26,6 @@ type SubagentRunner = (opts: {
   query: string;
   maxToolCalls: number;
   systemPrompt?: string;
-  suggestedParallelism?: number;
   messaging?: { broker: MessageBroker; address: string };
 }) => Promise<ResearchLoopResult>;
 

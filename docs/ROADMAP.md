@@ -158,7 +158,7 @@ unused (0/10 baseline tasks came within 10% of 1800s).
 Measurement command:
 
 ```bash
-npm run eval:draco -- --sample 10 --seed draco-v1 --timeout 2700 --token-limit 4000000 --team 1 \
+npm run eval:draco -- --sample 10 --seed draco-v1 --timeout 2700 --token-limit 4000000 \
   --judge-provider anthropic --judge-model claude-opus-4-6 --judge-concurrency 2 \
   --out eval-runs/draco-v3-cumulative.jsonl
 ```

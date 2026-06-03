@@ -3412,7 +3412,6 @@ describe("emergent team via spawn/join", () => {
       ctx,
       query: "Big question?",
       maxToolCalls: 20,
-      suggestedParallelism: 2,
     });
     const leadFinal = messagesCreate.mock.calls
       .map(([input]) => input as ModelStepInput)

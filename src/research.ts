@@ -78,7 +78,6 @@ export type ResearchEvent =
 export interface RunOptions {
   timeoutMs?: number;
   tokenLimit?: number;
-  suggestedTeamSize?: number;
   exploreProviderOptions?: ProviderOptions;
   finalizeProviderOptions?: ProviderOptions;
   output?: ResearchOutputOptions;
@@ -180,8 +179,6 @@ async function runResearch(
       ctx,
       query: opts.query,
       maxToolCalls: config.safetyMaxToolCalls,
-      suggestedParallelism:
-        config.suggestedTeamSize >= 2 ? config.suggestedTeamSize : undefined,
     });
     const runs: ResearchRun[] = [
       {

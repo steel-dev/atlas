@@ -121,7 +121,7 @@ npm run eval:draco -- --dry-run --sample 10 --seed draco-v1
 Other useful flags: `--domain "Finance,Law"`, `--case-id <uuid>`, `--concurrency N`
 (parallel tasks), `--timeout` (per-task research seconds, default 900; `0` = unlimited,
 matching DRACO's no-limit protocol), `--retries N` (retry a task's research run on
-transient errors like rate limits, default 1), `--team`, `--token-limit`,
+transient errors like rate limits, default 1), `--token-limit`,
 `--provider`/`--model` (research model). Run with `--help` for the full list.
 
 ## Grading (LLM-as-judge)

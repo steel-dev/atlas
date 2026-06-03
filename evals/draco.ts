@@ -52,7 +52,6 @@ export interface EvalOptions {
   outPath?: string;
   timeoutMs?: number;
   tokenLimit?: number;
-  teamSize?: number;
   provider?: ModelProvider;
   model?: string;
   openaiBaseUrl?: string;
@@ -481,7 +480,6 @@ Options:
       --out <file>            Write manifest/results/summary JSONL
       --timeout N             Per-task research timeout in seconds (default: ${DEFAULT_TIMEOUT_MS / 1000}; 0 = unlimited, like DRACO)
       --token-limit N         Total token budget per task (0 = unlimited)
-      --team N                Suggest up to N parallel sub-agents per task (default: 1)
       --provider NAME         Research model provider: anthropic, openai
       --model NAME            Research model name
       --base-url URL          OpenAI-compatible base URL for the research model
@@ -642,11 +640,6 @@ function parseArgs(argv: string[]): EvalOptions {
     }
     if (arg === "--token-limit") {
       opts.tokenLimit = readNonNegativeInt(readValue(argv, i, arg), arg);
-      i++;
-      continue;
-    }
-    if (arg === "--team") {
-      opts.teamSize = readPositiveInt(readValue(argv, i, arg), arg);
       i++;
       continue;
     }
@@ -1691,7 +1684,6 @@ async function runResearch(
         })),
         timeoutMs: opts.timeoutMs,
         tokenLimit: opts.tokenLimit,
-        suggestedTeamSize: opts.teamSize,
         includeSourceDocuments: true,
         browser: steel({ proxy: opts.useProxy }),
         exploreProviderOptions: {
@@ -2251,7 +2243,6 @@ async function main(): Promise<void> {
     judge: { provider: judge.provider, model: judge.modelId },
     timeoutMs: opts.timeoutMs ?? null,
     tokenLimit: opts.tokenLimit ?? null,
-    teamSize: opts.teamSize ?? 1,
     cases: selected.map((entry) => ({
       id: entry.id,
       domain: entry.domain,

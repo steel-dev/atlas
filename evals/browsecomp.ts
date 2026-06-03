@@ -34,7 +34,6 @@ interface EvalOptions {
   outPath?: string;
   timeoutMs?: number;
   tokenLimit?: number;
-  teamSize?: number;
   provider?: ModelProvider;
   model?: string;
   openaiBaseUrl?: string;
@@ -238,7 +237,6 @@ Options:
       --out <file>         Write manifest/results/summary JSONL
       --timeout N          Per-case timeout in seconds (default: 300)
       --token-limit N      Total token budget per case (e.g. 1000000, 3000000, 10000000)
-      --team N             Suggest up to N parallel sub-agents per case (default: 1)
       --provider NAME      Model provider: anthropic, openai
       --model NAME         Model name
       --base-url URL       OpenAI-compatible base URL
@@ -357,11 +355,6 @@ function parseArgs(argv: string[]): EvalOptions {
     }
     if (arg === "--token-limit") {
       opts.tokenLimit = readNonNegativeInt(readValue(argv, i, arg), arg);
-      i++;
-      continue;
-    }
-    if (arg === "--team") {
-      opts.teamSize = readPositiveInt(readValue(argv, i, arg), arg);
       i++;
       continue;
     }
@@ -1431,7 +1424,6 @@ async function runCase(
       })),
       timeoutMs: opts.timeoutMs,
       tokenLimit: opts.tokenLimit,
-      suggestedTeamSize: opts.teamSize,
       output: browseCompOutput(),
       includeSourceDocuments: true,
       browser: steel({ proxy: opts.useProxy }),
@@ -1957,7 +1949,6 @@ async function main(): Promise<void> {
     sample: opts.sample ?? null,
     timeoutMs: opts.timeoutMs ?? null,
     tokenLimit: opts.tokenLimit ?? null,
-    teamSize: opts.teamSize ?? null,
     judge: opts.judge,
     judgeProvider: opts.judge
       ? resolveEvalProvider(opts.judgeProvider ?? opts.provider)

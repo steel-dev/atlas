@@ -186,7 +186,6 @@ export async function runResearchLoop(opts: {
   query: string;
   maxToolCalls: number;
   systemPrompt?: string;
-  suggestedParallelism?: number;
   messaging?: { broker: MessageBroker; address: string };
 }): Promise<ResearchLoopResult> {
   const { ctx, query } = opts;
@@ -245,12 +244,7 @@ export async function runResearchLoop(opts: {
   const messages: ModelMessage[] = [
     {
       role: "user",
-      content: researchQuestionPrompt({
-        query,
-        suggestedParallelism: isSubagent
-          ? undefined
-          : opts.suggestedParallelism,
-      }),
+      content: researchQuestionPrompt(query),
     },
   ];
 

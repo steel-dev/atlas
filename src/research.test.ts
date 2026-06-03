@@ -288,7 +288,6 @@ describe("structured output finalization", () => {
 describe("resolveRunConfig", () => {
   const ATLAS_ENV_KEYS = [
     "ATLAS_TOKEN_LIMIT",
-    "ATLAS_TEAM_SIZE",
     "ATLAS_MAX_SUBAGENTS",
     "ATLAS_MAX_CONCURRENT_MODEL_CALLS",
     "ATLAS_MAX_DELEGATION_DEPTH",
@@ -311,18 +310,17 @@ describe("resolveRunConfig", () => {
 
   it("derives tool-call and source caps from the token budget", () => {
     clearAtlasEnv();
+    vi.stubEnv("ATLAS_MAX_SUBAGENTS", "8");
     const config = __testing.resolveRunConfig({
       query: "q",
       model: fakeLanguageModel(),
       browser: steel({ apiKey: "sk" }),
       tokenLimit: 800_000,
-      suggestedTeamSize: 50,
     });
 
     expect(config.agent.tokenLimit).toBe(800_000);
     expect(config.safetyMaxToolCalls).toBe(100);
     expect(config.agent.sourceCap).toBe(80);
-    expect(config.suggestedTeamSize).toBe(8);
     expect(config.agent.maxConcurrentSubagents).toBe(8);
     expect(config.maxConcurrentModelCalls).toBe(9);
     expect(config.summaryModel).toBe("m");
