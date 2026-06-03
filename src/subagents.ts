@@ -24,7 +24,7 @@ const COLLECTING_NOTE =
 type SubagentRunner = (opts: {
   ctx: ResearchCtx;
   query: string;
-  maxToolCalls?: number;
+  maxToolCalls: number;
   systemPrompt?: string;
   suggestedParallelism?: number;
   messaging?: { broker: MessageBroker; address: string };

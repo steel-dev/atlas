@@ -44,7 +44,6 @@ import {
   type MessageBroker,
 } from "./messaging.js";
 
-const DEFAULT_MAX_TOOL_CALLS = 12;
 const DEFAULT_MAX_CONCURRENT_TOOLS = 4;
 const BUDGET_STATUS_REMAINING_RATIO = 0.3;
 
@@ -180,7 +179,7 @@ function inboundMessagesNote(messages: MailboxMessage[]): string {
 export async function runResearchLoop(opts: {
   ctx: ResearchCtx;
   query: string;
-  maxToolCalls?: number;
+  maxToolCalls: number;
   systemPrompt?: string;
   suggestedParallelism?: number;
   messaging?: { broker: MessageBroker; address: string };
@@ -200,7 +199,7 @@ export async function runResearchLoop(opts: {
     }),
     ...userToolDefinitions(ctx),
   ];
-  const maxToolCalls = opts.maxToolCalls ?? DEFAULT_MAX_TOOL_CALLS;
+  const maxToolCalls = opts.maxToolCalls;
   const maxTotalToolExecutions = maxToolCalls * 3;
   const broker = opts.messaging?.broker ?? createMessageBroker();
   const mailbox = broker.mailbox(opts.messaging?.address ?? LEAD_ADDRESS, ctx);
