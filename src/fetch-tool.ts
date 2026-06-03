@@ -7,7 +7,7 @@ import {
   extractionMetadataFromScrape,
   extractionMetadataFromText,
   findSourceDocumentByUrl,
-  formatSourceCard,
+  sourceCardData,
   storeMarkdown,
 } from "./source-documents.js";
 import { extractSourceWithBrowser } from "./browser-extract.js";
@@ -666,24 +666,21 @@ async function fetchSourceDocument(
   return document;
 }
 
-export async function execFetch(
-  args: FetchToolInput,
+type SingleFetchOutcome =
+  | { ok: true; card: Record<string, unknown>; fetchedUrl?: string }
+  | { ok: false; error: string };
+
+async function fetchOneUrl(
+  requestedUrl: string,
+  previewChars: number,
   ctx: ResearchCtx,
-): Promise<FetchOutcome> {
-  if (Array.isArray(args.urls)) {
-    return fetchManyUrls(args, ctx);
-  }
-
-  const previewChars = readPreviewChars(args);
-  if (typeof previewChars === "string") return { text: previewChars };
-
-  const requestedUrl = String(args.url ?? "").trim();
+): Promise<SingleFetchOutcome> {
   const validationError = validateHttpUrl(requestedUrl);
-  if (validationError) return { text: validationError };
+  if (validationError) return { ok: false, error: validationError };
   const normalizedUrl = normalizeUrlForSource(requestedUrl);
   const existing = findSourceDocumentByUrl(ctx, normalizedUrl);
   if (existing) {
-    return { text: formatSourceCard(existing, previewChars) };
+    return { ok: true, card: sourceCardData(existing, previewChars) };
   }
 
   ctx.deps.throwIfAborted();
@@ -693,7 +690,9 @@ export async function execFetch(
     ctx.store.sourceReservations.documents.get(normalizedUrl);
   if (!documentPromise) {
     const reservation = reserveSource(ctx, requestedUrl);
-    if (typeof reservation === "string") return { text: reservation };
+    if (typeof reservation === "string") {
+      return { ok: false, error: reservation };
+    }
     const url = reservation.url;
     fetchedThisCall = true;
     documentPromise = fetchSourceDocument(
@@ -710,12 +709,13 @@ export async function execFetch(
   try {
     const document = await documentPromise;
     if (!document) {
-      return { text: "Fetch failed: no content fetched." };
+      return { ok: false, error: "Fetch failed: no content fetched." };
     }
 
     return {
-      fetchedUrl: fetchedThisCall ? document.url : undefined,
-      text: formatSourceCard(document, previewChars),
+      ok: true,
+      card: sourceCardData(document, previewChars),
+      ...(fetchedThisCall ? { fetchedUrl: document.url } : {}),
     };
   } catch (err) {
     ctx.store.caches.sources.delete(normalizedUrl);
@@ -725,8 +725,33 @@ export async function execFetch(
       url: normalizedUrl,
       error: message,
     });
-    return { text: `Fetch error: ${message}` };
+    return { ok: false, error: `Fetch error: ${message}` };
   }
+}
+
+export async function execFetch(
+  args: FetchToolInput,
+  ctx: ResearchCtx,
+): Promise<FetchOutcome> {
+  if (Array.isArray(args.urls)) {
+    return fetchManyUrls(args, ctx);
+  }
+
+  const previewChars = readPreviewChars(args);
+  if (typeof previewChars === "string") return { text: previewChars };
+
+  const outcome = await fetchOneUrl(
+    String(args.url ?? "").trim(),
+    previewChars,
+    ctx,
+  );
+  if (!outcome.ok) return { text: outcome.error };
+  return {
+    ...(outcome.fetchedUrl !== undefined
+      ? { fetchedUrl: outcome.fetchedUrl }
+      : {}),
+    text: JSON.stringify(outcome.card, null, 2),
+  };
 }
 
 async function fetchManyUrls(
@@ -756,15 +781,14 @@ async function fetchManyUrls(
 
   const outcomes = await Promise.all(
     urls.map(async (url) => {
-      const validationError = validateHttpUrl(url);
-      if (validationError) return { url, error: validationError };
-      const out = await execFetch({ url, preview_chars: previewChars }, ctx);
-      const parsed = parseJsonResult(out.text);
-      if (!parsed.ok) return { url, error: out.text };
+      const outcome = await fetchOneUrl(url, previewChars, ctx);
+      if (!outcome.ok) return { url, error: outcome.error };
       return {
         url,
-        ...(out.fetchedUrl ? { fetched_url: out.fetchedUrl } : {}),
-        result: parsed.value,
+        ...(outcome.fetchedUrl !== undefined
+          ? { fetched_url: outcome.fetchedUrl }
+          : {}),
+        result: outcome.card,
       };
     }),
   );
@@ -778,16 +802,6 @@ async function fetchManyUrls(
     fetchedUrls,
     text: JSON.stringify({ sources: outcomes }, null, 2),
   };
-}
-
-function parseJsonResult(
-  text: string,
-): { ok: true; value: unknown } | { ok: false } {
-  try {
-    return { ok: true, value: JSON.parse(text) as unknown };
-  } catch {
-    return { ok: false };
-  }
 }
 
 function sourceErrorFromMetadata(

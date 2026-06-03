@@ -216,6 +216,13 @@ export function formatSourceCard(
   document: SourceDocument,
   previewChars = SOURCE_CARD_PREVIEW_CHARS,
 ): string {
+  return JSON.stringify(sourceCardData(document, previewChars), null, 2);
+}
+
+export function sourceCardData(
+  document: SourceDocument,
+  previewChars = SOURCE_CARD_PREVIEW_CHARS,
+): Record<string, unknown> {
   const qualityWarnings = document.metadata.qualityWarnings ?? [];
   const isDiscoveryPage =
     document.metadata.qualityWarnings?.some((warning) =>
@@ -277,7 +284,7 @@ export function formatSourceCard(
     raw_access:
       "Stored as a source document. Use search_sources to find relevant passages across stored sources, read_source to read a chunk or quote an exact span, or digest_source for an optional goal-focused map.",
   };
-  return JSON.stringify(result, null, 2);
+  return result;
 }
 
 function chunkForRange(document: SourceDocument, start: number): SourceChunk {
