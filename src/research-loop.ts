@@ -251,7 +251,7 @@ export async function runResearchLoop(opts: {
     toolCalls < maxToolCalls &&
     totalToolExecutions < maxTotalToolExecutions
   ) {
-    ctx.deps.abort();
+    ctx.deps.throwIfAborted();
     const preStepStopReason = stopRequestedReason(ctx);
     if (preStepStopReason) {
       finishReason = preStepStopReason;
@@ -437,7 +437,7 @@ export async function runResearchLoop(opts: {
     !markdown &&
     (shouldAttemptFinalSynthesis(finishReason) || canSalvageAfterApiError)
   ) {
-    ctx.deps.abort();
+    ctx.deps.throwIfAborted();
     const lastInbound = mailbox.drain();
     if (lastInbound.length > 0) {
       messages.push({

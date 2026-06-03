@@ -59,7 +59,7 @@ function singleSourceContext(document: SourceDocument): ResearchCtx {
 function followupResearchContext(model: ModelAdapter): ResearchCtx {
   return {
     config: { useProxy: false, sourceCap: 10 },
-    deps: { model, abort: () => undefined },
+    deps: { model, throwIfAborted: () => undefined },
     store: {
       fetchedSources: [],
       sourceDocuments: new Map(),

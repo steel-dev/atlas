@@ -154,7 +154,7 @@ async function runResearch(
 ): Promise<ResearchResult> {
   const config = resolveRunConfig(opts);
   const runSignal = combineSignals(hardController.signal, opts.timeoutMs);
-  const abort = () => runSignal?.throwIfAborted();
+  const throwIfAborted = () => runSignal?.throwIfAborted();
   const resources = createRunResources(opts, config, runSignal, emit);
 
   try {
@@ -173,7 +173,7 @@ async function runResearch(
       leadScope,
       runSignal,
       stopSignal: softController.signal,
-      abort,
+      throwIfAborted,
     });
 
     const run = await runResearchLoop({
@@ -191,7 +191,7 @@ async function runResearch(
       },
     ];
 
-    abort();
+    throwIfAborted();
     const markdown = run.markdown.trim();
     if (!markdown) {
       throw new Error(
@@ -259,9 +259,10 @@ function buildResearchCtx(args: {
   leadScope: ResearchCtx["scope"];
   runSignal: AbortSignal | undefined;
   stopSignal: AbortSignal | undefined;
-  abort: () => void;
+  throwIfAborted: () => void;
 }): ResearchCtx {
-  const { config, resources, leadScope, runSignal, stopSignal, abort } = args;
+  const { config, resources, leadScope, runSignal, stopSignal, throwIfAborted } =
+    args;
   const ctx: ResearchCtx = {
     config: config.agent,
     deps: {
@@ -270,7 +271,7 @@ function buildResearchCtx(args: {
       steel: resources.steel,
       signal: runSignal,
       stopSignal,
-      abort,
+      throwIfAborted,
       ioGate: createConcurrencyGate(config.maxConcurrentSteelCalls),
       browserSessionPool: resources.browserSessionPool,
     },

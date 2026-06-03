@@ -686,7 +686,7 @@ export async function execFetch(
     return { text: formatSourceCard(existing, previewChars) };
   }
 
-  ctx.deps.abort();
+  ctx.deps.throwIfAborted();
 
   let fetchedThisCall = false;
   let documentPromise =

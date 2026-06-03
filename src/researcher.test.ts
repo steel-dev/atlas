@@ -66,7 +66,7 @@ function buildCtx(opts: {
         step: opts.step,
       },
       steel: { sessions: {} } as unknown as ResearchCtx["deps"]["steel"],
-      abort: () => {},
+      throwIfAborted: () => {},
       ioGate: createConcurrencyGate(2),
       browserSessionPool:
         {} as unknown as ResearchCtx["deps"]["browserSessionPool"],

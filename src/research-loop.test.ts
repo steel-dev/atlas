@@ -178,7 +178,7 @@ function createContext(opts: {
       } satisfies ModelAdapter,
       summaryModel: opts.summaryModel,
       steel: { sessions: {}, scrape } as unknown as Steel,
-      abort: vi.fn(),
+      throwIfAborted: vi.fn(),
       ioGate: createConcurrencyGate(2),
       browserSessionPool:
         browserSessionPool as unknown as ResearchCtx["deps"]["browserSessionPool"],

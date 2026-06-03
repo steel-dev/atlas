@@ -173,7 +173,7 @@ async function runSubagentTask(
         fetchedUrls: run.fetchedUrls,
       };
     } catch (err) {
-      ctx.deps.abort();
+      ctx.deps.throwIfAborted();
       return {
         summary: {
           task: question,

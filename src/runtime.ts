@@ -200,7 +200,7 @@ interface ResearchDeps {
   steel: Steel;
   signal?: AbortSignal;
   stopSignal?: AbortSignal;
-  abort: () => void;
+  throwIfAborted: () => void;
   searchProvider?: SearchProvider;
   /** Bounds concurrent Steel/network requests (web search + browser fetch). */
   ioGate: ConcurrencyGate;
