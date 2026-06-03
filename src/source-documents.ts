@@ -64,6 +64,8 @@ export function findSourceDocumentById(
   ctx: ResearchCtx,
   sourceId: string,
 ): SourceDocument | undefined {
+  const indexed = ctx.store.sourceDocumentsById?.get(sourceId);
+  if (indexed) return indexed;
   for (const document of ctx.store.sourceDocuments.values()) {
     if (document.sourceId === sourceId) return document;
   }

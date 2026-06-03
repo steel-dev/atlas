@@ -21,8 +21,7 @@ import {
 } from "./config-resolution.js";
 import {
   createAgentScope,
-  createSourceReservations,
-  createResearchCaches,
+  createSourceStore,
   createConcurrencyGate,
   type ResearchCtx,
   type ResearchLoopEvent,
@@ -275,12 +274,7 @@ function buildResearchCtx(args: {
       ioGate: createConcurrencyGate(config.maxConcurrentSteelCalls),
       browserSessionPool: resources.browserSessionPool,
     },
-    store: {
-      fetchedSources: [],
-      sourceDocuments: new Map<string, SourceDocument>(),
-      sourceReservations: createSourceReservations(),
-      caches: createResearchCaches(),
-    },
+    store: createSourceStore(),
     scope: leadScope,
   };
   ctx.deps.searchProvider = resolveSearchProvider(ctx, config.search);

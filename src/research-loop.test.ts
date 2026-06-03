@@ -186,6 +186,11 @@ function createContext(opts: {
     store: {
       fetchedSources: opts.fetchedSources ?? [],
       sourceDocuments: opts.sourceDocuments ?? new Map(),
+      sourceDocumentsById: new Map(
+        Array.from((opts.sourceDocuments ?? new Map()).values()).map(
+          (document) => [document.sourceId, document],
+        ),
+      ),
       sourceReservations: createSourceReservations(),
       caches: createResearchCaches(),
     },
@@ -1016,6 +1021,7 @@ describe("research loop cache integration", () => {
       "search_sources",
       "digest_source",
       "read_source",
+      "run_code",
       "browser_open",
       "browser_cdp",
       "browser_extract",
@@ -1490,6 +1496,44 @@ describe("research loop cache integration", () => {
     expect(ctx.emitSpy).toHaveBeenCalledWith({
       type: "research_started",
     });
+  });
+
+  it("runs run_code over stored sources and returns grep provenance", async () => {
+    const messagesCreate = vi
+      .fn()
+      .mockResolvedValueOnce(
+        messageWith([
+          toolUse("code_1", "run_code", { code: 'grep("[0-9.]+ m³/t")' }),
+        ]),
+      )
+      .mockResolvedValueOnce(finalReport());
+    const ctx = createContext({
+      messagesCreate,
+      fetchedSources: [
+        { url: "https://example.com/source", title: "Primary Source" },
+      ],
+      sourceDocuments: new Map([
+        [
+          "https://example.com/source",
+          sourceDocument(
+            "https://example.com/source",
+            "Primary Source",
+            "# Primary Source\n\nChile freshwater usage is 32.8 m³/t per ton.",
+          ),
+        ],
+      ]),
+    });
+
+    const result = await runResearchLoop({ ctx, query: "q", maxToolCalls: 3 });
+    const followup = messagesCreate.mock.calls[1]?.[0] as {
+      messages: Array<{ content: unknown }>;
+    };
+    const text = toolResultText(followup);
+
+    expect(result.finishReason).toBe("final report");
+    expect(text).toContain("source_test");
+    expect(text).toContain("32.8 m³/t");
+    expect(text).toContain('"sources_in_scope": 1');
   });
 
   it("accepts a final report even with only a few sources", async () => {

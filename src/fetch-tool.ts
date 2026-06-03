@@ -530,6 +530,7 @@ async function fetchSourceDocument(
     canonicalUrl: document.canonicalUrl,
   });
   ctx.store.sourceDocuments.set(normalizeUrlForSource(url), document);
+  ctx.store.sourceDocumentsById.set(document.sourceId, document);
 
   ctx.scope.emit({
     type: "source_fetched",

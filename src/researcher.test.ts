@@ -4,8 +4,7 @@ import { runResearchLoop } from "./research-loop.js";
 import {
   createAgentScope,
   createConcurrencyGate,
-  createResearchCaches,
-  createSourceReservations,
+  createSourceStore,
   type ResearchCtx,
   type ResearchLoopEvent,
 } from "./runtime.js";
@@ -72,12 +71,7 @@ function buildCtx(opts: {
       browserSessionPool:
         {} as unknown as ResearchCtx["deps"]["browserSessionPool"],
     },
-    store: {
-      fetchedSources: [],
-      sourceDocuments: new Map(),
-      sourceReservations: createSourceReservations(),
-      caches: createResearchCaches(),
-    },
+    store: createSourceStore(),
     scope: createAgentScope({ sink: (event) => events.push(event), depth: 0 }),
   };
   return { ctx, events };

@@ -28,6 +28,7 @@ import {
   type ReadSourceToolInput,
   type SearchSourcesToolInput,
 } from "./evidence-tool.js";
+import { execRunCode, type RunCodeToolInput } from "./code-tool.js";
 import {
   execBrowserCdp,
   execBrowserExtract,
@@ -134,6 +135,16 @@ function readJoinHandles(input: unknown): string[] | undefined {
     .map((handle) => (typeof handle === "string" ? handle.trim() : ""))
     .filter((handle) => handle.length > 0);
   return handles.length > 0 ? handles : undefined;
+}
+
+function runCodeContentIsError(content: string): boolean {
+  if (content.startsWith("Error:")) return true;
+  try {
+    const value = JSON.parse(content) as { error?: unknown };
+    return typeof value === "object" && value !== null && "error" in value;
+  } catch {
+    return false;
+  }
 }
 
 const RESEARCH_TOOL_REGISTRY: RegisteredTool[] = [
@@ -317,6 +328,45 @@ const RESEARCH_TOOL_REGISTRY: RegisteredTool[] = [
     handler: (input, ctx) => ({
       content: execReadSource((input as ReadSourceToolInput) ?? {}, ctx),
     }),
+  },
+  {
+    definition: {
+      name: "run_code",
+      description:
+        "Run synchronous JavaScript over the full text of sources you already fetched to extract exact values (numbers, dates, table cells, named entities), compute (sums, conversions, comparisons), or verify claims across sources. In scope: `sources` (array of {source_id, url, title, text} with the FULL stored text), `grep(pattern, {source_ids?, ignore_case?, context?, max?})` returning [{source_id, url, offset, match, context}] (pass offset to read_source start/end to quote), and `print(...)` for output. The script's final expression is returned as `result`. No network, filesystem, require, process, fetch, or timers; output is capped at about 8000 characters. Prefer this over transcribing figures from previews or snippets when a claim hinges on an exact value or on reconciling figures across sources.",
+      input_schema: {
+        type: "object",
+        properties: {
+          code: {
+            type: "string",
+            description:
+              "Synchronous JavaScript run over fetched sources. End with an expression to return a value; do not use top-level return.",
+          },
+          source_ids: {
+            type: "array",
+            items: { type: "string" },
+            description:
+              "Optional source IDs (such as source_1) to expose in `sources`. Omit to expose every fetched source.",
+          },
+          timeout_ms: {
+            type: "integer",
+            minimum: 1,
+            maximum: 10000,
+            description:
+              "Execution timeout in milliseconds. Default 5000, hard cap 10000.",
+          },
+        },
+        required: ["code"],
+      },
+    },
+    spendsActionBudget: true,
+    handler: (input, ctx) => {
+      const content = execRunCode((input as RunCodeToolInput) ?? {}, ctx);
+      return {
+        content,
+        ...(runCodeContentIsError(content) ? { isError: true } : {}),
+      };
+    },
   },
   {
     definition: {
@@ -589,6 +639,7 @@ function registerToolSource(
       canonicalUrl,
     );
     ctx.store.sourceDocuments.set(canonicalUrl, document);
+    ctx.store.sourceDocumentsById.set(sourceId, document);
     ctx.store.fetchedSources.push({
       url: source.url,
       title: source.title,

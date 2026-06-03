@@ -146,6 +146,7 @@ export async function execBrowserExtract(
     canonicalUrl: document.canonicalUrl,
   });
   ctx.store.sourceDocuments.set(normalizedUrl, document);
+  ctx.store.sourceDocumentsById.set(document.sourceId, document);
   ctx.scope.emit({
     type: "source_fetched",
     url: snapshot.url,

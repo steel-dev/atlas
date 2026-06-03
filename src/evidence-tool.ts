@@ -181,7 +181,7 @@ export async function execDigestSource(
   }
 }
 
-function documentsForSearch(
+export function documentsForSearch(
   ctx: ResearchCtx,
   sourceIds: string[] | undefined,
 ) {

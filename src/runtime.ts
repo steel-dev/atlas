@@ -210,8 +210,19 @@ interface ResearchDeps {
 interface SourceStore {
   fetchedSources: FetchedSource[];
   sourceDocuments: Map<string, SourceDocument>;
+  sourceDocumentsById: Map<string, SourceDocument>;
   sourceReservations: SourceReservations;
   caches: ResearchCaches;
+}
+
+export function createSourceStore(): SourceStore {
+  return {
+    fetchedSources: [],
+    sourceDocuments: new Map(),
+    sourceDocumentsById: new Map(),
+    sourceReservations: createSourceReservations(),
+    caches: createResearchCaches(),
+  };
 }
 
 interface AgentScopeOverrides {
