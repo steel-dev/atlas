@@ -1351,6 +1351,7 @@ function progressLine(caseId: string, event: ResearchEvent): string | null {
     case "research_started":
     case "report-boundary":
     case "report-delta":
+    case "tool_event":
       return null;
   }
 }
@@ -1435,6 +1436,7 @@ function traceEvent(event: ResearchEvent, started: number): EvalTraceEvent {
     case "research_started":
     case "report-boundary":
     case "report-delta":
+    case "tool_event":
       return base;
   }
 }
