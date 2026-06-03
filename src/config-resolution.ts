@@ -22,7 +22,7 @@ import {
   readBrowserIdleTtlMsFromEnv,
   readBrowserMaxSessionsFromEnv,
 } from "./browser-session-pool.js";
-import type { ResearchEvent, ResearchOptions } from "./research.js";
+import type { ResearchEvent, RunInput } from "./research.js";
 
 const DEFAULT_RUNTIME_LIMITS = {
   maxConcurrentTools: 8,
@@ -85,7 +85,7 @@ export interface RunResources {
   browserSessionPool: BrowserSessionPool;
 }
 
-export function resolveRunConfig(opts: ResearchOptions): ResolvedRunConfig {
+export function resolveRunConfig(opts: RunInput): ResolvedRunConfig {
   const limits = DEFAULT_RUNTIME_LIMITS;
   const { provider, modelId: model } = modelLabel(opts.model);
   const browser = opts.browser;
@@ -133,6 +133,8 @@ export function resolveRunConfig(opts: ResearchOptions): ResolvedRunConfig {
     maxConcurrentSubagents,
     exploreProviderOptions: opts.exploreProviderOptions,
     finalizeProviderOptions: opts.finalizeProviderOptions,
+    instructions: opts.instructions,
+    userTools: opts.userTools,
   };
 
   return {
@@ -184,7 +186,7 @@ export function resolveRunConfig(opts: ResearchOptions): ResolvedRunConfig {
 // lead and summary models share one concurrency gate so the total in-flight
 // model connections stay bounded across the whole run.
 export function createRunResources(
-  opts: ResearchOptions,
+  opts: RunInput,
   config: ResolvedRunConfig,
   runSignal: AbortSignal | undefined,
   emit: (event: ResearchEvent) => void,

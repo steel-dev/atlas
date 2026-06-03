@@ -14,6 +14,7 @@ import type {
 } from "./sources.js";
 import type { BrowserSessionPool } from "./browser-session-pool.js";
 import type { BrowserSessionLease } from "./browser-session-pool.js";
+import type { CompiledUserTool } from "./research-tool.js";
 
 export interface ConcurrencyGate {
   run<T>(fn: () => Promise<T>): Promise<T>;
@@ -189,6 +190,8 @@ export interface ResearchConfig {
   readonly maxConcurrentSubagents?: number;
   readonly exploreProviderOptions?: ProviderOptions;
   readonly finalizeProviderOptions?: ProviderOptions;
+  readonly instructions?: string;
+  readonly userTools?: ReadonlyMap<string, CompiledUserTool>;
 }
 
 interface ResearchDeps {
@@ -352,6 +355,7 @@ export type ResearchLoopEvent = (
     }
   | { type: "report-boundary" }
   | { type: "report-delta"; text: string }
+  | { type: "tool_event"; tool: string; data: unknown }
 ) & {
   depth?: number;
 };

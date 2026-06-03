@@ -28,6 +28,7 @@ import {
   executeResearchTool,
   researchToolDefinitions,
   toolSpendsActionBudget,
+  userToolDefinitions,
 } from "./tool-registry.js";
 import {
   EMPTY_RESPONSE_PROMPT,
@@ -171,11 +172,17 @@ export async function runResearchLoop(opts: {
   suggestedParallelism?: number;
 }): Promise<ResearchLoopResult> {
   const { ctx, query } = opts;
-  const systemPrompt = opts.systemPrompt ?? RESEARCH_SYSTEM_PROMPT;
-  const tools = researchToolDefinitions({
-    includeDelegation:
-      (ctx.scope.depth ?? 0) < (ctx.config.maxDelegationDepth ?? 0),
-  });
+  const baseSystemPrompt = opts.systemPrompt ?? RESEARCH_SYSTEM_PROMPT;
+  const systemPrompt = ctx.config.instructions
+    ? `${baseSystemPrompt}\n\n${ctx.config.instructions}`
+    : baseSystemPrompt;
+  const tools = [
+    ...researchToolDefinitions({
+      includeDelegation:
+        (ctx.scope.depth ?? 0) < (ctx.config.maxDelegationDepth ?? 0),
+    }),
+    ...userToolDefinitions(ctx),
+  ];
   const isSubagent = (ctx.scope.depth ?? 0) > 0;
   const maxToolCalls = opts.maxToolCalls ?? DEFAULT_MAX_TOOL_CALLS;
   const maxTotalToolExecutions = maxToolCalls * 2;

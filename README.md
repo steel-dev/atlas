@@ -87,6 +87,71 @@ const result = await research({
 });
 ```
 
+## Reusable researchers
+
+Define a researcher once — model, domain behavior, and defaults — then reuse it across many queries. This fits long-lived processes such as a server handling many requests: resources are created lazily on the first query, and concurrent runs stay isolated. Pass the query positionally; everything else is bound.
+
+```ts
+import { createResearcher } from "@steel-dev/atlas";
+import { anthropic } from "@ai-sdk/anthropic";
+
+const researcher = createResearcher({
+  model: anthropic("claude-sonnet-4-6"),
+  instructions:
+    "You are a clinical evidence analyst. Prefer RCTs and meta-analyses.",
+  defaults: { timeoutMs: 180_000, suggestedTeamSize: 3 },
+});
+
+const result = await researcher.research("SGLT2 inhibitors for HFpEF?");
+
+const run = researcher.stream("GLP-1 agonists and cardiovascular outcomes?");
+for await (const part of run.fullStream) {
+  if (part.type === "report-delta") process.stdout.write(part.text);
+}
+
+await researcher.close(); // drains in-flight runs; or `await using researcher = createResearcher({ … })`
+```
+
+`instructions` is appended to the system prompt rather than replacing it, and `defaults` set per-call options you can still override on each `research()` / `stream()` call.
+
+## Custom tools
+
+Give the model domain-specific tools alongside the built-ins. `researchTool` takes an `inputSchema` (Zod, or any AI SDK schema) and an `execute`; anything you register with `ctx.addSource` becomes a citable source in the report, exactly like a fetched page.
+
+```ts
+import { createResearcher, researchTool } from "@steel-dev/atlas";
+import { anthropic } from "@ai-sdk/anthropic";
+import { z } from "zod";
+
+const researcher = createResearcher({
+  model: anthropic("claude-sonnet-4-6"),
+  tools: {
+    pubmedSearch: researchTool({
+      description:
+        "Search PubMed for peer-reviewed studies. Each result becomes a citable source.",
+      inputSchema: z.object({
+        query: z.string(),
+        limit: z.number().default(5),
+      }),
+      execute: async ({ query, limit }, ctx) => {
+        const studies = await pubmed.search(query, {
+          limit,
+          signal: ctx.signal,
+        });
+        for (const s of studies) {
+          ctx.addSource({ url: s.url, title: s.title, content: s.abstract });
+        }
+        return studies.map((s) => `- ${s.title} — ${s.url}`).join("\n");
+      },
+    }),
+  },
+});
+
+const { markdown } = await researcher.research(
+  "Evidence for SGLT2 inhibitors in HFpEF?",
+);
+```
+
 ## Development
 
 ```bash

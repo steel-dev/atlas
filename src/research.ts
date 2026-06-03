@@ -29,6 +29,7 @@ import {
 } from "./runtime.js";
 import { normalizeUrlForSource } from "./url.js";
 import { createResearchStreamController } from "./research-stream.js";
+import type { CompiledUserTool } from "./research-tool.js";
 
 export type {
   LanguageModel,
@@ -75,12 +76,7 @@ export type ResearchEvent =
       depth?: number;
     });
 
-export interface ResearchOptions {
-  query: string;
-  model: Exclude<LanguageModel, string>;
-  summaryModel?: Exclude<LanguageModel, string>;
-  browser?: BrowserProvider;
-  search?: SearchProvider;
+export interface RunOptions {
   timeoutMs?: number;
   tokenLimit?: number;
   suggestedTeamSize?: number;
@@ -88,6 +84,23 @@ export interface ResearchOptions {
   finalizeProviderOptions?: ProviderOptions;
   output?: ResearchOutputOptions;
   includeSourceDocuments?: boolean;
+}
+
+export interface ResearchOptions extends RunOptions {
+  query: string;
+  model: Exclude<LanguageModel, string>;
+  summaryModel?: Exclude<LanguageModel, string>;
+  browser?: BrowserProvider;
+  search?: SearchProvider;
+}
+
+export interface QueryOptions extends RunOptions {
+  query: string;
+}
+
+export interface RunInput extends ResearchOptions {
+  instructions?: string;
+  userTools?: ReadonlyMap<string, CompiledUserTool>;
 }
 
 export interface ResearchStream {
@@ -104,10 +117,18 @@ export interface ResearchStream {
 }
 
 export function streamResearch(opts: ResearchOptions): ResearchStream {
-  if (!opts.query?.trim()) {
+  return startResearchStream(opts);
+}
+
+export async function research(opts: ResearchOptions): Promise<ResearchResult> {
+  return startResearchStream(opts).result;
+}
+
+export function startResearchStream(input: RunInput): ResearchStream {
+  if (!input.query?.trim()) {
     throw new Error("research: query is required");
   }
-  if (!opts.model) {
+  if (!input.model) {
     throw new Error(
       'research: model is required (pass an AI SDK LanguageModel, e.g. openai("gpt-5.5"))',
     );
@@ -116,7 +137,7 @@ export function streamResearch(opts: ResearchOptions): ResearchStream {
   const softController = new AbortController();
   const controller = createResearchStreamController();
   queueMicrotask(() => {
-    void runResearch(opts, controller.emit, hardController, softController)
+    void runResearch(input, controller.emit, hardController, softController)
       .then(controller.resolve, controller.reject)
       .finally(controller.close);
   });
@@ -126,12 +147,8 @@ export function streamResearch(opts: ResearchOptions): ResearchStream {
   });
 }
 
-export async function research(opts: ResearchOptions): Promise<ResearchResult> {
-  return streamResearch(opts).result;
-}
-
 async function runResearch(
-  opts: ResearchOptions,
+  opts: RunInput,
   emit: (event: ResearchEvent) => void,
   hardController: AbortController,
   softController: AbortController,

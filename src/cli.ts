@@ -145,6 +145,18 @@ function prettyEventBody(e: ResearchEvent): string {
     case "report-boundary":
     case "report-delta":
       return "";
+    case "tool_event": {
+      const detail =
+        typeof e.data === "string"
+          ? e.data
+          : e.data === undefined
+            ? ""
+            : JSON.stringify(e.data);
+      return (
+        paint(DIM, `    ⚙ ${e.tool}`) +
+        (detail ? ` ${truncate(detail, 80)}` : "")
+      );
+    }
     case "research_started":
       return paint(DIM, "  →") + " research started";
     case "research_finished":

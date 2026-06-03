@@ -1,10 +1,19 @@
-import type {
-  ModelToolCall,
-  ModelToolDefinition,
-  ModelToolResult,
+import {
+  totalUsageTokens,
+  type ModelToolCall,
+  type ModelToolDefinition,
+  type ModelToolResult,
 } from "./model.js";
 import type { ResearchCtx } from "./runtime.js";
 import { errorMessage } from "./errors.js";
+import { normalizeUrlForSource } from "./url.js";
+import { createSourceDocument } from "./source-documents.js";
+import {
+  compileUserTool,
+  type CompiledUserTool,
+  type ResearchTool,
+  type ResearchToolContext,
+} from "./research-tool.js";
 import {
   DEFAULT_FETCH_PREVIEW_CHARS,
   MAX_FETCH_PREVIEW_CHARS,
@@ -54,7 +63,7 @@ type ToolHandler = (
   extras: ToolHandlerExtras,
 ) => ToolHandlerResult | Promise<ToolHandlerResult>;
 
-interface ResearchTool {
+interface RegisteredTool {
   definition: ModelToolDefinition;
   /** Counts against the action-tool-call budget. Navigation/bookkeeping tools
    *  (plan, join, the read-only source tools) are free. */
@@ -127,7 +136,7 @@ function readJoinHandles(input: unknown): string[] | undefined {
   return handles.length > 0 ? handles : undefined;
 }
 
-const RESEARCH_TOOL_REGISTRY: ResearchTool[] = [
+const RESEARCH_TOOL_REGISTRY: RegisteredTool[] = [
   {
     definition: {
       name: "search",
@@ -503,6 +512,101 @@ const RESEARCH_TOOL_NAMES = RESEARCH_TOOL_REGISTRY.map(
   (tool) => tool.definition.name,
 );
 
+export const RESERVED_TOOL_NAMES: ReadonlySet<string> = new Set(
+  RESEARCH_TOOL_NAMES,
+);
+
+export function compileUserTools(
+  tools: Record<string, ResearchTool>,
+): Map<string, CompiledUserTool> {
+  const compiled = new Map<string, CompiledUserTool>();
+  for (const [name, spec] of Object.entries(tools)) {
+    if (RESERVED_TOOL_NAMES.has(name)) {
+      throw new Error(
+        `createResearcher: tool name "${name}" is reserved by a built-in tool. Choose a different name.`,
+      );
+    }
+    compiled.set(name, compileUserTool(name, spec));
+  }
+  return compiled;
+}
+
+export function userToolDefinitions(ctx: ResearchCtx): ModelToolDefinition[] {
+  const userTools = ctx.config.userTools;
+  if (!userTools) return [];
+  return [...userTools.values()].map((tool) => tool.definition);
+}
+
+async function runUserTool(
+  tool: CompiledUserTool,
+  input: unknown,
+  ctx: ResearchCtx,
+): Promise<ToolHandlerResult> {
+  const addedUrls: string[] = [];
+  const toolContext: ResearchToolContext = {
+    addSource: (source) => registerToolSource(ctx, source, addedUrls),
+    emit: (data) =>
+      ctx.scope.emit({ type: "tool_event", tool: tool.definition.name, data }),
+    signal: ctx.deps.signal,
+    budget: {
+      msRemaining:
+        ctx.scope.deadlineAt !== undefined
+          ? Math.max(0, ctx.scope.deadlineAt - Date.now())
+          : undefined,
+      tokensSpent: totalUsageTokens(ctx.deps.model.usage),
+      tokenLimit: ctx.config.tokenLimit,
+    },
+  };
+  const output = await tool.execute(input, toolContext);
+  const content = typeof output === "string" ? output : output.content;
+  return {
+    content,
+    ...(addedUrls.length > 0 ? { fetchedUrls: addedUrls } : {}),
+  };
+}
+
+function registerToolSource(
+  ctx: ResearchCtx,
+  source: { url: string; title: string; content?: string },
+  addedUrls: string[],
+): string | undefined {
+  const canonicalUrl = normalizeUrlForSource(source.url);
+  const existing = ctx.store.fetchedSources.find(
+    (fetched) =>
+      (fetched.canonicalUrl ?? normalizeUrlForSource(fetched.url)) ===
+      canonicalUrl,
+  );
+  if (existing) return existing.sourceId;
+  if (source.content !== undefined) {
+    const sourceId = `source_${ctx.store.sourceReservations.nextSourceNumber++}`;
+    const document = createSourceDocument(
+      source.url,
+      source.title,
+      source.content,
+      { markdownChars: source.content.length, extractionNotes: [] },
+      source.content.length,
+      sourceId,
+      canonicalUrl,
+    );
+    ctx.store.sourceDocuments.set(canonicalUrl, document);
+    ctx.store.fetchedSources.push({
+      url: source.url,
+      title: source.title,
+      sourceId,
+      canonicalUrl,
+    });
+    addedUrls.push(source.url);
+    return sourceId;
+  }
+  ctx.store.fetchedSources.push({
+    url: source.url,
+    title: source.title,
+    canonicalUrl,
+  });
+  addedUrls.push(source.url);
+  return undefined;
+}
+
 /** The tool definitions offered to a model step. Delegation tools (spawn/join)
  *  are dropped for agents at the deepest allowed depth. */
 export function researchToolDefinitions(
@@ -528,20 +632,27 @@ export async function executeResearchTool(
   ctx: ResearchCtx,
   extras: ToolHandlerExtras,
 ): Promise<ToolExecution> {
-  const tool = researchToolByName.get(tu.name);
-  if (!tool) {
+  const builtin = researchToolByName.get(tu.name);
+  const userTool = builtin ? undefined : ctx.config.userTools?.get(tu.name);
+  if (!builtin && !userTool) {
+    const available = [
+      ...RESEARCH_TOOL_NAMES,
+      ...(ctx.config.userTools ? [...ctx.config.userTools.keys()] : []),
+    ].join(", ");
     return {
       toolResult: {
         type: "tool_result",
         tool_call_id: tu.id,
-        content: `Unknown tool: ${tu.name}. Available tools: ${RESEARCH_TOOL_NAMES.join(", ")}.`,
+        content: `Unknown tool: ${tu.name}. Available tools: ${available}.`,
         is_error: true,
       },
     };
   }
 
   try {
-    const result = await tool.handler(tu.input, ctx, extras);
+    const result = builtin
+      ? await builtin.handler(tu.input, ctx, extras)
+      : await runUserTool(userTool as CompiledUserTool, tu.input, ctx);
     return {
       toolResult: {
         type: "tool_result",
