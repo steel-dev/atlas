@@ -384,9 +384,15 @@ const RESEARCH_TOOL_REGISTRY: RegisteredTool[] = [
     spendsActionBudget: true,
     handler: (input, ctx) => {
       const content = execRunCode((input as RunCodeToolInput) ?? {}, ctx);
+      const isError = runCodeContentIsError(content);
+      ctx.scope.emit({
+        type: "tool_event",
+        tool: "run_code",
+        data: { output_chars: content.length, ...(isError ? { error: true } : {}) },
+      });
       return {
         content,
-        ...(runCodeContentIsError(content) ? { isError: true } : {}),
+        ...(isError ? { isError: true } : {}),
       };
     },
   },

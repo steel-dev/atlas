@@ -211,6 +211,8 @@ type EvalTraceEvent = {
   from?: string;
   to?: string;
   chars?: number;
+  tool?: string;
+  data?: unknown;
   result?: {
     citedSources: number;
     citationsNotFetched: number;
@@ -1391,10 +1393,15 @@ function traceEvent(event: ResearchEvent, started: number): EvalTraceEvent {
       };
     case "message_sent":
       return { ...base, from: event.from, to: event.to, chars: event.chars };
+    case "tool_event":
+      return {
+        ...base,
+        tool: event.tool,
+        ...(event.data !== undefined ? { data: event.data } : {}),
+      };
     case "research_started":
     case "report-boundary":
     case "report-delta":
-    case "tool_event":
       return base;
   }
 }
