@@ -112,7 +112,7 @@ for await (const part of run.fullStream) {
 await researcher.close(); // drains in-flight runs; or `await using researcher = createResearcher({ … })`
 ```
 
-`instructions` is appended to the system prompt rather than replacing it, and `defaults` set per-call options you can still override on each `research()` / `stream()` call.
+`instructions` is appended to the system prompt rather than replacing it, and `defaults` set per-call options you can still override on each `research()` / `stream()` call. One-shot `research()` and `streamResearch()` calls accept `instructions` too.
 
 ## Custom tools
 

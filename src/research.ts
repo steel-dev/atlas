@@ -91,6 +91,7 @@ export interface ResearchOptions extends RunOptions {
   summaryModel?: Exclude<LanguageModel, string>;
   browser?: BrowserProvider;
   search?: SearchProvider;
+  instructions?: string;
 }
 
 export interface QueryOptions extends RunOptions {
@@ -98,7 +99,6 @@ export interface QueryOptions extends RunOptions {
 }
 
 export interface RunInput extends ResearchOptions {
-  instructions?: string;
   userTools?: ReadonlyMap<string, CompiledUserTool>;
 }
 

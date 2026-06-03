@@ -12,6 +12,7 @@ export type {
   QueryOptions,
   ResearchEvent,
   ResearchOptions,
+  ResearchOutputOptions,
   ResearchResult,
   ResearchRun,
   ResearchStream,

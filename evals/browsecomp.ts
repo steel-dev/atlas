@@ -1424,11 +1424,11 @@ async function runCase(
   try {
     const run = streamResearch({
       query: evalQuery(entry.query),
-      ...resolveModelSpec({
+      ...(await resolveModelSpec({
         provider: opts.provider,
         model: opts.model,
         baseUrl: opts.openaiBaseUrl,
-      }),
+      })),
       timeoutMs: opts.timeoutMs,
       tokenLimit: opts.tokenLimit,
       suggestedTeamSize: opts.teamSize,

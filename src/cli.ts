@@ -316,7 +316,7 @@ async function main(): Promise<void> {
 
   let run!: ReturnType<typeof streamResearch>;
   try {
-    const { model, summaryModel } = resolveModelSpec({
+    const { model, summaryModel } = await resolveModelSpec({
       provider,
       model: values.model,
       summaryModel: values["summary-model"],

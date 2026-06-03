@@ -1684,11 +1684,11 @@ async function runResearch(
     try {
       const run = streamResearch({
         query: entry.problem,
-        ...resolveModelSpec({
+        ...(await resolveModelSpec({
           provider: opts.provider,
           model: opts.model,
           baseUrl: opts.openaiBaseUrl,
-        }),
+        })),
         timeoutMs: opts.timeoutMs,
         tokenLimit: opts.tokenLimit,
         suggestedTeamSize: opts.teamSize,

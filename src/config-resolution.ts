@@ -1,5 +1,3 @@
-import { createAnthropic } from "@ai-sdk/anthropic";
-import { createOpenAI } from "@ai-sdk/openai";
 import {
   createAISdkModelAdapter,
   wrapModelAdapterWithConcurrency,
@@ -303,32 +301,37 @@ interface ModelSpecInput {
   baseUrl?: string;
 }
 
-export function resolveModelSpec(opts: ModelSpecInput): {
+export async function resolveModelSpec(opts: ModelSpecInput): Promise<{
   model: Exclude<LanguageModel, string>;
   summaryModel?: Exclude<LanguageModel, string>;
-} {
+}> {
   const provider = resolveProvider(opts.provider);
   const modelId = resolveModel(provider, opts.model);
   const baseUrl =
     opts.baseUrl ?? readEnv("ATLAS_OPENAI_BASE_URL", "OPENAI_BASE_URL");
-  const model = buildLanguageModel(provider, modelId, baseUrl);
+  const model = await buildLanguageModel(provider, modelId, baseUrl);
   const summaryId = resolveSummaryModel(opts.summaryModel, modelId);
   return summaryId === modelId
     ? { model }
-    : { model, summaryModel: buildLanguageModel(provider, summaryId, baseUrl) };
+    : {
+        model,
+        summaryModel: await buildLanguageModel(provider, summaryId, baseUrl),
+      };
 }
 
-function buildLanguageModel(
+async function buildLanguageModel(
   provider: ModelProvider,
   modelId: string,
   baseUrl: string | undefined,
-): Exclude<LanguageModel, string> {
+): Promise<Exclude<LanguageModel, string>> {
   if (provider === "openai") {
+    const { createOpenAI } = await import("@ai-sdk/openai");
     return createOpenAI({
       apiKey: readEnv("ATLAS_OPENAI_API_KEY", "OPENAI_API_KEY"),
       ...(baseUrl ? { baseURL: baseUrl } : {}),
     })(modelId);
   }
+  const { createAnthropic } = await import("@ai-sdk/anthropic");
   return createAnthropic({
     apiKey: readEnv("ATLAS_ANTHROPIC_API_KEY", "ANTHROPIC_API_KEY"),
   })(modelId);
