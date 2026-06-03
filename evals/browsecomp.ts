@@ -1435,9 +1435,11 @@ async function runCase(
       output: browseCompOutput(),
       includeSourceDocuments: true,
       browser: steel({ proxy: opts.useProxy }),
-      exploreProviderOptions: { anthropic: { thinking: { type: "adaptive" } } },
+      exploreProviderOptions: {
+        anthropic: { thinking: { type: "adaptive" }, effort: "max" },
+      },
       finalizeProviderOptions: {
-        anthropic: { thinking: { type: "adaptive" }, effort: "high" },
+        anthropic: { thinking: { type: "adaptive" }, effort: "max" },
       },
     });
     for await (const event of run.events) {

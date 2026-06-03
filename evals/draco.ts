@@ -1694,6 +1694,12 @@ async function runResearch(
         suggestedTeamSize: opts.teamSize,
         includeSourceDocuments: true,
         browser: steel({ proxy: opts.useProxy }),
+        exploreProviderOptions: {
+          anthropic: { thinking: { type: "adaptive" }, effort: "max" },
+        },
+        finalizeProviderOptions: {
+          anthropic: { thinking: { type: "adaptive" }, effort: "max" },
+        },
       });
       for await (const event of run.events) {
         trace.push(traceEvent(event, started));

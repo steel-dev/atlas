@@ -118,7 +118,8 @@ provider-symmetric, no Anthropic-native lock-in.
 
 1. **Fixed methodology:** judge `claude-opus-4-6`, per-criterion grader,
    `--judge-concurrency 2` (the account's concurrent-connection limit is below 8),
-   same seed (`draco-v1`).
+   same seed (`draco-v1`), max effort (adaptive thinking + `effort: "max"`,
+   hardcoded in the eval — system-card parity).
 2. **One variable at a time** — separate commits, separate measurement runs.
 3. **Measurement ladder:** fixed n=10 paired per-task deltas for fast iteration →
    confirm at n=30–50 before believing a result → n=100 for any headline number.
@@ -132,6 +133,12 @@ Note: by skipping the Phase 1/2 gates the next no-proxy run measures the
 cumulative delta (run_code + relaxed budgets + messaging), not one variable.
 Per-task traces still allow post-hoc attribution: `run_code` tool events,
 `message_sent` events (from/to/chars), and finish reasons are all in the JSONL.
+
+The 69.4% baseline also predates the max-effort methodology: the eval set no
+provider options at the time, so it ran at default effort while Anthropic's
+80.4% ran at max effort. The next run therefore carries a measurement-condition
+change on top of the code deltas; if attribution gets muddy, re-running the
+baseline commit at max effort isolates the effort term.
 
 Measurement command:
 
