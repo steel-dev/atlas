@@ -241,6 +241,7 @@ const DEFAULT_JUDGE_CONCURRENCY = 8;
 const PER_CRITERION_JUDGE_MAX_TOKENS = 8_192;
 const ONE_SHOT_JUDGE_MAX_TOKENS = 32_768;
 const JUDGE_TEMPERATURE = 0;
+const COVERAGE_FLOOR = 0.9;
 const SECTION_ORDER = [
   "factual-accuracy",
   "breadth-and-depth-of-analysis",
@@ -1960,6 +1961,7 @@ function summarize(results: EvalResult[]) {
     (sum, result) => sum + result.score.criteria,
     0,
   );
+  const coverage = totalCriteria === 0 ? 1 : gradedCriteria / totalCriteria;
   return {
     type: "summary" as const,
     total: results.length,
@@ -1973,7 +1975,8 @@ function summarize(results: EvalResult[]) {
     ),
     gradedCriteria,
     totalCriteria,
-    coverage: totalCriteria === 0 ? 1 : gradedCriteria / totalCriteria,
+    coverage,
+    scoreValid: coverage >= COVERAGE_FLOOR,
     normalizedScore: mean(scored.map((result) => result.score.normalizedScore)),
     passRate: mean(scored.map((result) => result.score.passRate)),
     domains,
@@ -2060,6 +2063,11 @@ function printSummary(
       `grading coverage: ${(summary.coverage * 100).toFixed(1)}% (${summary.gradedCriteria}/${summary.totalCriteria} criteria graded${
         summary.ungraded ? `, ${summary.ungraded} task(s) ungraded` : ""
       })`,
+      ...(summary.scoreValid
+        ? []
+        : [
+            `WARNING: grading coverage ${(summary.coverage * 100).toFixed(1)}% < ${(COVERAGE_FLOOR * 100).toFixed(0)}% — scores are NOT comparable; treat normalized score as invalid for this run.`,
+          ]),
       "by domain:",
       ...summary.domains.map(
         (d) =>
