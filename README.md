@@ -108,33 +108,6 @@ const result = await researcher.research(
 );
 ```
 
-## Reusable researchers
-
-Define a researcher once then reuse it across many queries. This fits long-lived processes such as a server handling many requests: resources are created lazily on the first query, and concurrent runs stay isolated. Pass the query positionally; everything else is bound.
-
-```ts
-import { Researcher } from "@steel-dev/atlas";
-import { anthropic } from "@ai-sdk/anthropic";
-
-const researcher = new Researcher({
-  model: anthropic("claude-sonnet-4-6"),
-  instructions:
-    "You are a clinical evidence analyst. Prefer RCTs and meta-analyses.",
-  defaults: { timeoutMs: 180_000 },
-});
-
-const result = await researcher.research("SGLT2 inhibitors for HFpEF?");
-
-const run = researcher.stream("GLP-1 agonists and cardiovascular outcomes?");
-for await (const part of run.fullStream) {
-  if (part.type === "report_delta") process.stdout.write(part.text);
-}
-
-await researcher.close(); // drains in-flight runs; or `await using researcher = new Researcher({ … })`
-```
-
-`instructions` is appended to the system prompt rather than replacing it, and `defaults` set per-call options you can still override on each `researcher.research()` / `researcher.stream()` call.
-
 ## Custom tools
 
 Give the model domain-specific tools alongside the built-ins. `researchTool` takes an `inputSchema` (Zod, or any AI SDK schema) and an `execute`; anything you register with `ctx.addSource` becomes a citable source in the report, exactly like a fetched page.
