@@ -61,25 +61,38 @@ the gap is proxy and the silent acceptance of blocked browser results.
   `choke.blocked_or_thin` (91) and factual accuracy; watch geo-sensitive domains
   (Shopping, Personalized Assistant) for regressions from proxy exit location.
 
-### Phase 2 — messaging harness (gated on Phase 1 results)
+### Phase 2 — Send/Wait messaging harness (DONE)
 
-Replace spawn/join's one-shot 4k-truncated handoff with Send/Wait message passing:
-broker + per-agent inboxes, inbound messages injected after the recipient's next
-tool result, blocking `wait_for_message` (park/wake), status + concurrency caps.
+The measurement gate was consciously skipped (explicit decision to build ahead of
+data); the strategic fork resolved to the **portable messaging** path —
+provider-symmetric, no Anthropic-native lock-in.
 
-Prerequisites: `run_code` available per agent and relaxed per-agent budgets
-(current 20 tool calls / 4k findings are the opposite of Anthropic's
-200k-no-compaction workers). Expected gain is latency and the removal of the lossy
-join; accuracy gains are modest per Anthropic's own multi-agent data.
-
-Strategic fork to decide at this gate: provider symmetry (portable path above) vs
-Anthropic-native ceiling (programmatic tool calling + code execution, single
-strong agent).
+- **Prerequisite (landed first, separate commit):** per-subagent budgets relaxed —
+  `SUBAGENT_MAX_TOOL_CALLS` 20→40, findings handoff cap 4k→16k chars. The lead
+  budget stays at 12 (measured not budget-bound).
+- **Messaging (landed):** broker + per-agent inboxes (`src/messaging.ts`) behind
+  `send_message` / `wait_for_message` tools on both sides, addressed by spawn
+  handle with `lead` reserved. Semantics: single-consumer mailbox, FIFO by
+  arrival, 8k chars per message, synchronous wake (test determinism). Inbound
+  messages are injected after the recipient's next tool-result flush and once
+  more before final synthesis. A parked `wait_for_message` resolves on send, on
+  `no_more_senders` (every possible sender finished), on timeout (default 120s,
+  clamped so a sub-agent can never park through its own synthesis reserve), on
+  soft stop (resolve with note), or on hard abort (reject through the normal
+  tool-error path). `join` and `settle` both broadcast a collecting note that
+  frees parked sub-agents, so the lead can never deadlock against a waiting
+  worker. Both tools are action-budget-free; the runaway ceiling moved from
+  `maxToolCalls × 2` to `× 3` so coordination chatter cannot end a run early.
+- spawn/join remain the lifecycle; messaging adds the mid-flight channel
+  (redirects, incremental findings, blocking questions). Peer-to-peer sub-agent
+  messaging already works mechanically — any registered handle is addressable —
+  it just requires the lead to share handles. Prompts stay advisory.
 
 ## Decided against
 
 | Item | Reason / revisit condition |
 | --- | --- |
+| Anthropic-native ceiling (programmatic tool calling + code execution, single strong agent) | The Phase 2 fork resolved to portable messaging; native path conflicts with the provider-symmetry investment. Revisit only if symmetry is abandoned |
 | SQLite / embedded DB for the store | Regex cannot be indexed; data is non-relational prose; corpus is MBs. Revisit for a cross-run fetch cache or a truly parallel shared store in Phase 2 |
 | Inverted index / vector store | Helps keyword/semantic search, not exact-pattern extraction — the measured bottleneck |
 | Raising the lead tool budget | Lead uses 4.7/12 calls; it is not budget-bound |
@@ -110,6 +123,11 @@ strong agent).
 
 Reference baseline: `eval-runs/draco-v2-regrade-opus46-clean.jsonl` — 69.4%
 normalized, factual-accuracy 60.6%, coverage 100%.
+
+Note: by skipping the Phase 1/2 gates the next no-proxy run measures the
+cumulative delta (run_code + relaxed budgets + messaging), not one variable.
+Per-task traces still allow post-hoc attribution: `run_code` tool events,
+`message_sent` events (from/to/chars), and finish reasons are all in the JSONL.
 
 Measurement command:
 
