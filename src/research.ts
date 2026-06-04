@@ -119,9 +119,13 @@ export type ResearchEventListener<K extends ResearchEventType> = (
   event: ResearchEventMap[K],
 ) => void;
 
+export type ResearchDepth = "quick" | "standard" | "deep";
+
 export interface RunOptions {
   timeoutMs?: number;
   tokenLimit?: number;
+  depth?: ResearchDepth;
+  signal?: AbortSignal;
   exploreProviderOptions?: ProviderOptions;
   finalizeProviderOptions?: ProviderOptions;
   includeSourceDocuments?: boolean;
@@ -180,10 +184,20 @@ export function startResearchStream(input: RunInput): ResearchStream {
   const hardController = new AbortController();
   const softController = new AbortController();
   const controller = createResearchStreamController();
+  const externalSignal = input.signal;
+  const onExternalAbort = () => hardController.abort(externalSignal?.reason);
+  if (externalSignal) {
+    if (externalSignal.aborted) hardController.abort(externalSignal.reason);
+    else
+      externalSignal.addEventListener("abort", onExternalAbort, { once: true });
+  }
   queueMicrotask(() => {
     void runResearch(input, controller.emit, hardController, softController)
       .then(controller.resolve, controller.reject)
-      .finally(controller.close);
+      .finally(() => {
+        externalSignal?.removeEventListener("abort", onExternalAbort);
+        controller.close();
+      });
   });
   return controller.build({
     abort: () => hardController.abort(),

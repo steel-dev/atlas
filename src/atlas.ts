@@ -10,7 +10,7 @@ import {
   type RunOptions,
 } from "./research.js";
 
-export interface ResearcherConfig {
+export interface AtlasConfig {
   model: Exclude<LanguageModel, string>;
   leafModel?: Exclude<LanguageModel, string>;
   browser?: BrowserProvider;
@@ -24,12 +24,12 @@ export interface ResearcherConfig {
  * instructions once, then runs many queries against that configuration.
  * Resources for a run are created per call, so concurrent runs stay isolated.
  */
-export class Researcher {
-  readonly #config: ResearcherConfig;
+export class Atlas {
+  readonly #config: AtlasConfig;
   #closed = false;
   readonly #inflight = new Set<Promise<unknown>>();
 
-  constructor(config: ResearcherConfig) {
+  constructor(config: AtlasConfig) {
     this.#config = config;
   }
 
@@ -51,7 +51,7 @@ export class Researcher {
     return this.#start(queryOrOpts, maybeOpts);
   }
 
-  /** Marks the researcher closed and waits for in-flight runs to settle. */
+  /** Marks the client closed and waits for in-flight runs to settle. */
   async close(): Promise<void> {
     this.#closed = true;
     await Promise.allSettled([...this.#inflight]);
@@ -65,7 +65,7 @@ export class Researcher {
     queryOrOpts: string | QueryOptions,
     maybeOpts?: RunOptions,
   ): ResearchStream {
-    if (this.#closed) throw new Error("Researcher is closed");
+    if (this.#closed) throw new Error("Atlas is closed");
     const handle = startResearchStream(this.#buildInput(queryOrOpts, maybeOpts));
     const tracked = handle.result.then(
       () => undefined,

@@ -150,6 +150,31 @@ describe("resolveRunConfig", () => {
     expect(config.timeoutDeadlineAt).toBeUndefined();
   });
 
+  it("maps a depth tier onto the token budget", () => {
+    clearAtlasEnv();
+    const config = resolveRunConfig({
+      query: "q",
+      model: fakeLanguageModel(),
+      browser: steel({ apiKey: "sk" }),
+      depth: "quick",
+    });
+
+    expect(config.agent.tokenLimit).toBe(500_000);
+  });
+
+  it("prefers an explicit tokenLimit over the depth tier", () => {
+    clearAtlasEnv();
+    const config = resolveRunConfig({
+      query: "q",
+      model: fakeLanguageModel(),
+      browser: steel({ apiKey: "sk" }),
+      depth: "deep",
+      tokenLimit: 123_000,
+    });
+
+    expect(config.agent.tokenLimit).toBe(123_000);
+  });
+
   it("sizes caps from the default budget when tokens are unlimited", () => {
     clearAtlasEnv();
     const config = resolveRunConfig({
@@ -238,7 +263,7 @@ describe("resolveRunConfig", () => {
     clearAtlasEnv();
     vi.stubEnv("ATLAS_STEEL_API_KEY", "env-steel");
 
-    // The headline zero-config call: new Researcher({ model }).research(query) with no browser.
+    // The headline zero-config call: new Atlas({ model }).research(query) with no browser.
     const config = resolveRunConfig({
       query: "q",
       model: fakeLanguageModel(),

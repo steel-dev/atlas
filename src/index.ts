@@ -1,7 +1,7 @@
-export { Researcher } from "./researcher.js";
+export { Atlas } from "./atlas.js";
 export { steel } from "./steel.js";
 export type { BrowserProvider, SteelBrowserOptions } from "./steel.js";
-export type { ResearcherConfig } from "./researcher.js";
+export type { AtlasConfig } from "./atlas.js";
 export type {
   ClaimConfidence,
   ClaimImportance,
@@ -15,6 +15,7 @@ export type {
   QueryOptions,
   ResearchClaim,
   ResearchClaims,
+  ResearchDepth,
   ResearchEvent,
   ResearchEventListener,
   ResearchEventMap,

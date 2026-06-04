@@ -10,7 +10,7 @@ import {
 } from "../src/defaults.js";
 import { createAISdkModelAdapter, type ModelAdapter } from "../src/model.js";
 import { type ModelProvider } from "../src/research.js";
-import { Researcher } from "../src/researcher.js";
+import { Atlas } from "../src/atlas.js";
 import { steel } from "../src/steel.js";
 import { resolveModelSpec } from "../src/config-resolution.js";
 import {
@@ -699,14 +699,14 @@ async function runCase(
     );
   }, 30_000);
   try {
-    const researcher = new Researcher({
+    const atlas = new Atlas({
       ...(await resolveModelSpec({
         provider: opts.provider,
         model: opts.model,
       })),
       browser: steel({ proxy: opts.useProxy }),
     });
-    const run = researcher.stream(evalQuery(entry.query), {
+    const run = atlas.stream(evalQuery(entry.query), {
       timeoutMs: opts.timeoutMs,
       tokenLimit: opts.tokenLimit,
       includeSourceDocuments: true,

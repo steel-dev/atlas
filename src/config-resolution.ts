@@ -20,7 +20,7 @@ import {
   readBrowserIdleTtlMsFromEnv,
   readBrowserMaxSessionsFromEnv,
 } from "./browser-session-pool.js";
-import type { ResearchEvent, RunInput } from "./research.js";
+import type { ResearchDepth, ResearchEvent, RunInput } from "./research.js";
 
 const DEFAULT_RUNTIME_LIMITS = {
   maxConcurrentTools: 8,
@@ -35,6 +35,11 @@ const DEFAULT_RUNTIME_LIMITS = {
 // safety caps are derived from it (and floored) so the token budget — not a
 // hand-tuned effort multiplier — is what governs how far a run scales.
 const DEFAULT_TOKEN_LIMIT = 2_000_000;
+const DEPTH_TOKEN_LIMITS: Record<ResearchDepth, number> = {
+  quick: 500_000,
+  standard: 2_000_000,
+  deep: 8_000_000,
+};
 const TOKENS_PER_TOOL_CALL = 8_000;
 const TOKENS_PER_SOURCE = 20_000;
 const TOKENS_PER_CONFIRMED_CLAIM = 40_000;
@@ -85,6 +90,7 @@ export function resolveRunConfig(opts: RunInput): ResolvedRunConfig {
   const useProxy = browser?.proxy ?? false;
   const tokenLimit =
     opts.tokenLimit ??
+    (opts.depth ? DEPTH_TOKEN_LIMITS[opts.depth] : undefined) ??
     readIntEnv("ATLAS_TOKEN_LIMIT", 0) ??
     DEFAULT_TOKEN_LIMIT;
   const effectiveLimitForCaps =

@@ -7,7 +7,7 @@ import {
   type ResearchResult,
   type ResearchStream,
 } from "./research.js";
-import { Researcher } from "./researcher.js";
+import { Atlas } from "./atlas.js";
 import { resolveModelSpec } from "./config-resolution.js";
 import { steel } from "./steel.js";
 import { exa, brave, type SearchProvider } from "./search-provider.js";
@@ -328,13 +328,13 @@ async function main(): Promise<void> {
       model: values.model,
       leafModel: values["leaf-model"],
     });
-    const researcher = new Researcher({
+    const atlas = new Atlas({
       model,
       ...(leafModel ? { leafModel } : {}),
       search: resolveSearch(values["search-provider"]),
       ...(useProxy ? { browser: steel({ proxy: true }) } : {}),
     });
-    run = researcher.stream(query, {
+    run = atlas.stream(query, {
       tokenLimit,
       exploreProviderOptions: { anthropic: { thinking: { type: "adaptive" } } },
       finalizeProviderOptions: {

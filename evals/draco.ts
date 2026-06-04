@@ -15,7 +15,7 @@ import {
   type ResearchResult,
   type VerifierPanelMode,
 } from "../src/research.js";
-import { Researcher } from "../src/researcher.js";
+import { Atlas } from "../src/atlas.js";
 import { steel } from "../src/steel.js";
 import { resolveModelSpec } from "../src/config-resolution.js";
 import {
@@ -1149,14 +1149,14 @@ async function runResearch(
   let lastError: unknown;
   for (let attempt = 1; attempt <= attempts; attempt++) {
     try {
-      const researcher = new Researcher({
+      const atlas = new Atlas({
         ...(await resolveModelSpec({
           provider: opts.provider,
           model: opts.model,
         })),
         browser: steel({ proxy: opts.useProxy }),
       });
-      const run = researcher.stream(entry.problem, {
+      const run = atlas.stream(entry.problem, {
         timeoutMs: opts.timeoutMs,
         tokenLimit: opts.tokenLimit,
         includeSourceDocuments: true,
