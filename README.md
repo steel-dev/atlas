@@ -137,6 +137,37 @@ console.log(result.basis["frameworks.0.license"].citations);
 
 The Markdown report is still produced, so `result.markdown` and `result.citedSources` are there too.
 
+## Custom tools
+
+Give the model domain-specific tools alongside the built-ins. Anything a tool registers via `ctx.addSource` becomes a citable source — its content is extracted into claims, adversarially verified, and cited in the report exactly like a fetched web page. This is the extension point for verticals: plug in PubMed, Westlaw, an internal API, or a vector store.
+
+```ts
+import { Atlas, researchTool } from "@steel-dev/atlas";
+import { anthropic } from "@ai-sdk/anthropic";
+import { z } from "zod";
+
+const atlas = new Atlas({
+  model: anthropic("claude-sonnet-4-6"),
+  tools: {
+    pubmedSearch: researchTool({
+      description: "Search PubMed for peer-reviewed studies. Each result becomes a citable source.",
+      inputSchema: z.object({ query: z.string(), limit: z.number().default(5) }),
+      execute: async ({ query, limit }, ctx) => {
+        const studies = await pubmed.search(query, { limit, signal: ctx.signal });
+        for (const s of studies) {
+          ctx.addSource({ url: s.url, title: s.title, content: s.abstract });
+        }
+        return studies.map((s) => `- ${s.title} — ${s.url}`).join("\n");
+      },
+    }),
+  },
+});
+
+const { markdown } = await atlas.research("Evidence for SGLT2 inhibitors in HFpEF?");
+```
+
+The tool key (`pubmedSearch`) is the name the model calls. `inputSchema` is a Zod schema or AI SDK `jsonSchema()`. The `ctx` passed to `execute` carries `addSource({ url, title, content })`, an `AbortSignal` as `ctx.signal`, and `ctx.log(message)` for progress.
+
 ## Bring any model
 
 Atlas runs every model through the [Vercel AI SDK](https://ai-sdk.dev), so the lifecycle stays the same across providers — recall, gap-chasing, verification, and synthesis — while you reach any provider the AI SDK supports. Install the provider package you need (`@ai-sdk/google`, `@ai-sdk/openai`, …). The lead and the leaf agents (claim extraction, verification voters) can run different models; pass `leafModel` to route the high-volume leaf calls to a cheaper model.
