@@ -70,7 +70,7 @@ function verdictAdapter(
 function makeCtx(
   adapter: ModelAdapter,
   claims: ResearchClaim[],
-  opts: { tokenLimit?: number } = {},
+  opts: { tokenLimit?: number; verifyTargetConfirmed?: number } = {},
 ): ResearchCtx & { events: Array<Record<string, unknown>> } {
   const events: Array<Record<string, unknown>> = [];
   return {
@@ -78,6 +78,9 @@ function makeCtx(
       useProxy: false,
       sourceCap: 100,
       ...(opts.tokenLimit !== undefined ? { tokenLimit: opts.tokenLimit } : {}),
+      ...(opts.verifyTargetConfirmed !== undefined
+        ? { verifyTargetConfirmed: opts.verifyTargetConfirmed }
+        : {}),
     },
     deps: {
       model: adapter,
@@ -178,17 +181,48 @@ describe("verifyClaims", () => {
     expect(target.votes.length).toBeLessThan(2);
   });
 
-  it("caps verification and reports the overflow", async () => {
+  it("stops verifying once the confirmed target is met", async () => {
     const adapter = verdictAdapter(() => ({ refuted: false }));
-    const claims = Array.from({ length: MAX_VERIFY_CLAIMS + 5 }, (_, index) =>
+    const claims = Array.from({ length: 60 }, (_, index) =>
       claim({ id: `c${index}` }),
     );
-    const ctx = makeCtx(adapter, claims);
+    const ctx = makeCtx(adapter, claims, { verifyTargetConfirmed: 25 });
 
     const summary = await verifyClaims(ctx, "test question");
 
-    expect(summary.verified).toBe(MAX_VERIFY_CLAIMS);
-    expect(summary.beyondCap).toBe(5);
+    expect(summary.confirmed).toBeGreaterThanOrEqual(25);
+    expect(summary.verified).toBeLessThan(claims.length);
+    expect(summary.beyondCap).toBe(claims.length - summary.verified);
+    expect(summary.beyondCap).toBeGreaterThan(0);
+  });
+
+  it("backfills past the first wave when confirmations are scarce", async () => {
+    const adapter = verdictAdapter(() => ({ refuted: true }));
+    const claims = Array.from({ length: 40 }, (_, index) =>
+      claim({ id: `c${index}` }),
+    );
+    const ctx = makeCtx(adapter, claims, { verifyTargetConfirmed: 25 });
+
+    const summary = await verifyClaims(ctx, "test question");
+
+    expect(summary.confirmed).toBe(0);
+    expect(summary.verified).toBe(40);
+    expect(summary.refuted).toBe(40);
+    expect(summary.beyondCap).toBe(0);
+  });
+
+  it("never verifies past the MAX_VERIFY_CLAIMS backstop", async () => {
+    const adapter = verdictAdapter(() => ({ refuted: true }));
+    const claims = Array.from({ length: MAX_VERIFY_CLAIMS + 20 }, (_, index) =>
+      claim({ id: `c${index}` }),
+    );
+    const ctx = makeCtx(adapter, claims, { verifyTargetConfirmed: 1_000 });
+
+    const summary = await verifyClaims(ctx, "test question");
+
+    expect(summary.verified).toBeLessThanOrEqual(MAX_VERIFY_CLAIMS);
+    expect(summary.beyondCap).toBe(claims.length - summary.verified);
+    expect(summary.beyondCap).toBeGreaterThan(0);
   });
 
   it("returns immediately when nothing is verifiable", async () => {
@@ -201,7 +235,7 @@ describe("verifyClaims", () => {
     expect(adapter.calls).toHaveLength(0);
   });
 
-  it("abstains instead of voting once the token budget is exhausted", async () => {
+  it("verifies nothing once the token budget is already exhausted", async () => {
     const adapter = verdictAdapter(() => ({ refuted: false }));
     adapter.usage.input_tokens = 10_000;
     const target = claim();
@@ -210,8 +244,9 @@ describe("verifyClaims", () => {
     const summary = await verifyClaims(ctx, "test question");
 
     expect(adapter.calls).toHaveLength(0);
-    expect(target.status).toBe("unverified");
-    expect(summary.unverified).toBe(1);
+    expect(target.status).toBe("quoted");
+    expect(summary.verified).toBe(0);
+    expect(summary.beyondCap).toBe(1);
   });
 });
 

@@ -37,8 +37,11 @@ const DEFAULT_RUNTIME_LIMITS = {
 const DEFAULT_TOKEN_LIMIT = 2_000_000;
 const TOKENS_PER_TOOL_CALL = 8_000;
 const TOKENS_PER_SOURCE = 20_000;
+const TOKENS_PER_CONFIRMED_CLAIM = 40_000;
 const MIN_SAFETY_TOOL_CALLS = 40;
 const MIN_SAFETY_SOURCE_CAP = 80;
+const MIN_VERIFY_TARGET = 25;
+const MAX_VERIFY_TARGET = 60;
 
 export const RUNTIME_LIMITS = DEFAULT_RUNTIME_LIMITS;
 
@@ -92,6 +95,13 @@ export function resolveRunConfig(opts: RunInput): ResolvedRunConfig {
     sourceCap: Math.max(
       MIN_SAFETY_SOURCE_CAP,
       Math.ceil(effectiveLimitForCaps / TOKENS_PER_SOURCE),
+    ),
+    verifyTargetConfirmed: Math.min(
+      MAX_VERIFY_TARGET,
+      Math.max(
+        MIN_VERIFY_TARGET,
+        Math.ceil(effectiveLimitForCaps / TOKENS_PER_CONFIRMED_CLAIM),
+      ),
     ),
     maxOutputTokens: limits.maxOutputTokens,
     defaultSearchLimit: limits.defaultSearchLimit,

@@ -10,6 +10,7 @@ import {
   createConcurrencyGate,
   timeoutSynthesisReason,
   tokenBudgetExhaustedReason,
+  type ConcurrencyGate,
   type ResearchCtx,
 } from "./runtime.js";
 import type { ClaimVote, ResearchClaim } from "./claims.js";
@@ -20,7 +21,9 @@ import { errorMessage } from "./errors.js";
 
 export const VOTES_PER_CLAIM = 3;
 export const REFUTATIONS_REQUIRED = 2;
-export const MAX_VERIFY_CLAIMS = 25;
+export const MAX_VERIFY_CLAIMS = 120;
+const VERIFY_BATCH_SIZE = 16;
+const DEFAULT_VERIFY_TARGET = 25;
 const MAX_VOTER_TOOL_TURNS = 2;
 const VOTER_STEP_MAX_TOKENS = 1_200;
 const VERDICT_MAX_TOKENS = 600;
@@ -323,59 +326,83 @@ export function voteSplit(claim: ResearchClaim): string {
   return `${claim.votes.length - refuted}-${refuted}`;
 }
 
+async function verifyOneClaim(
+  ctx: ResearchCtx,
+  question: string,
+  claim: ResearchClaim,
+  gate: ConcurrencyGate,
+  searchIndexRef: { next: number },
+): Promise<void> {
+  const votes = (
+    await Promise.all(
+      VERIFIER_LENSES.map((lens) =>
+        gate
+          .run(() => castVote(ctx, question, claim, lens, searchIndexRef))
+          .catch((err: unknown) => {
+            if (ctx.deps.signal?.aborted) throw err;
+            return null;
+          }),
+      ),
+    )
+  ).filter((vote): vote is ClaimVote => vote !== null);
+  settleClaim(claim, votes);
+  ctx.scope.emit({
+    type: "claim_verified",
+    id: claim.id,
+    claim: claim.text,
+    vote: voteSplit(claim),
+    status: claim.status,
+  });
+}
+
 export async function verifyClaims(
   ctx: ResearchCtx,
   question: string,
 ): Promise<VerifySummary> {
   const ranked = rankClaimsForVerification(ctx.store.claims.claims);
-  const selected = ranked.slice(0, MAX_VERIFY_CLAIMS);
-  const beyondCap = ranked.length - selected.length;
-  if (selected.length === 0) {
-    return {
-      verified: 0,
-      confirmed: 0,
-      refuted: 0,
-      unverified: 0,
-      beyondCap,
-    };
+  if (ranked.length === 0) {
+    return { verified: 0, confirmed: 0, refuted: 0, unverified: 0, beyondCap: 0 };
   }
 
-  ctx.scope.emit({ type: "verify_started", claims: selected.length });
+  const target = Math.max(
+    1,
+    ctx.config.verifyTargetConfirmed ?? DEFAULT_VERIFY_TARGET,
+  );
+  const maxToVerify = Math.min(ranked.length, MAX_VERIFY_CLAIMS);
+
+  ctx.scope.emit({ type: "verify_started", claims: maxToVerify });
   const gate = createConcurrencyGate(VERIFY_CONCURRENCY);
   const searchIndexRef = { next: 0 };
 
-  await Promise.all(
-    selected.map(async (claim) => {
-      const votes = (
-        await Promise.all(
-          VERIFIER_LENSES.map((lens) =>
-            gate
-              .run(() => castVote(ctx, question, claim, lens, searchIndexRef))
-              .catch((err: unknown) => {
-                if (ctx.deps.signal?.aborted) throw err;
-                return null;
-              }),
-          ),
-        )
-      ).filter((vote): vote is ClaimVote => vote !== null);
-      settleClaim(claim, votes);
-      ctx.scope.emit({
-        type: "claim_verified",
-        id: claim.id,
-        claim: claim.text,
-        vote: voteSplit(claim),
-        status: claim.status,
-      });
-    }),
-  );
+  let cursor = 0;
+  let confirmed = 0;
+  while (
+    cursor < maxToVerify &&
+    confirmed < target &&
+    !tokenBudgetExhaustedReason(ctx) &&
+    !timeoutSynthesisReason(ctx)
+  ) {
+    const wave = ranked.slice(
+      cursor,
+      Math.min(cursor + VERIFY_BATCH_SIZE, maxToVerify),
+    );
+    cursor += wave.length;
+    await Promise.all(
+      wave.map((claim) =>
+        verifyOneClaim(ctx, question, claim, gate, searchIndexRef),
+      ),
+    );
+    confirmed += wave.filter((claim) => claim.status === "confirmed").length;
+  }
 
+  const verified = ranked.slice(0, cursor);
   const summary: VerifySummary = {
-    verified: selected.length,
-    confirmed: selected.filter((claim) => claim.status === "confirmed").length,
-    refuted: selected.filter((claim) => claim.status === "refuted").length,
-    unverified: selected.filter((claim) => claim.status === "unverified")
+    verified: verified.length,
+    confirmed: verified.filter((claim) => claim.status === "confirmed").length,
+    refuted: verified.filter((claim) => claim.status === "refuted").length,
+    unverified: verified.filter((claim) => claim.status === "unverified")
       .length,
-    beyondCap,
+    beyondCap: ranked.length - verified.length,
   };
   ctx.scope.emit({
     type: "verify_finished",
