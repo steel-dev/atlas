@@ -7,6 +7,8 @@ import {
 } from "./verify.js";
 import {
   extractOpenQuestions,
+  extractReportStructure,
+  parseReportStructure,
   renderConfirmedClaims,
   renderRefutedClaims,
   synthesisPrompt,
@@ -64,6 +66,29 @@ function verdictAdapter(
         };
       }
       return { content: [{ type: "text", text: "no tools needed" }] };
+    },
+  };
+}
+
+function structureAdapter(
+  respond: (input: ModelStepInput) => string | Error,
+): ModelAdapter & { calls: ModelStepInput[] } {
+  const calls: ModelStepInput[] = [];
+  return {
+    provider: "anthropic",
+    model: "fake",
+    usage: {
+      input_tokens: 0,
+      output_tokens: 0,
+      cache_creation_input_tokens: 0,
+      cache_read_input_tokens: 0,
+    },
+    calls,
+    async step(input) {
+      calls.push(input);
+      const out = respond(input);
+      if (out instanceof Error) throw out;
+      return { content: [{ type: "text", text: out }] };
     },
   };
 }
@@ -497,5 +522,67 @@ describe("synthesis rendering", () => {
 
   it("returns no open questions when the report omits the section", () => {
     expect(extractOpenQuestions("# Report\nJust findings.")).toEqual([]);
+  });
+});
+
+describe("report structure extraction", () => {
+  it("parses caveats and open questions, trimming and deduping", () => {
+    const parsed = parseReportStructure(
+      JSON.stringify({
+        caveats: ["  Sources are dated.  ", "Sources are dated.", ""],
+        openQuestions: ["What about 2025?"],
+      }),
+    );
+    expect(parsed).toEqual({
+      caveats: ["Sources are dated."],
+      openQuestions: ["What about 2025?"],
+    });
+  });
+
+  it("returns null for non-JSON structure output", () => {
+    expect(parseReportStructure("not json")).toBeNull();
+  });
+
+  it("extracts structure from the model as guaranteed fields", async () => {
+    const adapter = structureAdapter(() =>
+      JSON.stringify({
+        caveats: ["Only one primary source."],
+        openQuestions: ["Does it hold in the EU?"],
+      }),
+    );
+    const ctx = makeCtx(adapter, []);
+
+    const structure = await extractReportStructure(ctx, "# Report\nBody.");
+
+    expect(structure.caveats).toEqual(["Only one primary source."]);
+    expect(structure.openQuestions).toEqual(["Does it hold in the EU?"]);
+    expect(adapter.calls[0]?.outputSchema?.name).toBe("report_structure");
+  });
+
+  it("falls back to the regex section when the model errors", async () => {
+    const adapter = structureAdapter(() => new Error("model down"));
+    const ctx = makeCtx(adapter, []);
+    const markdown = [
+      "# Report",
+      "Findings.",
+      "",
+      "## Open Questions",
+      "- What is the 2025 figure?",
+    ].join("\n");
+
+    const structure = await extractReportStructure(ctx, markdown);
+
+    expect(structure.caveats).toEqual([]);
+    expect(structure.openQuestions).toEqual(["What is the 2025 figure?"]);
+  });
+
+  it("skips the model and returns empty for an empty report", async () => {
+    const adapter = structureAdapter(() => new Error("should not be called"));
+    const ctx = makeCtx(adapter, []);
+
+    const structure = await extractReportStructure(ctx, "   ");
+
+    expect(structure).toEqual({ caveats: [], openQuestions: [] });
+    expect(adapter.calls).toHaveLength(0);
   });
 });

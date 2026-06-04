@@ -9,6 +9,7 @@ function fakeResult(markdown: string): ResearchResult {
     model: "m",
     markdown,
     openQuestions: [],
+    caveats: [],
     claims: { confirmed: [], refuted: [], unverified: [] },
     stats: {
       angles: 1,

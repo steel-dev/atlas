@@ -1,5 +1,9 @@
-import type { ModelStepInput, ModelStepResult } from "./model.js";
-import type { ResearchCtx } from "./runtime.js";
+import type {
+  ModelOutputSchema,
+  ModelStepInput,
+  ModelStepResult,
+} from "./model.js";
+import { tokenBudgetExhaustedReason, type ResearchCtx } from "./runtime.js";
 import type { ResearchClaim } from "./claims.js";
 import { voteSplit, type VerifySummary } from "./verify.js";
 
@@ -179,4 +183,111 @@ export function extractOpenQuestions(markdown: string): string[] {
     if (item) questions.push(item[1].trim());
   }
   return questions;
+}
+
+export interface ReportStructure {
+  caveats: string[];
+  openQuestions: string[];
+}
+
+const REPORT_STRUCTURE_MAX_TOKENS = 800;
+const REPORT_STRUCTURE_MAX_ITEMS = 8;
+
+const REPORT_STRUCTURE_SCHEMA: ModelOutputSchema = {
+  name: "report_structure",
+  schema: {
+    type: "object",
+    required: ["caveats", "openQuestions"],
+    properties: {
+      caveats: {
+        type: "array",
+        maxItems: REPORT_STRUCTURE_MAX_ITEMS,
+        items: { type: "string" },
+      },
+      openQuestions: {
+        type: "array",
+        maxItems: REPORT_STRUCTURE_MAX_ITEMS,
+        items: { type: "string" },
+      },
+    },
+  },
+};
+
+const REPORT_STRUCTURE_SYSTEM_PROMPT =
+  "You extract two lists from a finished research report: the caveats it states and the open questions it raises. " +
+  "Report only what the report itself states or directly implies — never invent caveats or questions. Structured output only.";
+
+function reportStructurePrompt(markdown: string): string {
+  return (
+    "## Report\n" +
+    markdown +
+    "\n\n## Task\n" +
+    "Read the report above and return two lists drawn strictly from it:\n" +
+    "- caveats: limitations, uncertainties, weak or single sources, and time-sensitivity the report notes.\n" +
+    "- openQuestions: questions the report raises or explicitly leaves unanswered.\n" +
+    "Condense each to one sentence in the report's own terms. Return an empty list for either if the report states none. Add nothing the report does not support.\n\nStructured output only."
+  );
+}
+
+interface RawReportStructure {
+  caveats?: unknown;
+  openQuestions?: unknown;
+}
+
+function readStringList(value: unknown, max: number): string[] {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set<string>();
+  const items: string[] = [];
+  for (const entry of value) {
+    const text = typeof entry === "string" ? entry.trim() : "";
+    if (!text || seen.has(text)) continue;
+    seen.add(text);
+    items.push(text);
+    if (items.length >= max) break;
+  }
+  return items;
+}
+
+export function parseReportStructure(text: string): ReportStructure | null {
+  let raw: RawReportStructure;
+  try {
+    const parsed = JSON.parse(text) as unknown;
+    if (typeof parsed !== "object" || parsed === null) return null;
+    raw = parsed as RawReportStructure;
+  } catch {
+    return null;
+  }
+  return {
+    caveats: readStringList(raw.caveats, REPORT_STRUCTURE_MAX_ITEMS),
+    openQuestions: readStringList(raw.openQuestions, REPORT_STRUCTURE_MAX_ITEMS),
+  };
+}
+
+export async function extractReportStructure(
+  ctx: ResearchCtx,
+  markdown: string,
+): Promise<ReportStructure> {
+  if (!markdown.trim()) return { caveats: [], openQuestions: [] };
+  const fallback: ReportStructure = {
+    caveats: [],
+    openQuestions: extractOpenQuestions(markdown),
+  };
+  if (tokenBudgetExhaustedReason(ctx)) return fallback;
+  const model = ctx.deps.leafModel ?? ctx.deps.model;
+  try {
+    const result = await model.step({
+      system: REPORT_STRUCTURE_SYSTEM_PROMPT,
+      messages: [{ role: "user", content: reportStructurePrompt(markdown) }],
+      maxTokens: REPORT_STRUCTURE_MAX_TOKENS,
+      outputSchema: REPORT_STRUCTURE_SCHEMA,
+      signal: ctx.deps.signal,
+    });
+    const textBlock = result.content.find(
+      (block): block is { type: "text"; text: string } => block.type === "text",
+    );
+    return parseReportStructure(textBlock?.text ?? "") ?? fallback;
+  } catch (err) {
+    if (ctx.deps.signal?.aborted) throw err;
+    return fallback;
+  }
 }

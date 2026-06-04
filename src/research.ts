@@ -18,7 +18,7 @@ import {
   type VerifySummary,
 } from "./verify.js";
 import {
-  extractOpenQuestions,
+  extractReportStructure,
   fallbackReportFromClaims,
   inconclusiveReport,
   synthesizeReport,
@@ -91,6 +91,7 @@ export interface ResearchResult {
   model: string;
   markdown: string;
   openQuestions: string[];
+  caveats: string[];
   claims: ResearchClaims;
   stats: ResearchStats;
   citedSources: CitedSource[];
@@ -215,6 +216,7 @@ async function runResearch(
 
     throwIfAborted();
     const markdown = await buildReport(ctx, opts.query, claims, verify, loop.gapsNote);
+    const structure = await extractReportStructure(ctx, markdown);
 
     const citations = reconcileCitations(
       markdown,
@@ -235,7 +237,8 @@ async function runResearch(
       provider: config.provider,
       model: config.model,
       markdown,
-      openQuestions: extractOpenQuestions(markdown),
+      openQuestions: structure.openQuestions,
+      caveats: structure.caveats,
       claims,
       stats: buildStats(ctx, recall, verify, loop),
       citedSources: citations.citedSources,
