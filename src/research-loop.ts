@@ -25,7 +25,12 @@ import type { RecallOutcome } from "./recall.js";
 import type { ResearchClaim } from "./claims.js";
 
 const DEFAULT_MAX_CONCURRENT_TOOLS = 4;
-const REANCHOR_TRIGGER_TOKENS = 150_000;
+// Default re-anchor threshold: when the transcript passes this many estimated
+// tokens, the lead drops it and rebuilds from the ledger digest. The default is
+// safe for ~200k-context models; large-context models can raise it via
+// RunOptions.reanchorTokens / ATLAS_REANCHOR_TOKENS so a long investigation keeps
+// its working transcript instead of being rebuilt every 150k tokens.
+const DEFAULT_REANCHOR_TRIGGER_TOKENS = 150_000;
 const LEDGER_DIGEST_MAX_CLAIMS = 60;
 const CHARS_PER_TOKEN = 4;
 
@@ -163,6 +168,11 @@ export async function runGapLoop(opts: {
     }),
   });
 
+  const reanchorTrigger =
+    ctx.config.reanchorTokens && ctx.config.reanchorTokens > 0
+      ? ctx.config.reanchorTokens
+      : DEFAULT_REANCHOR_TRIGGER_TOKENS;
+
   let messages: ModelMessage[] = [buildAnchor(false)];
   let toolCalls = 0;
   let totalToolExecutions = 0;
@@ -186,7 +196,7 @@ export async function runGapLoop(opts: {
       break;
     }
 
-    if (estimateMessagesTokens(messages) > REANCHOR_TRIGGER_TOKENS) {
+    if (estimateMessagesTokens(messages) > reanchorTrigger) {
       const tokensBefore = estimateMessagesTokens(messages);
       const droppedMessages = messages.length;
       messages = [buildAnchor(true)];

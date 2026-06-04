@@ -100,6 +100,7 @@ function makeCtx(opts: {
   adapter: ModelAdapter;
   claims?: ResearchClaim[];
   tokenLimit?: number;
+  reanchorTokens?: number;
   deadlineAt?: number;
   synthesisReserveMs?: number;
   stopSignal?: AbortSignal;
@@ -112,6 +113,9 @@ function makeCtx(opts: {
       sourceCap: 100,
       maxConcurrentTools: 2,
       ...(opts.tokenLimit !== undefined ? { tokenLimit: opts.tokenLimit } : {}),
+      ...(opts.reanchorTokens !== undefined
+        ? { reanchorTokens: opts.reanchorTokens }
+        : {}),
       ...(opts.instructions ? { instructions: opts.instructions } : {}),
     },
     deps: {
@@ -341,6 +345,48 @@ describe("runGapLoop", () => {
     const anchor = String(reanchoredMessages?.[0]?.content);
     expect(anchor).toContain("Context was re-anchored");
     expect(anchor).toContain("- first gap");
+  });
+
+  it("keeps the transcript when reanchorTokens is raised above its size", async () => {
+    executeToolMock.mockImplementation(async (tu, _ctx, extras) => {
+      if (tu.name === "survey") {
+        const goal = String(
+          (tu.input as { goal?: string } | undefined)?.goal ?? "",
+        );
+        extras.surveyedGoals.push(goal);
+      }
+      return {
+        toolResult: {
+          type: "tool_result",
+          tool_call_id: tu.id,
+          content: "x".repeat(700_000),
+        },
+      };
+    });
+    const { adapter, calls } = scriptedAdapter([
+      [toolUse("t1", "survey", { goal: "first gap" })],
+      [{ type: "text", text: "done without reanchor" }],
+    ]);
+    const ctx = makeCtx({
+      adapter,
+      claims: [claim()],
+      reanchorTokens: 10_000_000,
+    });
+
+    const result = await runGapLoop({
+      ctx,
+      question: "q",
+      recall: recallOutcome(),
+      maxToolCalls: 10,
+    });
+
+    // The same 700k-char payload that forces a re-anchor at the default
+    // threshold leaves the transcript intact once the threshold is raised.
+    expect(result.reanchors).toBe(0);
+    expect(ctx.events).not.toContainEqual(
+      expect.objectContaining({ type: "context_reanchored" }),
+    );
+    expect(calls[1]?.messages.length).toBeGreaterThan(1);
   });
 
   it("nudges once on an empty response then accepts the gap note", async () => {

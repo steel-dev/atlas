@@ -184,6 +184,9 @@ export interface ResearchConfig {
   readonly defaultSearchLimit?: number;
   readonly maxConcurrentTools?: number;
   readonly tokenLimit?: number;
+  /** Estimated-token transcript size at which the lead loop re-anchors onto the
+   *  ledger. Falls back to a context-safe default when unset. */
+  readonly reanchorTokens?: number;
   readonly exploreProviderOptions?: ProviderOptions;
   readonly finalizeProviderOptions?: ProviderOptions;
   readonly instructions?: string;

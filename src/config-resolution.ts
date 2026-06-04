@@ -113,6 +113,8 @@ export function resolveRunConfig(opts: RunInput): ResolvedRunConfig {
     defaultSearchLimit: limits.defaultSearchLimit,
     maxConcurrentTools: limits.maxConcurrentTools,
     tokenLimit,
+    reanchorTokens:
+      opts.reanchorTokens ?? readIntEnv("ATLAS_REANCHOR_TOKENS", 1),
     verifierPanel: resolveVerifierPanel(opts.verifierPanel),
     exploreProviderOptions: opts.exploreProviderOptions,
     finalizeProviderOptions: opts.finalizeProviderOptions,

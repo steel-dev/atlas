@@ -43,6 +43,7 @@ Environment:
   ATLAS_LEAF_MODEL                              optional (claim extraction + verifier model)
   ATLAS_TOKEN_LIMIT                             optional (total token budget; 0 = unlimited)
   ATLAS_MAX_CONCURRENT_MODEL_CALLS              optional (leaf fan-out width, default 8)
+  ATLAS_REANCHOR_TOKENS                         optional (lead re-anchor threshold; default 150000)
   ATLAS_BROWSER_IDLE_TTL_MS                     optional (default 120000; <=0 disables)
   ATLAS_ANTHROPIC_API_KEY or ANTHROPIC_API_KEY  required for provider=anthropic
   ATLAS_OPENAI_API_KEY    or OPENAI_API_KEY     required for provider=openai

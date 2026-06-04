@@ -100,7 +100,7 @@ Show that and stop — don't retry blindly.
 ## Step 5 — Return the report
 
 ```bash
-tail -5 "$ATLAS_LOG"   # includes the ✓ done — N documents line, token usage, and wrote path
+tail -5 "$ATLAS_LOG"   # includes the ✓ done — N verified claims from M cited sources line, token usage, and wrote path
 ```
 
 Then Read `$REPORT` and present it to the user as:
@@ -123,5 +123,5 @@ rm -f "$REPORT" "$ATLAS_LOG"
 - Only runs from the atlas repo root (where `src/cli.ts` lives).
 - One atlas job at a time — they share model-provider / Steel rate limits.
 - Never log or echo API keys back to chat.
-- Don't claim verification or citation-support stats; the current CLI reports opened/cited
-  documents and token usage, not claim-level verification.
+- Report only the stats Atlas actually prints — the ✓ done line gives verified-claim and
+  cited-source counts plus token usage. Quote those; never invent or inflate them.
