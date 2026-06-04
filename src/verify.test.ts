@@ -493,6 +493,7 @@ describe("synthesis rendering", () => {
           ],
         }),
       ],
+      candidates: [],
       refuted: [],
       gapsNote: "No 2025 figures found.",
     });
@@ -501,6 +502,20 @@ describe("synthesis rendering", () => {
     expect(prompt).toContain("No 2025 figures found.");
     expect(prompt).toContain("answer:");
   });
+
+  it("renders unconfirmed candidates and tells the model to mark them low confidence", () => {
+    const prompt = reportDataPrompt({
+      question: "What is the race name?",
+      confirmed: [],
+      candidates: [
+        claim({ status: "unverified", text: "The race was the Bubba Gump 5K." }),
+      ],
+      refuted: [],
+    });
+    expect(prompt).toContain("Unconfirmed candidate claims");
+    expect(prompt).toContain("The race was the Bubba Gump 5K.");
+    expect(prompt).toContain("low confidence");
+  });
 });
 
 describe("structured synthesis", () => {
@@ -508,6 +523,7 @@ describe("structured synthesis", () => {
     const parsed = parseReportData(
       JSON.stringify({
         answer: "  14,000 units per day.  ",
+        answerConfidence: "high",
         findings: [
           {
             statement: "The plant runs three shifts.",
@@ -522,6 +538,7 @@ describe("structured synthesis", () => {
       }),
     );
     expect(parsed?.answer).toBe("14,000 units per day.");
+    expect(parsed?.answerConfidence).toBe("high");
     expect(parsed?.findings).toEqual([
       {
         statement: "The plant runs three shifts.",
@@ -559,6 +576,7 @@ describe("structured synthesis", () => {
     const data = await synthesizeReportData(ctx, {
       question: "What is the answer?",
       confirmed: [claim({ status: "confirmed" })],
+      candidates: [],
       refuted: [],
     });
 
@@ -580,6 +598,7 @@ describe("structured synthesis", () => {
       question: "What is the answer?",
       data: {
         answer: "42.",
+        answerConfidence: "high",
         findings: [
           {
             statement: "Per the source.",

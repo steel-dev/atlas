@@ -209,19 +209,27 @@ async function runResearch(
     throwIfAborted();
     const verify = await verifyClaims(ctx, opts.query);
     const claims = partitionClaims(ctx);
+    const candidates = selectCandidates(claims.unverified);
     ctx.scope.emit({
       type: "research_finished",
       sourcesFetched: ctx.store.fetchedSources.length,
     });
 
     throwIfAborted();
-    const report = await buildReport(ctx, opts.query, claims, verify, loop.gapsNote);
+    const report = await buildReport(
+      ctx,
+      opts.query,
+      claims,
+      candidates,
+      verify,
+      loop.gapsNote,
+    );
     const markdown = report.markdown;
 
     const citations = reconcileCitations(
       markdown,
       ctx.store.fetchedSources,
-      claims.confirmed,
+      [...claims.confirmed, ...candidates],
     );
     if (citations.citationsNotFetched.length > 0) {
       emit({
@@ -281,33 +289,64 @@ interface BuiltReport {
   openQuestions: string[];
 }
 
+const CANDIDATE_IMPORTANCE_RANK = {
+  central: 0,
+  supporting: 1,
+  tangential: 2,
+} as const;
+const CANDIDATE_QUALITY_RANK = {
+  primary: 0,
+  secondary: 1,
+  blog: 2,
+  forum: 3,
+  unreliable: 4,
+} as const;
+const MAX_REPORT_CANDIDATES = 15;
+
+function selectCandidates(unverified: ResearchClaim[]): ResearchClaim[] {
+  return unverified
+    .filter((claim) => !claim.duplicateOf)
+    .slice()
+    .sort(
+      (a, b) =>
+        CANDIDATE_IMPORTANCE_RANK[a.importance] -
+          CANDIDATE_IMPORTANCE_RANK[b.importance] ||
+        CANDIDATE_QUALITY_RANK[a.sourceQuality] -
+          CANDIDATE_QUALITY_RANK[b.sourceQuality],
+    )
+    .slice(0, MAX_REPORT_CANDIDATES);
+}
+
 async function buildReport(
   ctx: ResearchCtx,
   question: string,
   claims: ResearchClaims,
+  candidates: ResearchClaim[],
   verify: VerifySummary,
   gapsNote: string,
 ): Promise<BuiltReport> {
   const confirmed = claims.confirmed.filter((claim) => !claim.duplicateOf);
   const refuted = claims.refuted.filter((claim) => !claim.duplicateOf);
-  if (confirmed.length === 0) {
-    return {
-      markdown: inconclusiveReport({
-        question,
-        verify,
-        refuted,
-        sourcesFetched: ctx.store.fetchedSources.length,
-        claimsUnsupported: ctx.store.claims.unsupportedCount,
-        gapsNote,
-      }),
-      caveats: [],
-      openQuestions: [],
-    };
+  const inconclusive = (): BuiltReport => ({
+    markdown: inconclusiveReport({
+      question,
+      verify,
+      refuted,
+      sourcesFetched: ctx.store.fetchedSources.length,
+      claimsUnsupported: ctx.store.claims.unsupportedCount,
+      gapsNote,
+    }),
+    caveats: [],
+    openQuestions: [],
+  });
+  if (confirmed.length === 0 && candidates.length === 0) {
+    return inconclusive();
   }
   try {
     const data = await synthesizeReportData(ctx, {
       question,
       confirmed,
+      candidates,
       refuted,
       ...(gapsNote ? { gapsNote } : {}),
     });
@@ -324,11 +363,13 @@ async function buildReport(
   } catch (err) {
     if (ctx.deps.signal?.aborted) throw err;
   }
-  return {
-    markdown: fallbackReportFromClaims(question, confirmed),
-    caveats: [],
-    openQuestions: [],
-  };
+  return confirmed.length > 0
+    ? {
+        markdown: fallbackReportFromClaims(question, confirmed),
+        caveats: [],
+        openQuestions: [],
+      }
+    : inconclusive();
 }
 
 function buildStats(
