@@ -181,6 +181,25 @@ describe("verifyClaims", () => {
     expect(target.votes.length).toBeLessThan(2);
   });
 
+  it("leaves a claim unverified when no contradiction lens voted", async () => {
+    const adapter = verdictAdapter((input) =>
+      /Your lens: contradiction/.test(JSON.stringify(input.messages))
+        ? new Error("contradiction abstained")
+        : { refuted: false },
+    );
+    const target = claim();
+    const ctx = makeCtx(adapter, [target]);
+
+    const summary = await verifyClaims(ctx, "test question");
+
+    expect(target.status).toBe("unverified");
+    expect(summary.confirmed).toBe(0);
+    expect(summary.unverified).toBe(1);
+    expect(target.votes.some((vote) => vote.lens === "contradiction")).toBe(
+      false,
+    );
+  });
+
   it("stops verifying once the confirmed target is met", async () => {
     const adapter = verdictAdapter(() => ({ refuted: false }));
     const claims = Array.from({ length: 60 }, (_, index) =>

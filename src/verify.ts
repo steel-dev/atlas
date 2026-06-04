@@ -331,10 +331,15 @@ async function castVote(
 function settleClaim(claim: ResearchClaim, votes: ClaimVote[]): void {
   claim.votes = votes;
   const refutedVotes = votes.filter((vote) => vote.refuted).length;
+  const contradictionVotes = votes.filter(
+    (vote) => vote.lens === "contradiction",
+  ).length;
   if (votes.length < REFUTATIONS_REQUIRED) {
     claim.status = "unverified";
   } else if (refutedVotes >= REFUTATIONS_REQUIRED) {
     claim.status = "refuted";
+  } else if (contradictionVotes === 0) {
+    claim.status = "unverified";
   } else {
     claim.status = "confirmed";
   }
