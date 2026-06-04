@@ -85,6 +85,7 @@ export interface ResearchResult {
   claims: ResearchClaims;
   stats: ResearchStats;
   citedSources: CitedSource[];
+  citationsNotConfirmed: string[];
   citationsNotFetched: string[];
   finishReason: string;
   sourceDocuments?: SourceDocument[];
@@ -205,7 +206,11 @@ async function runResearch(
     throwIfAborted();
     const markdown = await buildReport(ctx, opts.query, claims, verify, loop.gapsNote);
 
-    const citations = reconcileCitations(markdown, ctx.store.fetchedSources);
+    const citations = reconcileCitations(
+      markdown,
+      ctx.store.fetchedSources,
+      claims.confirmed,
+    );
     if (citations.citationsNotFetched.length > 0) {
       emit({
         type: "citations_not_fetched",
@@ -223,6 +228,7 @@ async function runResearch(
       claims,
       stats: buildStats(ctx, recall, verify, loop),
       citedSources: citations.citedSources,
+      citationsNotConfirmed: citations.citationsNotConfirmed,
       citationsNotFetched: citations.citationsNotFetched,
       finishReason: loop.finishReason,
       ...(opts.includeSourceDocuments
@@ -351,19 +357,25 @@ function buildResearchCtx(args: {
 
 interface CitationReconciliation {
   citedSources: CitedSource[];
+  citationsNotConfirmed: string[];
   citationsNotFetched: string[];
 }
 
 function reconcileCitations(
   markdown: string,
   fetchedSources: FetchedSource[],
+  confirmedClaims: ReadonlyArray<{ url: string }>,
 ): CitationReconciliation {
   const citedUrls = extractMarkdownUrls(markdown);
   const byNormalizedUrl = new Map(
     fetchedSources.map((source) => [normalizeUrlForSource(source.url), source]),
   );
+  const confirmedUrls = new Set(
+    confirmedClaims.map((claim) => normalizeUrlForSource(claim.url)),
+  );
 
   const citedSources: CitedSource[] = [];
+  const citationsNotConfirmed: string[] = [];
   const citationsNotFetched: string[] = [];
   const seen = new Set<string>();
   for (const url of citedUrls) {
@@ -371,14 +383,17 @@ function reconcileCitations(
     if (seen.has(normalized)) continue;
     seen.add(normalized);
     const fetchedSource = byNormalizedUrl.get(normalized);
-    if (fetchedSource) {
+    if (!fetchedSource) {
+      citationsNotFetched.push(url);
+    } else if (confirmedUrls.has(normalized)) {
       citedSources.push(fetchedSource);
     } else {
-      citationsNotFetched.push(url);
+      citationsNotConfirmed.push(url);
     }
   }
   return {
     citedSources,
+    citationsNotConfirmed,
     citationsNotFetched,
   };
 }

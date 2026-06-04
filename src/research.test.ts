@@ -26,6 +26,7 @@ describe("research source citations", () => {
           title: "Example Report",
         },
       ],
+      [{ url: "https://example.com/report?a=1&b=2" }],
     );
 
     expect(citations.citedSources).toEqual([
@@ -34,6 +35,7 @@ describe("research source citations", () => {
         title: "Example Report",
       },
     ]);
+    expect(citations.citationsNotConfirmed).toEqual([]);
     expect(citations.citationsNotFetched).toEqual([]);
   });
 
@@ -50,6 +52,7 @@ describe("research source citations", () => {
           title: "Fetched Source",
         },
       ],
+      [{ url: "https://example.com/fetched" }],
     );
 
     expect(citations.citedSources).toEqual([
@@ -58,6 +61,7 @@ describe("research source citations", () => {
         title: "Fetched Source",
       },
     ]);
+    expect(citations.citationsNotConfirmed).toEqual([]);
     expect(citations.citationsNotFetched).toEqual([
       "https://example.com/unfetched",
     ]);
@@ -73,11 +77,38 @@ describe("research source citations", () => {
         { url: "https://en.wikipedia.org/wiki/Foo_(bar)", title: "Foo" },
         { url: "https://en.wikipedia.org/wiki/Baz_(qux)", title: "Baz" },
       ],
+      [
+        { url: "https://en.wikipedia.org/wiki/Foo_(bar)" },
+        { url: "https://en.wikipedia.org/wiki/Baz_(qux)" },
+      ],
     );
 
     expect(citations.citedSources).toEqual([
       { url: "https://en.wikipedia.org/wiki/Foo_(bar)", title: "Foo" },
       { url: "https://en.wikipedia.org/wiki/Baz_(qux)", title: "Baz" },
+    ]);
+    expect(citations.citationsNotConfirmed).toEqual([]);
+    expect(citations.citationsNotFetched).toEqual([]);
+  });
+
+  it("flags a fetched source the report cites without a confirmed claim", () => {
+    const citations = __testing.reconcileCitations(
+      [
+        "Rests on [Confirmed](https://example.com/confirmed)",
+        "and [Unconfirmed](https://example.com/unconfirmed).",
+      ].join(" "),
+      [
+        { url: "https://example.com/confirmed", title: "Confirmed" },
+        { url: "https://example.com/unconfirmed", title: "Unconfirmed" },
+      ],
+      [{ url: "https://example.com/confirmed" }],
+    );
+
+    expect(citations.citedSources).toEqual([
+      { url: "https://example.com/confirmed", title: "Confirmed" },
+    ]);
+    expect(citations.citationsNotConfirmed).toEqual([
+      "https://example.com/unconfirmed",
     ]);
     expect(citations.citationsNotFetched).toEqual([]);
   });

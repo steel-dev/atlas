@@ -28,6 +28,7 @@ function fakeResult(markdown: string): ResearchResult {
       reanchors: 0,
     },
     citedSources: [{ url: "https://example.com", title: "Example" }],
+    citationsNotConfirmed: [],
     citationsNotFetched: [],
     finishReason: "gaps assessed",
     usage: {

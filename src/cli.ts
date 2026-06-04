@@ -240,9 +240,16 @@ function prettyEventBody(e: ResearchEvent): string {
         DIM,
         `  ↳ ${totalInput.toLocaleString()} in / ${us.output_tokens.toLocaleString()} out tok · cache ${cacheHitPct.toFixed(0)}% hit (${us.cache_read_input_tokens.toLocaleString()} read, ${us.cache_creation_input_tokens.toLocaleString()} write)`,
       );
+      const notConfirmed = e.result.citationsNotConfirmed.length;
       return (
         paint(GREEN, "✓") +
         ` done — ${e.result.claims.confirmed.length} verified claim${e.result.claims.confirmed.length === 1 ? "" : "s"} from ${e.result.citedSources.length} cited source${e.result.citedSources.length === 1 ? "" : "s"}\n` +
+        (notConfirmed > 0
+          ? paint(
+              YELLOW,
+              `    ! ${notConfirmed} cited URL${notConfirmed === 1 ? "" : "s"} not backed by a confirmed claim`,
+            ) + "\n"
+          : "") +
         tokenLine
       );
     }
