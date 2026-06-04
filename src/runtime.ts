@@ -244,10 +244,16 @@ export interface ResearchCtx {
   scope: AgentScope;
 }
 
+function totalUsedTokens(deps: ResearchDeps): number {
+  const lead = totalUsageTokens(deps.model.usage);
+  const leaf = deps.leafModel;
+  if (!leaf || leaf.usage === deps.model.usage) return lead;
+  return lead + totalUsageTokens(leaf.usage);
+}
+
 export function tokenBudgetExhaustedReason(ctx: ResearchCtx): string | null {
   if (!ctx.config.tokenLimit || ctx.config.tokenLimit <= 0) return null;
-  if (totalUsageTokens(ctx.deps.model.usage) < ctx.config.tokenLimit)
-    return null;
+  if (totalUsedTokens(ctx.deps) < ctx.config.tokenLimit) return null;
   return "token budget exhausted";
 }
 
