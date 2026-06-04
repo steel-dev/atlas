@@ -1,3 +1,4 @@
+import type { FlexibleSchema, InferSchema } from "ai";
 import type { LanguageModel } from "./model.js";
 import type { BrowserProvider } from "./steel.js";
 import type { SearchProvider } from "./search-provider.js";
@@ -8,6 +9,8 @@ import {
   type ResearchStream,
   type RunInput,
   type RunOptions,
+  type StructuredResearchResult,
+  type StructuredResearchStream,
 } from "./research.js";
 
 export interface AtlasConfig {
@@ -34,6 +37,9 @@ export class Atlas {
   }
 
   research(query: string, opts?: RunOptions): Promise<ResearchResult>;
+  research<SCHEMA extends FlexibleSchema>(
+    opts: QueryOptions & { outputSchema: SCHEMA },
+  ): Promise<StructuredResearchResult<InferSchema<SCHEMA>>>;
   research(opts: QueryOptions): Promise<ResearchResult>;
   research(
     queryOrOpts: string | QueryOptions,
@@ -43,6 +49,9 @@ export class Atlas {
   }
 
   stream(query: string, opts?: RunOptions): ResearchStream;
+  stream<SCHEMA extends FlexibleSchema>(
+    opts: QueryOptions & { outputSchema: SCHEMA },
+  ): StructuredResearchStream<InferSchema<SCHEMA>>;
   stream(opts: QueryOptions): ResearchStream;
   stream(
     queryOrOpts: string | QueryOptions,

@@ -1,3 +1,4 @@
+import type { FlexibleSchema } from "ai";
 import type {
   LanguageModel,
   ModelProvider,
@@ -23,6 +24,8 @@ import {
   synthesizeReportData,
   writeReportProse,
 } from "./synthesize.js";
+import { synthesizeStructured } from "./structured.js";
+import type { FieldBasis } from "./structured.js";
 import type { ResearchClaim } from "./claims.js";
 import { createClaimLedger } from "./claims.js";
 import {
@@ -48,6 +51,7 @@ export type {
   UsageSummary,
 } from "./model.js";
 export type { FetchedSource, SourceDocument, CitedSource } from "./sources.js";
+export type { BasisCitation, FieldBasis } from "./structured.js";
 export type { VerifierPanelMode } from "./verify.js";
 export type {
   ClaimConfidence,
@@ -102,6 +106,11 @@ export interface ResearchResult {
   usage: UsageSummary;
 }
 
+export interface StructuredResearchResult<T> extends ResearchResult {
+  data: T;
+  basis: Record<string, FieldBasis>;
+}
+
 type LeadResearchEvent =
   | { type: "citations_not_fetched"; count: number; urls: string[] }
   | { type: "written"; markdownChars: number }
@@ -134,6 +143,7 @@ export interface RunOptions {
   reanchorTokens?: number;
   depth?: ResearchDepth;
   signal?: AbortSignal;
+  outputSchema?: FlexibleSchema;
   exploreProviderOptions?: ProviderOptions;
   finalizeProviderOptions?: ProviderOptions;
   includeSourceDocuments?: boolean;
@@ -179,6 +189,10 @@ export interface ResearchStream {
   abort(): void;
   stop(): void;
 }
+
+export type StructuredResearchStream<T> = Omit<ResearchStream, "result"> & {
+  readonly result: Promise<StructuredResearchResult<T>>;
+};
 
 export function startResearchStream(input: RunInput): ResearchStream {
   if (!input.query?.trim()) {
@@ -284,7 +298,23 @@ async function runResearch(
     }
     emit({ type: "written", markdownChars: markdown.length });
 
-    const result: ResearchResult = {
+    let structured:
+      | { data: unknown; basis: Record<string, FieldBasis> }
+      | undefined;
+    if (opts.outputSchema) {
+      throwIfAborted();
+      structured = await synthesizeStructured(ctx, {
+        question: opts.query,
+        schema: opts.outputSchema,
+        confirmed: claims.confirmed.filter((claim) => !claim.duplicateOf),
+        candidates,
+      });
+    }
+
+    const result: ResearchResult & {
+      data?: unknown;
+      basis?: Record<string, FieldBasis>;
+    } = {
       query: opts.query,
       provider: config.provider,
       model: config.model,
@@ -299,6 +329,9 @@ async function runResearch(
       finishReason: loop.finishReason,
       ...(opts.includeSourceDocuments
         ? { sourceDocuments: [...ctx.store.sourceDocuments.values()] }
+        : {}),
+      ...(structured
+        ? { data: structured.data, basis: structured.basis }
         : {}),
       usage:
         resources.leafAdapter === resources.modelAdapter
