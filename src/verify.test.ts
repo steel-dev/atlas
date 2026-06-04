@@ -6,12 +6,12 @@ import {
   MAX_VERIFY_CLAIMS,
 } from "./verify.js";
 import {
-  extractOpenQuestions,
-  extractReportStructure,
-  parseReportStructure,
+  parseReportData,
   renderConfirmedClaims,
   renderRefutedClaims,
-  synthesisPrompt,
+  reportDataPrompt,
+  synthesizeReportData,
+  writeReportProse,
 } from "./synthesize.js";
 import type { ResearchClaim } from "./claims.js";
 import type { ModelAdapter, ModelStepInput } from "./model.js";
@@ -481,8 +481,8 @@ describe("synthesis rendering", () => {
     expect(renderRefutedClaims([refuted])).toContain("vote 0-2");
   });
 
-  it("builds a synthesis prompt that carries question, claims, and gaps", () => {
-    const prompt = synthesisPrompt({
+  it("builds a report-data prompt that carries question, claims, and gaps", () => {
+    const prompt = reportDataPrompt({
       question: "How many units per day?",
       confirmed: [
         claim({
@@ -499,90 +499,100 @@ describe("synthesis rendering", () => {
     expect(prompt).toContain("**Question:** How many units per day?");
     expect(prompt).toContain("## Known gaps");
     expect(prompt).toContain("No 2025 figures found.");
-    expect(prompt).toContain("Cite every claim inline");
-  });
-
-  it("extracts open questions from the synthesized report section", () => {
-    const markdown = [
-      "# Report",
-      "Some findings with a [cite](https://example.com).",
-      "",
-      "## Open Questions",
-      "- What is the 2025 figure?",
-      "- Does the trend hold outside the US?",
-      "",
-      "## Sources",
-      "- https://example.com",
-    ].join("\n");
-    expect(extractOpenQuestions(markdown)).toEqual([
-      "What is the 2025 figure?",
-      "Does the trend hold outside the US?",
-    ]);
-  });
-
-  it("returns no open questions when the report omits the section", () => {
-    expect(extractOpenQuestions("# Report\nJust findings.")).toEqual([]);
+    expect(prompt).toContain("answer:");
   });
 });
 
-describe("report structure extraction", () => {
-  it("parses caveats and open questions, trimming and deduping", () => {
-    const parsed = parseReportStructure(
+describe("structured synthesis", () => {
+  it("parses answer, findings, caveats, and open questions", () => {
+    const parsed = parseReportData(
       JSON.stringify({
-        caveats: ["  Sources are dated.  ", "Sources are dated.", ""],
+        answer: "  14,000 units per day.  ",
+        findings: [
+          {
+            statement: "The plant runs three shifts.",
+            confidence: "high",
+            sources: ["https://example.com/a"],
+          },
+          { statement: "", confidence: "high" },
+          { statement: "Output rose in 2024.", confidence: "bogus" },
+        ],
+        caveats: ["  One source.  ", "One source.", ""],
         openQuestions: ["What about 2025?"],
       }),
     );
-    expect(parsed).toEqual({
-      caveats: ["Sources are dated."],
-      openQuestions: ["What about 2025?"],
-    });
+    expect(parsed?.answer).toBe("14,000 units per day.");
+    expect(parsed?.findings).toEqual([
+      {
+        statement: "The plant runs three shifts.",
+        confidence: "high",
+        sources: ["https://example.com/a"],
+      },
+      { statement: "Output rose in 2024.", confidence: "low", sources: [] },
+    ]);
+    expect(parsed?.caveats).toEqual(["One source."]);
+    expect(parsed?.openQuestions).toEqual(["What about 2025?"]);
   });
 
-  it("returns null for non-JSON structure output", () => {
-    expect(parseReportStructure("not json")).toBeNull();
+  it("returns null for non-JSON or answerless output", () => {
+    expect(parseReportData("not json")).toBeNull();
+    expect(parseReportData(JSON.stringify({ findings: [] }))).toBeNull();
   });
 
-  it("extracts structure from the model as guaranteed fields", async () => {
+  it("synthesizes report data from the model with the report_data schema", async () => {
     const adapter = structureAdapter(() =>
       JSON.stringify({
-        caveats: ["Only one primary source."],
-        openQuestions: ["Does it hold in the EU?"],
+        answer: "42.",
+        findings: [
+          {
+            statement: "Per the source.",
+            confidence: "medium",
+            sources: ["https://example.com/a"],
+          },
+        ],
+        caveats: [],
+        openQuestions: [],
       }),
     );
     const ctx = makeCtx(adapter, []);
 
-    const structure = await extractReportStructure(ctx, "# Report\nBody.");
+    const data = await synthesizeReportData(ctx, {
+      question: "What is the answer?",
+      confirmed: [claim({ status: "confirmed" })],
+      refuted: [],
+    });
 
-    expect(structure.caveats).toEqual(["Only one primary source."]);
-    expect(structure.openQuestions).toEqual(["Does it hold in the EU?"]);
-    expect(adapter.calls[0]?.outputSchema?.name).toBe("report_structure");
+    expect(data?.answer).toBe("42.");
+    expect(data?.findings).toHaveLength(1);
+    expect(adapter.calls[0]?.outputSchema?.name).toBe("report_data");
+    expect(adapter.calls[0]?.messages[0]?.content).toContain(
+      "What is the answer?",
+    );
   });
 
-  it("falls back to the regex section when the model errors", async () => {
-    const adapter = structureAdapter(() => new Error("model down"));
-    const ctx = makeCtx(adapter, []);
-    const markdown = [
-      "# Report",
-      "Findings.",
-      "",
-      "## Open Questions",
-      "- What is the 2025 figure?",
-    ].join("\n");
-
-    const structure = await extractReportStructure(ctx, markdown);
-
-    expect(structure.caveats).toEqual([]);
-    expect(structure.openQuestions).toEqual(["What is the 2025 figure?"]);
-  });
-
-  it("skips the model and returns empty for an empty report", async () => {
-    const adapter = structureAdapter(() => new Error("should not be called"));
+  it("writes answer-first prose from report data", async () => {
+    const adapter = structureAdapter(
+      () => "42, per [the source](https://example.com/a).",
+    );
     const ctx = makeCtx(adapter, []);
 
-    const structure = await extractReportStructure(ctx, "   ");
+    const markdown = await writeReportProse(ctx, {
+      question: "What is the answer?",
+      data: {
+        answer: "42.",
+        findings: [
+          {
+            statement: "Per the source.",
+            confidence: "high",
+            sources: ["https://example.com/a"],
+          },
+        ],
+        caveats: [],
+        openQuestions: [],
+      },
+    });
 
-    expect(structure).toEqual({ caveats: [], openQuestions: [] });
-    expect(adapter.calls).toHaveLength(0);
+    expect(markdown).toBe("42, per [the source](https://example.com/a).");
+    expect(adapter.calls[0]?.messages[0]?.content).toContain("42.");
   });
 });

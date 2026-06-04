@@ -3,13 +3,17 @@ import type {
   ModelStepInput,
   ModelStepResult,
 } from "./model.js";
-import { tokenBudgetExhaustedReason, type ResearchCtx } from "./runtime.js";
-import type { ResearchClaim } from "./claims.js";
+import { type ResearchCtx } from "./runtime.js";
+import type { ClaimConfidence, ResearchClaim } from "./claims.js";
 import { voteSplit, type VerifySummary } from "./verify.js";
 
-const SYNTHESIS_MAX_TOKENS = 8_192;
+const REPORT_DATA_MAX_TOKENS = 4_096;
+const REPORT_PROSE_MAX_TOKENS = 8_192;
+const REPORT_DATA_MAX_FINDINGS = 12;
+const REPORT_DATA_MAX_ITEMS = 8;
 
 const CONFIDENCE_RANK = { high: 0, medium: 1, low: 2 } as const;
+const CONFIDENCE_VALUES: readonly ClaimConfidence[] = ["high", "medium", "low"];
 
 export function renderConfirmedClaims(confirmed: ResearchClaim[]): string {
   return confirmed
@@ -52,35 +56,242 @@ export function renderRefutedClaims(refuted: ResearchClaim[]): string {
   );
 }
 
-const SYNTHESIS_SYSTEM_PROMPT =
-  "You write the final cited research report from adversarially verified claims. " +
-  "Every factual statement must be traceable to a confirmed claim below, cited inline with the source URL as a Markdown link. " +
-  "Never cite a source that is not attached to a confirmed claim, and never resurrect a refuted claim.";
+export interface ReportFinding {
+  statement: string;
+  confidence: ClaimConfidence;
+  sources: string[];
+}
 
-export function synthesisPrompt(opts: {
+export interface ReportData {
+  answer: string;
+  findings: ReportFinding[];
+  caveats: string[];
+  openQuestions: string[];
+}
+
+const REPORT_DATA_SCHEMA: ModelOutputSchema = {
+  name: "report_data",
+  schema: {
+    type: "object",
+    required: ["answer", "findings"],
+    properties: {
+      answer: { type: "string" },
+      findings: {
+        type: "array",
+        maxItems: REPORT_DATA_MAX_FINDINGS,
+        items: {
+          type: "object",
+          required: ["statement", "confidence"],
+          properties: {
+            statement: { type: "string" },
+            confidence: { type: "string", enum: [...CONFIDENCE_VALUES] },
+            sources: { type: "array", items: { type: "string" } },
+          },
+        },
+      },
+      caveats: {
+        type: "array",
+        maxItems: REPORT_DATA_MAX_ITEMS,
+        items: { type: "string" },
+      },
+      openQuestions: {
+        type: "array",
+        maxItems: REPORT_DATA_MAX_ITEMS,
+        items: { type: "string" },
+      },
+    },
+  },
+};
+
+const REPORT_DATA_SYSTEM_PROMPT =
+  "You organize adversarially verified claims into a structured answer to one research question. " +
+  "Every statement must trace to a confirmed claim and carry its source URL; never use a refuted claim except to note it was ruled out; never invent caveats or open questions. " +
+  "Structured output only.";
+
+export function reportDataPrompt(opts: {
   question: string;
   confirmed: ResearchClaim[];
   refuted: ResearchClaim[];
   gapsNote?: string;
 }): string {
   return (
-    "## Synthesis: research report\n\n" +
+    "## Organize the verified findings\n\n" +
     `**Question:** ${opts.question}\n\n` +
-    `${opts.confirmed.length} claims survived adversarial verification. Merge semantic duplicates and synthesize.\n\n` +
+    `${opts.confirmed.length} claim(s) survived adversarial verification. Merge duplicates and structure the answer.\n\n` +
     "## Confirmed claims\n" +
     renderConfirmedClaims(opts.confirmed) +
     renderRefutedClaims(opts.refuted) +
     (opts.gapsNote ? `\n## Known gaps\n${opts.gapsNote}\n` : "") +
     "\n## Instructions\n" +
     "1. Merge claims that say the same thing; combine their sources.\n" +
-    "2. Group related claims into coherent findings that directly address the research question.\n" +
-    "3. Weight findings by confidence: unanimous votes on primary sources are strong; claims corroborated by multiple independent sources are stronger still; split votes, single-source, or blog-quality claims are weaker — say so.\n" +
-    "4. Open with a short executive summary that answers the research question.\n" +
-    "5. Note caveats: what is uncertain, which sources were weak, what is time-sensitive.\n" +
-    "6. Close with open questions that emerged but were not answered.\n" +
-    "7. Cite every claim inline with its source URL as a Markdown link. Cite only the URLs listed above.\n\n" +
-    "Write the report as Markdown."
+    "2. answer: the most direct answer the confirmed claims support. If they do not answer the question, state plainly what they do establish — do not guess.\n" +
+    "3. findings: the supporting points. Confidence is high for unanimous votes on primary or multiply-corroborated sources, low for split votes or a single weak source.\n" +
+    "4. caveats: only genuine limitations — weak or single sources, staleness, unresolved conflicts. Empty if none.\n" +
+    "5. openQuestions: only what the known gaps actually leave unresolved. Empty if none. Never pad.\n\n" +
+    "Structured output only."
   );
+}
+
+interface RawReportData {
+  answer?: unknown;
+  findings?: unknown;
+  caveats?: unknown;
+  openQuestions?: unknown;
+}
+
+function readConfidence(raw: unknown): ClaimConfidence {
+  return CONFIDENCE_VALUES.find((value) => value === raw) ?? "low";
+}
+
+function readStringList(value: unknown, max: number): string[] {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set<string>();
+  const items: string[] = [];
+  for (const entry of value) {
+    const text = typeof entry === "string" ? entry.trim() : "";
+    if (!text || seen.has(text)) continue;
+    seen.add(text);
+    items.push(text);
+    if (items.length >= max) break;
+  }
+  return items;
+}
+
+function readFindings(value: unknown): ReportFinding[] {
+  if (!Array.isArray(value)) return [];
+  const findings: ReportFinding[] = [];
+  for (const entry of value) {
+    if (typeof entry !== "object" || entry === null) continue;
+    const raw = entry as {
+      statement?: unknown;
+      confidence?: unknown;
+      sources?: unknown;
+    };
+    const statement =
+      typeof raw.statement === "string" ? raw.statement.trim() : "";
+    if (!statement) continue;
+    findings.push({
+      statement,
+      confidence: readConfidence(raw.confidence),
+      sources: Array.isArray(raw.sources)
+        ? raw.sources.filter((source): source is string => typeof source === "string")
+        : [],
+    });
+    if (findings.length >= REPORT_DATA_MAX_FINDINGS) break;
+  }
+  return findings;
+}
+
+export function parseReportData(text: string): ReportData | null {
+  let raw: RawReportData;
+  try {
+    const parsed = JSON.parse(text) as unknown;
+    if (typeof parsed !== "object" || parsed === null) return null;
+    raw = parsed as RawReportData;
+  } catch {
+    return null;
+  }
+  const answer = typeof raw.answer === "string" ? raw.answer.trim() : "";
+  if (!answer) return null;
+  return {
+    answer,
+    findings: readFindings(raw.findings),
+    caveats: readStringList(raw.caveats, REPORT_DATA_MAX_ITEMS),
+    openQuestions: readStringList(raw.openQuestions, REPORT_DATA_MAX_ITEMS),
+  };
+}
+
+export async function synthesizeReportData(
+  ctx: ResearchCtx,
+  opts: {
+    question: string;
+    confirmed: ResearchClaim[];
+    refuted: ResearchClaim[];
+    gapsNote?: string;
+  },
+): Promise<ReportData | null> {
+  const result = await ctx.deps.model.step({
+    system: REPORT_DATA_SYSTEM_PROMPT,
+    messages: [{ role: "user", content: reportDataPrompt(opts) }],
+    maxTokens: REPORT_DATA_MAX_TOKENS,
+    outputSchema: REPORT_DATA_SCHEMA,
+    providerOptions: ctx.config.finalizeProviderOptions,
+    signal: ctx.deps.signal,
+  });
+  const textBlock = result.content.find(
+    (block): block is { type: "text"; text: string } => block.type === "text",
+  );
+  return parseReportData(textBlock?.text ?? "");
+}
+
+const REPORT_PROSE_SYSTEM_PROMPT =
+  "You write the final answer to a research question from a structured, source-cited findings object. " +
+  "Lead with the direct answer in the very first sentence. " +
+  "Match length to the question: a single fact deserves 1-3 sentences with no headings; a broad question earns proportionally more, but never pad or pad out sections. " +
+  "Cite each factual statement inline as a Markdown link to its source URL, using only URLs present in the findings. " +
+  "Surface a caveat only where it changes how the answer should be read, inline next to the point it qualifies. " +
+  "Never append generic 'Caveats' or 'Open Questions' sections.";
+
+export function reportProsePrompt(question: string, data: ReportData): string {
+  const findings =
+    data.findings.length > 0
+      ? data.findings
+          .map(
+            (finding, index) =>
+              `${index + 1}. (${finding.confidence}) ${finding.statement}` +
+              (finding.sources.length > 0
+                ? ` [sources: ${finding.sources.join(", ")}]`
+                : ""),
+          )
+          .join("\n")
+      : "(none)";
+  return (
+    `**Question:** ${question}\n\n` +
+    "## Direct answer (verified)\n" +
+    data.answer +
+    "\n\n## Supporting findings\n" +
+    findings +
+    "\n" +
+    (data.caveats.length > 0
+      ? "\n## Caveats you may weave in where they change how the answer reads\n" +
+        data.caveats.map((caveat) => `- ${caveat}`).join("\n") +
+        "\n"
+      : "") +
+    "\n## Write the report\n" +
+    "Render the answer as Markdown for the user. Lead with the answer in the first sentence. " +
+    "Scale length to the question — a single fact is 1-3 sentences with no headings; a broad question gets more, never padded. " +
+    "Cite facts inline as Markdown links using only the source URLs listed above. " +
+    "Weave in a caveat only where it changes how the answer should be read. Do not add 'Caveats' or 'Open Questions' sections."
+  );
+}
+
+export async function writeReportProse(
+  ctx: ResearchCtx,
+  opts: { question: string; data: ReportData },
+): Promise<string> {
+  const input: ModelStepInput = {
+    system: REPORT_PROSE_SYSTEM_PROMPT,
+    messages: [
+      { role: "user", content: reportProsePrompt(opts.question, opts.data) },
+    ],
+    maxTokens: ctx.config.maxOutputTokens ?? REPORT_PROSE_MAX_TOKENS,
+    providerOptions: ctx.config.finalizeProviderOptions,
+    signal: ctx.deps.signal,
+  };
+  const stepStream = ctx.deps.model.stepStream?.bind(ctx.deps.model);
+  let result: ModelStepResult;
+  if (stepStream) {
+    result = await stepStream(input, {
+      onStart: () => ctx.scope.emit({ type: "report_boundary" }),
+      onText: (text) => ctx.scope.emit({ type: "report_delta", text }),
+    });
+  } else {
+    result = await ctx.deps.model.step(input);
+  }
+  return result.content
+    .map((block) => (block.type === "text" ? block.text : ""))
+    .join("")
+    .trim();
 }
 
 export function inconclusiveReport(opts: {
@@ -130,164 +341,4 @@ export function fallbackReportFromClaims(
         `- ${claim.text} — [${claim.title || claim.url}](${claim.url}) (vote ${voteSplit(claim)}, "${claim.quote}")`,
     ),
   ].join("\n");
-}
-
-export async function synthesizeReport(
-  ctx: ResearchCtx,
-  opts: {
-    question: string;
-    confirmed: ResearchClaim[];
-    refuted: ResearchClaim[];
-    gapsNote?: string;
-  },
-): Promise<string> {
-  const input: ModelStepInput = {
-    system: SYNTHESIS_SYSTEM_PROMPT,
-    messages: [
-      {
-        role: "user",
-        content: synthesisPrompt(opts),
-      },
-    ],
-    maxTokens: ctx.config.maxOutputTokens ?? SYNTHESIS_MAX_TOKENS,
-    providerOptions: ctx.config.finalizeProviderOptions,
-    signal: ctx.deps.signal,
-  };
-  const stepStream = ctx.deps.model.stepStream?.bind(ctx.deps.model);
-  let result: ModelStepResult;
-  if (stepStream) {
-    result = await stepStream(input, {
-      onStart: () => ctx.scope.emit({ type: "report_boundary" }),
-      onText: (text) => ctx.scope.emit({ type: "report_delta", text }),
-    });
-  } else {
-    result = await ctx.deps.model.step(input);
-  }
-  return result.content
-    .map((block) => (block.type === "text" ? block.text : ""))
-    .join("")
-    .trim();
-}
-
-export function extractOpenQuestions(markdown: string): string[] {
-  const questions: string[] = [];
-  let inSection = false;
-  for (const line of markdown.split("\n")) {
-    const heading = line.match(/^#{1,6}\s+(.+?)\s*$/);
-    if (heading) {
-      inSection = /open\s+questions?/i.test(heading[1]);
-      continue;
-    }
-    if (!inSection) continue;
-    const item = line.match(/^\s*(?:[-*+]|\d+[.)])\s+(.+?)\s*$/);
-    if (item) questions.push(item[1].trim());
-  }
-  return questions;
-}
-
-export interface ReportStructure {
-  caveats: string[];
-  openQuestions: string[];
-}
-
-const REPORT_STRUCTURE_MAX_TOKENS = 800;
-const REPORT_STRUCTURE_MAX_ITEMS = 8;
-
-const REPORT_STRUCTURE_SCHEMA: ModelOutputSchema = {
-  name: "report_structure",
-  schema: {
-    type: "object",
-    required: ["caveats", "openQuestions"],
-    properties: {
-      caveats: {
-        type: "array",
-        maxItems: REPORT_STRUCTURE_MAX_ITEMS,
-        items: { type: "string" },
-      },
-      openQuestions: {
-        type: "array",
-        maxItems: REPORT_STRUCTURE_MAX_ITEMS,
-        items: { type: "string" },
-      },
-    },
-  },
-};
-
-const REPORT_STRUCTURE_SYSTEM_PROMPT =
-  "You extract two lists from a finished research report: the caveats it states and the open questions it raises. " +
-  "Report only what the report itself states or directly implies — never invent caveats or questions. Structured output only.";
-
-function reportStructurePrompt(markdown: string): string {
-  return (
-    "## Report\n" +
-    markdown +
-    "\n\n## Task\n" +
-    "Read the report above and return two lists drawn strictly from it:\n" +
-    "- caveats: limitations, uncertainties, weak or single sources, and time-sensitivity the report notes.\n" +
-    "- openQuestions: questions the report raises or explicitly leaves unanswered.\n" +
-    "Condense each to one sentence in the report's own terms. Return an empty list for either if the report states none. Add nothing the report does not support.\n\nStructured output only."
-  );
-}
-
-interface RawReportStructure {
-  caveats?: unknown;
-  openQuestions?: unknown;
-}
-
-function readStringList(value: unknown, max: number): string[] {
-  if (!Array.isArray(value)) return [];
-  const seen = new Set<string>();
-  const items: string[] = [];
-  for (const entry of value) {
-    const text = typeof entry === "string" ? entry.trim() : "";
-    if (!text || seen.has(text)) continue;
-    seen.add(text);
-    items.push(text);
-    if (items.length >= max) break;
-  }
-  return items;
-}
-
-export function parseReportStructure(text: string): ReportStructure | null {
-  let raw: RawReportStructure;
-  try {
-    const parsed = JSON.parse(text) as unknown;
-    if (typeof parsed !== "object" || parsed === null) return null;
-    raw = parsed as RawReportStructure;
-  } catch {
-    return null;
-  }
-  return {
-    caveats: readStringList(raw.caveats, REPORT_STRUCTURE_MAX_ITEMS),
-    openQuestions: readStringList(raw.openQuestions, REPORT_STRUCTURE_MAX_ITEMS),
-  };
-}
-
-export async function extractReportStructure(
-  ctx: ResearchCtx,
-  markdown: string,
-): Promise<ReportStructure> {
-  if (!markdown.trim()) return { caveats: [], openQuestions: [] };
-  const fallback: ReportStructure = {
-    caveats: [],
-    openQuestions: extractOpenQuestions(markdown),
-  };
-  if (tokenBudgetExhaustedReason(ctx)) return fallback;
-  const model = ctx.deps.leafModel ?? ctx.deps.model;
-  try {
-    const result = await model.step({
-      system: REPORT_STRUCTURE_SYSTEM_PROMPT,
-      messages: [{ role: "user", content: reportStructurePrompt(markdown) }],
-      maxTokens: REPORT_STRUCTURE_MAX_TOKENS,
-      outputSchema: REPORT_STRUCTURE_SCHEMA,
-      signal: ctx.deps.signal,
-    });
-    const textBlock = result.content.find(
-      (block): block is { type: "text"; text: string } => block.type === "text",
-    );
-    return parseReportStructure(textBlock?.text ?? "") ?? fallback;
-  } catch (err) {
-    if (ctx.deps.signal?.aborted) throw err;
-    return fallback;
-  }
 }

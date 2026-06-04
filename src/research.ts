@@ -18,10 +18,10 @@ import {
   type VerifySummary,
 } from "./verify.js";
 import {
-  extractReportStructure,
   fallbackReportFromClaims,
   inconclusiveReport,
-  synthesizeReport,
+  synthesizeReportData,
+  writeReportProse,
 } from "./synthesize.js";
 import type { ResearchClaim } from "./claims.js";
 import { createClaimLedger } from "./claims.js";
@@ -215,8 +215,8 @@ async function runResearch(
     });
 
     throwIfAborted();
-    const markdown = await buildReport(ctx, opts.query, claims, verify, loop.gapsNote);
-    const structure = await extractReportStructure(ctx, markdown);
+    const report = await buildReport(ctx, opts.query, claims, verify, loop.gapsNote);
+    const markdown = report.markdown;
 
     const citations = reconcileCitations(
       markdown,
@@ -237,8 +237,8 @@ async function runResearch(
       provider: config.provider,
       model: config.model,
       markdown,
-      openQuestions: structure.openQuestions,
-      caveats: structure.caveats,
+      openQuestions: report.openQuestions,
+      caveats: report.caveats,
       claims,
       stats: buildStats(ctx, recall, verify, loop),
       citedSources: citations.citedSources,
@@ -275,37 +275,60 @@ function partitionClaims(ctx: ResearchCtx): ResearchClaims {
   };
 }
 
+interface BuiltReport {
+  markdown: string;
+  caveats: string[];
+  openQuestions: string[];
+}
+
 async function buildReport(
   ctx: ResearchCtx,
   question: string,
   claims: ResearchClaims,
   verify: VerifySummary,
   gapsNote: string,
-): Promise<string> {
+): Promise<BuiltReport> {
   const confirmed = claims.confirmed.filter((claim) => !claim.duplicateOf);
   const refuted = claims.refuted.filter((claim) => !claim.duplicateOf);
   if (confirmed.length === 0) {
-    return inconclusiveReport({
-      question,
-      verify,
-      refuted,
-      sourcesFetched: ctx.store.fetchedSources.length,
-      claimsUnsupported: ctx.store.claims.unsupportedCount,
-      gapsNote,
-    });
+    return {
+      markdown: inconclusiveReport({
+        question,
+        verify,
+        refuted,
+        sourcesFetched: ctx.store.fetchedSources.length,
+        claimsUnsupported: ctx.store.claims.unsupportedCount,
+        gapsNote,
+      }),
+      caveats: [],
+      openQuestions: [],
+    };
   }
   try {
-    const markdown = await synthesizeReport(ctx, {
+    const data = await synthesizeReportData(ctx, {
       question,
       confirmed,
       refuted,
       ...(gapsNote ? { gapsNote } : {}),
     });
-    if (markdown) return markdown;
+    if (data) {
+      const markdown = await writeReportProse(ctx, { question, data });
+      if (markdown) {
+        return {
+          markdown,
+          caveats: data.caveats,
+          openQuestions: data.openQuestions,
+        };
+      }
+    }
   } catch (err) {
     if (ctx.deps.signal?.aborted) throw err;
   }
-  return fallbackReportFromClaims(question, confirmed);
+  return {
+    markdown: fallbackReportFromClaims(question, confirmed),
+    caveats: [],
+    openQuestions: [],
+  };
 }
 
 function buildStats(
