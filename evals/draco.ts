@@ -1171,7 +1171,8 @@ async function runResearch(
         },
       });
       for await (const event of run.events) {
-        trace.push(traceEvent(event, started));
+        const traced = traceEvent(event, started);
+        if (traced) trace.push(traced);
         const line = progressLine(entry.id, event);
         if (line) process.stderr.write(`eval:draco: ${line}\n`);
       }
