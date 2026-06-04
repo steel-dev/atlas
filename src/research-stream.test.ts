@@ -13,6 +13,7 @@ function fakeResult(markdown: string): ResearchResult {
     claims: { confirmed: [], refuted: [], unverified: [] },
     stats: {
       angles: 1,
+      searchesRun: 1,
       sourcesFetched: 1,
       claimsExtracted: 0,
       claimsUnsupported: 0,

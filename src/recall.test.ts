@@ -334,6 +334,30 @@ describe("runRecall", () => {
     );
   });
 
+  it("allocates a contiguous search-index block from a shared ref", async () => {
+    const adapter = fakeAdapter(() => ({
+      strategy: "two angles",
+      angles: [
+        { label: "a", query: "query a" },
+        { label: "b", query: "query b" },
+      ],
+    }));
+    const ctx = makeCtx({
+      adapter,
+      provider: providerReturning(["https://one.com/x"]),
+    });
+    const searchIndexRef = { next: 5 };
+
+    await runRecall(ctx, "test question", searchIndexRef);
+
+    expect(searchIndexRef.next).toBe(7);
+    const searchingIndexes = ctx.events
+      .filter((event) => event.type === "searching")
+      .map((event) => event.index as number)
+      .sort((a, b) => a - b);
+    expect(searchingIndexes).toEqual([5, 6]);
+  });
+
   it("honors the recall fetch budget and chunks fetches into batches of at most 12 urls", async () => {
     const adapter = fakeAdapter(() => ({
       strategy: "three angles",

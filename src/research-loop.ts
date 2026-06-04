@@ -142,6 +142,7 @@ export async function runGapLoop(opts: {
   question: string;
   recall: RecallOutcome;
   maxToolCalls: number;
+  searchIndexRef?: { next: number };
 }): Promise<GapLoopResult> {
   const { ctx, question, recall } = opts;
   const systemPrompt = ctx.config.instructions
@@ -151,7 +152,7 @@ export async function runGapLoop(opts: {
   const maxToolCalls = opts.maxToolCalls;
   const maxTotalToolExecutions = maxToolCalls * 3;
   const extras: ToolHandlerExtras = {
-    searchIndexRef: { next: recall.searchQueriesRun },
+    searchIndexRef: opts.searchIndexRef ?? { next: recall.searchQueriesRun },
     surveyedGoals: [],
   };
 

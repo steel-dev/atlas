@@ -421,6 +421,7 @@ function propagateVerdictsToDuplicates(
 export async function verifyClaims(
   ctx: ResearchCtx,
   question: string,
+  searchIndexRef: { next: number } = { next: 0 },
 ): Promise<VerifySummary> {
   const ranked = rankClaimsForVerification(ctx.store.claims.claims);
   if (ranked.length === 0) {
@@ -446,7 +447,6 @@ export async function verifyClaims(
 
   ctx.scope.emit({ type: "verify_started", claims: maxToVerify });
   const gate = createConcurrencyGate(VERIFY_CONCURRENCY);
-  const searchIndexRef = { next: 0 };
   const panel = panelFor(ctx.config.verifierPanel);
 
   let cursor = 0;

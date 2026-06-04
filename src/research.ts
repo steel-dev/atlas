@@ -72,6 +72,7 @@ export interface ResearchClaims {
 
 export interface ResearchStats {
   angles: number;
+  searchesRun: number;
   sourcesFetched: number;
   claimsExtracted: number;
   claimsUnsupported: number;
@@ -260,17 +261,19 @@ async function runResearch(
     });
 
     ctx.scope.emit({ type: "research_started" });
-    const recall = await runRecall(ctx, opts.query);
+    const searchIndexRef = { next: 0 };
+    const recall = await runRecall(ctx, opts.query, searchIndexRef);
     const loop = await runGapLoop({
       ctx,
       question: opts.query,
       recall,
+      searchIndexRef,
       maxToolCalls: config.safetyMaxToolCalls,
     });
     await ctx.store.claims.settle();
 
     throwIfAborted();
-    const verify = await verifyClaims(ctx, opts.query);
+    const verify = await verifyClaims(ctx, opts.query, searchIndexRef);
     const claims = partitionClaims(ctx);
     const candidates = selectCandidates(claims.unverified);
     ctx.scope.emit({
@@ -332,7 +335,7 @@ async function runResearch(
       openQuestions: report.openQuestions,
       caveats: report.caveats,
       claims,
-      stats: buildStats(ctx, recall, verify, loop),
+      stats: buildStats(ctx, recall, verify, loop, searchIndexRef.next),
       citedSources: citations.citedSources,
       citationsNotConfirmed: citations.citationsNotConfirmed,
       citationsNotFetched: citations.citationsNotFetched,
@@ -468,9 +471,11 @@ function buildStats(
     surveys: number;
     reanchors: number;
   },
+  searchesRun: number,
 ): ResearchStats {
   return {
     angles: recall.angles.length,
+    searchesRun,
     sourcesFetched: ctx.store.fetchedSources.length,
     claimsExtracted: ctx.store.claims.claims.length,
     claimsUnsupported: ctx.store.claims.unsupportedCount,

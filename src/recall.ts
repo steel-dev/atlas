@@ -430,6 +430,7 @@ async function fetchUrls(ctx: ResearchCtx, urls: string[]): Promise<number> {
 export async function runRecall(
   ctx: ResearchCtx,
   question: string,
+  searchIndexRef: { next: number } = { next: 0 },
 ): Promise<RecallOutcome> {
   const { strategy, angles } = await scopeQuestion(ctx, question);
   ctx.scope.emit({
@@ -438,11 +439,13 @@ export async function runRecall(
     angles: angles.map(({ label, query }) => ({ label, query })),
   });
 
+  const searchIndexBase = searchIndexRef.next;
+  searchIndexRef.next += angles.length;
   const searches = await Promise.all(
     angles.map((angle, index) =>
       runSearchQueries(ctx, [angle.query], {
         limit: RESULTS_PER_QUERY,
-        searchIndexStart: index,
+        searchIndexStart: searchIndexBase + index,
       }),
     ),
   );
