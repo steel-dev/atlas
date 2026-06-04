@@ -1,23 +1,33 @@
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { createOpenAI } from "@ai-sdk/openai";
 import { createHash } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
+import { readFile } from "node:fs/promises";
+import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   DEFAULT_ANTHROPIC_MODEL,
   DEFAULT_OPENAI_MODEL,
 } from "../src/defaults.js";
 import { createAISdkModelAdapter, type ModelAdapter } from "../src/model.js";
-import {
-  type ModelProvider,
-  type ResearchEvent,
-  type ResearchResult,
-} from "../src/research.js";
+import { type ModelProvider } from "../src/research.js";
 import { Researcher } from "../src/researcher.js";
 import { steel } from "../src/steel.js";
 import { resolveModelSpec } from "../src/config-resolution.js";
-import type { SourceDocument } from "../src/sources.js";
-import { normalizeUrlForSource } from "../src/url.js";
+import {
+  buildDiagnostics,
+  formatCountMap,
+  mapWithConcurrency,
+  median,
+  progressLine,
+  readEnv,
+  stableHash,
+  summarizeRun,
+  traceEvent,
+  writeJsonl,
+  type EvalDiagnostics,
+  type EvalTraceEvent,
+  type RunMetrics,
+} from "./lib.js";
 
 interface EvalCase {
   id: string;
@@ -55,27 +65,6 @@ interface JudgeResult {
   raw: string;
 }
 
-interface EvidenceValidation {
-  checked: number;
-  valid: number;
-  invalid: number;
-  items: EvidenceValidationItem[];
-}
-
-interface EvidenceValidationItem {
-  index: number;
-  valid: boolean;
-  clue?: string;
-  source_id?: string;
-  source_url?: string;
-  source_title?: string;
-  start?: number;
-  end?: number;
-  quote?: string;
-  quote_found_elsewhere_at?: number;
-  reason?: string;
-}
-
 interface EvalResult {
   type: "result";
   id: string;
@@ -84,8 +73,6 @@ interface EvalResult {
   predictedAnswer: string | null;
   exactCorrect: boolean;
   correct: boolean;
-  structured?: unknown;
-  evidenceValidation?: EvidenceValidation;
   judge?: JudgeResult;
   judgeError?: string;
   error?: string;
@@ -94,128 +81,8 @@ interface EvalResult {
   latencyMs: number;
   trace: EvalTraceEvent[];
   diagnostics?: EvalDiagnostics;
-  metrics?: {
-    provider: ModelProvider;
-    model: string;
-    /** Total action tool calls, including lead, sub-agents, and structured follow-ups. */
-    toolCalls: number;
-    leadToolCalls: number;
-    subagentToolCalls: number;
-    totalToolCalls: number;
-    subagents: SubagentMetrics[];
-    fetchedUrls: string[];
-    citedSources: number;
-    citationsNotFetched: number;
-    inputTokens: number;
-    outputTokens: number;
-  };
+  metrics?: RunMetrics;
 }
-
-interface EvalDiagnostics {
-  search: {
-    events: number;
-    possibleBatchedGroups: number;
-    maxQueriesPerGroup: number;
-    stringifiedArrayLikeQueries: number;
-  };
-  fetch: {
-    fetched: number;
-    rejected: number;
-    fetchedByMethod: Record<string, number>;
-    fetchedByDepthAndMethod: Record<string, Record<string, number>>;
-    failedAttemptsByMethod: Record<string, number>;
-    qualityWarningsByCode: Record<string, number>;
-    sourceErrorsByCode: Record<string, number>;
-    fetchedHosts: Record<string, number>;
-    rejectedHosts: Record<string, number>;
-    totalFetchedMarkdownChars: number;
-  };
-  cost: {
-    latencyMs: number;
-    toolCalls?: number;
-    leadToolCalls?: number;
-    subagentToolCalls?: number;
-    totalToolCalls?: number;
-    inputTokens?: number;
-    outputTokens?: number;
-  };
-  depth: Record<string, DepthDiagnostics>;
-  choke: ChokeDiagnostics;
-}
-
-interface SubagentMetrics {
-  task: string;
-  startedAtMs?: number;
-  finishedAtMs: number;
-  durationMs?: number;
-  sourcesFetched: number;
-  toolCalls: number;
-  finishReason: string;
-}
-
-interface DepthDiagnostics {
-  searches: number;
-  fetches: number;
-  sourcesFetched: number;
-  sourceErrors: number;
-  qualityWarnings: number;
-}
-
-interface ChokeDiagnostics {
-  budgetExhaustedSubagents: number;
-  timeoutSubagents: number;
-  sourceErrors: number;
-  blockedOrThinSources: number;
-  blockedOrThinByHost: Record<string, number>;
-  subagentFinishReasons: Record<string, number>;
-}
-
-type EvalTraceEvent = {
-  atMs: number;
-  event: ResearchEvent["type"];
-  depth?: number;
-  index?: number;
-  query?: string;
-  count?: number;
-  results?: Array<{
-    url: string;
-    domain: string;
-    title?: string;
-    snippet?: string;
-  }>;
-  tasks?: string[];
-  task?: string;
-  url?: string;
-  title?: string;
-  method?: string;
-  error?: string;
-  retryAfterSeconds?: number;
-  attempt?: number;
-  maxAttempts?: number;
-  attempts?: Array<{
-    method: string;
-    ok: boolean;
-    note: string;
-  }>;
-  qualityWarnings?: string[];
-  sourcesFetched?: number;
-  toolCalls?: number;
-  finishReason?: string;
-  markdownChars?: number;
-  tokensBefore?: number;
-  tokensAfter?: number;
-  foldedMessages?: number;
-  from?: string;
-  to?: string;
-  chars?: number;
-  tool?: string;
-  data?: unknown;
-  result?: {
-    citedSources: number;
-    citationsNotFetched: number;
-    markdownChars: number;
-  };
-};
 
 const DEFAULT_CASES_PATH = "evals/cases/browsecomp.jsonl";
 const OFFICIAL_BROWSECOMP_CASES_URL =
@@ -406,18 +273,6 @@ function parseArgs(argv: string[]): EvalOptions {
   }
 
   return opts;
-}
-
-function stableHash(value: string): string {
-  return createHash("sha256").update(value).digest("hex");
-}
-
-function readEnv(...keys: string[]): string | undefined {
-  for (const key of keys) {
-    const value = process.env[key];
-    if (value?.trim()) return value.trim();
-  }
-  return undefined;
 }
 
 function resolveEvalProvider(
@@ -710,358 +565,6 @@ function evalQuery(query: string): string {
   ].join("\n");
 }
 
-function browseCompOutput() {
-  return {
-    name: "browsecomp_answer",
-    schema: {
-      type: "object",
-      description:
-        "Structured answer for a hard browsing question. Use only evidence gathered during the research run.",
-      properties: {
-        final_answer: {
-          type: "string",
-          description:
-            "Concise exact answer to the question. Avoid aliases or parenthetical details unless they are part of the answer.",
-        },
-        evidence: {
-          type: "array",
-          description:
-            "Fetched-source evidence supporting the final answer and important clues.",
-          items: {
-            type: "object",
-            properties: {
-              clue: {
-                type: "string",
-                description:
-                  "Question clue or answer claim this evidence supports.",
-              },
-              source_url: {
-                type: "string",
-                description: "URL of the fetched source.",
-              },
-              source_id: {
-                type: "string",
-                description:
-                  "source_id returned by fetch for the cited source, such as source_1.",
-              },
-              quote: {
-                type: "string",
-                description:
-                  "Exact text copied verbatim from the cited source. Character offsets are resolved automatically from this quote.",
-              },
-            },
-            required: ["clue", "source_url", "source_id", "quote"],
-            additionalProperties: false,
-          },
-        },
-        unresolved_clues: {
-          type: "array",
-          description:
-            "Important clues that were not verified. Use an empty array when fully verified.",
-          items: { type: "string" },
-        },
-      },
-      required: ["final_answer", "evidence", "unresolved_clues"],
-      additionalProperties: false,
-    },
-  };
-}
-
-function structuredFinalAnswer(structured: unknown): string | null {
-  if (typeof structured !== "object" || structured === null) return null;
-  const value = (structured as { final_answer?: unknown }).final_answer;
-  return typeof value === "string" && value.trim() ? value.trim() : null;
-}
-
-function structuredEvidence(structured: unknown): unknown[] {
-  if (typeof structured !== "object" || structured === null) return [];
-  const evidence = (structured as { evidence?: unknown }).evidence;
-  return Array.isArray(evidence) ? evidence : [];
-}
-
-function readStructuredString(
-  record: Record<string, unknown>,
-  field: string,
-): string | undefined {
-  const value = record[field];
-  return typeof value === "string" && value.trim() ? value.trim() : undefined;
-}
-
-function readStructuredInteger(
-  record: Record<string, unknown>,
-  field: string,
-): number | undefined {
-  const value = record[field];
-  const n = typeof value === "number" ? value : Number(value);
-  if (!Number.isInteger(n) || n < 0) return undefined;
-  return n;
-}
-
-function sourceMatchesUrl(source: SourceDocument, sourceUrl: string): boolean {
-  const normalized = normalizeUrlForSource(sourceUrl);
-  return (
-    normalized === source.canonicalUrl ||
-    normalized === normalizeUrlForSource(source.url)
-  );
-}
-
-function findEvidenceSource(
-  sources: SourceDocument[],
-  sourceId: string | undefined,
-  sourceUrl: string | undefined,
-): SourceDocument | undefined {
-  if (sourceId) {
-    const source = sources.find((entry) => entry.sourceId === sourceId);
-    if (source) return source;
-  }
-  if (sourceUrl) {
-    return sources.find((entry) => sourceMatchesUrl(entry, sourceUrl));
-  }
-  return undefined;
-}
-
-function repairStructuredEvidenceSpans(
-  structured: unknown,
-  sources: SourceDocument[] | undefined,
-): unknown {
-  if (
-    typeof structured !== "object" ||
-    structured === null ||
-    Array.isArray(structured)
-  ) {
-    return structured;
-  }
-  const evidence = structuredEvidence(structured);
-  if (evidence.length === 0) return structured;
-
-  const sourceDocuments = sources ?? [];
-  const repairedEvidence = evidence.map((entry) => {
-    if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
-      return entry;
-    }
-    const record = entry as Record<string, unknown>;
-    const source = findEvidenceSource(
-      sourceDocuments,
-      readStructuredString(record, "source_id"),
-      readStructuredString(record, "source_url"),
-    );
-    const quote = readStructuredString(record, "quote");
-    if (!source || !quote) return entry;
-
-    const preferredStart = readStructuredInteger(record, "start");
-    const span = findBestQuoteSpan(source.markdown, quote, preferredStart);
-    if (!span) return entry;
-
-    return {
-      ...record,
-      start: span.start,
-      end: span.end,
-      quote: source.markdown.slice(span.start, span.end),
-    };
-  });
-
-  return {
-    ...(structured as Record<string, unknown>),
-    evidence: repairedEvidence,
-  };
-}
-
-function findBestQuoteSpan(
-  source: string,
-  quote: string,
-  preferredStart: number | undefined,
-): { start: number; end: number } | null {
-  const exactMatches = findAllExactMatches(source, quote);
-  if (exactMatches.length > 0) {
-    const start = chooseClosestStart(exactMatches, preferredStart);
-    return { start, end: start + quote.length };
-  }
-  return findWhitespaceNormalizedSpan(source, quote, preferredStart);
-}
-
-function findAllExactMatches(source: string, quote: string): number[] {
-  const matches: number[] = [];
-  let fromIndex = 0;
-  while (fromIndex <= source.length) {
-    const index = source.indexOf(quote, fromIndex);
-    if (index === -1) break;
-    matches.push(index);
-    fromIndex = index + Math.max(1, quote.length);
-  }
-  return matches;
-}
-
-function chooseClosestStart(
-  starts: number[],
-  preferredStart: number | undefined,
-): number {
-  if (preferredStart === undefined) return starts[0] ?? 0;
-  return starts.reduce((best, candidate) =>
-    Math.abs(candidate - preferredStart) < Math.abs(best - preferredStart)
-      ? candidate
-      : best,
-  );
-}
-
-function findWhitespaceNormalizedSpan(
-  source: string,
-  quote: string,
-  preferredStart: number | undefined,
-): { start: number; end: number } | null {
-  const normalizedSource = normalizeTextWithOffsets(source);
-  const normalizedQuote = normalizeWhitespace(quote);
-  if (!normalizedQuote) return null;
-
-  const matches = findAllExactMatches(normalizedSource.text, normalizedQuote);
-  if (matches.length === 0) return null;
-
-  const preferredNormalizedStart: number | undefined =
-    preferredStart === undefined
-      ? undefined
-      : normalizedSource.offsets.findIndex(
-          (offset) => offset >= preferredStart,
-        );
-  const normalizedStart = chooseClosestStart(
-    matches,
-    preferredNormalizedStart !== undefined && preferredNormalizedStart >= 0
-      ? preferredNormalizedStart
-      : undefined,
-  );
-  const normalizedEnd = normalizedStart + normalizedQuote.length - 1;
-  const start = normalizedSource.offsets[normalizedStart];
-  const end = normalizedSource.offsets[normalizedEnd];
-  if (start === undefined || end === undefined) return null;
-  return { start, end: end + 1 };
-}
-
-function normalizeTextWithOffsets(text: string): {
-  text: string;
-  offsets: number[];
-} {
-  let normalized = "";
-  const offsets: number[] = [];
-  let pendingWhitespaceOffset: number | undefined;
-  for (let index = 0; index < text.length; index++) {
-    const char = text[index];
-    if (/\s/.test(char)) {
-      if (normalized && pendingWhitespaceOffset === undefined) {
-        pendingWhitespaceOffset = index;
-      }
-      continue;
-    }
-    if (pendingWhitespaceOffset !== undefined) {
-      normalized += " ";
-      offsets.push(pendingWhitespaceOffset);
-      pendingWhitespaceOffset = undefined;
-    }
-    normalized += normalizeComparableChar(char);
-    offsets.push(index);
-  }
-  return { text: normalized, offsets };
-}
-
-function normalizeWhitespace(text: string): string {
-  return text
-    .replace(/[‘’]/g, "'")
-    .replace(/[“”]/g, '"')
-    .replace(/[‐‑‒–—―]/g, "-")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function normalizeComparableChar(char: string): string {
-  if (char === "‘" || char === "’") return "'";
-  if (char === "“" || char === "”") return '"';
-  if (/[‐‑‒–—―]/.test(char)) return "-";
-  return char;
-}
-
-function validateStructuredEvidence(
-  structured: unknown,
-  sources: SourceDocument[] | undefined,
-): EvidenceValidation | undefined {
-  const evidence = structuredEvidence(structured);
-  if (evidence.length === 0) return undefined;
-
-  const sourceDocuments = sources ?? [];
-  const items = evidence.map((entry, index): EvidenceValidationItem => {
-    if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
-      return { index, valid: false, reason: "evidence item is not an object" };
-    }
-
-    const record = entry as Record<string, unknown>;
-    const clue = readStructuredString(record, "clue");
-    const sourceId = readStructuredString(record, "source_id");
-    const sourceUrl = readStructuredString(record, "source_url");
-    const quote = readStructuredString(record, "quote");
-    const start = readStructuredInteger(record, "start");
-    const end = readStructuredInteger(record, "end");
-    const base: EvidenceValidationItem = {
-      index,
-      ...(clue ? { clue } : {}),
-      ...(sourceId ? { source_id: sourceId } : {}),
-      ...(sourceUrl ? { source_url: sourceUrl } : {}),
-      ...(start !== undefined ? { start } : {}),
-      ...(end !== undefined ? { end } : {}),
-      ...(quote ? { quote } : {}),
-      valid: false,
-    };
-
-    const source = findEvidenceSource(sourceDocuments, sourceId, sourceUrl);
-    if (!source) {
-      return {
-        ...base,
-        reason:
-          sourceId || sourceUrl
-            ? "source not found"
-            : "missing source_id/source_url",
-      };
-    }
-    const withSource = { ...base, source_title: source.title };
-    if (sourceId && source.sourceId !== sourceId) {
-      return {
-        ...withSource,
-        reason: "source_id does not match fetched source",
-      };
-    }
-    if (sourceUrl && !sourceMatchesUrl(source, sourceUrl)) {
-      return {
-        ...withSource,
-        reason: "source_url does not match fetched source",
-      };
-    }
-    if (!quote) {
-      return { ...withSource, reason: "missing quote" };
-    }
-    if (start === undefined || end === undefined) {
-      return { ...withSource, reason: "missing or invalid quote span" };
-    }
-    if (end <= start || end > source.markdown.length) {
-      return { ...withSource, reason: "quote span out of bounds" };
-    }
-
-    const spanned = source.markdown.slice(start, end);
-    if (spanned !== quote) {
-      const quoteIndex = source.markdown.indexOf(quote);
-      return {
-        ...withSource,
-        ...(quoteIndex >= 0 ? { quote_found_elsewhere_at: quoteIndex } : {}),
-        reason: "quote does not match source span",
-      };
-    }
-
-    return { ...withSource, valid: true };
-  });
-
-  const valid = items.filter((item) => item.valid).length;
-  return {
-    checked: items.length,
-    valid,
-    invalid: items.length - valid,
-    items,
-  };
-}
-
 function extractFinalAnswer(markdown: string): string | null {
   const patterns = [
     /^#{0,6}\s*\*{0,2}final answer\*{0,2}\s*:\s*(.+)$/im,
@@ -1180,205 +683,6 @@ async function judgeResponse(opts: {
   };
 }
 
-function summarizeSubagents(trace: EvalTraceEvent[]): SubagentMetrics[] {
-  const startsByTask = new Map<string, number[]>();
-  const subagents: SubagentMetrics[] = [];
-
-  for (const event of trace) {
-    if (event.event === "subagent_started" && event.task) {
-      const starts = startsByTask.get(event.task) ?? [];
-      starts.push(event.atMs);
-      startsByTask.set(event.task, starts);
-      continue;
-    }
-
-    if (event.event !== "subagent_finished" || !event.task) continue;
-    const starts = startsByTask.get(event.task) ?? [];
-    const startedAtMs = starts.shift();
-    if (starts.length === 0) startsByTask.delete(event.task);
-    const finishedAtMs = event.atMs;
-    subagents.push({
-      task: event.task,
-      ...(startedAtMs !== undefined ? { startedAtMs } : {}),
-      finishedAtMs,
-      ...(startedAtMs !== undefined
-        ? { durationMs: Math.max(0, finishedAtMs - startedAtMs) }
-        : {}),
-      sourcesFetched: event.sourcesFetched ?? 0,
-      toolCalls: event.toolCalls ?? 0,
-      finishReason: event.finishReason ?? "unknown",
-    });
-  }
-
-  return subagents;
-}
-
-function summarizeRun(
-  result: ResearchResult,
-  trace: EvalTraceEvent[],
-): EvalResult["metrics"] {
-  const leadToolCalls = result.runs.reduce(
-    (sum, run) => sum + run.toolCalls,
-    0,
-  );
-  const subagents = summarizeSubagents(trace);
-  const subagentToolCalls = subagents.reduce(
-    (sum, subagent) => sum + subagent.toolCalls,
-    0,
-  );
-  const totalToolCalls = leadToolCalls + subagentToolCalls;
-  return {
-    provider: result.provider,
-    model: result.model,
-    toolCalls: totalToolCalls,
-    leadToolCalls,
-    subagentToolCalls,
-    totalToolCalls,
-    subagents,
-    fetchedUrls: result.runs.flatMap((run) => run.fetchedUrls),
-    citedSources: result.citedSources.length,
-    citationsNotFetched: result.citationsNotFetched.length,
-    inputTokens:
-      result.usage.input_tokens +
-      result.usage.cache_creation_input_tokens +
-      result.usage.cache_read_input_tokens,
-    outputTokens: result.usage.output_tokens,
-  };
-}
-
-function progressLine(caseId: string, event: ResearchEvent): string | null {
-  switch (event.type) {
-    case "searching":
-      return `${caseId}: search[${event.index}] ${event.query}`;
-    case "search_results":
-      return `${caseId}: search[${event.index}] ${event.count} result(s)`;
-    case "search_failed":
-      return `${caseId}: search[${event.index}] failed: ${event.error}`;
-    case "fetching":
-      return `${caseId}: fetch ${event.url}`;
-    case "source_fetched":
-      return `${caseId}: fetched ${event.url}${event.method ? ` (${event.method})` : ""}`;
-    case "source_error":
-      return `${caseId}: source error ${event.url}: ${event.error}`;
-    case "rate_limited":
-      return `${caseId}: rate limited, waiting ${event.retryAfterSeconds}s`;
-    case "research_finished":
-      return `${caseId}: research finished with ${event.sourcesFetched} source(s)`;
-    case "context_compacted":
-      return `${caseId}: context compacted ${event.tokensBefore} -> ${event.tokensAfter} tok (${event.foldedMessages} message(s) folded)`;
-    case "delegation_started":
-      return `${caseId}: delegating ${event.tasks.length} sub-agent(s)`;
-    case "subagent_started":
-      return `${caseId}: sub-agent started: ${event.task.slice(0, 80)}`;
-    case "subagent_finished":
-      return `${caseId}: sub-agent finished: ${event.sourcesFetched} source(s), ${event.toolCalls} tool call(s), ${event.finishReason}`;
-    case "citations_not_fetched":
-      return `${caseId}: ${event.count} citation(s) not fetched`;
-    case "written":
-      return `${caseId}: wrote ${event.markdownChars} markdown chars`;
-    case "message_sent":
-      return `${caseId}: message ${event.from} -> ${event.to} (${event.chars} chars)`;
-    case "completed":
-    case "research_started":
-    case "report_boundary":
-    case "report_delta":
-    case "tool_event":
-      return null;
-  }
-}
-
-function traceEvent(event: ResearchEvent, started: number): EvalTraceEvent {
-  const base = {
-    atMs: Date.now() - started,
-    event: event.type,
-    ...(event.depth !== undefined ? { depth: event.depth } : {}),
-  };
-  switch (event.type) {
-    case "searching":
-      return { ...base, index: event.index, query: event.query };
-    case "search_results":
-      return {
-        ...base,
-        index: event.index,
-        count: event.count,
-        ...(event.results ? { results: event.results } : {}),
-      };
-    case "search_failed":
-      return { ...base, index: event.index, error: event.error };
-    case "fetching":
-      return { ...base, url: event.url };
-    case "rate_limited":
-      return {
-        ...base,
-        retryAfterSeconds: event.retryAfterSeconds,
-        attempt: event.attempt,
-        maxAttempts: event.maxAttempts,
-      };
-    case "source_fetched":
-      return {
-        ...base,
-        url: event.url,
-        title: event.title,
-        ...(event.method ? { method: event.method } : {}),
-        ...(event.markdownChars !== undefined
-          ? { markdownChars: event.markdownChars }
-          : {}),
-        ...(event.attempts ? { attempts: event.attempts } : {}),
-        ...(event.qualityWarnings
-          ? { qualityWarnings: event.qualityWarnings }
-          : {}),
-      };
-    case "source_error":
-      return { ...base, url: event.url, error: event.error };
-    case "research_finished":
-      return { ...base, sourcesFetched: event.sourcesFetched };
-    case "context_compacted":
-      return {
-        ...base,
-        tokensBefore: event.tokensBefore,
-        tokensAfter: event.tokensAfter,
-        foldedMessages: event.foldedMessages,
-      };
-    case "delegation_started":
-      return { ...base, tasks: event.tasks };
-    case "subagent_started":
-      return { ...base, task: event.task };
-    case "subagent_finished":
-      return {
-        ...base,
-        task: event.task,
-        sourcesFetched: event.sourcesFetched,
-        toolCalls: event.toolCalls,
-        finishReason: event.finishReason,
-      };
-    case "citations_not_fetched":
-      return { ...base, count: event.count };
-    case "written":
-      return { ...base, markdownChars: event.markdownChars };
-    case "completed":
-      return {
-        ...base,
-        result: {
-          citedSources: event.result.citedSources.length,
-          citationsNotFetched: event.result.citationsNotFetched.length,
-          markdownChars: event.result.markdown.length,
-        },
-      };
-    case "message_sent":
-      return { ...base, from: event.from, to: event.to, chars: event.chars };
-    case "tool_event":
-      return {
-        ...base,
-        tool: event.tool,
-        ...(event.data !== undefined ? { data: event.data } : {}),
-      };
-    case "research_started":
-    case "report_boundary":
-    case "report_delta":
-      return base;
-  }
-}
-
 async function runCase(
   entry: EvalCase,
   opts: EvalOptions,
@@ -1405,7 +709,6 @@ async function runCase(
     const run = researcher.stream(evalQuery(entry.query), {
       timeoutMs: opts.timeoutMs,
       tokenLimit: opts.tokenLimit,
-      output: browseCompOutput(),
       includeSourceDocuments: true,
       exploreProviderOptions: {
         anthropic: { thinking: { type: "adaptive" }, effort: "max" },
@@ -1423,19 +726,7 @@ async function runCase(
     }
     const result = await run.result;
     clearInterval(heartbeat);
-    const structured =
-      result.structured === undefined
-        ? undefined
-        : repairStructuredEvidenceSpans(
-            result.structured,
-            result.sourceDocuments,
-          );
-    const predictedAnswer =
-      structuredFinalAnswer(structured) ?? extractFinalAnswer(result.markdown);
-    const evidenceValidation = validateStructuredEvidence(
-      structured,
-      result.sourceDocuments,
-    );
+    const predictedAnswer = extractFinalAnswer(result.markdown);
     const exactCorrect = gradeAnswer(predictedAnswer, entry.answers);
     let judgeResult: JudgeResult | undefined;
     let judgeError: string | undefined;
@@ -1458,7 +749,7 @@ async function runCase(
       }
     }
     const latencyMs = Date.now() - started;
-    const metrics = summarizeRun(result, trace);
+    const metrics = summarizeRun(result);
     return {
       type: "result",
       id: entry.id,
@@ -1467,11 +758,9 @@ async function runCase(
       predictedAnswer,
       exactCorrect,
       correct: judgeResult?.correct ?? exactCorrect,
-      ...(structured !== undefined ? { structured } : {}),
-      ...(evidenceValidation ? { evidenceValidation } : {}),
       ...(judgeResult ? { judge: judgeResult } : {}),
       ...(judgeError ? { judgeError } : {}),
-      finishReason: result.runs.map((run) => run.finishReason).join("; "),
+      finishReason: result.finishReason,
       markdown: result.markdown,
       latencyMs,
       trace,
@@ -1497,343 +786,36 @@ async function runCase(
   }
 }
 
-async function mapWithConcurrency<T, R>(
-  items: T[],
-  concurrency: number,
-  fn: (item: T, index: number) => Promise<R>,
-): Promise<R[]> {
-  const results = new Array<R>(items.length);
-  let next = 0;
-  const workers = Array.from(
-    { length: Math.min(concurrency, items.length) },
-    async () => {
-      while (next < items.length) {
-        const index = next++;
-        results[index] = await fn(items[index], index);
-      }
-    },
-  );
-  await Promise.all(workers);
-  return results;
-}
-
-function median(values: number[]): number {
-  if (values.length === 0) return 0;
-  const sorted = [...values].sort((a, b) => a - b);
-  const mid = Math.floor(sorted.length / 2);
-  return sorted.length % 2 === 0
-    ? (sorted[mid - 1] + sorted[mid]) / 2
-    : sorted[mid];
-}
-
-function formatCountMap(counts: Record<string, number>): string {
-  const entries = Object.entries(counts).sort(([a], [b]) => a.localeCompare(b));
-  return entries.length === 0
-    ? "none"
-    : entries.map(([key, value]) => `${key}:${value}`).join(",");
-}
-
-function increment(counts: Record<string, number>, key: string): void {
-  counts[key] = (counts[key] ?? 0) + 1;
-}
-
-function hostFromUrl(url: string | undefined): string {
-  if (!url) return "unknown";
-  try {
-    return new URL(url).hostname.replace(/^www\./, "");
-  } catch {
-    return "invalid";
-  }
-}
-
-function codeFromMessage(message: string | undefined): string {
-  if (!message) return "unknown";
-  const match = message.match(/^([a-z_]+):/i);
-  return match?.[1] ?? "unknown";
-}
-
-function looksLikeStringifiedArrayQuery(query: string): boolean {
-  const trimmed = query.trim();
-  return (
-    /^\[[\s\S]*\]$/.test(trimmed) ||
-    (trimmed.includes('",') && trimmed.includes("[") && trimmed.includes("]"))
-  );
-}
-
-function searchGroups(searchEvents: EvalTraceEvent[]): EvalTraceEvent[][] {
-  const groups: EvalTraceEvent[][] = [];
-  let current: EvalTraceEvent[] = [];
-  for (const event of searchEvents) {
-    const previous = current[current.length - 1];
-    if (!previous || event.atMs - previous.atMs <= 50) {
-      current.push(event);
-      continue;
-    }
-    groups.push(current);
-    current = [event];
-  }
-  if (current.length > 0) groups.push(current);
-  return groups;
-}
-
-function depthKey(event: EvalTraceEvent): string {
-  return String(event.depth ?? 0);
-}
-
-function ensureDepthDiagnostics(
-  depths: Record<string, DepthDiagnostics>,
-  key: string,
-): DepthDiagnostics {
-  const existing = depths[key];
-  if (existing) return existing;
-  const created = {
-    searches: 0,
-    fetches: 0,
-    sourcesFetched: 0,
-    sourceErrors: 0,
-    qualityWarnings: 0,
-  };
-  depths[key] = created;
-  return created;
-}
-
-function incrementNested(
-  counts: Record<string, Record<string, number>>,
-  outer: string,
-  inner: string,
-): void {
-  counts[outer] ??= {};
-  counts[outer][inner] = (counts[outer][inner] ?? 0) + 1;
-}
-
-function isBudgetExhausted(reason: string | undefined): boolean {
-  return /\btool call budget exhausted\b|\btool execution safety budget exhausted\b/i.test(
-    reason ?? "",
-  );
-}
-
-function isTimeoutFinish(reason: string | undefined): boolean {
-  return /\btimeout approaching\b/i.test(reason ?? "");
-}
-
-function isBlockedOrThin(warnings: string[] | undefined): boolean {
-  return (warnings ?? []).some((warning) =>
-    /\b(?:blocked_or_challenge|thin_content|error_page)\b/i.test(warning),
-  );
-}
-
-function buildDiagnostics(opts: {
-  trace: EvalTraceEvent[];
-  latencyMs: number;
-  metrics?: EvalResult["metrics"];
-}): EvalDiagnostics {
-  const searchEvents = opts.trace.filter(
-    (event) => event.event === "searching",
-  );
-  const groups = searchGroups(searchEvents);
-  const fetchedByMethod: Record<string, number> = {};
-  const fetchedByDepthAndMethod: Record<string, Record<string, number>> = {};
-  const failedAttemptsByMethod: Record<string, number> = {};
-  const qualityWarningsByCode: Record<string, number> = {};
-  const sourceErrorsByCode: Record<string, number> = {};
-  const fetchedHosts: Record<string, number> = {};
-  const rejectedHosts: Record<string, number> = {};
-  const depth: Record<string, DepthDiagnostics> = {};
-  const blockedOrThinByHost: Record<string, number> = {};
-  const subagentFinishReasons: Record<string, number> = {};
-  let blockedOrThinSources = 0;
-  let fetched = 0;
-  let rejected = 0;
-  let totalFetchedMarkdownChars = 0;
-
-  for (const event of opts.trace) {
-    const depthStats = ensureDepthDiagnostics(depth, depthKey(event));
-    if (event.event === "searching") {
-      depthStats.searches++;
-      continue;
-    }
-    if (event.event === "fetching") {
-      depthStats.fetches++;
-      continue;
-    }
-    if (event.event === "source_fetched") {
-      fetched++;
-      depthStats.sourcesFetched++;
-      increment(fetchedByMethod, event.method ?? "unknown");
-      incrementNested(
-        fetchedByDepthAndMethod,
-        depthKey(event),
-        event.method ?? "unknown",
-      );
-      increment(fetchedHosts, hostFromUrl(event.url));
-      totalFetchedMarkdownChars += event.markdownChars ?? 0;
-      if (isBlockedOrThin(event.qualityWarnings)) {
-        blockedOrThinSources++;
-        increment(blockedOrThinByHost, hostFromUrl(event.url));
-      }
-      for (const warning of event.qualityWarnings ?? []) {
-        depthStats.qualityWarnings++;
-        increment(qualityWarningsByCode, codeFromMessage(warning));
-      }
-      for (const attempt of event.attempts ?? []) {
-        if (!attempt.ok) increment(failedAttemptsByMethod, attempt.method);
-      }
-      continue;
-    }
-    if (event.event === "source_error") {
-      rejected++;
-      depthStats.sourceErrors++;
-      increment(rejectedHosts, hostFromUrl(event.url));
-      increment(sourceErrorsByCode, codeFromMessage(event.error));
-      continue;
-    }
-    if (event.event === "subagent_finished") {
-      increment(subagentFinishReasons, event.finishReason ?? "unknown");
-    }
-  }
-  const subagents = opts.metrics?.subagents ?? summarizeSubagents(opts.trace);
-
-  return {
-    search: {
-      events: searchEvents.length,
-      possibleBatchedGroups: groups.filter((group) => group.length > 1).length,
-      maxQueriesPerGroup: Math.max(0, ...groups.map((group) => group.length)),
-      stringifiedArrayLikeQueries: searchEvents.filter(
-        (event) => event.query && looksLikeStringifiedArrayQuery(event.query),
-      ).length,
-    },
-    fetch: {
-      fetched,
-      rejected,
-      fetchedByMethod,
-      fetchedByDepthAndMethod,
-      failedAttemptsByMethod,
-      qualityWarningsByCode,
-      sourceErrorsByCode,
-      fetchedHosts,
-      rejectedHosts,
-      totalFetchedMarkdownChars,
-    },
-    cost: {
-      latencyMs: opts.latencyMs,
-      ...(opts.metrics
-        ? {
-            toolCalls: opts.metrics.toolCalls,
-            leadToolCalls: opts.metrics.leadToolCalls,
-            subagentToolCalls: opts.metrics.subagentToolCalls,
-            totalToolCalls: opts.metrics.totalToolCalls,
-            inputTokens: opts.metrics.inputTokens,
-            outputTokens: opts.metrics.outputTokens,
-          }
-        : {}),
-    },
-    depth,
-    choke: {
-      budgetExhaustedSubagents: subagents.filter((subagent) =>
-        isBudgetExhausted(subagent.finishReason),
-      ).length,
-      timeoutSubagents: subagents.filter((subagent) =>
-        isTimeoutFinish(subagent.finishReason),
-      ).length,
-      sourceErrors: rejected,
-      blockedOrThinSources,
-      blockedOrThinByHost,
-      subagentFinishReasons,
-    },
-  };
-}
-
 function summarizeFetchHealth(results: EvalResult[]) {
   const fetchedByMethod: Record<string, number> = {};
-  const failedAttemptsByMethod: Record<string, number> = {};
   let fetched = 0;
   let rejected = 0;
-  let totalFetchedMarkdownChars = 0;
-  let qualityWarnings = 0;
-
+  let blockedOrThin = 0;
   for (const result of results) {
-    for (const event of result.trace) {
-      if (event.event === "source_fetched") {
-        fetched++;
-        increment(fetchedByMethod, event.method ?? "unknown");
-        totalFetchedMarkdownChars += event.markdownChars ?? 0;
-        qualityWarnings += event.qualityWarnings?.length ?? 0;
-        for (const attempt of event.attempts ?? []) {
-          if (!attempt.ok) {
-            increment(failedAttemptsByMethod, attempt.method);
-          }
-        }
-        continue;
-      }
-      if (event.event === "source_error") {
-        rejected++;
-        continue;
-      }
+    const fetch = result.diagnostics?.fetch;
+    if (!fetch) continue;
+    fetched += fetch.fetched;
+    rejected += fetch.rejected;
+    blockedOrThin += fetch.blockedOrThinSources;
+    for (const [method, count] of Object.entries(fetch.fetchedByMethod)) {
+      fetchedByMethod[method] = (fetchedByMethod[method] ?? 0) + count;
     }
   }
-
-  return {
-    fetched,
-    rejected,
-    fetchedByMethod,
-    failedAttemptsByMethod,
-    totalFetchedMarkdownChars,
-    qualityWarnings,
-  };
+  return { fetched, rejected, blockedOrThin, fetchedByMethod };
 }
 
-function summarizeSearchDiagnostics(results: EvalResult[]) {
+function summarizeClaimHealth(results: EvalResult[]) {
   return results.reduce(
     (summary, result) => {
-      const search = result.diagnostics?.search;
-      if (!search) return summary;
-      summary.events += search.events;
-      summary.possibleBatchedGroups += search.possibleBatchedGroups;
-      summary.maxQueriesPerGroup = Math.max(
-        summary.maxQueriesPerGroup,
-        search.maxQueriesPerGroup,
-      );
-      summary.stringifiedArrayLikeQueries += search.stringifiedArrayLikeQueries;
+      const claims = result.diagnostics?.claims;
+      if (!claims) return summary;
+      summary.extracted += claims.extracted;
+      summary.unsupported += claims.unsupported;
+      summary.confirmed += claims.confirmed;
+      summary.refuted += claims.refuted;
       return summary;
     },
-    {
-      events: 0,
-      possibleBatchedGroups: 0,
-      maxQueriesPerGroup: 0,
-      stringifiedArrayLikeQueries: 0,
-    },
-  );
-}
-
-function summarizeChokeDiagnostics(results: EvalResult[]) {
-  return results.reduce(
-    (summary, result) => {
-      const choke = result.diagnostics?.choke;
-      if (!choke) return summary;
-      summary.budgetExhaustedSubagents += choke.budgetExhaustedSubagents;
-      summary.timeoutSubagents += choke.timeoutSubagents;
-      summary.sourceErrors += choke.sourceErrors;
-      summary.blockedOrThinSources += choke.blockedOrThinSources;
-      for (const [host, count] of Object.entries(choke.blockedOrThinByHost)) {
-        summary.blockedOrThinByHost[host] =
-          (summary.blockedOrThinByHost[host] ?? 0) + count;
-      }
-      for (const [reason, count] of Object.entries(
-        choke.subagentFinishReasons,
-      )) {
-        summary.subagentFinishReasons[reason] =
-          (summary.subagentFinishReasons[reason] ?? 0) + count;
-      }
-      return summary;
-    },
-    {
-      budgetExhaustedSubagents: 0,
-      timeoutSubagents: 0,
-      sourceErrors: 0,
-      blockedOrThinSources: 0,
-      blockedOrThinByHost: {} as Record<string, number>,
-      subagentFinishReasons: {} as Record<string, number>,
-    },
+    { extracted: 0, unsupported: 0, confirmed: 0, refuted: 0 },
   );
 }
 
@@ -1847,12 +829,8 @@ function summarize(results: EvalResult[]) {
     (sum, result) => sum + (result.metrics?.leadToolCalls ?? 0),
     0,
   );
-  const totalSubagentToolCalls = completed.reduce(
-    (sum, result) => sum + (result.metrics?.subagentToolCalls ?? 0),
-    0,
-  );
-  const totalToolCalls = completed.reduce(
-    (sum, result) => sum + (result.metrics?.totalToolCalls ?? 0),
+  const totalSurveys = completed.reduce(
+    (sum, result) => sum + (result.metrics?.surveys ?? 0),
     0,
   );
   return {
@@ -1868,30 +846,16 @@ function summarize(results: EvalResult[]) {
     exactAccuracy: results.length === 0 ? 0 : exactCorrect / results.length,
     judgeAccuracy: judged.length === 0 ? null : judgeCorrect / judged.length,
     medianLatencyMs: median(completed.map((result) => result.latencyMs)),
-    averageToolCalls:
-      completed.length === 0 ? 0 : totalToolCalls / completed.length,
     averageLeadToolCalls:
       completed.length === 0 ? 0 : totalLeadToolCalls / completed.length,
-    averageSubagentToolCalls:
-      completed.length === 0 ? 0 : totalSubagentToolCalls / completed.length,
-    totalToolCalls,
-    totalLeadToolCalls,
-    totalSubagentToolCalls,
+    averageSurveys:
+      completed.length === 0 ? 0 : totalSurveys / completed.length,
     totalCitationsNotFetched: completed.reduce(
       (sum, result) => sum + (result.metrics?.citationsNotFetched ?? 0),
       0,
     ),
-    totalEvidenceChecked: completed.reduce(
-      (sum, result) => sum + (result.evidenceValidation?.checked ?? 0),
-      0,
-    ),
-    totalInvalidEvidence: completed.reduce(
-      (sum, result) => sum + (result.evidenceValidation?.invalid ?? 0),
-      0,
-    ),
-    searchDiagnostics: summarizeSearchDiagnostics(results),
+    claimHealth: summarizeClaimHealth(results),
     fetchHealth: summarizeFetchHealth(results),
-    chokeDiagnostics: summarizeChokeDiagnostics(results),
   };
 }
 
@@ -1902,15 +866,6 @@ function defaultOutPath(): string {
 
 function isOfficialBrowseCompCases(casesPath: string): boolean {
   return casesPath === OFFICIAL_BROWSECOMP_CASES_URL;
-}
-
-async function writeJsonl(path: string, rows: unknown[]): Promise<void> {
-  const resolved = resolve(path);
-  await mkdir(dirname(resolved), { recursive: true });
-  await writeFile(
-    resolved,
-    `${rows.map((row) => JSON.stringify(row)).join("\n")}\n`,
-  );
 }
 
 async function main(): Promise<void> {
@@ -1975,14 +930,17 @@ async function main(): Promise<void> {
         : `judge accuracy: ${(summary.judgeAccuracy * 100).toFixed(1)}% (${summary.judgeCorrect}/${summary.judged})`,
       `errors: ${summary.errors}`,
       `median latency: ${(summary.medianLatencyMs / 1000).toFixed(1)}s`,
-      `avg tool calls: ${summary.averageToolCalls.toFixed(1)} (lead ${summary.averageLeadToolCalls.toFixed(1)}, subagent ${summary.averageSubagentToolCalls.toFixed(1)})`,
-      `invalid evidence: ${summary.totalInvalidEvidence}/${summary.totalEvidenceChecked}`,
-      `search diagnostics: events=${summary.searchDiagnostics.events}, batched=${summary.searchDiagnostics.possibleBatchedGroups}, stringified_arrays=${summary.searchDiagnostics.stringifiedArrayLikeQueries}`,
-      `choke diagnostics: budget_subagents=${summary.chokeDiagnostics.budgetExhaustedSubagents}, timeout_subagents=${summary.chokeDiagnostics.timeoutSubagents}, source_errors=${summary.chokeDiagnostics.sourceErrors}, blocked_or_thin=${summary.chokeDiagnostics.blockedOrThinSources}`,
-      `fetch health: fetched=${summary.fetchHealth.fetched}, rejected=${summary.fetchHealth.rejected}, methods=${formatCountMap(summary.fetchHealth.fetchedByMethod)}`,
+      `avg lead tool calls: ${summary.averageLeadToolCalls.toFixed(1)} (surveys ${summary.averageSurveys.toFixed(1)})`,
+      `claims: extracted=${summary.claimHealth.extracted}, unsupported=${summary.claimHealth.unsupported}, confirmed=${summary.claimHealth.confirmed}, refuted=${summary.claimHealth.refuted}`,
+      `fetch health: fetched=${summary.fetchHealth.fetched}, rejected=${summary.fetchHealth.rejected}, blocked_or_thin=${summary.fetchHealth.blockedOrThin}, methods=${formatCountMap(summary.fetchHealth.fetchedByMethod)}`,
       `results: ${outPath}`,
     ].join("\n") + "\n",
   );
 }
 
-main().catch((err) => fail(err instanceof Error ? err.message : String(err)));
+const isEntrypoint =
+  Boolean(process.argv[1]) &&
+  resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+if (isEntrypoint) {
+  main().catch((err) => fail(err instanceof Error ? err.message : String(err)));
+}
