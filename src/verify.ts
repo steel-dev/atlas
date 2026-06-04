@@ -385,9 +385,13 @@ function propagateVerdictsToDuplicates(
 ): void {
   const settledById = new Map<string, ResearchClaim>();
   for (const representative of verifiedRepresentatives) {
-    if (representative.status !== "quoted") {
-      settledById.set(representative.id, representative);
+    if (
+      representative.status === "quoted" ||
+      representative.status === "refuted"
+    ) {
+      continue;
     }
+    settledById.set(representative.id, representative);
   }
   if (settledById.size === 0) return;
   for (const claim of ctx.store.claims.claims) {

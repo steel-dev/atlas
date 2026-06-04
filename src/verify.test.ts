@@ -319,6 +319,60 @@ describe("verifyClaims", () => {
     expect(c0.corroboration).toBe(2);
   });
 
+  it("does not propagate a refuted verdict to clustered duplicates", async () => {
+    const calls: ModelStepInput[] = [];
+    const adapter: ModelAdapter & { calls: ModelStepInput[] } = {
+      provider: "anthropic",
+      model: "fake",
+      usage: {
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: 0,
+      },
+      calls,
+      async step(input) {
+        calls.push(input);
+        if (input.outputSchema?.name === "claim_clusters") {
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({ clusters: [{ claimIds: ["c0", "c1"] }] }),
+              },
+            ],
+          };
+        }
+        if (input.outputSchema) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({
+                  refuted: true,
+                  evidence: "refuted",
+                  confidence: "high",
+                }),
+              },
+            ],
+          };
+        }
+        return { content: [{ type: "text", text: "no tools needed" }] };
+      },
+    };
+    const c0 = claim({ id: "c0", sourceId: "source_1", url: "https://a.com" });
+    const c1 = claim({ id: "c1", sourceId: "source_2", url: "https://b.com" });
+    const ctx = makeCtx(adapter, [c0, c1]);
+
+    const summary = await verifyClaims(ctx, "test question");
+
+    expect(c0.status).toBe("refuted");
+    expect(c1.duplicateOf).toBe("c0");
+    expect(c1.status).toBe("quoted");
+    expect(summary.refuted).toBe(1);
+    expect(summary.confirmed).toBe(0);
+  });
+
   it("returns immediately when nothing is verifiable", async () => {
     const adapter = verdictAdapter(() => ({ refuted: false }));
     const ctx = makeCtx(adapter, [claim({ status: "unsupported" })]);
