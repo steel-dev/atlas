@@ -1,5 +1,7 @@
 import type {
   ResearchEvent,
+  ResearchEventListener,
+  ResearchEventType,
   ResearchResult,
   ResearchStream,
 } from "./research.js";
@@ -27,6 +29,11 @@ interface Subscriber {
   predicate: ((event: ResearchEvent) => boolean) | null;
 }
 
+interface ListenerEntry {
+  fn: (event: ResearchEvent) => void;
+  once: boolean;
+}
+
 export interface ResearchStreamController {
   emit(event: ResearchEvent): void;
   resolve(result: ResearchResult): void;
@@ -37,6 +44,7 @@ export interface ResearchStreamController {
 
 export function createResearchStreamController(): ResearchStreamController {
   const subscribers = new Set<Subscriber>();
+  const listeners = new Map<string, Set<ListenerEntry>>();
   const done = createDeferred<ResearchResult>();
   done.promise.catch(() => {});
   let closed = false;
@@ -55,6 +63,41 @@ export function createResearchStreamController(): ResearchStreamController {
         sub.queue.push(event);
       }
     }
+    const entries = listeners.get(event.type);
+    if (entries) {
+      for (const entry of [...entries]) {
+        if (entry.once) entries.delete(entry);
+        try {
+          entry.fn(event);
+        } catch {}
+      }
+    }
+  };
+
+  const addListener = (
+    type: string,
+    fn: (event: ResearchEvent) => void,
+    once: boolean,
+  ): (() => void) => {
+    const existing = listeners.get(type);
+    const set = existing ?? new Set<ListenerEntry>();
+    if (!existing) listeners.set(type, set);
+    const entry: ListenerEntry = { fn, once };
+    set.add(entry);
+    return () => {
+      set.delete(entry);
+    };
+  };
+
+  const removeListener = (
+    type: string,
+    fn: (event: ResearchEvent) => void,
+  ): void => {
+    const set = listeners.get(type);
+    if (!set) return;
+    for (const entry of set) {
+      if (entry.fn === fn) set.delete(entry);
+    }
   };
 
   const close = (): void => {
@@ -68,6 +111,7 @@ export function createResearchStreamController(): ResearchStreamController {
         resolveNext({ value: undefined, done: true });
       }
     }
+    listeners.clear();
   };
 
   const resolve = (result: ResearchResult): void => {
@@ -87,6 +131,7 @@ export function createResearchStreamController(): ResearchStreamController {
         rejectNext(error);
       }
     }
+    listeners.clear();
   };
 
   const subscribe = (
@@ -177,6 +222,32 @@ export function createResearchStreamController(): ResearchStreamController {
     },
     get usage() {
       return done.promise.then((result) => result.usage);
+    },
+    on<K extends ResearchEventType>(
+      type: K,
+      listener: ResearchEventListener<K>,
+    ): () => void {
+      return addListener(
+        type,
+        listener as (event: ResearchEvent) => void,
+        false,
+      );
+    },
+    once<K extends ResearchEventType>(
+      type: K,
+      listener: ResearchEventListener<K>,
+    ): () => void {
+      return addListener(
+        type,
+        listener as (event: ResearchEvent) => void,
+        true,
+      );
+    },
+    off<K extends ResearchEventType>(
+      type: K,
+      listener: ResearchEventListener<K>,
+    ): void {
+      removeListener(type, listener as (event: ResearchEvent) => void);
     },
     abort: controls.abort,
     stop: controls.stop,

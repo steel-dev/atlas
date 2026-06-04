@@ -109,6 +109,16 @@ type LeadResearchEvent =
 
 export type ResearchEvent = ResearchLoopEvent | LeadResearchEvent;
 
+export type ResearchEventType = ResearchEvent["type"];
+
+export type ResearchEventMap = {
+  [E in ResearchEvent as E["type"]]: E;
+};
+
+export type ResearchEventListener<K extends ResearchEventType> = (
+  event: ResearchEventMap[K],
+) => void;
+
 export interface RunOptions {
   timeoutMs?: number;
   tokenLimit?: number;
@@ -142,6 +152,18 @@ export interface ResearchStream {
   readonly citedSources: Promise<CitedSource[]>;
   readonly citationsNotFetched: Promise<string[]>;
   readonly usage: Promise<UsageSummary>;
+  on<K extends ResearchEventType>(
+    type: K,
+    listener: ResearchEventListener<K>,
+  ): () => void;
+  once<K extends ResearchEventType>(
+    type: K,
+    listener: ResearchEventListener<K>,
+  ): () => void;
+  off<K extends ResearchEventType>(
+    type: K,
+    listener: ResearchEventListener<K>,
+  ): void;
   abort(): void;
   stop(): void;
 }

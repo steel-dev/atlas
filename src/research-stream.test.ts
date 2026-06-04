@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createResearchStreamController } from "./research-stream.js";
-import type { ResearchResult } from "./research.js";
+import type { ResearchEventListener, ResearchResult } from "./research.js";
 
 function fakeResult(markdown: string): ResearchResult {
   return {
@@ -162,5 +162,91 @@ describe("research stream controller", () => {
 
     expect(aborted).toBe(1);
     expect(stopped).toBe(1);
+  });
+
+  it("delivers type-filtered events to .on listeners and supports unsubscribe", () => {
+    const controller = createResearchStreamController();
+    const stream = controller.build({ abort: () => {}, stop: () => {} });
+
+    const urls: string[] = [];
+    const unsubscribe = stream.on("fetching", (event) => {
+      urls.push(event.url);
+    });
+
+    controller.emit({ type: "fetching", url: "https://a.com" });
+    controller.emit({ type: "research_started" });
+    controller.emit({ type: "fetching", url: "https://b.com" });
+    unsubscribe();
+    controller.emit({ type: "fetching", url: "https://c.com" });
+
+    expect(urls).toEqual(["https://a.com", "https://b.com"]);
+  });
+
+  it("fires a once listener a single time", () => {
+    const controller = createResearchStreamController();
+    const stream = controller.build({ abort: () => {}, stop: () => {} });
+
+    const texts: string[] = [];
+    stream.once("report_delta", (event) => {
+      texts.push(event.text);
+    });
+
+    controller.emit({ type: "report_delta", text: "a" });
+    controller.emit({ type: "report_delta", text: "b" });
+
+    expect(texts).toEqual(["a"]);
+  });
+
+  it("removes a listener by reference with off", () => {
+    const controller = createResearchStreamController();
+    const stream = controller.build({ abort: () => {}, stop: () => {} });
+
+    const texts: string[] = [];
+    const listener: ResearchEventListener<"report_delta"> = (event) => {
+      texts.push(event.text);
+    };
+    stream.on("report_delta", listener);
+
+    controller.emit({ type: "report_delta", text: "a" });
+    stream.off("report_delta", listener);
+    controller.emit({ type: "report_delta", text: "b" });
+
+    expect(texts).toEqual(["a"]);
+  });
+
+  it("isolates a throwing listener from the rest of the broadcast", () => {
+    const controller = createResearchStreamController();
+    const stream = controller.build({ abort: () => {}, stop: () => {} });
+
+    const seen: string[] = [];
+    stream.on("fetching", () => {
+      throw new Error("listener boom");
+    });
+    stream.on("fetching", (event) => {
+      seen.push(event.url);
+    });
+
+    expect(() =>
+      controller.emit({ type: "fetching", url: "https://a.com" }),
+    ).not.toThrow();
+    expect(seen).toEqual(["https://a.com"]);
+  });
+
+  it("stops delivering to listeners after the run settles", async () => {
+    const controller = createResearchStreamController();
+    const stream = controller.build({ abort: () => {}, stop: () => {} });
+
+    let count = 0;
+    stream.on("fetching", () => {
+      count++;
+    });
+
+    controller.emit({ type: "fetching", url: "https://a.com" });
+    controller.resolve(fakeResult("done"));
+    controller.close();
+    controller.emit({ type: "fetching", url: "https://b.com" });
+
+    await stream.result;
+    expect(count).toBe(1);
   });
 });
