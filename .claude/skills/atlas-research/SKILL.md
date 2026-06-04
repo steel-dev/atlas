@@ -14,10 +14,10 @@ allowed-tools: Bash, Read
 
 Run a deep-research query via this repo's atlas CLI and return the cited markdown report.
 
-Atlas runs a lightweight research loop: the selected model chooses when to search, fetch sources, read fetched
-sources, and stop with a cited Markdown answer. The harness provides web/search/browser tools,
-runtime limits, caching, and progress events; it does not impose a fixed planning, coverage,
-verification, or rewrite pipeline.
+Atlas runs a fixed research lifecycle: it scopes the question into search angles, fetches sources through
+Steel, extracts verbatim-quoted claims, chases gaps with a lead agent, adversarially verifies every claim
+with independent voters, and synthesizes a cited Markdown report from the claims that survive. The harness
+provides web/search/browser tools, runtime limits, caching, and progress events.
 
 ## Step 1 — Get the question
 

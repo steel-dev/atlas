@@ -8,7 +8,7 @@
 npx @steel-dev/atlas "What is deep research?" > report.md
 ```
 
-Ask a messy question. Atlas searches the web, fetches pages through Steel Browser, follows the useful trails, and writes a cited Markdown report.
+Ask a messy question. Atlas scopes it into search angles, fetches pages through Steel Browser, extracts verbatim-quoted claims, chases the gaps, adversarially verifies every claim, and writes a cited Markdown report from the survivors.
 
 ## Quick Start (CLI)
 
@@ -48,7 +48,21 @@ const result = await researcher.research(
 
 console.log(result.markdown);
 console.log(result.citedSources);
+console.log(result.claims.confirmed); // verified claims, with quotes and votes
+console.log(result.stats); // angles, sources, claims extracted/verified, surveys
 ```
+
+## How it works
+
+Every run goes through one fixed lifecycle, so the report rests on verified evidence rather than whatever happened to stay in context:
+
+1. **Scope** — decompose the question into complementary search angles (1 for a narrow lookup, up to 6 for a broad one).
+2. **Recall** — search every angle, dedupe URLs, fetch the top sources, and extract falsifiable claims, each pinned to a verbatim quote that is string-matched against the stored source text.
+3. **Gap-chasing** — a lead agent reads the claim ledger and closes what's missing with `survey` (search + fetch + extract in one call), direct `fetch`, or interactive `browser_*` tools. It never re-derives what the ledger already covers.
+4. **Verify** — each claim faces an independent three-voter adversarial panel (quote fidelity, contradiction search, source strength). Two refutations kill it; too few votes leave it unverified.
+5. **Synthesize** — the report is written only from confirmed claims, each cited to its source URL.
+
+`result.claims` partitions every claim into `confirmed` / `refuted` / `unverified`, and `result.stats` reports the run shape (angles, sources fetched, claims extracted/verified, surveys, re-anchors).
 
 ## Streaming
 
@@ -66,6 +80,8 @@ const run = researcher.stream(
 
 for await (const part of run.fullStream) {
   if (part.type === "fetching") process.stderr.write(`reading ${part.url}\n`);
+  else if (part.type === "claim_verified")
+    process.stderr.write(`${part.status}: ${part.claim}\n`);
   else if (part.type === "report_delta") process.stdout.write(part.text);
 }
 
@@ -74,7 +90,7 @@ const { citedSources } = await run.result;
 
 ## Bring any model
 
-Atlas runs every model through the [Vercel AI SDK](https://ai-sdk.dev), so the research loop stays the same, models call `search` and `fetch`, then Atlas applies runtime limits, source tracking, and citation reconciliation, while you can reach any provider the AI SDK supports. Install the provider package you need (`@ai-sdk/google`, `@ai-sdk/openai`, …).
+Atlas runs every model through the [Vercel AI SDK](https://ai-sdk.dev), so the lifecycle stays the same across providers — recall, gap-chasing, verification, and synthesis — while you reach any provider the AI SDK supports. Install the provider package you need (`@ai-sdk/google`, `@ai-sdk/openai`, …). The lead and the leaf agents (claim extraction, verification voters) can run different models; pass `leafModel` to route the high-volume leaf calls to a cheaper model.
 
 ```ts
 import { Researcher } from "@steel-dev/atlas";
@@ -105,44 +121,6 @@ const researcher = new Researcher({
 
 const result = await researcher.research(
   "What's changing in browser automation for AI agents?",
-);
-```
-
-## Custom tools
-
-Give the model domain-specific tools alongside the built-ins. `researchTool` takes an `inputSchema` (Zod, or any AI SDK schema) and an `execute`; anything you register with `ctx.addSource` becomes a citable source in the report, exactly like a fetched page.
-
-```ts
-import { Researcher, researchTool } from "@steel-dev/atlas";
-import { anthropic } from "@ai-sdk/anthropic";
-import { z } from "zod";
-
-const researcher = new Researcher({
-  model: anthropic("claude-sonnet-4-6"),
-  tools: {
-    pubmedSearch: researchTool({
-      description:
-        "Search PubMed for peer-reviewed studies. Each result becomes a citable source.",
-      inputSchema: z.object({
-        query: z.string(),
-        limit: z.number().default(5),
-      }),
-      execute: async ({ query, limit }, ctx) => {
-        const studies = await pubmed.search(query, {
-          limit,
-          signal: ctx.signal,
-        });
-        for (const s of studies) {
-          ctx.addSource({ url: s.url, title: s.title, content: s.abstract });
-        }
-        return studies.map((s) => `- ${s.title} — ${s.url}`).join("\n");
-      },
-    }),
-  },
-});
-
-const { markdown } = await researcher.research(
-  "Evidence for SGLT2 inhibitors in HFpEF?",
 );
 ```
 
