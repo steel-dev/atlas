@@ -52,18 +52,6 @@ console.log(result.claims.confirmed); // verified claims, with quotes and votes
 console.log(result.stats); // angles, sources, claims extracted/verified, surveys
 ```
 
-## How it works
-
-Every run goes through one fixed lifecycle, so the report rests on verified evidence rather than whatever happened to stay in context:
-
-1. **Scope** — decompose the question into complementary search angles (1 for a narrow lookup, up to 6 for a broad one).
-2. **Recall** — search every angle, dedupe URLs, fetch the top sources, and extract falsifiable claims, each pinned to a verbatim quote that is string-matched against the stored source text.
-3. **Gap-chasing** — a lead agent reads the claim ledger and closes what's missing with `survey` (search + fetch + extract in one call), direct `fetch`, or interactive `browser_*` tools. It never re-derives what the ledger already covers.
-4. **Verify** — each claim faces an independent adversarial panel (quote fidelity, two contradiction searches, source strength). Two refutations kill it; too few votes leave it unverified.
-5. **Synthesize** — write a cited report from the confirmed claims, drawing on the strongest unconfirmed candidates when confirmed evidence is thin; weak or unverified support lowers confidence and surfaces as caveats and open questions rather than being silently dropped.
-
-`result.claims` partitions every claim into `confirmed` / `refuted` / `unverified`, and `result.stats` reports the run shape (angles, sources fetched, claims extracted/verified, surveys, re-anchors).
-
 ## Streaming
 
 `atlas.research()` resolves once, at the end. For a live UI, `atlas.stream()` returns a handle you can iterate while the run is in flight; its promise fields still resolve at the end whether or not you read the stream.
@@ -95,7 +83,9 @@ const run = atlas.stream(
   "What's changing in browser automation for AI agents?",
 );
 
-const off = run.on("fetching", (e) => process.stderr.write(`reading ${e.url}\n`));
+const off = run.on("fetching", (e) =>
+  process.stderr.write(`reading ${e.url}\n`),
+);
 run.on("claim_verified", (e) =>
   process.stderr.write(`${e.status}: ${e.claim}\n`),
 );
@@ -150,10 +140,17 @@ const atlas = new Atlas({
   model: anthropic("claude-sonnet-4-6"),
   tools: {
     pubmedSearch: researchTool({
-      description: "Search PubMed for peer-reviewed studies. Each result becomes a citable source.",
-      inputSchema: z.object({ query: z.string(), limit: z.number().default(5) }),
+      description:
+        "Search PubMed for peer-reviewed studies. Each result becomes a citable source.",
+      inputSchema: z.object({
+        query: z.string(),
+        limit: z.number().default(5),
+      }),
       execute: async ({ query, limit }, ctx) => {
-        const studies = await pubmed.search(query, { limit, signal: ctx.signal });
+        const studies = await pubmed.search(query, {
+          limit,
+          signal: ctx.signal,
+        });
         for (const s of studies) {
           ctx.addSource({ url: s.url, title: s.title, content: s.abstract });
         }
@@ -163,10 +160,10 @@ const atlas = new Atlas({
   },
 });
 
-const { markdown } = await atlas.research("Evidence for SGLT2 inhibitors in HFpEF?");
+const { markdown } = await atlas.research(
+  "Evidence for SGLT2 inhibitors in HFpEF?",
+);
 ```
-
-The tool key (`pubmedSearch`) is the name the model calls. `inputSchema` is a Zod schema or AI SDK `jsonSchema()`. The `ctx` passed to `execute` carries `addSource({ url, title, content })`, an `AbortSignal` as `ctx.signal`, and `ctx.log(message)` for progress.
 
 ## Bring any model
 
