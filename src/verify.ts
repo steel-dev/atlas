@@ -14,6 +14,7 @@ import {
   type ResearchCtx,
 } from "./runtime.js";
 import type { ClaimVote, ResearchClaim } from "./claims.js";
+import { clusterClaims, CLUSTER_WINDOW } from "./cluster.js";
 import { execSearch } from "./search-tool.js";
 import { execReadSource, execSearchSources } from "./evidence-tool.js";
 import { execRunCode } from "./code-tool.js";
@@ -43,6 +44,8 @@ export interface VerifySummary {
   refuted: number;
   unverified: number;
   beyondCap: number;
+  clustersFormed: number;
+  claimsDeduped: number;
 }
 
 const VERDICT_OUTPUT_SCHEMA: ModelOutputSchema = {
@@ -355,20 +358,51 @@ async function verifyOneClaim(
   });
 }
 
+function propagateVerdictsToDuplicates(
+  ctx: ResearchCtx,
+  verifiedRepresentatives: ResearchClaim[],
+): void {
+  const settledById = new Map<string, ResearchClaim>();
+  for (const representative of verifiedRepresentatives) {
+    if (representative.status !== "quoted") {
+      settledById.set(representative.id, representative);
+    }
+  }
+  if (settledById.size === 0) return;
+  for (const claim of ctx.store.claims.claims) {
+    if (!claim.duplicateOf) continue;
+    const representative = settledById.get(claim.duplicateOf);
+    if (!representative) continue;
+    claim.status = representative.status;
+    claim.votes = representative.votes;
+  }
+}
+
 export async function verifyClaims(
   ctx: ResearchCtx,
   question: string,
 ): Promise<VerifySummary> {
   const ranked = rankClaimsForVerification(ctx.store.claims.claims);
   if (ranked.length === 0) {
-    return { verified: 0, confirmed: 0, refuted: 0, unverified: 0, beyondCap: 0 };
+    return {
+      verified: 0,
+      confirmed: 0,
+      refuted: 0,
+      unverified: 0,
+      beyondCap: 0,
+      clustersFormed: 0,
+      claimsDeduped: 0,
+    };
   }
+
+  const cluster = await clusterClaims(ctx, ranked.slice(0, CLUSTER_WINDOW));
+  const representatives = ranked.filter((claim) => !claim.duplicateOf);
 
   const target = Math.max(
     1,
     ctx.config.verifyTargetConfirmed ?? DEFAULT_VERIFY_TARGET,
   );
-  const maxToVerify = Math.min(ranked.length, MAX_VERIFY_CLAIMS);
+  const maxToVerify = Math.min(representatives.length, MAX_VERIFY_CLAIMS);
 
   ctx.scope.emit({ type: "verify_started", claims: maxToVerify });
   const gate = createConcurrencyGate(VERIFY_CONCURRENCY);
@@ -382,7 +416,7 @@ export async function verifyClaims(
     !tokenBudgetExhaustedReason(ctx) &&
     !timeoutSynthesisReason(ctx)
   ) {
-    const wave = ranked.slice(
+    const wave = representatives.slice(
       cursor,
       Math.min(cursor + VERIFY_BATCH_SIZE, maxToVerify),
     );
@@ -395,14 +429,18 @@ export async function verifyClaims(
     confirmed += wave.filter((claim) => claim.status === "confirmed").length;
   }
 
-  const verified = ranked.slice(0, cursor);
+  propagateVerdictsToDuplicates(ctx, representatives.slice(0, cursor));
+
+  const verified = representatives.slice(0, cursor);
   const summary: VerifySummary = {
     verified: verified.length,
     confirmed: verified.filter((claim) => claim.status === "confirmed").length,
     refuted: verified.filter((claim) => claim.status === "refuted").length,
     unverified: verified.filter((claim) => claim.status === "unverified")
       .length,
-    beyondCap: ranked.length - verified.length,
+    beyondCap: representatives.length - verified.length,
+    clustersFormed: cluster.clustersFormed,
+    claimsDeduped: cluster.claimsDeduped,
   };
   ctx.scope.emit({
     type: "verify_finished",

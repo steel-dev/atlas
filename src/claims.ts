@@ -44,6 +44,9 @@ export interface ResearchClaim {
   publishedTime?: string;
   status: ClaimStatus;
   votes: ClaimVote[];
+  duplicateOf?: string;
+  corroboration?: number;
+  corroboratingSources?: string[];
 }
 
 export interface ClaimLedger {

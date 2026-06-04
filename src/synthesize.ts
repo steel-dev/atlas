@@ -20,6 +20,13 @@ export function renderConfirmedClaims(confirmed: ResearchClaim[]): string {
         `Vote: ${voteSplit(claim)} · Source: ${claim.url} (${claim.sourceQuality}` +
         `${claim.publishedTime ? `, published ${claim.publishedTime}` : ""})\n` +
         `Quote: "${claim.quote}"\n` +
+        (claim.corroboration && claim.corroboration > 1
+          ? `Corroborated by ${claim.corroboration} independent sources` +
+            (claim.corroboratingSources && claim.corroboratingSources.length > 0
+              ? `: ${claim.corroboratingSources.join(", ")}`
+              : "") +
+            "\n"
+          : "") +
         (supporting
           ? `Verifier evidence (${supporting.confidence}): ${supporting.evidence}\n`
           : "")
@@ -63,7 +70,7 @@ export function synthesisPrompt(opts: {
     "\n## Instructions\n" +
     "1. Merge claims that say the same thing; combine their sources.\n" +
     "2. Group related claims into coherent findings that directly address the research question.\n" +
-    "3. Weight findings by confidence: unanimous votes on primary sources are strong; split votes or blog-quality sources are weak — say so.\n" +
+    "3. Weight findings by confidence: unanimous votes on primary sources are strong; claims corroborated by multiple independent sources are stronger still; split votes, single-source, or blog-quality claims are weaker — say so.\n" +
     "4. Open with a short executive summary that answers the research question.\n" +
     "5. Note caveats: what is uncertain, which sources were weak, what is time-sensitive.\n" +
     "6. Close with open questions that emerged but were not answered.\n" +

@@ -68,6 +68,8 @@ export interface ResearchStats {
   refuted: number;
   unverified: number;
   beyondVerifyCap: number;
+  clustersFormed: number;
+  claimsDeduped: number;
   recallUrlDupes: number;
   recallBudgetDropped: number;
   leadToolCalls: number;
@@ -260,11 +262,13 @@ async function buildReport(
   verify: VerifySummary,
   gapsNote: string,
 ): Promise<string> {
-  if (claims.confirmed.length === 0) {
+  const confirmed = claims.confirmed.filter((claim) => !claim.duplicateOf);
+  const refuted = claims.refuted.filter((claim) => !claim.duplicateOf);
+  if (confirmed.length === 0) {
     return inconclusiveReport({
       question,
       verify,
-      refuted: claims.refuted,
+      refuted,
       sourcesFetched: ctx.store.fetchedSources.length,
       claimsUnsupported: ctx.store.claims.unsupportedCount,
       gapsNote,
@@ -273,15 +277,15 @@ async function buildReport(
   try {
     const markdown = await synthesizeReport(ctx, {
       question,
-      confirmed: claims.confirmed,
-      refuted: claims.refuted,
+      confirmed,
+      refuted,
       ...(gapsNote ? { gapsNote } : {}),
     });
     if (markdown) return markdown;
   } catch (err) {
     if (ctx.deps.signal?.aborted) throw err;
   }
-  return fallbackReportFromClaims(question, claims.confirmed);
+  return fallbackReportFromClaims(question, confirmed);
 }
 
 function buildStats(
@@ -304,6 +308,8 @@ function buildStats(
     refuted: verify.refuted,
     unverified: verify.unverified,
     beyondVerifyCap: verify.beyondCap,
+    clustersFormed: verify.clustersFormed,
+    claimsDeduped: verify.claimsDeduped,
     recallUrlDupes: recall.urlDupes,
     recallBudgetDropped: recall.budgetDropped,
     leadToolCalls: loop.toolCalls,

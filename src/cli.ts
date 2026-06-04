@@ -196,6 +196,11 @@ function prettyEventBody(e: ResearchEvent): string {
             DIM,
             `      ↳ ${e.count} claim${e.count === 1 ? "" : "s"}${e.unsupported > 0 ? ` (${e.unsupported} unsupported)` : ""}`,
           );
+    case "claims_clustered":
+      return paint(
+        DIM,
+        `  → merged ${e.claimsDeduped} duplicate claim${e.claimsDeduped === 1 ? "" : "s"} into ${e.clustersFormed} cluster${e.clustersFormed === 1 ? "" : "s"}`,
+      );
     case "verify_started":
       return (
         paint(DIM, "  →") +

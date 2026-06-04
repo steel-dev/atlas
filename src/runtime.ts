@@ -339,6 +339,11 @@ export type ResearchLoopEvent =
       unsupported: number;
       error?: string;
     }
+  | {
+      type: "claims_clustered";
+      clustersFormed: number;
+      claimsDeduped: number;
+    }
   | { type: "verify_started"; claims: number }
   | {
       type: "claim_verified";

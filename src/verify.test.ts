@@ -225,6 +225,81 @@ describe("verifyClaims", () => {
     expect(summary.beyondCap).toBeGreaterThan(0);
   });
 
+  it("verifies one representative per cluster and propagates the verdict", async () => {
+    const clusters = [["c0", "c1"]];
+    const calls: ModelStepInput[] = [];
+    const adapter: ModelAdapter & { calls: ModelStepInput[] } = {
+      provider: "anthropic",
+      model: "fake",
+      usage: {
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: 0,
+      },
+      calls,
+      async step(input) {
+        calls.push(input);
+        if (input.outputSchema?.name === "claim_clusters") {
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({
+                  clusters: clusters.map((claimIds) => ({ claimIds })),
+                }),
+              },
+            ],
+          };
+        }
+        if (input.outputSchema) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({
+                  refuted: false,
+                  evidence: "ok",
+                  confidence: "high",
+                }),
+              },
+            ],
+          };
+        }
+        return { content: [{ type: "text", text: "no tools needed" }] };
+      },
+    };
+    const c0 = claim({
+      id: "c0",
+      sourceId: "source_1",
+      url: "https://a.com",
+      sourceQuality: "primary",
+    });
+    const c1 = claim({
+      id: "c1",
+      sourceId: "source_2",
+      url: "https://b.com",
+      sourceQuality: "secondary",
+    });
+    const c2 = claim({
+      id: "c2",
+      sourceId: "source_3",
+      url: "https://c.com",
+      sourceQuality: "primary",
+    });
+    const ctx = makeCtx(adapter, [c0, c1, c2]);
+
+    const summary = await verifyClaims(ctx, "test question");
+
+    expect(summary.clustersFormed).toBe(1);
+    expect(summary.claimsDeduped).toBe(1);
+    expect(summary.verified).toBe(2);
+    expect(summary.confirmed).toBe(2);
+    expect(c1.duplicateOf).toBe("c0");
+    expect(c1.status).toBe("confirmed");
+    expect(c0.corroboration).toBe(2);
+  });
+
   it("returns immediately when nothing is verifiable", async () => {
     const adapter = verdictAdapter(() => ({ refuted: false }));
     const ctx = makeCtx(adapter, [claim({ status: "unsupported" })]);

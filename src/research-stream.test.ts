@@ -19,6 +19,8 @@ function fakeResult(markdown: string): ResearchResult {
       refuted: 0,
       unverified: 0,
       beyondVerifyCap: 0,
+      clustersFormed: 0,
+      claimsDeduped: 0,
       recallUrlDupes: 0,
       recallBudgetDropped: 0,
       leadToolCalls: 0,
