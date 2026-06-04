@@ -15,6 +15,7 @@ import type {
 import type { BrowserSessionPool } from "./browser-session-pool.js";
 import type { BrowserSessionLease } from "./browser-session-pool.js";
 import type { ClaimLedger } from "./claims.js";
+import type { ResolvedCustomTool } from "./custom-tools.js";
 
 export interface ConcurrencyGate {
   run<T>(fn: () => Promise<T>): Promise<T>;
@@ -245,6 +246,7 @@ export interface ResearchCtx {
   deps: ResearchDeps;
   store: SourceStore;
   scope: AgentScope;
+  tools?: ReadonlyMap<string, ResolvedCustomTool>;
 }
 
 function totalUsedTokens(deps: ResearchDeps): number {

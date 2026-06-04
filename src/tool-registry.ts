@@ -4,6 +4,7 @@ import type {
   ModelToolResult,
 } from "./model.js";
 import type { ResearchCtx } from "./runtime.js";
+import { runCustomTool } from "./custom-tools.js";
 import { errorMessage } from "./errors.js";
 import {
   DEFAULT_FETCH_PREVIEW_CHARS,
@@ -442,25 +443,32 @@ export async function executeResearchTool(
   extras: ToolHandlerExtras,
 ): Promise<ToolExecution> {
   const builtin = researchToolByName.get(tu.name);
-  if (!builtin) {
+  const custom = builtin ? undefined : ctx.tools?.get(tu.name);
+  if (!builtin && !custom) {
+    const available = [
+      ...RESEARCH_TOOL_NAMES,
+      ...(ctx.tools ? [...ctx.tools.keys()] : []),
+    ];
     return {
       toolResult: {
         type: "tool_result",
         tool_call_id: tu.id,
-        content: `Unknown tool: ${tu.name}. Available tools: ${RESEARCH_TOOL_NAMES.join(", ")}.`,
+        content: `Unknown tool: ${tu.name}. Available tools: ${available.join(", ")}.`,
         is_error: true,
       },
     };
   }
 
   try {
-    const result = await builtin.handler(tu.input, ctx, extras);
+    const result = builtin
+      ? await builtin.handler(tu.input, ctx, extras)
+      : { content: await runCustomTool(ctx, custom!, tu.input) };
     return {
       toolResult: {
         type: "tool_result",
         tool_call_id: tu.id,
         content: result.content,
-        ...(result.isError ? { is_error: true } : {}),
+        ...("isError" in result && result.isError ? { is_error: true } : {}),
       },
     };
   } catch (err) {

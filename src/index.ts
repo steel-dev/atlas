@@ -1,4 +1,6 @@
 export { Atlas } from "./atlas.js";
+export { researchTool } from "./custom-tools.js";
+export type { ResearchTool, ToolContext } from "./custom-tools.js";
 export { steel } from "./steel.js";
 export type { BrowserProvider, SteelBrowserOptions } from "./steel.js";
 export type { AtlasConfig } from "./atlas.js";

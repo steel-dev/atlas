@@ -16,6 +16,7 @@ import {
   toolSpendsActionBudget,
   type ToolHandlerExtras,
 } from "./tool-registry.js";
+import { customToolDefinitions } from "./custom-tools.js";
 import {
   EMPTY_GAP_NOTE_PROMPT,
   LEAD_SYSTEM_PROMPT,
@@ -146,7 +147,7 @@ export async function runGapLoop(opts: {
   const systemPrompt = ctx.config.instructions
     ? `${LEAD_SYSTEM_PROMPT}\n\n${ctx.config.instructions}`
     : LEAD_SYSTEM_PROMPT;
-  const tools = researchToolDefinitions();
+  const tools = [...researchToolDefinitions(), ...customToolDefinitions(ctx)];
   const maxToolCalls = opts.maxToolCalls;
   const maxTotalToolExecutions = maxToolCalls * 3;
   const extras: ToolHandlerExtras = {

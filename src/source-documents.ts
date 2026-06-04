@@ -158,6 +158,17 @@ export function extractionMetadataFromText(opts: {
   });
 }
 
+export function extractionMetadataFromCustomTool(opts: {
+  markdownChars: number;
+  toolName: string;
+}): SourceExtractionMetadata {
+  return buildExtractionMetadata({
+    markdownChars: opts.markdownChars,
+    method: "custom_tool",
+    leadNote: `Added by the "${opts.toolName}" custom tool.`,
+  });
+}
+
 export function extractionMetadataFromScrape(opts: {
   markdownChars: number;
   contentType?: string;

@@ -26,6 +26,8 @@ import {
 } from "./synthesize.js";
 import { synthesizeStructured } from "./structured.js";
 import type { FieldBasis } from "./structured.js";
+import { resolveCustomTools } from "./custom-tools.js";
+import type { ResearchTool, ResolvedCustomTool } from "./custom-tools.js";
 import type { ResearchClaim } from "./claims.js";
 import { createClaimLedger } from "./claims.js";
 import {
@@ -157,6 +159,7 @@ export interface ResearchOptions extends RunOptions {
   browser?: BrowserProvider;
   search?: SearchProvider;
   instructions?: string;
+  tools?: Record<string, ResearchTool>;
 }
 
 export interface QueryOptions extends RunOptions {
@@ -237,6 +240,7 @@ async function runResearch(
   const runSignal = combineSignals(hardController.signal, opts.timeoutMs);
   const throwIfAborted = () => runSignal?.throwIfAborted();
   const resources = createRunResources(opts, config, runSignal, emit);
+  const customTools = await resolveCustomTools(opts.tools);
 
   try {
     await using leadScope = createAgentScope({
@@ -252,6 +256,7 @@ async function runResearch(
       runSignal,
       stopSignal: softController.signal,
       throwIfAborted,
+      tools: customTools,
     });
 
     ctx.scope.emit({ type: "research_started" });
@@ -490,6 +495,7 @@ function buildResearchCtx(args: {
   runSignal: AbortSignal | undefined;
   stopSignal: AbortSignal | undefined;
   throwIfAborted: () => void;
+  tools: ReadonlyMap<string, ResolvedCustomTool>;
 }): ResearchCtx {
   const { config, resources, leadScope, runSignal, stopSignal, throwIfAborted } =
     args;
@@ -507,6 +513,7 @@ function buildResearchCtx(args: {
     },
     store: createSourceStore(createClaimLedger()),
     scope: leadScope,
+    ...(args.tools.size > 0 ? { tools: args.tools } : {}),
   };
   ctx.deps.searchProvider = resolveSearchProvider(ctx, config.search);
   return ctx;

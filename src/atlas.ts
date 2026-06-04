@@ -2,6 +2,7 @@ import type { FlexibleSchema, InferSchema } from "ai";
 import type { LanguageModel } from "./model.js";
 import type { BrowserProvider } from "./steel.js";
 import type { SearchProvider } from "./search-provider.js";
+import type { ResearchTool } from "./custom-tools.js";
 import {
   startResearchStream,
   type QueryOptions,
@@ -19,6 +20,7 @@ export interface AtlasConfig {
   browser?: BrowserProvider;
   search?: SearchProvider;
   instructions?: string;
+  tools?: Record<string, ResearchTool>;
   defaults?: RunOptions;
 }
 
@@ -101,6 +103,7 @@ export class Atlas {
       ...(config.leafModel ? { leafModel: config.leafModel } : {}),
       ...(config.browser ? { browser: config.browser } : {}),
       ...(config.search ? { search: config.search } : {}),
+      ...(config.tools ? { tools: config.tools } : {}),
       ...config.defaults,
       ...overrides,
       ...(config.instructions ? { instructions: config.instructions } : {}),
