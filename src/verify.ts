@@ -187,16 +187,19 @@ const LENS_INSTRUCTIONS: Record<VerifierLens, string> = {
     "Run 1-2 targeted queries: counterclaims, more recent figures, disputes, corrections. " +
     "refuted=true if any credible result contradicts or heavily qualifies the claim, or shows it is outdated. refuted=false ONLY if you find no credible contradiction.",
   "source-strength":
-    "Is this source strong enough for this claim, and is the claim current? " +
-    "Extraordinary claims need primary sources; marketing copy, press releases, cherry-picked benchmarks, and forum speculation are weak; stale claims about fast-moving topics are suspect. " +
+    "Judge how strong this source is for the claim and whether the claim is current, then express that as confidence — not as a refutation. " +
+    "Primary sources and corroboration are strong; marketing copy, press releases, cherry-picked benchmarks, blogs, and forum speculation are weak; stale claims about fast-moving topics are suspect. " +
     "Use read_source around the quote to judge the page's nature and date. " +
-    "refuted=true if the source quality is insufficient for the claim's strength or the claim is likely stale. refuted=false ONLY if quality and recency match the claim.",
+    "refuted=true ONLY if the source is not real evidence at all — spam, ads, fabrication, or a page that does not actually concern the claim. " +
+    "For a merely weak, thin, or stale source, set refuted=false with confidence=low: weakness lowers confidence, it does not kill the claim.",
 };
 
 const VERIFIER_SYSTEM_PROMPT =
   `You are one adversarial verifier on a ${VOTES_PER_CLAIM}-voter panel judging one claim from a research run. ` +
-  `Be SKEPTICAL: try to REFUTE the claim through your assigned lens. ${REFUTATIONS_REQUIRED} of ${VOTES_PER_CLAIM} refutations kill the claim. ` +
-  "Default to refuted=true if uncertain. Evidence must be specific — quote or cite what you checked.";
+  `Be SKEPTICAL: probe the claim through your assigned lens. ${REFUTATIONS_REQUIRED} of ${VOTES_PER_CLAIM} refutations kill the claim. ` +
+  "Refute only when you find a concrete, nameable problem — a misquote, a credible contradiction, or a source that is not real evidence. " +
+  "Uncertainty alone, or a merely weak source, is not grounds to refute; reflect that through low confidence instead. " +
+  "Evidence must be specific — quote or cite what you checked.";
 
 function voterPrompt(
   question: string,
