@@ -14,6 +14,7 @@ import { runGapLoop } from "./research-loop.js";
 import { runRecall, type RecallOutcome } from "./recall.js";
 import { verifyClaims, type VerifySummary } from "./verify.js";
 import {
+  extractOpenQuestions,
   fallbackReportFromClaims,
   inconclusiveReport,
   synthesizeReport,
@@ -82,6 +83,7 @@ export interface ResearchResult {
   provider: ModelProvider;
   model: string;
   markdown: string;
+  openQuestions: string[];
   claims: ResearchClaims;
   stats: ResearchStats;
   citedSources: CitedSource[];
@@ -225,6 +227,7 @@ async function runResearch(
       provider: config.provider,
       model: config.model,
       markdown,
+      openQuestions: extractOpenQuestions(markdown),
       claims,
       stats: buildStats(ctx, recall, verify, loop),
       citedSources: citations.citedSources,

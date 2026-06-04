@@ -8,6 +8,7 @@ function fakeResult(markdown: string): ResearchResult {
     provider: "anthropic",
     model: "m",
     markdown,
+    openQuestions: [],
     claims: { confirmed: [], refuted: [], unverified: [] },
     stats: {
       angles: 1,

@@ -6,6 +6,7 @@ import {
   MAX_VERIFY_CLAIMS,
 } from "./verify.js";
 import {
+  extractOpenQuestions,
   renderConfirmedClaims,
   renderRefutedClaims,
   synthesisPrompt,
@@ -448,5 +449,27 @@ describe("synthesis rendering", () => {
     expect(prompt).toContain("## Known gaps");
     expect(prompt).toContain("No 2025 figures found.");
     expect(prompt).toContain("Cite every claim inline");
+  });
+
+  it("extracts open questions from the synthesized report section", () => {
+    const markdown = [
+      "# Report",
+      "Some findings with a [cite](https://example.com).",
+      "",
+      "## Open Questions",
+      "- What is the 2025 figure?",
+      "- Does the trend hold outside the US?",
+      "",
+      "## Sources",
+      "- https://example.com",
+    ].join("\n");
+    expect(extractOpenQuestions(markdown)).toEqual([
+      "What is the 2025 figure?",
+      "Does the trend hold outside the US?",
+    ]);
+  });
+
+  it("returns no open questions when the report omits the section", () => {
+    expect(extractOpenQuestions("# Report\nJust findings.")).toEqual([]);
   });
 });

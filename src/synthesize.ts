@@ -164,3 +164,19 @@ export async function synthesizeReport(
     .join("")
     .trim();
 }
+
+export function extractOpenQuestions(markdown: string): string[] {
+  const questions: string[] = [];
+  let inSection = false;
+  for (const line of markdown.split("\n")) {
+    const heading = line.match(/^#{1,6}\s+(.+?)\s*$/);
+    if (heading) {
+      inSection = /open\s+questions?/i.test(heading[1]);
+      continue;
+    }
+    if (!inSection) continue;
+    const item = line.match(/^\s*(?:[-*+]|\d+[.)])\s+(.+?)\s*$/);
+    if (item) questions.push(item[1].trim());
+  }
+  return questions;
+}
