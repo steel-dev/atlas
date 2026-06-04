@@ -37,12 +37,12 @@ npm install @steel-dev/atlas ai @ai-sdk/anthropic
 ## Usage
 
 ```ts
-import { Researcher } from "@steel-dev/atlas";
+import { Atlas } from "@steel-dev/atlas";
 import { anthropic } from "@ai-sdk/anthropic";
 
-const researcher = new Researcher({ model: anthropic("claude-sonnet-4-6") });
+const atlas = new Atlas({ model: anthropic("claude-sonnet-4-6") });
 
-const result = await researcher.research(
+const result = await atlas.research(
   "What's changing in browser automation for AI agents?",
 );
 
@@ -60,21 +60,21 @@ Every run goes through one fixed lifecycle, so the report rests on verified evid
 2. **Recall** — search every angle, dedupe URLs, fetch the top sources, and extract falsifiable claims, each pinned to a verbatim quote that is string-matched against the stored source text.
 3. **Gap-chasing** — a lead agent reads the claim ledger and closes what's missing with `survey` (search + fetch + extract in one call), direct `fetch`, or interactive `browser_*` tools. It never re-derives what the ledger already covers.
 4. **Verify** — each claim faces an independent adversarial panel (quote fidelity, two contradiction searches, source strength). Two refutations kill it; too few votes leave it unverified.
-5. **Synthesize** — the report is written only from confirmed claims, each cited to its source URL.
+5. **Synthesize** — write a cited report from the confirmed claims, drawing on the strongest unconfirmed candidates when confirmed evidence is thin; weak or unverified support lowers confidence and surfaces as caveats and open questions rather than being silently dropped.
 
 `result.claims` partitions every claim into `confirmed` / `refuted` / `unverified`, and `result.stats` reports the run shape (angles, sources fetched, claims extracted/verified, surveys, re-anchors).
 
 ## Streaming
 
-`researcher.research()` resolves once, at the end. For a live UI, `researcher.stream()` returns a handle you can iterate while the run is in flight; its promise fields still resolve at the end whether or not you read the stream.
+`atlas.research()` resolves once, at the end. For a live UI, `atlas.stream()` returns a handle you can iterate while the run is in flight; its promise fields still resolve at the end whether or not you read the stream.
 
 ```ts
-import { Researcher } from "@steel-dev/atlas";
+import { Atlas } from "@steel-dev/atlas";
 import { anthropic } from "@ai-sdk/anthropic";
 
-const researcher = new Researcher({ model: anthropic("claude-sonnet-4-6") });
+const atlas = new Atlas({ model: anthropic("claude-sonnet-4-6") });
 
-const run = researcher.stream(
+const run = atlas.stream(
   "What's changing in browser automation for AI agents?",
 );
 
@@ -88,19 +88,36 @@ for await (const part of run.fullStream) {
 const { citedSources } = await run.result;
 ```
 
+Prefer callbacks to iteration? The same handle is a typed event emitter: `run.on(type, listener)` is keyed by event type — the listener argument is narrowed to that event — returns an unsubscribe function, and `once` / `off` work as expected.
+
+```ts
+const run = atlas.stream(
+  "What's changing in browser automation for AI agents?",
+);
+
+const off = run.on("fetching", (e) => process.stderr.write(`reading ${e.url}\n`));
+run.on("claim_verified", (e) =>
+  process.stderr.write(`${e.status}: ${e.claim}\n`),
+);
+run.on("report_delta", (e) => process.stdout.write(e.text));
+
+const { citedSources } = await run.result;
+off();
+```
+
 ## Bring any model
 
 Atlas runs every model through the [Vercel AI SDK](https://ai-sdk.dev), so the lifecycle stays the same across providers — recall, gap-chasing, verification, and synthesis — while you reach any provider the AI SDK supports. Install the provider package you need (`@ai-sdk/google`, `@ai-sdk/openai`, …). The lead and the leaf agents (claim extraction, verification voters) can run different models; pass `leafModel` to route the high-volume leaf calls to a cheaper model.
 
 ```ts
-import { Researcher } from "@steel-dev/atlas";
+import { Atlas } from "@steel-dev/atlas";
 import { google } from "@ai-sdk/google";
 
-const researcher = new Researcher({
+const atlas = new Atlas({
   model: google("gemini-3-pro"), // or bedrock(...), vertex(...), groq(...), …
 });
 
-const result = await researcher.research(
+const result = await atlas.research(
   "What's changing in browser automation for AI agents?",
 );
 ```
@@ -110,16 +127,16 @@ const result = await researcher.research(
 Atlas fetches every page and, by default, scrapes search-engine results through a browser substrate. Steel reads `STEEL_API_KEY` from the environment, so you can omit `browser: steel()` unless you want to override a knob. Pass `browser` and `search` only to customize behavior or swap the search backend.
 
 ```ts
-import { Researcher, steel, exa } from "@steel-dev/atlas";
+import { Atlas, steel, exa } from "@steel-dev/atlas";
 import { anthropic } from "@ai-sdk/anthropic";
 
-const researcher = new Researcher({
+const atlas = new Atlas({
   model: anthropic("claude-sonnet-4-6"),
   browser: steel({ proxy: true }),
   search: exa(), // bypass the browser for search; omit to scrape SERPs
 });
 
-const result = await researcher.research(
+const result = await atlas.research(
   "What's changing in browser automation for AI agents?",
 );
 ```
