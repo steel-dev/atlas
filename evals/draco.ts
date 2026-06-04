@@ -13,6 +13,7 @@ import {
   type LanguageModel,
   type ModelProvider,
   type ResearchResult,
+  type VerifierPanelMode,
 } from "../src/research.js";
 import { Researcher } from "../src/researcher.js";
 import { steel } from "../src/steel.js";
@@ -80,6 +81,7 @@ export interface EvalOptions {
   regrade?: string;
   useProxy: boolean;
   dryRun: boolean;
+  verifierPanel?: VerifierPanelMode;
 }
 
 interface JudgeSpec {
@@ -379,6 +381,7 @@ Options:
       --out <file>            Write manifest/results/summary JSONL
       --timeout N             Per-task research timeout in seconds (default: ${DEFAULT_TIMEOUT_MS / 1000}; 0 = unlimited, like DRACO)
       --token-limit N         Total token budget per task (0 = unlimited)
+      --verifier-panel MODE   lens | clone (default: lens — distinct verifier lenses; clone = identical contradiction refuters)
       --provider NAME         Research model provider: anthropic, openai
       --model NAME            Research model name
       --grader MODE           per-criterion | one-shot (default: per-criterion)
@@ -463,6 +466,11 @@ function readStratify(raw: string): "domain" | "none" {
   fail(`--stratify must be one of: domain, none (got "${raw}")`);
 }
 
+function readVerifierPanel(raw: string): VerifierPanelMode {
+  if (raw === "lens" || raw === "clone") return raw;
+  fail(`--verifier-panel must be one of: lens, clone (got "${raw}")`);
+}
+
 function parseArgs(argv: string[]): EvalOptions {
   const caseIds = new Set<string>();
   const domains = new Set<string>();
@@ -537,6 +545,11 @@ function parseArgs(argv: string[]): EvalOptions {
     }
     if (arg === "--token-limit") {
       opts.tokenLimit = readNonNegativeInt(readValue(argv, i, arg), arg);
+      i++;
+      continue;
+    }
+    if (arg === "--verifier-panel") {
+      opts.verifierPanel = readVerifierPanel(readValue(argv, i, arg));
       i++;
       continue;
     }
@@ -1147,6 +1160,7 @@ async function runResearch(
         timeoutMs: opts.timeoutMs,
         tokenLimit: opts.tokenLimit,
         includeSourceDocuments: true,
+        ...(opts.verifierPanel ? { verifierPanel: opts.verifierPanel } : {}),
         exploreProviderOptions: {
           anthropic: { thinking: { type: "adaptive" }, effort: "max" },
           openai: { reasoningEffort: "high" },
@@ -1622,6 +1636,7 @@ async function main(): Promise<void> {
     judge: { provider: judge.provider, model: judge.modelId },
     timeoutMs: opts.timeoutMs ?? null,
     tokenLimit: opts.tokenLimit ?? null,
+    verifierPanel: opts.verifierPanel ?? "lens",
     cases: selected.map((entry) => ({
       id: entry.id,
       domain: entry.domain,

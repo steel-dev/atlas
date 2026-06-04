@@ -22,6 +22,7 @@ export type {
   RunOptions,
   SourceDocument,
   UsageSummary,
+  VerifierPanelMode,
 } from "./research.js";
 export { exa, brave } from "./search-provider.js";
 export type {

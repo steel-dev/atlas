@@ -71,7 +71,11 @@ function verdictAdapter(
 function makeCtx(
   adapter: ModelAdapter,
   claims: ResearchClaim[],
-  opts: { tokenLimit?: number; verifyTargetConfirmed?: number } = {},
+  opts: {
+    tokenLimit?: number;
+    verifyTargetConfirmed?: number;
+    verifierPanel?: "lens" | "clone";
+  } = {},
 ): ResearchCtx & { events: Array<Record<string, unknown>> } {
   const events: Array<Record<string, unknown>> = [];
   return {
@@ -81,6 +85,9 @@ function makeCtx(
       ...(opts.tokenLimit !== undefined ? { tokenLimit: opts.tokenLimit } : {}),
       ...(opts.verifyTargetConfirmed !== undefined
         ? { verifyTargetConfirmed: opts.verifyTargetConfirmed }
+        : {}),
+      ...(opts.verifierPanel !== undefined
+        ? { verifierPanel: opts.verifierPanel }
         : {}),
     },
     deps: {
@@ -199,6 +206,25 @@ describe("verifyClaims", () => {
     expect(target.votes.some((vote) => vote.lens === "contradiction")).toBe(
       false,
     );
+  });
+
+  it("seats an all-contradiction panel when verifierPanel is clone", async () => {
+    const adapter = verdictAdapter(() => ({ refuted: false }));
+    const target = claim();
+    const ctx = makeCtx(adapter, [target], { verifierPanel: "clone" });
+
+    const summary = await verifyClaims(ctx, "test question");
+
+    expect(target.votes).toHaveLength(4);
+    expect(target.votes.every((vote) => vote.lens === "contradiction")).toBe(
+      true,
+    );
+    expect(target.status).toBe("confirmed");
+    expect(summary.confirmed).toBe(1);
+    const prompts = JSON.stringify(adapter.calls);
+    expect(prompts).toContain("Your lens: contradiction");
+    expect(prompts).not.toContain("Your lens: quote-fidelity");
+    expect(prompts).not.toContain("Your lens: source-strength");
   });
 
   it("stops verifying once the confirmed target is met", async () => {

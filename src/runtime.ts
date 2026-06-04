@@ -179,6 +179,7 @@ export interface ResearchConfig {
   readonly useProxy: boolean;
   readonly sourceCap: number;
   readonly verifyTargetConfirmed?: number;
+  readonly verifierPanel?: "lens" | "clone";
   readonly maxOutputTokens?: number;
   readonly defaultSearchLimit?: number;
   readonly maxConcurrentTools?: number;

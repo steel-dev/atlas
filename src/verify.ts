@@ -53,6 +53,17 @@ const VERIFIER_PANEL: readonly VerifierSeat[] = [
 
 export const VOTES_PER_CLAIM = VERIFIER_PANEL.length;
 
+export type VerifierPanelMode = "lens" | "clone";
+
+const CLONE_PANEL: readonly VerifierSeat[] = Array.from(
+  { length: VERIFIER_PANEL.length },
+  (): VerifierSeat => ({ lens: "contradiction" }),
+);
+
+function panelFor(mode: VerifierPanelMode | undefined): readonly VerifierSeat[] {
+  return mode === "clone" ? CLONE_PANEL : VERIFIER_PANEL;
+}
+
 export interface VerifySummary {
   verified: number;
   confirmed: number;
@@ -356,10 +367,11 @@ async function verifyOneClaim(
   claim: ResearchClaim,
   gate: ConcurrencyGate,
   searchIndexRef: { next: number },
+  panel: readonly VerifierSeat[],
 ): Promise<void> {
   const votes = (
     await Promise.all(
-      VERIFIER_PANEL.map((seat) =>
+      panel.map((seat) =>
         gate
           .run(() => castVote(ctx, question, claim, seat, searchIndexRef))
           .catch((err: unknown) => {
@@ -432,6 +444,7 @@ export async function verifyClaims(
   ctx.scope.emit({ type: "verify_started", claims: maxToVerify });
   const gate = createConcurrencyGate(VERIFY_CONCURRENCY);
   const searchIndexRef = { next: 0 };
+  const panel = panelFor(ctx.config.verifierPanel);
 
   let cursor = 0;
   let confirmed = 0;
@@ -448,7 +461,7 @@ export async function verifyClaims(
     cursor += wave.length;
     await Promise.all(
       wave.map((claim) =>
-        verifyOneClaim(ctx, question, claim, gate, searchIndexRef),
+        verifyOneClaim(ctx, question, claim, gate, searchIndexRef, panel),
       ),
     );
     confirmed += wave.filter((claim) => claim.status === "confirmed").length;

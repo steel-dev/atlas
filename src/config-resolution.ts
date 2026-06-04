@@ -107,6 +107,7 @@ export function resolveRunConfig(opts: RunInput): ResolvedRunConfig {
     defaultSearchLimit: limits.defaultSearchLimit,
     maxConcurrentTools: limits.maxConcurrentTools,
     tokenLimit,
+    verifierPanel: resolveVerifierPanel(opts.verifierPanel),
     exploreProviderOptions: opts.exploreProviderOptions,
     finalizeProviderOptions: opts.finalizeProviderOptions,
     instructions: opts.instructions,
@@ -205,6 +206,13 @@ export function createRunResources(
     idleTtlMs: config.browserIdleTtlMs,
   });
   return { modelAdapter, leafAdapter, steel, browserSessionPool };
+}
+
+function resolveVerifierPanel(
+  explicit: "lens" | "clone" | undefined,
+): "lens" | "clone" | undefined {
+  const raw = explicit ?? readEnv("ATLAS_VERIFIER_PANEL");
+  return raw === "lens" || raw === "clone" ? raw : undefined;
 }
 
 function readIntEnv(name: string, min: number): number | undefined {

@@ -12,7 +12,11 @@ import {
 import type { BrowserProvider } from "./steel.js";
 import { runGapLoop } from "./research-loop.js";
 import { runRecall, type RecallOutcome } from "./recall.js";
-import { verifyClaims, type VerifySummary } from "./verify.js";
+import {
+  verifyClaims,
+  type VerifierPanelMode,
+  type VerifySummary,
+} from "./verify.js";
 import {
   extractOpenQuestions,
   fallbackReportFromClaims,
@@ -44,6 +48,7 @@ export type {
   UsageSummary,
 } from "./model.js";
 export type { FetchedSource, SourceDocument, CitedSource } from "./sources.js";
+export type { VerifierPanelMode } from "./verify.js";
 export type {
   ClaimConfidence,
   ClaimImportance,
@@ -109,6 +114,7 @@ export interface RunOptions {
   exploreProviderOptions?: ProviderOptions;
   finalizeProviderOptions?: ProviderOptions;
   includeSourceDocuments?: boolean;
+  verifierPanel?: VerifierPanelMode;
 }
 
 export interface ResearchOptions extends RunOptions {
