@@ -105,6 +105,38 @@ const { citedSources } = await run.result;
 off();
 ```
 
+## Structured output
+
+Pass an `outputSchema` to get typed data alongside the Markdown report. The schema is a [Zod](https://zod.dev) schema or an AI SDK `jsonSchema()` — anything the AI SDK accepts. `result.data` is the typed object, filled from the verified claims; `result.basis` maps each field path to the source citations (with the exact quote excerpt) and reasoning that back it, so every cell is auditable. Fields no claim supports are flagged transparently rather than invented.
+
+```ts
+import { Atlas } from "@steel-dev/atlas";
+import { anthropic } from "@ai-sdk/anthropic";
+import { z } from "zod";
+
+const atlas = new Atlas({ model: anthropic("claude-sonnet-4-6") });
+
+const result = await atlas.research({
+  query: "Compare the top deep-research frameworks on license and language.",
+  outputSchema: z.object({
+    frameworks: z.array(
+      z.object({
+        name: z.string(),
+        license: z.string(),
+        language: z.string(),
+      }),
+    ),
+  }),
+});
+
+result.data.frameworks.forEach((f) => console.log(f.name, f.license));
+
+// every field is grounded — basis is keyed by field path:
+console.log(result.basis["frameworks.0.license"].citations);
+```
+
+The Markdown report is still produced, so `result.markdown` and `result.citedSources` are there too.
+
 ## Bring any model
 
 Atlas runs every model through the [Vercel AI SDK](https://ai-sdk.dev), so the lifecycle stays the same across providers — recall, gap-chasing, verification, and synthesis — while you reach any provider the AI SDK supports. Install the provider package you need (`@ai-sdk/google`, `@ai-sdk/openai`, …). The lead and the leaf agents (claim extraction, verification voters) can run different models; pass `leafModel` to route the high-volume leaf calls to a cheaper model.
