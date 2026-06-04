@@ -292,7 +292,12 @@ async function runResearch(
     const citations = reconcileCitations(
       markdown,
       ctx.store.fetchedSources,
-      [...claims.confirmed, ...candidates],
+      [
+        ...ctx.store.claims.claims.filter(
+          (claim) => claim.status === "confirmed",
+        ),
+        ...candidates,
+      ],
     );
     if (citations.citationsNotFetched.length > 0) {
       emit({
@@ -311,7 +316,7 @@ async function runResearch(
       structured = await synthesizeStructured(ctx, {
         question: opts.query,
         schema: opts.outputSchema,
-        confirmed: claims.confirmed.filter((claim) => !claim.duplicateOf),
+        confirmed: claims.confirmed,
         candidates,
       });
     }
@@ -355,11 +360,13 @@ async function runResearch(
 }
 
 function partitionClaims(ctx: ResearchCtx): ResearchClaims {
-  const all = ctx.store.claims.claims;
+  const representatives = ctx.store.claims.claims.filter(
+    (claim) => !claim.duplicateOf,
+  );
   return {
-    confirmed: all.filter((claim) => claim.status === "confirmed"),
-    refuted: all.filter((claim) => claim.status === "refuted"),
-    unverified: all.filter(
+    confirmed: representatives.filter((claim) => claim.status === "confirmed"),
+    refuted: representatives.filter((claim) => claim.status === "refuted"),
+    unverified: representatives.filter(
       (claim) => claim.status === "unverified" || claim.status === "quoted",
     ),
   };
@@ -387,7 +394,6 @@ const MAX_REPORT_CANDIDATES = 15;
 
 function selectCandidates(unverified: ResearchClaim[]): ResearchClaim[] {
   return unverified
-    .filter((claim) => !claim.duplicateOf)
     .slice()
     .sort(
       (a, b) =>
@@ -407,8 +413,7 @@ async function buildReport(
   verify: VerifySummary,
   gapsNote: string,
 ): Promise<BuiltReport> {
-  const confirmed = claims.confirmed.filter((claim) => !claim.duplicateOf);
-  const refuted = claims.refuted.filter((claim) => !claim.duplicateOf);
+  const { confirmed, refuted } = claims;
   const inconclusive = (): BuiltReport => ({
     markdown: inconclusiveReport({
       question,
@@ -608,4 +613,5 @@ function combineSignals(
 
 export const __testing = {
   reconcileCitations,
+  partitionClaims,
 };

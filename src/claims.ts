@@ -145,13 +145,18 @@ export function normalizeForQuoteMatch(text: string): string {
     .trim();
 }
 
+function quoteSupportedIn(normalizedSource: string, quote: string): boolean {
+  const normalizedQuote = normalizeForQuoteMatch(quote);
+  return (
+    normalizedQuote.length > 0 && normalizedSource.includes(normalizedQuote)
+  );
+}
+
 export function quoteAppearsInSource(
   quote: string,
   sourceText: string,
 ): boolean {
-  const normalizedQuote = normalizeForQuoteMatch(quote);
-  if (!normalizedQuote) return false;
-  return normalizeForQuoteMatch(sourceText).includes(normalizedQuote);
+  return quoteSupportedIn(normalizeForQuoteMatch(sourceText), quote);
 }
 
 interface RawExtractedClaim {
@@ -226,9 +231,7 @@ async function extractClaims(
     const text = typeof raw.claim === "string" ? raw.claim.trim() : "";
     const quote = typeof raw.quote === "string" ? raw.quote.trim() : "";
     if (!text) continue;
-    const normalizedQuote = normalizeForQuoteMatch(quote);
-    const supported =
-      normalizedQuote.length > 0 && normalizedSource.includes(normalizedQuote);
+    const supported = quoteSupportedIn(normalizedSource, quote);
     if (!supported) {
       unsupported++;
       continue;

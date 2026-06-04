@@ -4,6 +4,30 @@ import { resolveRunConfig } from "./config-resolution.js";
 import { steel } from "./steel.js";
 import type { SearchProvider } from "./search-provider.js";
 import { type LanguageModel } from "./model.js";
+import type { ClaimStatus, ResearchClaim } from "./claims.js";
+
+function makeClaim(
+  overrides: Partial<ResearchClaim> & { id: string; status: ClaimStatus },
+): ResearchClaim {
+  return {
+    text: `text ${overrides.id}`,
+    quote: "quote",
+    importance: "central",
+    sourceQuality: "primary",
+    sourceId: "source_1",
+    url: "https://example.com",
+    title: "Title",
+    votes: [],
+    ...overrides,
+  };
+}
+
+function partition(claims: ResearchClaim[]) {
+  const ctx = { store: { claims: { claims } } } as unknown as Parameters<
+    typeof __testing.partitionClaims
+  >[0];
+  return __testing.partitionClaims(ctx);
+}
 
 function fakeLanguageModel(
   provider = "anthropic",
@@ -111,6 +135,30 @@ describe("research source citations", () => {
       "https://example.com/unconfirmed",
     ]);
     expect(citations.citationsNotFetched).toEqual([]);
+  });
+});
+
+describe("partitionClaims", () => {
+  it("keeps one entry per fact, dropping clustered duplicates", () => {
+    const claims = partition([
+      makeClaim({ id: "claim_1", status: "confirmed" }),
+      makeClaim({ id: "claim_2", status: "confirmed", duplicateOf: "claim_1" }),
+      makeClaim({ id: "claim_3", status: "unverified" }),
+      makeClaim({ id: "claim_4", status: "quoted", duplicateOf: "claim_3" }),
+    ]);
+
+    expect(claims.confirmed.map((claim) => claim.id)).toEqual(["claim_1"]);
+    expect(claims.unverified.map((claim) => claim.id)).toEqual(["claim_3"]);
+  });
+
+  it("excludes duplicates of a refuted representative instead of leaking them as unverified", () => {
+    const claims = partition([
+      makeClaim({ id: "claim_1", status: "refuted" }),
+      makeClaim({ id: "claim_2", status: "quoted", duplicateOf: "claim_1" }),
+    ]);
+
+    expect(claims.refuted.map((claim) => claim.id)).toEqual(["claim_1"]);
+    expect(claims.unverified).toEqual([]);
   });
 });
 
