@@ -143,13 +143,13 @@ describe("verifyClaims", () => {
 
     expect(summary).toMatchObject({ verified: 1, confirmed: 1, refuted: 0 });
     expect(target.status).toBe("confirmed");
-    expect(target.votes).toHaveLength(3);
-    expect(voteSplit(target)).toBe("2-1");
+    expect(target.votes).toHaveLength(4);
+    expect(voteSplit(target)).toBe("3-1");
     expect(ctx.events).toContainEqual(
       expect.objectContaining({
         type: "claim_verified",
         status: "confirmed",
-        vote: "2-1",
+        vote: "3-1",
       }),
     );
   });

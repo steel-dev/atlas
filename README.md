@@ -59,7 +59,7 @@ Every run goes through one fixed lifecycle, so the report rests on verified evid
 1. **Scope** — decompose the question into complementary search angles (1 for a narrow lookup, up to 6 for a broad one).
 2. **Recall** — search every angle, dedupe URLs, fetch the top sources, and extract falsifiable claims, each pinned to a verbatim quote that is string-matched against the stored source text.
 3. **Gap-chasing** — a lead agent reads the claim ledger and closes what's missing with `survey` (search + fetch + extract in one call), direct `fetch`, or interactive `browser_*` tools. It never re-derives what the ledger already covers.
-4. **Verify** — each claim faces an independent three-voter adversarial panel (quote fidelity, contradiction search, source strength). Two refutations kill it; too few votes leave it unverified.
+4. **Verify** — each claim faces an independent adversarial panel (quote fidelity, two contradiction searches, source strength). Two refutations kill it; too few votes leave it unverified.
 5. **Synthesize** — the report is written only from confirmed claims, each cited to its source URL.
 
 `result.claims` partitions every claim into `confirmed` / `refuted` / `unverified`, and `result.stats` reports the run shape (angles, sources fetched, claims extracted/verified, surveys, re-anchors).

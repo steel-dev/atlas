@@ -20,7 +20,6 @@ import { execReadSource, execSearchSources } from "./evidence-tool.js";
 import { execRunCode } from "./code-tool.js";
 import { errorMessage } from "./errors.js";
 
-export const VOTES_PER_CLAIM = 3;
 export const REFUTATIONS_REQUIRED = 2;
 export const MAX_VERIFY_CLAIMS = 120;
 const VERIFY_BATCH_SIZE = 16;
@@ -32,11 +31,27 @@ const VERIFY_CONCURRENCY = 8;
 
 export type VerifierLens = "quote-fidelity" | "contradiction" | "source-strength";
 
-export const VERIFIER_LENSES: readonly VerifierLens[] = [
-  "quote-fidelity",
-  "contradiction",
-  "source-strength",
+interface VerifierSeat {
+  lens: VerifierLens;
+  focus?: string;
+}
+
+const VERIFIER_PANEL: readonly VerifierSeat[] = [
+  { lens: "quote-fidelity" },
+  {
+    lens: "contradiction",
+    focus:
+      "Bias your queries toward more recent figures, corrections, retractions, or disputes that postdate the claim.",
+  },
+  {
+    lens: "contradiction",
+    focus:
+      "Bias your queries toward primary sources or authorities that assert a different value, outcome, or conclusion.",
+  },
+  { lens: "source-strength" },
 ];
+
+export const VOTES_PER_CLAIM = VERIFIER_PANEL.length;
 
 export interface VerifySummary {
   verified: number;
@@ -175,7 +190,7 @@ const VERIFIER_SYSTEM_PROMPT =
 function voterPrompt(
   question: string,
   claim: ResearchClaim,
-  lens: VerifierLens,
+  seat: VerifierSeat,
 ): string {
   return (
     "## Claim under review\n" +
@@ -183,8 +198,9 @@ function voterPrompt(
     `Source: ${claim.url} (${claim.sourceQuality}, published ${claim.publishedTime ?? "unknown"}) · source_id ${claim.sourceId}\n` +
     `Supporting quote (mechanically verified to appear verbatim in the stored source text):\n"${claim.quote}"\n\n` +
     `Research question: "${question}"\n\n` +
-    `## Your lens: ${lens}\n` +
-    LENS_INSTRUCTIONS[lens] +
+    `## Your lens: ${seat.lens}\n` +
+    LENS_INSTRUCTIONS[seat.lens] +
+    (seat.focus ? "\n" + seat.focus : "") +
     "\n\n" +
     `You may use at most ${MAX_VOTER_TOOL_TURNS} tool turns before returning your verdict. Structured output only.`
   );
@@ -262,13 +278,13 @@ async function castVote(
   ctx: ResearchCtx,
   question: string,
   claim: ResearchClaim,
-  lens: VerifierLens,
+  seat: VerifierSeat,
   searchIndexRef: { next: number },
 ): Promise<ClaimVote | null> {
   const model = ctx.deps.leafModel ?? ctx.deps.model;
-  const tools = LENS_TOOLS[lens];
+  const tools = LENS_TOOLS[seat.lens];
   const messages: ModelMessage[] = [
-    { role: "user", content: voterPrompt(question, claim, lens) },
+    { role: "user", content: voterPrompt(question, claim, seat) },
   ];
 
   for (let turn = 0; turn < MAX_VOTER_TOOL_TURNS; turn++) {
@@ -309,7 +325,7 @@ async function castVote(
     signal: ctx.deps.signal,
   });
   const vote = parseVerdict(verdictResult.content);
-  return vote ? { ...vote, lens } : null;
+  return vote ? { ...vote, lens: seat.lens } : null;
 }
 
 function settleClaim(claim: ResearchClaim, votes: ClaimVote[]): void {
@@ -338,9 +354,9 @@ async function verifyOneClaim(
 ): Promise<void> {
   const votes = (
     await Promise.all(
-      VERIFIER_LENSES.map((lens) =>
+      VERIFIER_PANEL.map((seat) =>
         gate
-          .run(() => castVote(ctx, question, claim, lens, searchIndexRef))
+          .run(() => castVote(ctx, question, claim, seat, searchIndexRef))
           .catch((err: unknown) => {
             if (ctx.deps.signal?.aborted) throw err;
             return null;
