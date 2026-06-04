@@ -73,6 +73,8 @@ export interface ResearchStats {
   claimsDeduped: number;
   recallUrlDupes: number;
   recallBudgetDropped: number;
+  recallSpamDropped: number;
+  recallLowRelevanceDropped: number;
   leadToolCalls: number;
   surveys: number;
   reanchors: number;
@@ -321,6 +323,8 @@ function buildStats(
     claimsDeduped: verify.claimsDeduped,
     recallUrlDupes: recall.urlDupes,
     recallBudgetDropped: recall.budgetDropped,
+    recallSpamDropped: recall.spamDropped,
+    recallLowRelevanceDropped: recall.lowRelevanceDropped,
     leadToolCalls: loop.toolCalls,
     surveys: loop.surveys,
     reanchors: loop.reanchors,

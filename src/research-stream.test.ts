@@ -24,6 +24,8 @@ function fakeResult(markdown: string): ResearchResult {
       claimsDeduped: 0,
       recallUrlDupes: 0,
       recallBudgetDropped: 0,
+      recallSpamDropped: 0,
+      recallLowRelevanceDropped: 0,
       leadToolCalls: 0,
       surveys: 0,
       reanchors: 0,

@@ -1,9 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  applyRelevanceSelection,
   runRecall,
   runSurvey,
   scopeQuestion,
   selectNovelUrls,
+  selectSourcesToFetch,
   RECALL_MAX_FETCH,
 } from "./recall.js";
 import { execFetch } from "./fetch-tool.js";
@@ -206,6 +208,99 @@ describe("selectNovelUrls", () => {
     const selection = selectNovelUrls(ctx, [results], 5);
     expect(selection.urls).toHaveLength(5);
     expect(selection.budgetDropped).toBe(3);
+  });
+});
+
+describe("applyRelevanceSelection", () => {
+  const results = (count: number) =>
+    Array.from({ length: count }, (_, index) =>
+      searchResult(`https://a.com/${index}`, index + 1),
+    );
+
+  it("falls back to a rank-order cap when there are no verdicts", () => {
+    const selection = applyRelevanceSelection(results(8), null, 5);
+    expect(selection.urls).toHaveLength(5);
+    expect(selection.budgetDropped).toBe(3);
+    expect(selection.spamDropped).toBe(0);
+    expect(selection.lowRelevanceDropped).toBe(0);
+  });
+
+  it("drops spam but keeps low-relevance results while budget remains", () => {
+    const verdicts = new Map([
+      [0, { relevance: "high" as const, spam: false }],
+      [1, { relevance: "medium" as const, spam: true }],
+      [2, { relevance: "low" as const, spam: false }],
+    ]);
+    const selection = applyRelevanceSelection(results(3), verdicts, 5);
+    expect(selection.urls).toEqual(["https://a.com/0", "https://a.com/2"]);
+    expect(selection.spamDropped).toBe(1);
+    expect(selection.budgetDropped).toBe(0);
+    expect(selection.lowRelevanceDropped).toBe(0);
+  });
+
+  it("prioritizes by relevance tier and drops the lowest overflow when over budget", () => {
+    const verdicts = new Map([
+      [0, { relevance: "low" as const, spam: false }],
+      [1, { relevance: "high" as const, spam: false }],
+      [2, { relevance: "medium" as const, spam: false }],
+      [3, { relevance: "low" as const, spam: false }],
+    ]);
+    const selection = applyRelevanceSelection(results(4), verdicts, 2);
+    expect(selection.urls).toEqual(["https://a.com/1", "https://a.com/2"]);
+    expect(selection.budgetDropped).toBe(2);
+    expect(selection.lowRelevanceDropped).toBe(2);
+  });
+
+  it("distrusts a panel that flags every candidate as spam", () => {
+    const verdicts = new Map([
+      [0, { relevance: "medium" as const, spam: true }],
+      [1, { relevance: "medium" as const, spam: true }],
+    ]);
+    const selection = applyRelevanceSelection(results(2), verdicts, 5);
+    expect(selection.urls).toHaveLength(2);
+    expect(selection.spamDropped).toBe(0);
+  });
+});
+
+describe("selectSourcesToFetch", () => {
+  it("drops spam flagged by the triage gate before fetching", async () => {
+    const adapter = fakeAdapter(() => ({
+      verdicts: [
+        { index: 0, relevance: "high", spam: false },
+        { index: 1, relevance: "medium", spam: true },
+      ],
+    }));
+    const ctx = makeCtx({ adapter });
+    const selection = await selectSourcesToFetch(
+      ctx,
+      "target",
+      [
+        [
+          searchResult("https://good.com/1", 1),
+          searchResult("https://spam.com/2", 2),
+        ],
+      ],
+      5,
+    );
+    expect(selection.urls).toEqual(["https://good.com/1"]);
+    expect(selection.spamDropped).toBe(1);
+  });
+
+  it("falls back to rank order when the gate returns unusable output", async () => {
+    const ctx = makeCtx({ adapter: fakeAdapter(() => ({ nope: true })) });
+    const selection = await selectSourcesToFetch(
+      ctx,
+      "target",
+      [
+        [
+          searchResult("https://a.com/1", 1),
+          searchResult("https://a.com/2", 2),
+        ],
+      ],
+      5,
+    );
+    expect(selection.urls).toEqual(["https://a.com/1", "https://a.com/2"]);
+    expect(selection.spamDropped).toBe(0);
   });
 });
 

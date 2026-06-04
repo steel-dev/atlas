@@ -1,5 +1,5 @@
 import type { ModelOutputSchema } from "./model.js";
-import type { ResearchCtx } from "./runtime.js";
+import { tokenBudgetExhaustedReason, type ResearchCtx } from "./runtime.js";
 import type { ResearchClaim } from "./claims.js";
 import { runSearchQueries, type MergedSearchResult } from "./search-tool.js";
 import { execFetch } from "./fetch-tool.js";
@@ -10,6 +10,8 @@ export const SURVEY_MAX_FETCH = 5;
 const RESULTS_PER_QUERY = 6;
 const FETCH_BATCH_SIZE = 12;
 const SCOPE_MAX_TOKENS = 1_500;
+const TRIAGE_MAX_TOKENS = 1_500;
+const TRIAGE_SNIPPET_CHARS = 200;
 
 export interface ResearchAngle {
   label: string;
@@ -23,6 +25,8 @@ export interface RecallOutcome {
   sourcesFetched: number;
   urlDupes: number;
   budgetDropped: number;
+  spamDropped: number;
+  lowRelevanceDropped: number;
   claimsExtracted: number;
   searchQueriesRun: number;
 }
@@ -33,6 +37,8 @@ export interface SurveyOutcome {
   sourcesFetched: number;
   urlDupes: number;
   budgetDropped: number;
+  spamDropped: number;
+  lowRelevanceDropped: number;
   newClaims: ResearchClaim[];
 }
 
@@ -148,21 +154,126 @@ export async function scopeQuestion(
   }
 }
 
-interface NovelSelection {
+export interface NovelSelection {
   urls: string[];
   urlDupes: number;
   budgetDropped: number;
+  spamDropped: number;
+  lowRelevanceDropped: number;
 }
 
-export function selectNovelUrls(
+type TriageRelevance = "high" | "medium" | "low";
+
+interface TriageVerdict {
+  relevance: TriageRelevance;
+  spam: boolean;
+}
+
+const TRIAGE_TIER: Record<TriageRelevance, number> = {
+  high: 0,
+  medium: 1,
+  low: 2,
+};
+
+const TRIAGE_OUTPUT_SCHEMA: ModelOutputSchema = {
+  name: "search_triage",
+  schema: {
+    type: "object",
+    required: ["verdicts"],
+    properties: {
+      verdicts: {
+        type: "array",
+        items: {
+          type: "object",
+          required: ["index", "relevance", "spam"],
+          properties: {
+            index: { type: "integer", minimum: 0 },
+            relevance: { type: "string", enum: ["high", "medium", "low"] },
+            spam: { type: "boolean" },
+          },
+        },
+      },
+    },
+  },
+};
+
+const TRIAGE_SYSTEM_PROMPT =
+  "You triage web search results for a deep research run, deciding which are worth the cost of fetching. Structured output only.";
+
+function triageHost(url: string): string {
+  try {
+    return new URL(url).hostname.replace(/^www\./, "");
+  } catch {
+    return url;
+  }
+}
+
+function triagePrompt(target: string, candidates: MergedSearchResult[]): string {
+  const lines = candidates
+    .map((candidate, index) => {
+      const snippet = (candidate.snippet || "(no snippet)").slice(
+        0,
+        TRIAGE_SNIPPET_CHARS,
+      );
+      return `[${index}] ${candidate.title || "(untitled)"} — ${triageHost(candidate.url)}\n    ${snippet}`;
+    })
+    .join("\n");
+  return (
+    `## Research target\n${target}\n\n` +
+    `## Candidate results\n${lines}\n\n` +
+    "## Task\n" +
+    "For each candidate index, judge two things from the title and snippet alone — you are deciding whether to pay to fetch the page, not reading it:\n" +
+    '- relevance to the research target: "high" (directly answers it or is a strong signal), "medium" (related or partial), "low" (off-topic or only tangential).\n' +
+    "- spam: true if it is SEO spam, a content farm, an auto-generated aggregator or listing page, a contentless paywall stub, or otherwise not worth fetching as evidence.\n" +
+    "Return one verdict per candidate index. Do not omit any index.\n\nStructured output only."
+  );
+}
+
+interface RawTriage {
+  verdicts?: unknown;
+}
+
+function parseTriage(
+  text: string,
+  candidateCount: number,
+): Map<number, TriageVerdict> | null {
+  let raw: RawTriage = {};
+  try {
+    const parsed = JSON.parse(text) as unknown;
+    if (typeof parsed === "object" && parsed !== null) raw = parsed as RawTriage;
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(raw.verdicts)) return null;
+  const verdicts = new Map<number, TriageVerdict>();
+  for (const entry of raw.verdicts) {
+    const candidate = entry as {
+      index?: unknown;
+      relevance?: unknown;
+      spam?: unknown;
+    };
+    const index =
+      typeof candidate.index === "number" ? Math.trunc(candidate.index) : -1;
+    if (index < 0 || index >= candidateCount) continue;
+    const relevance: TriageRelevance =
+      candidate.relevance === "high" || candidate.relevance === "low"
+        ? candidate.relevance
+        : "medium";
+    verdicts.set(index, { relevance, spam: candidate.spam === true });
+  }
+  return verdicts.size > 0 ? verdicts : null;
+}
+
+// Round-robin across the per-angle ranked lists, skipping URLs already seen in
+// this selection or already stored from an earlier stage. No budget cap — that
+// is applied after relevance triage.
+export function dedupeCandidates(
   ctx: ResearchCtx,
   rankedLists: MergedSearchResult[][],
-  slots: number,
-): NovelSelection {
+): { candidates: MergedSearchResult[]; urlDupes: number } {
   const seen = new Set<string>();
-  const urls: string[] = [];
+  const candidates: MergedSearchResult[] = [];
   let urlDupes = 0;
-  let budgetDropped = 0;
   const cursors = rankedLists.map(() => 0);
 
   let advanced = true;
@@ -178,17 +289,132 @@ export function selectNovelUrls(
           continue;
         }
         seen.add(key);
-        if (urls.length >= slots) {
-          budgetDropped++;
-        } else {
-          urls.push(result.url);
-        }
+        candidates.push(result);
         advanced = true;
         break;
       }
     }
   }
-  return { urls, urlDupes, budgetDropped };
+  return { candidates, urlDupes };
+}
+
+// Turn deduped candidates + optional triage verdicts into the URLs to fetch.
+// With no verdicts it is a plain rank-order cap (the pre-triage behavior). With
+// verdicts: spam is always dropped; when the survivors still fit the budget
+// they are all kept (no recall lost while slots remain); only when over budget
+// are they prioritized by relevance tier, dropping the lowest-ranked overflow.
+export function applyRelevanceSelection(
+  candidates: MergedSearchResult[],
+  verdicts: Map<number, TriageVerdict> | null,
+  slots: number,
+): Omit<NovelSelection, "urlDupes"> {
+  if (!verdicts || verdicts.size === 0) {
+    const kept = candidates.slice(0, slots);
+    return {
+      urls: kept.map((candidate) => candidate.url),
+      budgetDropped: Math.max(0, candidates.length - slots),
+      spamDropped: 0,
+      lowRelevanceDropped: 0,
+    };
+  }
+
+  const verdictAt = (index: number): TriageVerdict =>
+    verdicts.get(index) ?? { relevance: "medium", spam: false };
+  const tagged = candidates.map((candidate, index) => ({
+    candidate,
+    verdict: verdictAt(index),
+  }));
+
+  let survivors = tagged.filter((item) => !item.verdict.spam);
+  let spamDropped = tagged.length - survivors.length;
+  // A panel that flags every result as spam is malfunctioning; distrust it
+  // rather than fetch nothing.
+  if (survivors.length === 0) {
+    survivors = tagged;
+    spamDropped = 0;
+  }
+
+  if (survivors.length <= slots) {
+    return {
+      urls: survivors.map((item) => item.candidate.url),
+      budgetDropped: 0,
+      spamDropped,
+      lowRelevanceDropped: 0,
+    };
+  }
+
+  // Over budget: stable-sort by relevance tier (Array.prototype.sort is stable),
+  // so the round-robin order survives within a tier and the lowest-relevance
+  // results fall into the dropped overflow.
+  const ordered = survivors
+    .slice()
+    .sort(
+      (a, b) =>
+        TRIAGE_TIER[a.verdict.relevance] - TRIAGE_TIER[b.verdict.relevance],
+    );
+  const kept = ordered.slice(0, slots);
+  const dropped = ordered.slice(slots);
+  return {
+    urls: kept.map((item) => item.candidate.url),
+    budgetDropped: dropped.length,
+    spamDropped,
+    lowRelevanceDropped: dropped.filter(
+      (item) => item.verdict.relevance === "low",
+    ).length,
+  };
+}
+
+async function triageCandidates(
+  ctx: ResearchCtx,
+  target: string,
+  candidates: MergedSearchResult[],
+): Promise<Map<number, TriageVerdict> | null> {
+  if (candidates.length < 2) return null;
+  if (tokenBudgetExhaustedReason(ctx)) return null;
+  const model = ctx.deps.leafModel ?? ctx.deps.model;
+  try {
+    const result = await model.step({
+      system: TRIAGE_SYSTEM_PROMPT,
+      messages: [{ role: "user", content: triagePrompt(target, candidates) }],
+      maxTokens: TRIAGE_MAX_TOKENS,
+      outputSchema: TRIAGE_OUTPUT_SCHEMA,
+      signal: ctx.deps.signal,
+    });
+    const textBlock = result.content.find(
+      (block): block is { type: "text"; text: string } => block.type === "text",
+    );
+    return parseTriage(textBlock?.text ?? "{}", candidates.length);
+  } catch (err) {
+    if (ctx.deps.signal?.aborted) throw err;
+    return null;
+  }
+}
+
+// Dedupe → relevance triage → budget-aware selection. The triage call is best
+// effort: on a pool below 2, an exhausted token budget, a model error, or
+// unparseable output it returns null and selection falls back to rank order.
+export async function selectSourcesToFetch(
+  ctx: ResearchCtx,
+  target: string,
+  rankedLists: MergedSearchResult[][],
+  slots: number,
+): Promise<NovelSelection> {
+  const { candidates, urlDupes } = dedupeCandidates(ctx, rankedLists);
+  const verdicts = await triageCandidates(ctx, target, candidates);
+  const selection = applyRelevanceSelection(candidates, verdicts, slots);
+  return { ...selection, urlDupes };
+}
+
+// Pure dedupe + rank-order cap, kept for callers and tests that skip relevance
+// triage. Equivalent to selectSourcesToFetch with no verdicts.
+export function selectNovelUrls(
+  ctx: ResearchCtx,
+  rankedLists: MergedSearchResult[][],
+  slots: number,
+): NovelSelection {
+  const { candidates, urlDupes } = dedupeCandidates(ctx, rankedLists);
+  const selection = applyRelevanceSelection(candidates, null, slots);
+  return { ...selection, urlDupes };
 }
 
 async function fetchUrls(ctx: ResearchCtx, urls: string[]): Promise<number> {
@@ -220,8 +446,9 @@ export async function runRecall(
       }),
     ),
   );
-  const selection = selectNovelUrls(
+  const selection = await selectSourcesToFetch(
     ctx,
+    question,
     searches.map((outcome) => outcome.results),
     RECALL_MAX_FETCH,
   );
@@ -235,6 +462,8 @@ export async function runRecall(
     sourcesFetched,
     urlDupes: selection.urlDupes,
     budgetDropped: selection.budgetDropped,
+    spamDropped: selection.spamDropped,
+    lowRelevanceDropped: selection.lowRelevanceDropped,
     claimsExtracted: ctx.store.claims.claims.length - claimsBefore,
     searchQueriesRun: angles.length,
   };
@@ -266,7 +495,12 @@ export async function runSurvey(
     limit: RESULTS_PER_QUERY,
     searchIndexStart: opts.searchIndexStart,
   });
-  const selection = selectNovelUrls(ctx, [search.results], SURVEY_MAX_FETCH);
+  const selection = await selectSourcesToFetch(
+    ctx,
+    opts.goal,
+    [search.results],
+    SURVEY_MAX_FETCH,
+  );
   const claimsBefore = ctx.store.claims.claims.length;
   const sourcesFetched = await fetchUrls(ctx, selection.urls);
   await ctx.store.claims.settle();
@@ -277,6 +511,8 @@ export async function runSurvey(
     sourcesFetched,
     urlDupes: selection.urlDupes,
     budgetDropped: selection.budgetDropped,
+    spamDropped: selection.spamDropped,
+    lowRelevanceDropped: selection.lowRelevanceDropped,
     newClaims: ctx.store.claims.claims.slice(claimsBefore),
   };
 }

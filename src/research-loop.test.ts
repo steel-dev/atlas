@@ -88,6 +88,8 @@ function recallOutcome(overrides: Partial<RecallOutcome> = {}): RecallOutcome {
     sourcesFetched: 1,
     urlDupes: 0,
     budgetDropped: 0,
+    spamDropped: 0,
+    lowRelevanceDropped: 0,
     claimsExtracted: 1,
     searchQueriesRun: 1,
     ...overrides,
