@@ -224,7 +224,7 @@ function triagePrompt(target: string, candidates: MergedSearchResult[]): string 
     "## Task\n" +
     "For each candidate index, judge two things from the title and snippet alone — you are deciding whether to pay to fetch the page, not reading it:\n" +
     '- relevance to the research target: "high" (directly answers it or is a strong signal), "medium" (related or partial), "low" (off-topic or only tangential).\n' +
-    "- spam: true if it is SEO spam, a content farm, an auto-generated aggregator or listing page, a contentless paywall stub, or otherwise not worth fetching as evidence.\n" +
+    "- spam: true ONLY if the page is genuinely worthless as evidence — SEO spam, a content farm, a contentless paywall stub, or a page auto-generated from the search query itself (a crossword-solver, stock-photo, or keyword-echo page that just reflects your terms back). A real event/race listing, results page, directory, or aggregator is NOT spam: for \"what was X\" questions the answer often lives exactly there, so judge those on relevance, not spam.\n" +
     "Return one verdict per candidate index. Do not omit any index.\n\nStructured output only."
   );
 }
