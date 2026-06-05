@@ -1,6 +1,5 @@
 import type {
   ModelAssistantBlock,
-  ModelMessage,
   ModelOutputSchema,
   ModelToolCall,
   ModelToolDefinition,
@@ -14,6 +13,7 @@ import {
   type ResearchCtx,
 } from "./runtime.js";
 import type { ClaimVote, ResearchClaim } from "./claims.js";
+import { runAgentLoop } from "./agent-loop.js";
 import { clusterClaims, CLUSTER_WINDOW } from "./cluster.js";
 import { execSearch } from "./search-tool.js";
 import { execReadSource, execSearchSources } from "./evidence-tool.js";
@@ -23,7 +23,16 @@ import { errorMessage } from "./errors.js";
 export const REFUTATIONS_REQUIRED = 2;
 export const MAX_VERIFY_CLAIMS = 120;
 const VERIFY_BATCH_SIZE = 16;
-const MAX_VOTER_TOOL_TURNS = 2;
+// Backstop on a single voter's tool-using turns — a runaway guard, not the plan.
+// The voter stops when it judges it has investigated enough (no more tool calls)
+// or when its per-vote token budget is spent, usually well before this.
+const MAX_VOTER_TOOL_TURNS = 8;
+// Per-vote input-token budget. Once a single voter has billed this many input
+// tokens across its investigation, the loop stops and the voter is asked to
+// decide on what it has. Sizing depth by tokens, not a turn count, lets a cheap
+// line of search run several turns while a voter reading large sources stops
+// sooner — and keeps each vote's cost bounded under the run-wide governor.
+const VOTER_TOKEN_BUDGET = 60_000;
 const VOTER_STEP_MAX_TOKENS = 1_200;
 const VERDICT_MAX_TOKENS = 600;
 const VERIFY_CONCURRENCY = 8;
@@ -215,7 +224,7 @@ function voterPrompt(
     LENS_INSTRUCTIONS[seat.lens] +
     (seat.focus ? "\n" + seat.focus : "") +
     "\n\n" +
-    `You may use at most ${MAX_VOTER_TOOL_TURNS} tool turns before returning your verdict. Structured output only.`
+    "Use your tools to investigate as far as the claim warrants — a turn or two is usual, more when it is genuinely contested — then return your verdict. Stop as soon as you can judge it; do not run searches you do not need. Structured output only."
   );
 }
 
@@ -295,44 +304,47 @@ async function castVote(
   searchIndexRef: { next: number },
 ): Promise<ClaimVote | null> {
   const model = ctx.deps.leafModel ?? ctx.deps.model;
-  const tools = LENS_TOOLS[seat.lens];
-  const messages: ModelMessage[] = [
-    { role: "user", content: voterPrompt(question, claim, seat) },
-  ];
+  const maxTurns = ctx.config.verifierMaxToolTurns ?? MAX_VOTER_TOOL_TURNS;
+  const tokenBudget = ctx.config.verifierTokenBudget ?? VOTER_TOKEN_BUDGET;
 
-  for (let turn = 0; turn < MAX_VOTER_TOOL_TURNS; turn++) {
-    if (tokenBudgetExhaustedReason(ctx) || timeoutSynthesisReason(ctx)) {
-      return null;
-    }
-    const result = await model.step({
-      system: VERIFIER_SYSTEM_PROMPT,
-      tools,
-      messages,
-      maxTokens: VOTER_STEP_MAX_TOKENS,
-      signal: ctx.deps.signal,
-    });
-    const toolCalls = result.content.filter(
-      (block): block is ModelToolCall => block.type === "tool_call",
-    );
-    if (toolCalls.length === 0) break;
-    messages.push({ role: "assistant", content: result.content });
-    const toolResults = await Promise.all(
-      toolCalls.map((call) => executeVoterTool(ctx, call, searchIndexRef)),
-    );
-    messages.push({ role: "user", content: toolResults });
-  }
+  // Investigate phase: the voter drives its own tool loop and decides when it
+  // has seen enough. It is bounded only by the run-wide governor, a per-vote
+  // token budget, and a generous turn backstop — not a fixed step count.
+  const loop = await runAgentLoop({
+    model,
+    system: VERIFIER_SYSTEM_PROMPT,
+    tools: LENS_TOOLS[seat.lens],
+    messages: [{ role: "user", content: voterPrompt(question, claim, seat) }],
+    maxTokens: VOTER_STEP_MAX_TOKENS,
+    maxTurns,
+    executeTools: (calls) =>
+      Promise.all(
+        calls.map((call) => executeVoterTool(ctx, call, searchIndexRef)),
+      ),
+    shouldStop: ({ inputTokens }) =>
+      tokenBudgetExhaustedReason(ctx) ??
+      timeoutSynthesisReason(ctx) ??
+      (inputTokens >= tokenBudget ? "vote token budget spent" : null),
+    signal: ctx.deps.signal,
+  });
 
+  // A run-wide budget or timeout stop means abstain: there is nothing left to
+  // spend on a considered verdict. A per-vote budget stop is different — the
+  // voter investigated enough, so fall through and have it decide now.
   if (tokenBudgetExhaustedReason(ctx) || timeoutSynthesisReason(ctx)) {
     return null;
   }
-  messages.push({
-    role: "user",
-    content:
-      "Return your verdict now as structured output: refuted, evidence, confidence.",
-  });
+
   const verdictResult = await model.step({
     system: VERIFIER_SYSTEM_PROMPT,
-    messages,
+    messages: [
+      ...loop.messages,
+      {
+        role: "user",
+        content:
+          "Return your verdict now as structured output: refuted, evidence, confidence.",
+      },
+    ],
     maxTokens: VERDICT_MAX_TOKENS,
     outputSchema: VERDICT_OUTPUT_SCHEMA,
     signal: ctx.deps.signal,

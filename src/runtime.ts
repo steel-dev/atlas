@@ -181,6 +181,12 @@ export interface ResearchConfig {
   readonly sourceCap: number;
   readonly verifyTargetConfirmed?: number;
   readonly verifierPanel?: "lens" | "clone";
+  /** Backstop on a single verifier voter's tool-using turns. Falls back to a
+   *  generous default when unset; the per-vote token budget usually binds first. */
+  readonly verifierMaxToolTurns?: number;
+  /** Per-vote input-token budget that bounds how deep one voter investigates
+   *  before it must decide. Falls back to a default when unset. */
+  readonly verifierTokenBudget?: number;
   readonly maxOutputTokens?: number;
   readonly defaultSearchLimit?: number;
   readonly maxConcurrentTools?: number;

@@ -93,6 +93,62 @@ function structureAdapter(
   };
 }
 
+// A voter adapter that always emits a tool call on a tool-step, so the agent
+// loop only terminates via its turn backstop or token-budget governor — never
+// because the model "decided" it was done. Verdict steps (outputSchema) return
+// a fixed verdict. Counters are shared across the panel's voters; assert totals.
+function investigatingAdapter(
+  opts: { refuted?: boolean; inputTokensPerStep?: number } = {},
+): ModelAdapter & { loopSteps: number; verdictSteps: number } {
+  let loopSteps = 0;
+  let verdictSteps = 0;
+  return {
+    provider: "anthropic",
+    model: "fake",
+    usage: {
+      input_tokens: 0,
+      output_tokens: 0,
+      cache_creation_input_tokens: 0,
+      cache_read_input_tokens: 0,
+    },
+    get loopSteps() {
+      return loopSteps;
+    },
+    get verdictSteps() {
+      return verdictSteps;
+    },
+    async step(input) {
+      if (input.outputSchema) {
+        verdictSteps++;
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                refuted: opts.refuted ?? false,
+                evidence: "checked",
+                confidence: "high",
+              }),
+            },
+          ],
+        };
+      }
+      loopSteps++;
+      const content = [
+        {
+          type: "tool_call" as const,
+          id: `t${loopSteps}`,
+          name: "search_sources",
+          input: { query: "x" },
+        },
+      ];
+      return opts.inputTokensPerStep !== undefined
+        ? { content, inputTokens: opts.inputTokensPerStep }
+        : { content };
+    },
+  } as ModelAdapter & { loopSteps: number; verdictSteps: number };
+}
+
 function makeCtx(
   adapter: ModelAdapter,
   claims: ResearchClaim[],
@@ -100,6 +156,8 @@ function makeCtx(
     tokenLimit?: number;
     verifyTargetConfirmed?: number;
     verifierPanel?: "lens" | "clone";
+    verifierMaxToolTurns?: number;
+    verifierTokenBudget?: number;
   } = {},
 ): ResearchCtx & { events: Array<Record<string, unknown>> } {
   const events: Array<Record<string, unknown>> = [];
@@ -113,6 +171,12 @@ function makeCtx(
         : {}),
       ...(opts.verifierPanel !== undefined
         ? { verifierPanel: opts.verifierPanel }
+        : {}),
+      ...(opts.verifierMaxToolTurns !== undefined
+        ? { verifierMaxToolTurns: opts.verifierMaxToolTurns }
+        : {}),
+      ...(opts.verifierTokenBudget !== undefined
+        ? { verifierTokenBudget: opts.verifierTokenBudget }
         : {}),
     },
     deps: {
@@ -447,6 +511,42 @@ describe("verifyClaims", () => {
     expect(target.status).toBe("quoted");
     expect(summary.verified).toBe(0);
     expect(summary.beyondCap).toBe(1);
+  });
+
+  it("lets a voter investigate past the old two-turn cap up to the backstop", async () => {
+    const adapter = investigatingAdapter({ refuted: false });
+    const target = claim();
+    const ctx = makeCtx(adapter, [target], { verifierMaxToolTurns: 3 });
+
+    const summary = await verifyClaims(ctx, "test question");
+
+    // 4 seats, each runs 3 tool turns (hits the backstop) then one verdict step.
+    expect(adapter.loopSteps).toBe(12);
+    expect(adapter.verdictSteps).toBe(4);
+    expect(target.votes).toHaveLength(4);
+    expect(target.status).toBe("confirmed");
+    expect(summary.confirmed).toBe(1);
+  });
+
+  it("stops a voter's investigation when its per-vote token budget is spent", async () => {
+    const adapter = investigatingAdapter({
+      refuted: false,
+      inputTokensPerStep: 30_000,
+    });
+    const target = claim();
+    const ctx = makeCtx(adapter, [target], {
+      verifierMaxToolTurns: 8,
+      verifierTokenBudget: 50_000,
+    });
+
+    const summary = await verifyClaims(ctx, "test question");
+
+    // Budget trips after the cumulative input crosses 50k (two 30k steps),
+    // well before the turn backstop of 8: 2 tool turns per voter.
+    expect(adapter.loopSteps).toBe(8);
+    expect(adapter.verdictSteps).toBe(4);
+    expect(target.status).toBe("confirmed");
+    expect(summary.confirmed).toBe(1);
   });
 });
 

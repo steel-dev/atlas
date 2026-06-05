@@ -100,6 +100,8 @@ export function resolveRunConfig(opts: RunInput): ResolvedRunConfig {
     reanchorTokens:
       opts.reanchorTokens ?? readIntEnv("ATLAS_REANCHOR_TOKENS", 1),
     verifierPanel: resolveVerifierPanel(opts.verifierPanel),
+    verifierMaxToolTurns: readIntEnv("ATLAS_VERIFIER_MAX_TOOL_TURNS", 1),
+    verifierTokenBudget: readIntEnv("ATLAS_VERIFIER_TOKEN_BUDGET", 1),
     exploreProviderOptions: opts.exploreProviderOptions,
     finalizeProviderOptions: opts.finalizeProviderOptions,
     instructions: opts.instructions,
