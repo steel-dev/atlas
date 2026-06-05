@@ -193,7 +193,7 @@ describe("resolveRunConfig", () => {
     expect(config.agent.tokenLimit).toBe(800_000);
     expect(config.safetyMaxToolCalls).toBe(1_500);
     expect(config.agent.sourceCap).toBe(500);
-    expect(config.agent.verifyTargetConfirmed).toBe(50);
+    expect(config.agent.verifyTargetConfirmed).toBeUndefined();
     expect(config.maxConcurrentModelCalls).toBe(8);
     expect(config.leafModel).toBe("m");
     expect(config.timeoutDeadlineAt).toBeUndefined();

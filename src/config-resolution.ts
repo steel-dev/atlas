@@ -43,7 +43,6 @@ const DEPTH_TOKEN_LIMITS: Record<ResearchDepth, number> = {
 };
 const SAFETY_MAX_TOOL_CALLS = 1_500;
 const SAFETY_SOURCE_CAP = 500;
-const VERIFY_TARGET_CONFIRMED = 50;
 
 export const RUNTIME_LIMITS = DEFAULT_RUNTIME_LIMITS;
 
@@ -94,7 +93,6 @@ export function resolveRunConfig(opts: RunInput): ResolvedRunConfig {
   const agent: ResearchConfig = {
     useProxy,
     sourceCap: SAFETY_SOURCE_CAP,
-    verifyTargetConfirmed: VERIFY_TARGET_CONFIRMED,
     maxOutputTokens: limits.maxOutputTokens,
     defaultSearchLimit: limits.defaultSearchLimit,
     maxConcurrentTools: limits.maxConcurrentTools,

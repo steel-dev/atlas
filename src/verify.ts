@@ -23,7 +23,6 @@ import { errorMessage } from "./errors.js";
 export const REFUTATIONS_REQUIRED = 2;
 export const MAX_VERIFY_CLAIMS = 120;
 const VERIFY_BATCH_SIZE = 16;
-const DEFAULT_VERIFY_TARGET = 25;
 const MAX_VOTER_TOOL_TURNS = 2;
 const VOTER_STEP_MAX_TOKENS = 1_200;
 const VERDICT_MAX_TOKENS = 600;
@@ -441,7 +440,7 @@ export async function verifyClaims(
 
   const target = Math.max(
     1,
-    ctx.config.verifyTargetConfirmed ?? DEFAULT_VERIFY_TARGET,
+    ctx.config.verifyTargetConfirmed ?? MAX_VERIFY_CLAIMS,
   );
   const maxToVerify = Math.min(representatives.length, MAX_VERIFY_CLAIMS);
 
