@@ -19,6 +19,7 @@ export function leadAnchorPrompt(opts: {
   claimCount: number;
   sourceCount: number;
   surveyedGoals: string[];
+  pursuit?: string;
   reanchored: boolean;
 }): string {
   const angleList = opts.angles
@@ -33,6 +34,9 @@ export function leadAnchorPrompt(opts: {
     (opts.ledgerDigest || "(empty — recall found no extractable claims)") +
     (opts.surveyedGoals.length > 0
       ? `\n\n## Gaps already surveyed this run\n${opts.surveyedGoals.map((goal) => `- ${goal}`).join("\n")}`
+      : "") +
+    (opts.reanchored && opts.pursuit
+      ? `\n\n## What you were pursuing (just before re-anchor)\n${opts.pursuit}\n\nResume this line of investigation if the ledger has not already closed it; trust the ledger above for facts.`
       : "") +
     (opts.reanchored
       ? "\n\n(Context was re-anchored: the transcript so far was dropped and this message rebuilt from the current ledger. Trust the ledger digest above over any memory of earlier turns.)"

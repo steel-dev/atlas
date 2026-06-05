@@ -138,10 +138,10 @@ export interface RunOptions {
   tokenLimit?: number;
   /**
    * Estimated-token transcript size at which the gap-chasing lead drops its
-   * transcript and re-anchors onto the current ledger. The default (150k) is
-   * safe for ~200k-context models; raise it for large-context models so a long
-   * investigation keeps its working transcript instead of being rebuilt from
-   * the ledger digest. Also settable via `ATLAS_REANCHOR_TOKENS`.
+   * transcript and re-anchors onto the current ledger plus the mid-investigation
+   * thread. The default (200k) suits large-context models; lower it for
+   * <=256k-context models, or raise it so a long investigation keeps more of its
+   * working transcript. Also settable via `ATLAS_REANCHOR_TOKENS`.
    */
   reanchorTokens?: number;
   depth?: ResearchDepth;

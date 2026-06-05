@@ -316,7 +316,7 @@ describe("runGapLoop", () => {
         toolResult: {
           type: "tool_result",
           tool_call_id: tu.id,
-          content: "x".repeat(700_000),
+          content: "x".repeat(900_000),
         },
       };
     });
@@ -347,6 +347,36 @@ describe("runGapLoop", () => {
     expect(anchor).toContain("- first gap");
   });
 
+  it("carries the mid-investigation thread into the re-anchored prompt", async () => {
+    executeToolMock.mockImplementation(async (tu) => ({
+      toolResult: {
+        type: "tool_result",
+        tool_call_id: tu.id,
+        content: "x".repeat(900_000),
+      },
+    }));
+    const { adapter, calls } = scriptedAdapter([
+      [
+        { type: "text", text: "Chasing the 2019 venue from the bio clue" },
+        toolUse("t1", "survey", { goal: "first gap" }),
+      ],
+      [{ type: "text", text: "done after reanchor" }],
+    ]);
+    const ctx = makeCtx({ adapter, claims: [claim()] });
+
+    const result = await runGapLoop({
+      ctx,
+      question: "q",
+      recall: recallOutcome(),
+      maxToolCalls: 10,
+    });
+
+    expect(result.reanchors).toBe(1);
+    const anchor = String(calls[1]?.messages[0]?.content);
+    expect(anchor).toContain("What you were pursuing");
+    expect(anchor).toContain("Chasing the 2019 venue from the bio clue");
+  });
+
   it("keeps the transcript when reanchorTokens is raised above its size", async () => {
     executeToolMock.mockImplementation(async (tu, _ctx, extras) => {
       if (tu.name === "survey") {
@@ -359,7 +389,7 @@ describe("runGapLoop", () => {
         toolResult: {
           type: "tool_result",
           tool_call_id: tu.id,
-          content: "x".repeat(700_000),
+          content: "x".repeat(900_000),
         },
       };
     });
@@ -380,7 +410,7 @@ describe("runGapLoop", () => {
       maxToolCalls: 10,
     });
 
-    // The same 700k-char payload that forces a re-anchor at the default
+    // The same 900k-char payload that forces a re-anchor at the default
     // threshold leaves the transcript intact once the threshold is raised.
     expect(result.reanchors).toBe(0);
     expect(ctx.events).not.toContainEqual(

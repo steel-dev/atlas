@@ -27,11 +27,11 @@ import type { ResearchClaim } from "./claims.js";
 
 const DEFAULT_MAX_CONCURRENT_TOOLS = 4;
 // Default re-anchor threshold: when the transcript passes this many estimated
-// tokens, the lead drops it and rebuilds from the ledger digest. The default is
-// safe for ~200k-context models; large-context models can raise it via
-// RunOptions.reanchorTokens / ATLAS_REANCHOR_TOKENS so a long investigation keeps
-// its working transcript instead of being rebuilt every 150k tokens.
-const DEFAULT_REANCHOR_TRIGGER_TOKENS = 150_000;
+// tokens, the lead drops it and rebuilds from the ledger digest plus the
+// mid-investigation thread. The default suits large-context models; lower it for
+// <=256k-context models, or raise it via RunOptions.reanchorTokens /
+// ATLAS_REANCHOR_TOKENS so a long investigation keeps more of its transcript.
+const DEFAULT_REANCHOR_TRIGGER_TOKENS = 200_000;
 const LEDGER_DIGEST_MAX_CLAIMS = 60;
 const CHARS_PER_TOKEN = 4;
 
@@ -49,6 +49,17 @@ function textFromContent(content: ModelAssistantBlock[]): string {
     .map((block) => (block.type === "text" ? block.text : ""))
     .join("")
     .trim();
+}
+
+function lastAssistantText(messages: ModelMessage[]): string {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i];
+    if (message.role === "assistant") {
+      const text = textFromContent(message.content);
+      if (text) return text;
+    }
+  }
+  return "";
 }
 
 function shortHost(url: string): string {
@@ -156,7 +167,7 @@ export async function runGapLoop(opts: {
     surveyedGoals: [],
   };
 
-  const buildAnchor = (reanchored: boolean): ModelMessage => ({
+  const buildAnchor = (reanchored: boolean, pursuit?: string): ModelMessage => ({
     role: "user",
     content: leadAnchorPrompt({
       question,
@@ -166,6 +177,7 @@ export async function runGapLoop(opts: {
       claimCount: ctx.store.claims.claims.length,
       sourceCount: ctx.store.sourceDocuments.size,
       surveyedGoals: extras.surveyedGoals,
+      pursuit,
       reanchored,
     }),
   });
@@ -201,7 +213,7 @@ export async function runGapLoop(opts: {
     if (estimateMessagesTokens(messages) > reanchorTrigger) {
       const tokensBefore = estimateMessagesTokens(messages);
       const droppedMessages = messages.length;
-      messages = [buildAnchor(true)];
+      messages = [buildAnchor(true, lastAssistantText(messages))];
       reanchors++;
       ctx.scope.emit({
         type: "context_reanchored",
