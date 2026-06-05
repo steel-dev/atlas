@@ -14,6 +14,7 @@ import {
 } from "./runtime.js";
 import type { ClaimVote, ResearchClaim } from "./claims.js";
 import { runAgentLoop } from "./agent-loop.js";
+import { withRole } from "./recording.js";
 import { clusterClaims, CLUSTER_WINDOW } from "./cluster.js";
 import { execSearch } from "./search-tool.js";
 import { execReadSource, execSearchSources } from "./evidence-tool.js";
@@ -310,23 +311,25 @@ async function castVote(
   // Investigate phase: the voter drives its own tool loop and decides when it
   // has seen enough. It is bounded only by the run-wide governor, a per-vote
   // token budget, and a generous turn backstop — not a fixed step count.
-  const loop = await runAgentLoop({
-    model,
-    system: VERIFIER_SYSTEM_PROMPT,
-    tools: LENS_TOOLS[seat.lens],
-    messages: [{ role: "user", content: voterPrompt(question, claim, seat) }],
-    maxTokens: VOTER_STEP_MAX_TOKENS,
-    maxTurns,
-    executeTools: (calls) =>
-      Promise.all(
-        calls.map((call) => executeVoterTool(ctx, call, searchIndexRef)),
-      ),
-    shouldStop: ({ inputTokens }) =>
-      tokenBudgetExhaustedReason(ctx) ??
-      timeoutSynthesisReason(ctx) ??
-      (inputTokens >= tokenBudget ? "vote token budget spent" : null),
-    signal: ctx.deps.signal,
-  });
+  const loop = await withRole(`verify:${claim.id}`, () =>
+    runAgentLoop({
+      model,
+      system: VERIFIER_SYSTEM_PROMPT,
+      tools: LENS_TOOLS[seat.lens],
+      messages: [{ role: "user", content: voterPrompt(question, claim, seat) }],
+      maxTokens: VOTER_STEP_MAX_TOKENS,
+      maxTurns,
+      executeTools: (calls) =>
+        Promise.all(
+          calls.map((call) => executeVoterTool(ctx, call, searchIndexRef)),
+        ),
+      shouldStop: ({ inputTokens }) =>
+        tokenBudgetExhaustedReason(ctx) ??
+        timeoutSynthesisReason(ctx) ??
+        (inputTokens >= tokenBudget ? "vote token budget spent" : null),
+      signal: ctx.deps.signal,
+    }),
+  );
 
   // A run-wide budget or timeout stop means abstain: there is nothing left to
   // spend on a considered verdict. A per-vote budget stop is different — the
@@ -335,20 +338,22 @@ async function castVote(
     return null;
   }
 
-  const verdictResult = await model.step({
-    system: VERIFIER_SYSTEM_PROMPT,
-    messages: [
-      ...loop.messages,
-      {
-        role: "user",
-        content:
-          "Return your verdict now as structured output: refuted, evidence, confidence.",
-      },
-    ],
-    maxTokens: VERDICT_MAX_TOKENS,
-    outputSchema: VERDICT_OUTPUT_SCHEMA,
-    signal: ctx.deps.signal,
-  });
+  const verdictResult = await withRole(`verify:${claim.id}`, () =>
+    model.step({
+      system: VERIFIER_SYSTEM_PROMPT,
+      messages: [
+        ...loop.messages,
+        {
+          role: "user",
+          content:
+            "Return your verdict now as structured output: refuted, evidence, confidence.",
+        },
+      ],
+      maxTokens: VERDICT_MAX_TOKENS,
+      outputSchema: VERDICT_OUTPUT_SCHEMA,
+      signal: ctx.deps.signal,
+    }),
+  );
   const vote = parseVerdict(verdictResult.content);
   return vote ? { ...vote, lens: seat.lens } : null;
 }

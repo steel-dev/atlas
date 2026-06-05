@@ -1,5 +1,6 @@
 import type { ModelOutputSchema } from "./model.js";
 import { tokenBudgetExhaustedReason, type ResearchCtx } from "./runtime.js";
+import { withRole } from "./recording.js";
 import type { ResearchClaim } from "./claims.js";
 
 export const CLUSTER_WINDOW = 150;
@@ -104,13 +105,15 @@ export async function clusterClaims(
   let groups: string[][];
   try {
     const model = ctx.deps.leafModel ?? ctx.deps.model;
-    const result = await model.step({
-      system: CLUSTER_SYSTEM_PROMPT,
-      messages: [{ role: "user", content: clusterPrompt(claims) }],
-      maxTokens: CLUSTER_MAX_TOKENS,
-      outputSchema: CLUSTER_OUTPUT_SCHEMA,
-      signal: ctx.deps.signal,
-    });
+    const result = await withRole("cluster", () =>
+      model.step({
+        system: CLUSTER_SYSTEM_PROMPT,
+        messages: [{ role: "user", content: clusterPrompt(claims) }],
+        maxTokens: CLUSTER_MAX_TOKENS,
+        outputSchema: CLUSTER_OUTPUT_SCHEMA,
+        signal: ctx.deps.signal,
+      }),
+    );
     const textBlock = result.content.find(
       (block): block is { type: "text"; text: string } => block.type === "text",
     );

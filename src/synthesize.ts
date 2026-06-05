@@ -4,6 +4,7 @@ import type {
   ModelStepResult,
 } from "./model.js";
 import { type ResearchCtx } from "./runtime.js";
+import { withRole } from "./recording.js";
 import type { ClaimConfidence, ResearchClaim } from "./claims.js";
 import { voteSplit, type VerifySummary } from "./verify.js";
 
@@ -243,14 +244,16 @@ export async function synthesizeReportData(
     gapsNote?: string;
   },
 ): Promise<ReportData | null> {
-  const result = await ctx.deps.model.step({
-    system: REPORT_DATA_SYSTEM_PROMPT,
-    messages: [{ role: "user", content: reportDataPrompt(opts) }],
-    maxTokens: REPORT_DATA_MAX_TOKENS,
-    outputSchema: REPORT_DATA_SCHEMA,
-    providerOptions: ctx.config.finalizeProviderOptions,
-    signal: ctx.deps.signal,
-  });
+  const result = await withRole("synthesis.data", () =>
+    ctx.deps.model.step({
+      system: REPORT_DATA_SYSTEM_PROMPT,
+      messages: [{ role: "user", content: reportDataPrompt(opts) }],
+      maxTokens: REPORT_DATA_MAX_TOKENS,
+      outputSchema: REPORT_DATA_SCHEMA,
+      providerOptions: ctx.config.finalizeProviderOptions,
+      signal: ctx.deps.signal,
+    }),
+  );
   const textBlock = result.content.find(
     (block): block is { type: "text"; text: string } => block.type === "text",
   );
@@ -316,12 +319,14 @@ export async function writeReportProse(
   const stepStream = ctx.deps.model.stepStream?.bind(ctx.deps.model);
   let result: ModelStepResult;
   if (stepStream) {
-    result = await stepStream(input, {
-      onStart: () => ctx.scope.emit({ type: "report_boundary" }),
-      onText: (text) => ctx.scope.emit({ type: "report_delta", text }),
-    });
+    result = await withRole("synthesis.prose", () =>
+      stepStream(input, {
+        onStart: () => ctx.scope.emit({ type: "report_boundary" }),
+        onText: (text) => ctx.scope.emit({ type: "report_delta", text }),
+      }),
+    );
   } else {
-    result = await ctx.deps.model.step(input);
+    result = await withRole("synthesis.prose", () => ctx.deps.model.step(input));
   }
   return result.content
     .map((block) => (block.type === "text" ? block.text : ""))

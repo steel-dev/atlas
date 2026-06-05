@@ -1,5 +1,9 @@
 import { Atlas } from "../../src/atlas.js";
-import type { ResearchEvent, ResearchStream } from "../../src/research.js";
+import type {
+  ResearchEvent,
+  ResearchResult,
+  ResearchStream,
+} from "../../src/research.js";
 import {
   buildResearchRunOptions,
   gradeResearch,
@@ -238,10 +242,13 @@ export class DracoRunHost {
     try {
       entry.phase = "researching";
       push({ type: "phase", phase: "researching" });
-      const run = this.atlas.stream(
-        entry.dracoCase.problem,
-        buildResearchRunOptions(this.opts),
-      );
+      const run = this.atlas.stream(entry.dracoCase.problem, {
+        ...buildResearchRunOptions(this.opts),
+        // Full visibility for offline analysis: capture the byte-exact model
+        // transcript and keep every fetched source's body.
+        recordTranscript: true,
+        includeSourceDocuments: true,
+      });
       entry.run = run;
       for await (const event of run.fullStream) {
         if (event.type === "scope_completed") entry.angles = event.angles.length;
@@ -281,7 +288,7 @@ export class DracoRunHost {
         passRate: evalResult.score?.passRate ?? null,
       });
       entry.phase = "persisting";
-      this.persist(entry, evalResult);
+      this.persist(entry, evalResult, result);
       push({ type: "persisted", commit: entry.commitSha, caseId: entry.caseId });
       entry.phase = "done";
       process.stderr.write(
@@ -306,6 +313,7 @@ export class DracoRunHost {
 
   private persistMeta(entry: DracoRunEntry) {
     return {
+      runId: entry.id,
       commitSha: entry.commitSha,
       dirty: entry.dirty,
       source: "run",
@@ -318,8 +326,25 @@ export class DracoRunHost {
     };
   }
 
-  private persist(entry: DracoRunEntry, evalResult: PersistableResult): void {
-    this.store.upsertResult(evalResult, this.persistMeta(entry));
+  private persist(
+    entry: DracoRunEntry,
+    evalResult: PersistableResult,
+    result: ResearchResult,
+  ): void {
+    this.store.insertRun(
+      {
+        ...evalResult,
+        claims: result.claims,
+        sources: result.sourceDocuments,
+        citations: {
+          citedSources: result.citedSources,
+          citationsNotConfirmed: result.citationsNotConfirmed,
+          citationsNotFetched: result.citationsNotFetched,
+        },
+        transcript: result.transcript,
+      },
+      this.persistMeta(entry),
+    );
   }
 
   private persistError(
@@ -327,7 +352,7 @@ export class DracoRunHost {
     message: string,
     latencyMs: number,
   ): void {
-    this.store.upsertResult(
+    this.store.insertRun(
       {
         id: entry.caseId,
         domain: entry.domain,

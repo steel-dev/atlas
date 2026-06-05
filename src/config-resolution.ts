@@ -6,6 +6,7 @@ import {
   type ModelProvider,
   type ModelRetryInfo,
 } from "./model.js";
+import { StepRecorder, wrapModelAdapterWithRecording } from "./recording.js";
 import { DEFAULT_ANTHROPIC_MODEL, DEFAULT_OPENAI_MODEL } from "./defaults.js";
 import { createSteel } from "./steel.js";
 import type { SearchProvider } from "./search-provider.js";
@@ -67,6 +68,8 @@ export interface ResolvedRunConfig {
 export interface RunResources {
   modelAdapter: ModelAdapter;
   leafAdapter: ModelAdapter;
+  /** Present only when `recordTranscript` is set; collects every model step. */
+  recorder?: StepRecorder;
   steel: ReturnType<typeof createSteel>;
   browserSessionPool: BrowserSessionPool;
 }
@@ -163,11 +166,15 @@ export function createRunResources(
         maxAttempts: info.maxAttempts,
       }),
   };
+  // Opt-in byte-exact transcript capture. The recorder is shared by the lead
+  // and leaf adapters so a run's steps land in one ordered timeline.
+  const recorder = opts.recordTranscript ? new StepRecorder() : undefined;
   const wrap = (
     model: Exclude<LanguageModel, string>,
     label: { provider: ModelProvider; modelId: string },
-  ) =>
-    wrapModelAdapterWithConcurrency(
+    recordLabel: "lead" | "leaf",
+  ) => {
+    const adapter = wrapModelAdapterWithConcurrency(
       createAISdkModelAdapter({
         model,
         provider: label.provider,
@@ -176,12 +183,17 @@ export function createRunResources(
       modelCallGate,
       concurrencyOptions,
     );
-  const modelAdapter = wrap(opts.model, {
-    provider: config.provider,
-    modelId: config.model,
-  });
+    return recorder
+      ? wrapModelAdapterWithRecording(adapter, recorder, recordLabel)
+      : adapter;
+  };
+  const modelAdapter = wrap(
+    opts.model,
+    { provider: config.provider, modelId: config.model },
+    "lead",
+  );
   const leafAdapter = opts.leafModel
-    ? wrap(opts.leafModel, modelLabel(opts.leafModel))
+    ? wrap(opts.leafModel, modelLabel(opts.leafModel), "leaf")
     : modelAdapter;
   const steel = createSteel({
     apiKey: config.steelApiKey,
@@ -196,7 +208,7 @@ export function createRunResources(
     maxSessions: config.browserMaxSessions,
     idleTtlMs: config.browserIdleTtlMs,
   });
-  return { modelAdapter, leafAdapter, steel, browserSessionPool };
+  return { modelAdapter, leafAdapter, recorder, steel, browserSessionPool };
 }
 
 function resolveVerifierPanel(

@@ -6,6 +6,7 @@ import type {
   UsageSummary,
 } from "./model.js";
 import type { FetchedSource, SourceDocument, CitedSource } from "./sources.js";
+import type { RecordedStep } from "./recording.js";
 import {
   resolveSearchProvider,
   type SearchProvider,
@@ -106,6 +107,12 @@ export interface ResearchResult {
   citationsNotFetched: string[];
   finishReason: string;
   sourceDocuments?: SourceDocument[];
+  /**
+   * Byte-exact transcript of every model step taken during the run — present
+   * only when `recordTranscript` is set. Heavy: the messages array is
+   * cumulative across steps. Intended for offline analysis, not live use.
+   */
+  transcript?: RecordedStep[];
   usage: UsageSummary;
 }
 
@@ -151,6 +158,13 @@ export interface RunOptions {
   finalizeProviderOptions?: ProviderOptions;
   includeSourceDocuments?: boolean;
   verifierPanel?: VerifierPanelMode;
+  /**
+   * Capture a byte-exact transcript of every model step (lead, verifiers, leaf,
+   * synthesis) onto `result.transcript`. Off by default — it holds the full,
+   * cumulative message thread per step in memory, so reserve it for evals and
+   * offline inspection rather than production runs.
+   */
+  recordTranscript?: boolean;
 }
 
 export interface ResearchOptions extends RunOptions {
@@ -342,6 +356,9 @@ async function runResearch(
       finishReason: loop.finishReason,
       ...(opts.includeSourceDocuments
         ? { sourceDocuments: [...ctx.store.sourceDocuments.values()] }
+        : {}),
+      ...(resources.recorder
+        ? { transcript: resources.recorder.steps }
         : {}),
       ...(structured
         ? { data: structured.data, basis: structured.basis }

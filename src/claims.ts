@@ -5,6 +5,7 @@ import {
   type ResearchCtx,
 } from "./runtime.js";
 import type { SourceDocument } from "./sources.js";
+import { withRole } from "./recording.js";
 import { errorMessage } from "./errors.js";
 
 export type ClaimImportance = "central" | "supporting" | "tangential";
@@ -200,18 +201,20 @@ async function extractClaims(
   document: SourceDocument,
 ): Promise<ExtractionOutcome> {
   const model = ctx.deps.leafModel ?? ctx.deps.model;
-  const result = await model.step({
-    system: EXTRACTION_SYSTEM_PROMPT,
-    messages: [
-      {
-        role: "user",
-        content: extractionPrompt(ctx.scope.query ?? "", document),
-      },
-    ],
-    maxTokens: EXTRACTION_MAX_TOKENS,
-    outputSchema: EXTRACTION_OUTPUT_SCHEMA,
-    signal: ctx.deps.signal,
-  });
+  const result = await withRole("extract", () =>
+    model.step({
+      system: EXTRACTION_SYSTEM_PROMPT,
+      messages: [
+        {
+          role: "user",
+          content: extractionPrompt(ctx.scope.query ?? "", document),
+        },
+      ],
+      maxTokens: EXTRACTION_MAX_TOKENS,
+      outputSchema: EXTRACTION_OUTPUT_SCHEMA,
+      signal: ctx.deps.signal,
+    }),
+  );
   const textBlock = result.content.find(
     (block): block is { type: "text"; text: string } => block.type === "text",
   );

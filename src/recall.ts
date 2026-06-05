@@ -1,5 +1,6 @@
 import type { ModelOutputSchema } from "./model.js";
 import { researchBudgetExhaustedReason, type ResearchCtx } from "./runtime.js";
+import { withRole } from "./recording.js";
 import type { ResearchClaim } from "./claims.js";
 import { runSearchQueries, type MergedSearchResult } from "./search-tool.js";
 import { execFetch } from "./fetch-tool.js";
@@ -137,13 +138,15 @@ export async function scopeQuestion(
   question: string,
 ): Promise<{ strategy: string; angles: ResearchAngle[] }> {
   try {
-    const result = await ctx.deps.model.step({
-      system: SCOPE_SYSTEM_PROMPT,
-      messages: [{ role: "user", content: scopePrompt(question) }],
-      maxTokens: SCOPE_MAX_TOKENS,
-      outputSchema: SCOPE_OUTPUT_SCHEMA,
-      signal: ctx.deps.signal,
-    });
+    const result = await withRole("recall.scope", () =>
+      ctx.deps.model.step({
+        system: SCOPE_SYSTEM_PROMPT,
+        messages: [{ role: "user", content: scopePrompt(question) }],
+        maxTokens: SCOPE_MAX_TOKENS,
+        outputSchema: SCOPE_OUTPUT_SCHEMA,
+        signal: ctx.deps.signal,
+      }),
+    );
     const textBlock = result.content.find(
       (block): block is { type: "text"; text: string } => block.type === "text",
     );
@@ -373,13 +376,15 @@ async function triageCandidates(
   if (researchBudgetExhaustedReason(ctx)) return null;
   const model = ctx.deps.leafModel ?? ctx.deps.model;
   try {
-    const result = await model.step({
-      system: TRIAGE_SYSTEM_PROMPT,
-      messages: [{ role: "user", content: triagePrompt(target, candidates) }],
-      maxTokens: TRIAGE_MAX_TOKENS,
-      outputSchema: TRIAGE_OUTPUT_SCHEMA,
-      signal: ctx.deps.signal,
-    });
+    const result = await withRole("recall.triage", () =>
+      model.step({
+        system: TRIAGE_SYSTEM_PROMPT,
+        messages: [{ role: "user", content: triagePrompt(target, candidates) }],
+        maxTokens: TRIAGE_MAX_TOKENS,
+        outputSchema: TRIAGE_OUTPUT_SCHEMA,
+        signal: ctx.deps.signal,
+      }),
+    );
     const textBlock = result.content.find(
       (block): block is { type: "text"; text: string } => block.type === "text",
     );

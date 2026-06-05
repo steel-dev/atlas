@@ -2,6 +2,7 @@ import { asSchema, type FlexibleSchema } from "ai";
 import type { ModelOutputSchema, ModelStepResult } from "./model.js";
 import type { ResearchCtx } from "./runtime.js";
 import type { ResearchClaim } from "./claims.js";
+import { withRole } from "./recording.js";
 
 export interface BasisCitation {
   sourceId?: string;
@@ -209,22 +210,24 @@ export async function synthesizeStructured<T>(
   },
 ): Promise<StructuredOutput<T>> {
   const jsonSchemaObject = await Promise.resolve(asSchema(opts.schema).jsonSchema);
-  const dataResult = await ctx.deps.model.step({
-    system: DATA_SYSTEM_PROMPT,
-    messages: [
-      {
-        role: "user",
-        content: dataPrompt(opts.question, opts.confirmed, opts.candidates),
+  const dataResult = await withRole("structured.data", () =>
+    ctx.deps.model.step({
+      system: DATA_SYSTEM_PROMPT,
+      messages: [
+        {
+          role: "user",
+          content: dataPrompt(opts.question, opts.confirmed, opts.candidates),
+        },
+      ],
+      maxTokens: DATA_MAX_TOKENS,
+      outputSchema: {
+        name: "structured_output",
+        schema: jsonSchemaObject as Record<string, unknown>,
       },
-    ],
-    maxTokens: DATA_MAX_TOKENS,
-    outputSchema: {
-      name: "structured_output",
-      schema: jsonSchemaObject as Record<string, unknown>,
-    },
-    providerOptions: ctx.config.finalizeProviderOptions,
-    signal: ctx.deps.signal,
-  });
+      providerOptions: ctx.config.finalizeProviderOptions,
+      signal: ctx.deps.signal,
+    }),
+  );
   const data = parseData<T>(extractText(dataResult));
 
   const paths = leafPaths(data);
@@ -236,19 +239,21 @@ export async function synthesizeStructured<T>(
 
   const numbered = [...opts.confirmed, ...opts.candidates];
   try {
-    const attributionResult = await ctx.deps.model.step({
-      system: ATTRIBUTION_SYSTEM_PROMPT,
-      messages: [
-        {
-          role: "user",
-          content: attributionPrompt(opts.question, data, numbered, paths),
-        },
-      ],
-      maxTokens: ATTRIBUTION_MAX_TOKENS,
-      outputSchema: ATTRIBUTION_SCHEMA,
-      providerOptions: ctx.config.finalizeProviderOptions,
-      signal: ctx.deps.signal,
-    });
+    const attributionResult = await withRole("structured.basis", () =>
+      ctx.deps.model.step({
+        system: ATTRIBUTION_SYSTEM_PROMPT,
+        messages: [
+          {
+            role: "user",
+            content: attributionPrompt(opts.question, data, numbered, paths),
+          },
+        ],
+        maxTokens: ATTRIBUTION_MAX_TOKENS,
+        outputSchema: ATTRIBUTION_SCHEMA,
+        providerOptions: ctx.config.finalizeProviderOptions,
+        signal: ctx.deps.signal,
+      }),
+    );
     const pathSet = new Set(paths);
     for (const field of parseAttribution(extractText(attributionResult))) {
       if (!pathSet.has(field.path)) continue;

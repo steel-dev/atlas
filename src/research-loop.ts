@@ -22,6 +22,7 @@ import {
   LEAD_SYSTEM_PROMPT,
   leadAnchorPrompt,
 } from "./tool-contract.js";
+import { withRole } from "./recording.js";
 import type { RecallOutcome } from "./recall.js";
 import type { ResearchClaim } from "./claims.js";
 
@@ -225,14 +226,16 @@ export async function runGapLoop(opts: {
 
     let content: ModelAssistantBlock[];
     try {
-      const resp = await ctx.deps.model.step({
-        system: systemPrompt,
-        tools,
-        messages,
-        maxTokens: ctx.config.maxOutputTokens ?? 2048,
-        providerOptions: ctx.config.exploreProviderOptions,
-        signal: ctx.deps.signal,
-      });
+      const resp = await withRole("lead", () =>
+        ctx.deps.model.step({
+          system: systemPrompt,
+          tools,
+          messages,
+          maxTokens: ctx.config.maxOutputTokens ?? 2048,
+          providerOptions: ctx.config.exploreProviderOptions,
+          signal: ctx.deps.signal,
+        }),
+      );
       content = resp.content;
     } catch (err) {
       if (ctx.deps.signal?.aborted) throw err;
