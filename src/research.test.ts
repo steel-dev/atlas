@@ -181,7 +181,7 @@ describe("resolveRunConfig", () => {
 
   afterEach(() => vi.unstubAllEnvs());
 
-  it("derives tool-call and source caps from the token budget", () => {
+  it("uses fixed safety backstops regardless of the token budget", () => {
     clearAtlasEnv();
     const config = resolveRunConfig({
       query: "q",
@@ -191,8 +191,9 @@ describe("resolveRunConfig", () => {
     });
 
     expect(config.agent.tokenLimit).toBe(800_000);
-    expect(config.safetyMaxToolCalls).toBe(100);
-    expect(config.agent.sourceCap).toBe(80);
+    expect(config.safetyMaxToolCalls).toBe(1_500);
+    expect(config.agent.sourceCap).toBe(500);
+    expect(config.agent.verifyTargetConfirmed).toBe(50);
     expect(config.maxConcurrentModelCalls).toBe(8);
     expect(config.leafModel).toBe("m");
     expect(config.timeoutDeadlineAt).toBeUndefined();
@@ -223,7 +224,7 @@ describe("resolveRunConfig", () => {
     expect(config.agent.tokenLimit).toBe(123_000);
   });
 
-  it("sizes caps from the default budget when tokens are unlimited", () => {
+  it("keeps the same backstops when the budget is unlimited", () => {
     clearAtlasEnv();
     const config = resolveRunConfig({
       query: "q",
@@ -233,8 +234,8 @@ describe("resolveRunConfig", () => {
     });
 
     expect(config.agent.tokenLimit).toBe(0);
-    expect(config.safetyMaxToolCalls).toBe(250);
-    expect(config.agent.sourceCap).toBe(100);
+    expect(config.safetyMaxToolCalls).toBe(1_500);
+    expect(config.agent.sourceCap).toBe(500);
   });
 
   it("maps the browser provider onto resolved steel config", () => {

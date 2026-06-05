@@ -31,22 +31,19 @@ const DEFAULT_RUNTIME_LIMITS = {
   timeoutSynthesisReserveMs: 180_000,
 };
 
-// Total token budget = the single test-time compute knob. Tool-call and source
-// safety caps are derived from it (and floored) so the token budget — not a
-// hand-tuned effort multiplier — is what governs how far a run scales.
+// Total token budget = the single test-time compute knob. A live token governor
+// (tokenBudgetExhaustedReason) stops the run; the caps below are fixed backstops
+// set generously enough not to bind before the governor, so the budget — not a
+// hand-tuned cap — is what scales a run. They only bind under an unlimited budget.
 const DEFAULT_TOKEN_LIMIT = 2_000_000;
 const DEPTH_TOKEN_LIMITS: Record<ResearchDepth, number> = {
   quick: 500_000,
   standard: 2_000_000,
   deep: 8_000_000,
 };
-const TOKENS_PER_TOOL_CALL = 8_000;
-const TOKENS_PER_SOURCE = 20_000;
-const TOKENS_PER_CONFIRMED_CLAIM = 40_000;
-const MIN_SAFETY_TOOL_CALLS = 40;
-const MIN_SAFETY_SOURCE_CAP = 80;
-const MIN_VERIFY_TARGET = 25;
-const MAX_VERIFY_TARGET = 60;
+const SAFETY_MAX_TOOL_CALLS = 1_500;
+const SAFETY_SOURCE_CAP = 500;
+const VERIFY_TARGET_CONFIRMED = 50;
 
 export const RUNTIME_LIMITS = DEFAULT_RUNTIME_LIMITS;
 
@@ -93,22 +90,11 @@ export function resolveRunConfig(opts: RunInput): ResolvedRunConfig {
     (opts.depth ? DEPTH_TOKEN_LIMITS[opts.depth] : undefined) ??
     readIntEnv("ATLAS_TOKEN_LIMIT", 0) ??
     DEFAULT_TOKEN_LIMIT;
-  const effectiveLimitForCaps =
-    tokenLimit > 0 ? tokenLimit : DEFAULT_TOKEN_LIMIT;
 
   const agent: ResearchConfig = {
     useProxy,
-    sourceCap: Math.max(
-      MIN_SAFETY_SOURCE_CAP,
-      Math.ceil(effectiveLimitForCaps / TOKENS_PER_SOURCE),
-    ),
-    verifyTargetConfirmed: Math.min(
-      MAX_VERIFY_TARGET,
-      Math.max(
-        MIN_VERIFY_TARGET,
-        Math.ceil(effectiveLimitForCaps / TOKENS_PER_CONFIRMED_CLAIM),
-      ),
-    ),
+    sourceCap: SAFETY_SOURCE_CAP,
+    verifyTargetConfirmed: VERIFY_TARGET_CONFIRMED,
     maxOutputTokens: limits.maxOutputTokens,
     defaultSearchLimit: limits.defaultSearchLimit,
     maxConcurrentTools: limits.maxConcurrentTools,
@@ -129,10 +115,7 @@ export function resolveRunConfig(opts: RunInput): ResolvedRunConfig {
     steelBaseUrl:
       browser?.baseUrl ?? readEnv("ATLAS_STEEL_BASE_URL", "STEEL_BASE_URL"),
     useProxy,
-    safetyMaxToolCalls: Math.max(
-      MIN_SAFETY_TOOL_CALLS,
-      Math.ceil(effectiveLimitForCaps / TOKENS_PER_TOOL_CALL),
-    ),
+    safetyMaxToolCalls: SAFETY_MAX_TOOL_CALLS,
     maxConcurrentModelCalls:
       readIntEnv("ATLAS_MAX_CONCURRENT_MODEL_CALLS", 1) ??
       limits.maxConcurrentModelCalls,
