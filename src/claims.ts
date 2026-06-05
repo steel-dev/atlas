@@ -1,7 +1,7 @@
 import { type ModelOutputSchema } from "./model.js";
 import {
   createConcurrencyGate,
-  tokenBudgetExhaustedReason,
+  researchBudgetExhaustedReason,
   type ResearchCtx,
 } from "./runtime.js";
 import type { SourceDocument } from "./sources.js";
@@ -271,7 +271,7 @@ export function createClaimLedger(): ClaimLedger {
     if (queuedSourceIds.has(document.sourceId)) return;
     queuedSourceIds.add(document.sourceId);
     if (!isEvidenceSource(document)) return;
-    if (tokenBudgetExhaustedReason(ctx)) return;
+    if (researchBudgetExhaustedReason(ctx)) return;
 
     const task = gate
       .run(() => extractClaims(ctx, document))

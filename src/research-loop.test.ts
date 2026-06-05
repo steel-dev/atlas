@@ -439,7 +439,7 @@ describe("runGapLoop", () => {
     expect(String(nudge?.content)).toContain("no tool calls and no text");
   });
 
-  it("stops before stepping once the token budget is exhausted", async () => {
+  it("stops before stepping once the research budget is exhausted", async () => {
     const { adapter } = scriptedAdapter([[{ type: "text", text: "unused" }]]);
     adapter.usage.input_tokens = 10_000;
     const ctx = makeCtx({ adapter, tokenLimit: 1_000 });
@@ -451,7 +451,7 @@ describe("runGapLoop", () => {
       maxToolCalls: 10,
     });
 
-    expect(result.finishReason).toBe("token budget exhausted");
+    expect(result.finishReason).toBe("research budget exhausted");
     expect(result.gapsNote).toBe("");
   });
 

@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { tokenBudgetExhaustedReason, type ResearchCtx } from "./runtime.js";
+import {
+  researchBudgetExhaustedReason,
+  tokenBudgetExhaustedReason,
+  type ResearchCtx,
+} from "./runtime.js";
 import { emptyUsageSummary, type ModelAdapter } from "./model.js";
 
 function adapterWithTokens(outputTokens: number): ModelAdapter {
@@ -50,5 +54,27 @@ describe("tokenBudgetExhaustedReason", () => {
     const leafModel = adapterWithTokens(2000);
     const ctx = budgetCtx({ tokenLimit: 1000, model, leafModel });
     expect(tokenBudgetExhaustedReason(ctx)).toBe("token budget exhausted");
+  });
+});
+
+describe("researchBudgetExhaustedReason", () => {
+  it("returns null when no token limit is set", () => {
+    const model = adapterWithTokens(10_000);
+    expect(
+      researchBudgetExhaustedReason(budgetCtx({ tokenLimit: 0, model })),
+    ).toBeNull();
+  });
+
+  it("reserves a verify slice: stops research before the full limit", () => {
+    const model = adapterWithTokens(900);
+    const ctx = budgetCtx({ tokenLimit: 1000, model });
+    expect(researchBudgetExhaustedReason(ctx)).toBe("research budget exhausted");
+    expect(tokenBudgetExhaustedReason(ctx)).toBeNull();
+  });
+
+  it("keeps research running below the reserve threshold", () => {
+    const model = adapterWithTokens(700);
+    const ctx = budgetCtx({ tokenLimit: 1000, model });
+    expect(researchBudgetExhaustedReason(ctx)).toBeNull();
   });
 });

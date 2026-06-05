@@ -7,7 +7,7 @@ import {
 import {
   stopRequestedReason,
   timeoutSynthesisReason,
-  tokenBudgetExhaustedReason,
+  researchBudgetExhaustedReason,
   type ResearchCtx,
 } from "./runtime.js";
 import {
@@ -204,7 +204,7 @@ export async function runGapLoop(opts: {
     const breakReason =
       stopRequestedReason(ctx) ??
       timeoutSynthesisReason(ctx) ??
-      tokenBudgetExhaustedReason(ctx);
+      researchBudgetExhaustedReason(ctx);
     if (breakReason) {
       finishReason = breakReason;
       break;

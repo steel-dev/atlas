@@ -1,5 +1,5 @@
 import type { ModelOutputSchema } from "./model.js";
-import { tokenBudgetExhaustedReason, type ResearchCtx } from "./runtime.js";
+import { researchBudgetExhaustedReason, type ResearchCtx } from "./runtime.js";
 import type { ResearchClaim } from "./claims.js";
 import { runSearchQueries, type MergedSearchResult } from "./search-tool.js";
 import { execFetch } from "./fetch-tool.js";
@@ -370,7 +370,7 @@ async function triageCandidates(
   candidates: MergedSearchResult[],
 ): Promise<Map<number, TriageVerdict> | null> {
   if (candidates.length < 2) return null;
-  if (tokenBudgetExhaustedReason(ctx)) return null;
+  if (researchBudgetExhaustedReason(ctx)) return null;
   const model = ctx.deps.leafModel ?? ctx.deps.model;
   try {
     const result = await model.step({

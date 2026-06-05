@@ -262,6 +262,17 @@ export function tokenBudgetExhaustedReason(ctx: ResearchCtx): string | null {
   return "token budget exhausted";
 }
 
+const VERIFY_BUDGET_RESERVE = 0.2;
+
+export function researchBudgetExhaustedReason(ctx: ResearchCtx): string | null {
+  const limit = ctx.config.tokenLimit;
+  if (!limit || limit <= 0) return null;
+  if (totalUsedTokens(ctx.deps) < limit * (1 - VERIFY_BUDGET_RESERVE)) {
+    return null;
+  }
+  return "research budget exhausted";
+}
+
 export function stopRequestedReason(ctx: ResearchCtx): string | null {
   return ctx.deps.stopSignal?.aborted ? "stop requested" : null;
 }
