@@ -11,11 +11,13 @@ import { Atlas } from "./atlas.js";
 import { resolveModelSpec } from "./config-resolution.js";
 import { steel } from "./steel.js";
 import { exa, brave, type SearchProvider } from "./search-provider.js";
+import { serve } from "./serve.js";
 
 const USAGE = `atlas — deep research from your terminal
 
 Usage:
   atlas "<question>" [options]
+  atlas serve [options]       Launch the local web UI (atlas serve --help)
 
 A research lifecycle scopes the question, searches it from several angles,
 extracts verbatim-quoted claims, chases gaps, adversarially verifies every
@@ -58,6 +60,34 @@ Examples:
   atlas "..." --proxy
   atlas "..." --timeout 300
   atlas "..." --json 2> events.jsonl > report.md
+`;
+
+const SERVE_USAGE = `atlas serve — local web UI for deep research
+
+Usage:
+  atlas serve [options]
+
+Starts a local server with a web UI. Open the printed URL, ask a question, and
+watch the research stream live — angles, sources, claim verification — ending in
+a cited Markdown report. One run per request; single instance, in-memory.
+
+Options:
+      --port N                Port to listen on (default: 4317)
+      --host HOST             Host to bind (default: 127.0.0.1)
+      --provider PROVIDER     Model provider: anthropic, openai (default: auto)
+      --search-provider NAME  Search backend: web, exa, brave (default: web)
+      --model MODEL           Model name (default: provider-specific)
+      --leaf-model MODEL      Model for claim extraction and verifier voters
+      --proxy                 Route Steel search and fetch requests through proxy
+  -h, --help                  Show this help
+
+Environment:
+  Same keys as 'atlas' — ANTHROPIC_API_KEY / OPENAI_API_KEY and STEEL_API_KEY.
+
+Examples:
+  atlas serve
+  atlas serve --port 8080
+  atlas serve --provider openai --model gpt-5.5
 `;
 
 const VERSION = (
@@ -224,6 +254,11 @@ function prettyEventBody(e: ResearchEvent): string {
         paint(YELLOW, "    ! citations not fetched:") +
         ` ${e.count} cited URL${e.count === 1 ? "" : "s"} Atlas did not read`
       );
+    case "synthesis_failed":
+      return paint(
+        YELLOW,
+        `    ! synthesis failed (${e.reason}${e.error ? `: ${e.error}` : ""}) — falling back to raw claims`,
+      );
     case "written":
       return (
         paint(GREEN, "✓") +
@@ -265,7 +300,62 @@ function writeCompletionSummary(result: ResearchResult, json: boolean): void {
   process.stderr.write(prettyEvent({ type: "completed", result }) + "\n");
 }
 
+async function runServe(argv: string[]): Promise<void> {
+  const parsed = (() => {
+    try {
+      return parseArgs({
+        args: argv,
+        allowPositionals: false,
+        options: {
+          port: { type: "string" },
+          host: { type: "string" },
+          provider: { type: "string" },
+          model: { type: "string" },
+          "leaf-model": { type: "string" },
+          "search-provider": { type: "string" },
+          proxy: { type: "boolean" },
+          help: { type: "boolean", short: "h" },
+        },
+      });
+    } catch (err) {
+      fail(err instanceof Error ? err.message : String(err));
+    }
+  })();
+  const { values } = parsed;
+
+  if (values.help) {
+    process.stdout.write(SERVE_USAGE);
+    return;
+  }
+
+  const port = values.port === undefined ? 4317 : Number(values.port);
+  if (!Number.isInteger(port) || port < 0 || port > 65535) {
+    fail(`--port must be a valid port 0-65535 (got "${values.port}")`);
+  }
+  const provider = parseProvider(values.provider);
+
+  try {
+    await serve({
+      port,
+      host: values.host ?? "127.0.0.1",
+      ...(provider ? { provider } : {}),
+      ...(values.model ? { model: values.model } : {}),
+      ...(values["leaf-model"] ? { leafModel: values["leaf-model"] } : {}),
+      ...(values["search-provider"]
+        ? { searchProvider: values["search-provider"] }
+        : {}),
+      ...(values.proxy === true ? { proxy: true } : {}),
+    });
+  } catch (err) {
+    fail(err instanceof Error ? err.message : String(err));
+  }
+}
+
 async function main(): Promise<void> {
+  if (process.argv[2] === "serve") {
+    await runServe(process.argv.slice(3));
+    return;
+  }
   const parsed = (() => {
     try {
       return parseArgs({

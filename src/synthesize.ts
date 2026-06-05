@@ -7,7 +7,7 @@ import { type ResearchCtx } from "./runtime.js";
 import type { ClaimConfidence, ResearchClaim } from "./claims.js";
 import { voteSplit, type VerifySummary } from "./verify.js";
 
-const REPORT_DATA_MAX_TOKENS = 4_096;
+const REPORT_DATA_MAX_TOKENS = 8_192;
 const REPORT_PROSE_MAX_TOKENS = 8_192;
 const REPORT_DATA_MAX_FINDINGS = 12;
 const REPORT_DATA_MAX_ITEMS = 8;

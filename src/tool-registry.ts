@@ -41,6 +41,7 @@ interface ToolHandlerResult {
 export interface ToolHandlerExtras {
   searchIndexRef: { next: number };
   surveyedGoals: string[];
+  question?: string;
 }
 
 type ToolHandler = (
@@ -117,6 +118,7 @@ const RESEARCH_TOOL_REGISTRY: RegisteredTool[] = [
         goal,
         ...(queries ? { queries } : {}),
         searchIndexStart,
+        ...(extras.question ? { question: extras.question } : {}),
       });
       extras.surveyedGoals.push(goal);
       return {

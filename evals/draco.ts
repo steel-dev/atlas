@@ -13,6 +13,7 @@ import {
   type LanguageModel,
   type ModelProvider,
   type ResearchResult,
+  type RunOptions,
   type VerifierPanelMode,
 } from "../src/research.js";
 import { Atlas } from "../src/atlas.js";
@@ -76,6 +77,7 @@ export interface EvalOptions {
   judgeModel?: string;
   judgeTimeoutMs: number;
   judgeConcurrency: number;
+  gradeRuns: number;
   concurrency: number;
   retries: number;
   regrade?: string;
@@ -84,7 +86,7 @@ export interface EvalOptions {
   verifierPanel?: VerifierPanelMode;
 }
 
-interface JudgeSpec {
+export interface JudgeSpec {
   provider: JudgeProvider;
   modelId: string;
   model: LanguageModel;
@@ -98,6 +100,8 @@ export interface CriterionReport {
   verdict: Verdict;
   reason: string;
   judgeError?: string;
+  metVotes?: number;
+  runs?: number;
 }
 
 interface SectionScore {
@@ -109,7 +113,7 @@ interface SectionScore {
   passRate: number;
 }
 
-interface RubricScore {
+export interface RubricScore {
   criteria: number;
   gradedCriteria: number;
   rawScore: number;
@@ -117,10 +121,13 @@ interface RubricScore {
   negativeWeight: number;
   normalizedScore: number;
   passRate: number;
+  normalizedScoreSD?: number;
+  passRateSD?: number;
+  gradingRuns?: number;
   sections: SectionScore[];
 }
 
-interface EvalResult {
+export interface EvalResult {
   type: "result";
   id: string;
   domain: string;
@@ -137,8 +144,8 @@ interface EvalResult {
   metrics?: RunMetrics;
 }
 
-const DRACO_DATASET_REVISION = "ce076749809027649ebd331bcb70f42bf720d387";
-const DEFAULT_CASES_URL = `https://huggingface.co/datasets/perplexity-ai/draco/resolve/${DRACO_DATASET_REVISION}/test.jsonl`;
+export const DRACO_DATASET_REVISION = "ce076749809027649ebd331bcb70f42bf720d387";
+export const DEFAULT_CASES_URL = `https://huggingface.co/datasets/perplexity-ai/draco/resolve/${DRACO_DATASET_REVISION}/test.jsonl`;
 const DEFAULT_SEED = "atlas-draco-v1";
 const DEFAULT_TIMEOUT_MS = 900_000;
 const DEFAULT_JUDGE_TIMEOUT_MS = 120_000;
@@ -471,24 +478,32 @@ function readVerifierPanel(raw: string): VerifierPanelMode {
   fail(`--verifier-panel must be one of: lens, clone (got "${raw}")`);
 }
 
-function parseArgs(argv: string[]): EvalOptions {
-  const caseIds = new Set<string>();
-  const domains = new Set<string>();
-  const opts: EvalOptions = {
+export function buildEvalOptions(
+  overrides: Partial<EvalOptions> = {},
+): EvalOptions {
+  return {
     casesPath: DEFAULT_CASES_URL,
     seed: DEFAULT_SEED,
-    caseIds,
-    domains,
+    caseIds: new Set<string>(),
+    domains: new Set<string>(),
     stratify: "domain",
     timeoutMs: DEFAULT_TIMEOUT_MS,
     grader: "per-criterion",
     judgeTimeoutMs: DEFAULT_JUDGE_TIMEOUT_MS,
     judgeConcurrency: DEFAULT_JUDGE_CONCURRENCY,
+    gradeRuns: 5,
     concurrency: 1,
     retries: 1,
     useProxy: false,
     dryRun: false,
+    ...overrides,
   };
+}
+
+function parseArgs(argv: string[]): EvalOptions {
+  const opts = buildEvalOptions();
+  const caseIds = opts.caseIds;
+  const domains = opts.domains;
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -590,6 +605,11 @@ function parseArgs(argv: string[]): EvalOptions {
       i++;
       continue;
     }
+    if (arg === "--grade-runs") {
+      opts.gradeRuns = readPositiveInt(readValue(argv, i, arg), arg);
+      i++;
+      continue;
+    }
     if (arg === "--concurrency") {
       opts.concurrency = readPositiveInt(readValue(argv, i, arg), arg);
       i++;
@@ -628,7 +648,7 @@ function huggingfaceRevision(pathOrUrl: string): string | null {
   return match ? match[1] : null;
 }
 
-function resolveResearchProvider(
+export function resolveResearchProvider(
   provider: ModelProvider | undefined,
 ): ModelProvider {
   const raw = provider ?? readEnv("ATLAS_PROVIDER");
@@ -641,7 +661,7 @@ function resolveResearchProvider(
   return hasOpenAI && !hasAnthropic ? "openai" : "anthropic";
 }
 
-function resolveResearchModel(
+export function resolveResearchModel(
   provider: ModelProvider,
   model: string | undefined,
 ): string {
@@ -674,7 +694,7 @@ export function buildJudgeSpec(opts: EvalOptions): JudgeSpec {
       "GOOGLE_API_KEY",
     );
     if (!apiKey) {
-      fail(
+      throw new Error(
         "judge: set GOOGLE_GENERATIVE_AI_API_KEY (or GEMINI_API_KEY) for --judge-provider google, " +
           "or use --judge-provider anthropic|openai",
       );
@@ -688,14 +708,14 @@ export function buildJudgeSpec(opts: EvalOptions): JudgeSpec {
   if (provider === "anthropic") {
     const apiKey = readEnv("ATLAS_ANTHROPIC_API_KEY", "ANTHROPIC_API_KEY");
     if (!apiKey)
-      fail(
+      throw new Error(
         "judge: ANTHROPIC_API_KEY is required for --judge-provider anthropic",
       );
     return { provider, modelId, model: createAnthropic({ apiKey })(modelId) };
   }
   const apiKey = readEnv("ATLAS_OPENAI_API_KEY", "OPENAI_API_KEY");
   if (!apiKey)
-    fail("judge: OPENAI_API_KEY is required for --judge-provider openai");
+    throw new Error("judge: OPENAI_API_KEY is required for --judge-provider openai");
   return {
     provider,
     modelId,
@@ -816,7 +836,7 @@ async function readText(pathOrUrl: string): Promise<string> {
   }
 }
 
-async function readCases(path: string): Promise<DracoCase[]> {
+export async function readCases(path: string): Promise<DracoCase[]> {
   const text = await readText(path);
   const trimmed = text.trim();
   if (!trimmed) fail(`cases file is empty: ${path}`);
@@ -1118,25 +1138,54 @@ export async function gradeRubric(opts: {
   query: string;
   concurrency: number;
   timeoutMs: number;
+  onProgress?: (done: number, total: number) => void;
 }): Promise<CriterionReport[]> {
+  const total = opts.criteria.length;
   if (opts.grader === "one-shot") {
-    return gradeOneShot(
+    opts.onProgress?.(0, total);
+    const report = await gradeOneShot(
       opts.judge,
       opts.criteria,
       opts.response,
       opts.query,
       opts.timeoutMs,
     );
+    opts.onProgress?.(total, total);
+    return report;
   }
-  return mapWithConcurrency(opts.criteria, opts.concurrency, (criterion) =>
-    gradePerCriterion(
-      opts.judge,
-      criterion,
-      opts.response,
-      opts.query,
-      opts.timeoutMs,
-    ),
+  let done = 0;
+  return mapWithConcurrency(
+    opts.criteria,
+    opts.concurrency,
+    async (criterion) => {
+      const report = await gradePerCriterion(
+        opts.judge,
+        criterion,
+        opts.response,
+        opts.query,
+        opts.timeoutMs,
+      );
+      opts.onProgress?.(++done, total);
+      return report;
+    },
   );
+}
+
+export function buildResearchRunOptions(opts: EvalOptions): RunOptions {
+  return {
+    timeoutMs: opts.timeoutMs,
+    tokenLimit: opts.tokenLimit,
+    includeSourceDocuments: true,
+    ...(opts.verifierPanel ? { verifierPanel: opts.verifierPanel } : {}),
+    exploreProviderOptions: {
+      anthropic: { thinking: { type: "adaptive" }, effort: "max" },
+      openai: { reasoningEffort: "high" },
+    },
+    finalizeProviderOptions: {
+      anthropic: { thinking: { type: "adaptive" }, effort: "max" },
+      openai: { reasoningEffort: "high" },
+    },
+  };
 }
 
 async function runResearch(
@@ -1156,20 +1205,7 @@ async function runResearch(
         })),
         browser: steel({ proxy: opts.useProxy }),
       });
-      const run = atlas.stream(entry.problem, {
-        timeoutMs: opts.timeoutMs,
-        tokenLimit: opts.tokenLimit,
-        includeSourceDocuments: true,
-        ...(opts.verifierPanel ? { verifierPanel: opts.verifierPanel } : {}),
-        exploreProviderOptions: {
-          anthropic: { thinking: { type: "adaptive" }, effort: "max" },
-          openai: { reasoningEffort: "high" },
-        },
-        finalizeProviderOptions: {
-          anthropic: { thinking: { type: "adaptive" }, effort: "max" },
-          openai: { reasoningEffort: "high" },
-        },
-      });
+      const run = atlas.stream(entry.problem, buildResearchRunOptions(opts));
       for await (const event of run.events) {
         const traced = traceEvent(event, started);
         if (traced) trace.push(traced);
@@ -1194,6 +1230,118 @@ async function runResearch(
   throw lastError;
 }
 
+function std(values: number[]): number {
+  if (values.length < 2) return 0;
+  const m = mean(values);
+  return Math.sqrt(mean(values.map((v) => (v - m) ** 2)));
+}
+
+export function aggregateGrading(
+  reports: CriterionReport[][],
+  entry: DracoCase,
+): { report: CriterionReport[]; score?: RubricScore } {
+  const runs = reports.length;
+  if (runs <= 1) {
+    const report = reports[0] ?? [];
+    const judgeErrors = report.filter((r) => r.judgeError).length;
+    const score =
+      judgeErrors < report.length ? buildScore(report, entry) : undefined;
+    return { report, score };
+  }
+  const perRun = reports.map((r) => buildScore(r, entry));
+  const aggReport: CriterionReport[] = entry.criteria.map((_criterion, j) => {
+    const cells = reports.map((r) => r[j]).filter(Boolean);
+    const base = cells[0];
+    const metVotes = cells.filter((c) => c.verdict === "MET").length;
+    const verdict: Verdict = metVotes * 2 >= cells.length ? "MET" : "UNMET";
+    const reason =
+      cells.find((c) => c.verdict === verdict && c.reason)?.reason ??
+      base.reason;
+    const allErrored = cells.every((c) => c.judgeError);
+    return {
+      sectionId: base.sectionId,
+      id: base.id,
+      requirement: base.requirement,
+      weight: base.weight,
+      verdict,
+      reason,
+      metVotes,
+      runs: cells.length,
+      ...(allErrored ? { judgeError: base.judgeError } : {}),
+    };
+  });
+  const judgeErrors = aggReport.filter((r) => r.judgeError).length;
+  if (judgeErrors >= aggReport.length) return { report: aggReport };
+  const baseScore = buildScore(aggReport, entry);
+  const sections = baseScore.sections.map((sec) => {
+    const vals = perRun
+      .map((s) => s.sections.find((x) => x.id === sec.id))
+      .filter((x): x is SectionScore => Boolean(x));
+    return {
+      ...sec,
+      normalizedScore: mean(vals.map((v) => v.normalizedScore)),
+      passRate: mean(vals.map((v) => v.passRate)),
+    };
+  });
+  const score: RubricScore = {
+    ...baseScore,
+    normalizedScore: mean(perRun.map((s) => s.normalizedScore)),
+    passRate: mean(perRun.map((s) => s.passRate)),
+    normalizedScoreSD: std(perRun.map((s) => s.normalizedScore)),
+    passRateSD: std(perRun.map((s) => s.passRate)),
+    gradingRuns: runs,
+    sections,
+  };
+  return { report: aggReport, score };
+}
+
+export async function gradeResearch(
+  entry: DracoCase,
+  opts: EvalOptions,
+  judge: JudgeSpec,
+  result: ResearchResult,
+  trace: EvalTraceEvent[],
+  startedAt: number,
+  onGradeProgress?: (done: number, total: number) => void,
+): Promise<EvalResult> {
+  const runs = Math.max(1, opts.gradeRuns ?? 1);
+  const total = entry.criteria.length * runs;
+  const reports: CriterionReport[][] = [];
+  for (let run = 0; run < runs; run++) {
+    const offset = run * entry.criteria.length;
+    const rep = await gradeRubric({
+      judge,
+      grader: opts.grader,
+      criteria: entry.criteria,
+      response: result.markdown,
+      query: entry.problem,
+      concurrency: opts.judgeConcurrency,
+      timeoutMs: opts.judgeTimeoutMs,
+      onProgress: (done) => onGradeProgress?.(offset + done, total),
+    });
+    reports.push(rep);
+  }
+  const { report, score } = aggregateGrading(reports, entry);
+  const judgeErrors = report.filter((r) => r.judgeError).length;
+  const latencyMs = Date.now() - startedAt;
+  const metrics = summarizeRun(result);
+  return {
+    type: "result",
+    id: entry.id,
+    domain: entry.domain,
+    problem: entry.problem,
+    ...(score ? { score } : {}),
+    report,
+    ...(judgeErrors ? { judgeErrors } : {}),
+    finishReason: result.finishReason,
+    markdown: result.markdown,
+    latencyMs,
+    trace,
+    diagnostics: buildDiagnostics({ trace, latencyMs, metrics }),
+    metrics,
+  };
+}
+
 async function runCase(
   entry: DracoCase,
   opts: EvalOptions,
@@ -1215,47 +1363,30 @@ async function runCase(
     process.stderr.write(
       `eval:draco: ${entry.id}: judging ${entry.criteria.length} criteria (${opts.grader}, ${judge.provider}/${judge.modelId})\n`,
     );
-    const report = await gradeRubric({
+    const evalResult = await gradeResearch(
+      entry,
+      opts,
       judge,
-      grader: opts.grader,
-      criteria: entry.criteria,
-      response: result.markdown,
-      query: entry.problem,
-      concurrency: opts.judgeConcurrency,
-      timeoutMs: opts.judgeTimeoutMs,
-    });
-    const judgeErrors = report.filter((r) => r.judgeError).length;
-    const score =
-      judgeErrors < report.length ? buildScore(report, entry) : undefined;
-    const latencyMs = Date.now() - started;
-    const metrics = summarizeRun(result);
+      result,
+      trace,
+      started,
+    );
+    const score = evalResult.score;
     if (score) {
       process.stderr.write(
         `eval:draco: ${entry.id} [${entry.domain}]: score ${(score.normalizedScore * 100).toFixed(1)}% ` +
           `pass ${(score.passRate * 100).toFixed(1)}% (${score.gradedCriteria}/${score.criteria} criteria graded${
-            judgeErrors ? `, ${judgeErrors} judge error(s)` : ""
+            evalResult.judgeErrors
+              ? `, ${evalResult.judgeErrors} judge error(s)`
+              : ""
           })\n`,
       );
     } else {
       process.stderr.write(
-        `eval:draco: ${entry.id} [${entry.domain}]: UNGRADED — all ${report.length} criteria errored on the judge\n`,
+        `eval:draco: ${entry.id} [${entry.domain}]: UNGRADED — all ${evalResult.report?.length ?? 0} criteria errored on the judge\n`,
       );
     }
-    return {
-      type: "result",
-      id: entry.id,
-      domain: entry.domain,
-      problem: entry.problem,
-      ...(score ? { score } : {}),
-      report,
-      ...(judgeErrors ? { judgeErrors } : {}),
-      finishReason: result.finishReason,
-      markdown: result.markdown,
-      latencyMs,
-      trace,
-      diagnostics: buildDiagnostics({ trace, latencyMs, metrics }),
-      metrics,
-    };
+    return evalResult;
   } catch (err) {
     clearInterval(heartbeat);
     const latencyMs = Date.now() - started;

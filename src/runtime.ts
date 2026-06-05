@@ -389,4 +389,5 @@ export type ResearchLoopEvent =
     }
   | { type: "report_boundary" }
   | { type: "report_delta"; text: string }
+  | { type: "synthesis_failed"; reason: string; error?: string }
   | { type: "tool_event"; tool: string; data: unknown };

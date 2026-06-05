@@ -440,7 +440,9 @@ async function buildReport(
       refuted,
       ...(gapsNote ? { gapsNote } : {}),
     });
-    if (data) {
+    if (!data) {
+      ctx.scope.emit({ type: "synthesis_failed", reason: "report_data_empty" });
+    } else {
       const markdown = await writeReportProse(ctx, { question, data });
       if (markdown) {
         return {
@@ -449,9 +451,15 @@ async function buildReport(
           openQuestions: data.openQuestions,
         };
       }
+      ctx.scope.emit({ type: "synthesis_failed", reason: "prose_empty" });
     }
   } catch (err) {
     if (ctx.deps.signal?.aborted) throw err;
+    ctx.scope.emit({
+      type: "synthesis_failed",
+      reason: "threw",
+      error: err instanceof Error ? err.message : String(err),
+    });
   }
   return confirmed.length > 0
     ? {

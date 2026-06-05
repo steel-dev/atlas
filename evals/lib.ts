@@ -114,6 +114,7 @@ export type EvalTraceEvent = {
   title?: string;
   method?: string;
   error?: string;
+  reason?: string;
   retryAfterSeconds?: number;
   attempt?: number;
   maxAttempts?: number;
@@ -249,6 +250,12 @@ export function traceEvent(
         tool: event.tool,
         ...(event.data !== undefined ? { data: event.data } : {}),
       };
+    case "synthesis_failed":
+      return {
+        ...base,
+        reason: event.reason,
+        ...(event.error ? { error: event.error } : {}),
+      };
     case "research_started":
     case "report_boundary":
     case "report_delta":
@@ -297,6 +304,8 @@ export function progressLine(
       return `${caseId}: ${event.count} citation(s) not fetched`;
     case "written":
       return `${caseId}: wrote ${event.markdownChars} markdown chars`;
+    case "synthesis_failed":
+      return `${caseId}: synthesis failed (${event.reason}${event.error ? `: ${event.error}` : ""}) — falling back to raw claims`;
     case "completed":
     case "research_started":
     case "report_boundary":

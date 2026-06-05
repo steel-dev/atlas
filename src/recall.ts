@@ -491,6 +491,7 @@ export async function runSurvey(
     goal: string;
     queries?: string[];
     searchIndexStart: number;
+    question?: string;
   },
 ): Promise<SurveyOutcome> {
   const queries = readSurveyQueries(opts.goal, opts.queries);
@@ -498,9 +499,12 @@ export async function runSurvey(
     limit: RESULTS_PER_QUERY,
     searchIndexStart: opts.searchIndexStart,
   });
+  const triageTarget = opts.question
+    ? `${opts.question}\n\n(Judge relevance to the question above. Sub-goal currently being pursued: ${opts.goal})`
+    : opts.goal;
   const selection = await selectSourcesToFetch(
     ctx,
-    opts.goal,
+    triageTarget,
     [search.results],
     SURVEY_MAX_FETCH,
   );

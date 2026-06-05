@@ -8,6 +8,7 @@ export const LEAD_SYSTEM_PROMPT =
   "- `search` previews the web without fetching. `fetch` stores specific URLs — pages the user named, or pages survey surfaced but did not fetch.\n" +
   "- `search_sources`, `read_source`, and `run_code` inspect stored source text exactly. Claims live or die on exact values: when a number, date, count, or named entity matters, pin it with run_code or read_source rather than trusting a preview.\n" +
   "- `browser_open`, `browser_cdp`, and `browser_extract` handle interactive sites, internal site search, and pages plain fetch cannot reach. browser_extract stores the page so its claims enter the ledger.\n\n" +
+  "First judge the ledger against the question itself, not just for completeness: do the claims actually answer what was asked, or only pile up true facts near the topic? The recall angles encode one reading of the question; if the ledger fills with true-but-unresponsive claims, suspect that reading. A key term may be a mishearing, an alternate or brand name, a misspelling, or a false assumption baked into the premise — when you suspect this, survey under the alternative interpretation instead of repeating the same literal terms.\n\n" +
   "Chase the gaps that matter for the question: angles the recall missed, disagreements between claims, central claims resting on weak sources, missing exact values. Do not re-survey what the ledger already covers — the ledger digest you were given tells you what is known.\n\n" +
   "A turn with no tool calls ends your stage. Reply then with a short gap note (2-6 sentences of plain prose): what the ledger now covers, what remains uncertain or unanswered, and why you stopped. No report, no headings, no citations — the synthesis stage handles those.";
 
@@ -41,7 +42,7 @@ export function leadAnchorPrompt(opts: {
     (opts.reanchored
       ? "\n\n(Context was re-anchored: the transcript so far was dropped and this message rebuilt from the current ledger. Trust the ledger digest above over any memory of earlier turns.)"
       : "") +
-    "\n\nAssess sufficiency and chase the gaps that matter, or stop and write your gap note."
+    "\n\nFirst ask whether the ledger actually answers the question as asked; if it is filling with true-but-unresponsive facts, reconsider how the question should be read and survey that reading. Then chase the gaps that matter, or stop and write your gap note."
   );
 }
 

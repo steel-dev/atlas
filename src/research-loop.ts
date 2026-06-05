@@ -165,6 +165,7 @@ export async function runGapLoop(opts: {
   const extras: ToolHandlerExtras = {
     searchIndexRef: opts.searchIndexRef ?? { next: recall.searchQueriesRun },
     surveyedGoals: [],
+    question,
   };
 
   const buildAnchor = (reanchored: boolean, pursuit?: string): ModelMessage => ({
