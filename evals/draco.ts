@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { generateObject, jsonSchema } from "ai";
+import { generateObject, jsonSchema, type LanguageModelUsage } from "ai";
 import { createGoogleGenerativeAI } from "@ai-sdk/google";
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { createOpenAI } from "@ai-sdk/openai";
@@ -142,9 +142,11 @@ export interface EvalResult {
   trace: EvalTraceEvent[];
   diagnostics?: EvalDiagnostics;
   metrics?: RunMetrics;
+  judgeUsage?: JudgeUsage;
 }
 
-export const DRACO_DATASET_REVISION = "ce076749809027649ebd331bcb70f42bf720d387";
+export const DRACO_DATASET_REVISION =
+  "ce076749809027649ebd331bcb70f42bf720d387";
 export const DEFAULT_CASES_URL = `https://huggingface.co/datasets/perplexity-ai/draco/resolve/${DRACO_DATASET_REVISION}/test.jsonl`;
 const DEFAULT_SEED = "atlas-draco-v1";
 const DEFAULT_TIMEOUT_MS = 900_000;
@@ -715,7 +717,9 @@ export function buildJudgeSpec(opts: EvalOptions): JudgeSpec {
   }
   const apiKey = readEnv("ATLAS_OPENAI_API_KEY", "OPENAI_API_KEY");
   if (!apiKey)
-    throw new Error("judge: OPENAI_API_KEY is required for --judge-provider openai");
+    throw new Error(
+      "judge: OPENAI_API_KEY is required for --judge-provider openai",
+    );
   return {
     provider,
     modelId,
@@ -1010,12 +1014,42 @@ function baseReport(
   };
 }
 
+export interface JudgeUsage {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadInputTokens: number;
+  cacheWriteInputTokens: number;
+  calls: number;
+}
+
+export function emptyJudgeUsage(): JudgeUsage {
+  return {
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadInputTokens: 0,
+    cacheWriteInputTokens: 0,
+    calls: 0,
+  };
+}
+
+function addJudgeUsage(acc: JudgeUsage, u: LanguageModelUsage): void {
+  const cacheRead =
+    u.inputTokenDetails?.cacheReadTokens ?? u.cachedInputTokens ?? 0;
+  const cacheWrite = u.inputTokenDetails?.cacheWriteTokens ?? 0;
+  acc.inputTokens += Math.max(0, (u.inputTokens ?? 0) - cacheRead - cacheWrite);
+  acc.outputTokens += u.outputTokens ?? 0;
+  acc.cacheReadInputTokens += cacheRead;
+  acc.cacheWriteInputTokens += cacheWrite;
+  acc.calls += 1;
+}
+
 async function gradePerCriterion(
   judge: JudgeSpec,
   criterion: DracoCriterion,
   response: string,
   query: string,
   timeoutMs: number,
+  usage?: JudgeUsage,
 ): Promise<CriterionReport> {
   const criterionType = criterion.weight < 0 ? "negative" : "positive";
   const prompt = `<criterion_type>
@@ -1032,7 +1066,7 @@ ${criterion.requirement}
 ${response}
 </response>`;
   try {
-    const { object } = await generateObject({
+    const { object, usage: u } = await generateObject({
       model: judge.model,
       system: PER_CRITERION_SYSTEM_PROMPT,
       prompt,
@@ -1042,6 +1076,7 @@ ${response}
       maxRetries: 2,
       abortSignal: AbortSignal.timeout(timeoutMs),
     });
+    if (usage) addJudgeUsage(usage, u);
     const value = object as {
       explanation?: unknown;
       criterion_status?: unknown;
@@ -1065,6 +1100,7 @@ async function gradeOneShot(
   response: string,
   query: string,
   timeoutMs: number,
+  usage?: JudgeUsage,
 ): Promise<CriterionReport[]> {
   const criteriaText = criteria
     .map((criterion, index) => {
@@ -1089,7 +1125,7 @@ ${response}
 Provide your evaluation as JSON only.`;
   let evaluations: Array<Record<string, unknown>> = [];
   try {
-    const { object } = await generateObject({
+    const { object, usage: u } = await generateObject({
       model: judge.model,
       system: ONE_SHOT_SYSTEM_PROMPT,
       prompt,
@@ -1099,6 +1135,7 @@ Provide your evaluation as JSON only.`;
       maxRetries: 2,
       abortSignal: AbortSignal.timeout(timeoutMs),
     });
+    if (usage) addJudgeUsage(usage, u);
     const raw = (object as { criteria_evaluations?: unknown })
       .criteria_evaluations;
     if (Array.isArray(raw)) evaluations = raw as Array<Record<string, unknown>>;
@@ -1138,6 +1175,7 @@ export async function gradeRubric(opts: {
   query: string;
   concurrency: number;
   timeoutMs: number;
+  usage?: JudgeUsage;
   onProgress?: (done: number, total: number) => void;
 }): Promise<CriterionReport[]> {
   const total = opts.criteria.length;
@@ -1149,6 +1187,7 @@ export async function gradeRubric(opts: {
       opts.response,
       opts.query,
       opts.timeoutMs,
+      opts.usage,
     );
     opts.onProgress?.(total, total);
     return report;
@@ -1164,6 +1203,7 @@ export async function gradeRubric(opts: {
         opts.response,
         opts.query,
         opts.timeoutMs,
+        opts.usage,
       );
       opts.onProgress?.(++done, total);
       return report;
@@ -1306,6 +1346,7 @@ export async function gradeResearch(
 ): Promise<EvalResult> {
   const runs = Math.max(1, opts.gradeRuns ?? 1);
   const total = entry.criteria.length * runs;
+  const judgeUsage = emptyJudgeUsage();
   const reports: CriterionReport[][] = [];
   for (let run = 0; run < runs; run++) {
     const offset = run * entry.criteria.length;
@@ -1317,6 +1358,7 @@ export async function gradeResearch(
       query: entry.problem,
       concurrency: opts.judgeConcurrency,
       timeoutMs: opts.judgeTimeoutMs,
+      usage: judgeUsage,
       onProgress: (done) => onGradeProgress?.(offset + done, total),
     });
     reports.push(rep);
@@ -1339,6 +1381,7 @@ export async function gradeResearch(
     trace,
     diagnostics: buildDiagnostics({ trace, latencyMs, metrics }),
     metrics,
+    judgeUsage,
   };
 }
 

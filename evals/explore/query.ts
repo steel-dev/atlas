@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Store } from "./store.js";
 import { captureCommit } from "./git.js";
+import { runCost, type RunUsage } from "./pricing.js";
 
 // Read-only, keyless drill-down over the DRACO explorer DB. No model/Steel
 // wiring — it just opens the SQLite store and answers questions about runs
@@ -17,8 +18,10 @@ Usage:
 
 Overview (cheap, start here):
   commits                         List commits with run counts + avg score
-  commit [<sha>] [--baseline <s>] Per-case grid for a commit, Δ vs a baseline
-                                  (defaults: sha=HEAD, baseline=previous commit)
+  commit [<sha>] [--baseline <s>] [--cost]
+                                  Per-case grid for a commit, Δ vs a baseline;
+                                  --cost adds per-case + total USD (defaults:
+                                  sha=HEAD, baseline=previous commit)
 
 Per-case (one case, still compact):
   case <sha> <caseId>             Rubric + per-criterion MET/UNMET + judge
@@ -32,6 +35,7 @@ Evidence (one run — get run_id from \`case\`/\`runs\`):
   citations <runId>               Citation map + not-fetched / not-confirmed
   trace <runId> [--grep RE]       Lightweight pipeline event timeline
   diagnostics <runId>             Aggregate health counters
+  cost <runId>                    Token usage + estimated USD (research + judge)
   blobs <runId>                   Which artifacts this run stored + sizes
 
 Transcript (byte-exact model steps — sliced):
@@ -83,6 +87,7 @@ interface Flags {
   head?: string;
   messages: boolean;
   json: boolean;
+  cost: boolean;
 }
 
 function need(positionals: string[], index: number, name: string): string {
@@ -135,6 +140,29 @@ function cmdCommit(store: Store, positionals: string[], flags: Flags): void {
       runId: r.runId,
     };
   });
+  const costed = flags.cost
+    ? cases.map((c) => ({
+        ...c,
+        estCostUsd: c.runId
+          ? runCost(
+              parseJson(
+                store.getBlob(c.runId, "usage") ?? "null",
+              ) as RunUsage | null,
+            ).totalUsd
+          : null,
+      }))
+    : cases;
+  const totalCostUsd = flags.cost
+    ? Number(
+        costed
+          .reduce(
+            (s, c) =>
+              s + ((c as { estCostUsd?: number | null }).estCostUsd ?? 0),
+            0,
+          )
+          .toFixed(4),
+      )
+    : undefined;
   out({
     commit: sha,
     baseline: baseline ?? null,
@@ -147,6 +175,7 @@ function cmdCommit(store: Store, positionals: string[], flags: Flags): void {
             ).toFixed(4),
           )
         : null,
+    ...(totalCostUsd !== undefined ? { totalCostUsd } : {}),
     scored: scored.length,
     errors: grid.filter((r) => r.status === "error").length,
     unrun: grid.filter((r) => r.status === null).length,
@@ -154,7 +183,7 @@ function cmdCommit(store: Store, positionals: string[], flags: Flags): void {
       .filter((c) => c.delta !== null && c.delta < 0)
       .sort((a, b) => (a.delta ?? 0) - (b.delta ?? 0))
       .map((c) => `${c.caseId} (${c.delta})`),
-    cases,
+    cases: costed,
   });
 }
 
@@ -211,6 +240,9 @@ function cmdCase(store: Store, positionals: string[]): void {
         }
       : null,
     diagnostics: parseJson(detail.diagnostics_json),
+    cost: runCost(
+      parseJson(store.getBlob(runId, "usage") ?? "null") as RunUsage | null,
+    ),
     runs: store
       .listRuns(sha, caseId)
       .map((r) => ({ runId: r.runId, normalized: r.normalized, createdAt: r.createdAt })),
@@ -318,6 +350,12 @@ function cmdTrace(store: Store, positionals: string[], flags: Flags): void {
 
 function cmdDiagnostics(store: Store, positionals: string[]): void {
   out(parseJson(blobOrFail(store, need(positionals, 1, "runId"), "diagnostics")));
+}
+
+function cmdCost(store: Store, positionals: string[]): void {
+  const runId = need(positionals, 1, "runId");
+  const usage = parseJson(blobOrFail(store, runId, "usage")) as RunUsage | null;
+  out({ runId, ...runCost(usage), raw: usage });
 }
 
 function cmdBlobs(store: Store, positionals: string[]): void {
@@ -454,6 +492,7 @@ function main(): void {
       head: { type: "string" },
       messages: { type: "boolean" },
       json: { type: "boolean" },
+      cost: { type: "boolean" },
       help: { type: "boolean", short: "h" },
     },
   });
@@ -477,6 +516,7 @@ function main(): void {
     head: values.head,
     messages: Boolean(values.messages),
     json: Boolean(values.json),
+    cost: Boolean(values.cost),
   };
 
   const store = new Store(flags.db);
@@ -502,6 +542,8 @@ function main(): void {
         return cmdTrace(store, positionals, flags);
       case "diagnostics":
         return cmdDiagnostics(store, positionals);
+      case "cost":
+        return cmdCost(store, positionals);
       case "blobs":
         return cmdBlobs(store, positionals);
       case "transcript":

@@ -81,8 +81,6 @@ ON CONFLICT(case_id) DO UPDATE SET
   criteria_json=excluded.criteria_json, cases_revision=excluded.cases_revision,
   fetched_at=excluded.fetched_at`;
 
-// Selects the single most recent run per (commit, case) — created_at, then
-// run_id, as a deterministic tiebreaker for runs minted in the same millisecond.
 const LATEST_PER_CASE = `
   SELECT * FROM (
     SELECT *, ROW_NUMBER() OVER (
@@ -91,12 +89,12 @@ const LATEST_PER_CASE = `
     FROM runs WHERE commit_sha = ?
   ) WHERE rn = 1`;
 
-/** The heavy per-run artifacts, each stored gzip-compressed under its kind. */
 export type BlobKind =
   | "score"
   | "report"
   | "markdown"
   | "metrics"
+  | "usage"
   | "diagnostics"
   | "trace"
   | "claims"
@@ -129,6 +127,8 @@ export interface PersistableResult {
     inputTokens?: number;
     outputTokens?: number;
   } | null;
+  /** Per-model token usage breakdown for cost: { research, judge }. */
+  usage?: unknown;
   diagnostics?: unknown;
   judgeErrors?: number;
   finishReason?: string;
@@ -261,6 +261,7 @@ function blobPayloads(r: PersistableResult): Array<{
   push("report", r.report);
   push("markdown", r.markdown, true);
   push("metrics", r.metrics);
+  push("usage", r.usage);
   push("diagnostics", r.diagnostics);
   push("trace", r.trace);
   push("claims", r.claims);
@@ -332,9 +333,9 @@ export class Store {
       this.setMeta("migrated_results_v1", "1");
       return;
     }
-    const rows = this.db
-      .prepare("SELECT * FROM results")
-      .all() as Array<Record<string, unknown>>;
+    const rows = this.db.prepare("SELECT * FROM results").all() as Array<
+      Record<string, unknown>
+    >;
     for (const row of rows) {
       const runId = `legacy_${row.commit_sha}_${row.case_id}`;
       this.db.prepare(INSERT_RUN).run({
@@ -527,10 +528,7 @@ export class Store {
   // The latest run for (commit, case), shaped to mirror the old single-row
   // result: scalar columns plus the *_json/markdown artifacts (decompressed
   // from run_blobs) under their legacy names, so the web UI reads it unchanged.
-  detail(
-    commit: string,
-    caseId: string,
-  ): Record<string, unknown> | undefined {
+  detail(commit: string, caseId: string): Record<string, unknown> | undefined {
     const run = this.db
       .prepare(
         `SELECT r.*, c.problem AS case_problem, c.domain AS case_domain,

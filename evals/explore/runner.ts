@@ -9,11 +9,12 @@ import {
   gradeResearch,
   type DracoCase,
   type EvalOptions,
+  type EvalResult,
   type JudgeSpec,
 } from "../draco.js";
 import { traceEvent, type EvalTraceEvent } from "../lib.js";
 import { captureCommit } from "./git.js";
-import type { PersistableResult, Store } from "./store.js";
+import type { Store } from "./store.js";
 
 export type RunPhase =
   | "queued"
@@ -107,8 +108,7 @@ export class DracoRunHost {
     if (!this.judge) throw new Error("judge not configured");
     const dracoCase = this.loadCase(caseId);
     const commit = captureCommit();
-    const id =
-      "run_" + Date.now().toString(36) + (this.counter++).toString(36);
+    const id = "run_" + Date.now().toString(36) + (this.counter++).toString(36);
     const entry: DracoRunEntry = {
       id,
       caseId,
@@ -173,7 +173,10 @@ export class DracoRunHost {
       entry.endedAt = Date.now();
       return true;
     }
-    if (entry.run && (entry.phase === "researching" || entry.phase === "grading")) {
+    if (
+      entry.run &&
+      (entry.phase === "researching" || entry.phase === "grading")
+    ) {
       entry.run.abort();
       return true;
     }
@@ -251,7 +254,8 @@ export class DracoRunHost {
       });
       entry.run = run;
       for await (const event of run.fullStream) {
-        if (event.type === "scope_completed") entry.angles = event.angles.length;
+        if (event.type === "scope_completed")
+          entry.angles = event.angles.length;
         else if (event.type === "source_fetched") entry.sources++;
         else if (
           event.type === "claim_verified" &&
@@ -289,7 +293,11 @@ export class DracoRunHost {
       });
       entry.phase = "persisting";
       this.persist(entry, evalResult, result);
-      push({ type: "persisted", commit: entry.commitSha, caseId: entry.caseId });
+      push({
+        type: "persisted",
+        commit: entry.commitSha,
+        caseId: entry.caseId,
+      });
       entry.phase = "done";
       process.stderr.write(
         `draco-explore: ${entry.caseId} done — ${
@@ -304,7 +312,9 @@ export class DracoRunHost {
       entry.phase = "error";
       this.persistError(entry, message, Date.now() - started);
       push({ type: "error", message });
-      process.stderr.write(`draco-explore: ${entry.caseId} error — ${message}\n`);
+      process.stderr.write(
+        `draco-explore: ${entry.caseId} error — ${message}\n`,
+      );
     } finally {
       entry.endedAt = Date.now();
       for (const fn of entry.subs) fn(null, entry.log.length);
@@ -328,7 +338,7 @@ export class DracoRunHost {
 
   private persist(
     entry: DracoRunEntry,
-    evalResult: PersistableResult,
+    evalResult: EvalResult,
     result: ResearchResult,
   ): void {
     this.store.insertRun(
@@ -342,6 +352,26 @@ export class DracoRunHost {
           citationsNotFetched: result.citationsNotFetched,
         },
         transcript: result.transcript,
+        usage: {
+          research: {
+            input: result.usage.input_tokens,
+            output: result.usage.output_tokens,
+            cacheRead: result.usage.cache_read_input_tokens,
+            cacheWrite: result.usage.cache_creation_input_tokens,
+            model: this.researchModel,
+          },
+          judge: evalResult.judgeUsage
+            ? {
+                input: evalResult.judgeUsage.inputTokens,
+                output: evalResult.judgeUsage.outputTokens,
+                cacheRead: evalResult.judgeUsage.cacheReadInputTokens,
+                cacheWrite: evalResult.judgeUsage.cacheWriteInputTokens,
+                calls: evalResult.judgeUsage.calls,
+                model: this.judge?.modelId ?? null,
+                gradeRuns: this.opts.gradeRuns ?? null,
+              }
+            : null,
+        },
       },
       this.persistMeta(entry),
     );

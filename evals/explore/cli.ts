@@ -36,8 +36,8 @@ Options:
       --judge-model MODEL   Judge model
       --grader MODE         per-criterion | one-shot (default: per-criterion)
       --verifier-panel MODE lens | clone (default: lens)
-      --timeout N           Per-run research timeout in seconds (0 = unlimited)
-      --token-limit N       Per-run token budget (0 = unlimited)
+      --timeout N           Per-run research timeout in seconds (default: 3600; 0 = unlimited)
+      --token-limit N       Per-run token budget (default: 10000000; 0 = unlimited)
       --grade-runs N        Independent judge gradings per case, averaged ± SD (default: 5, DRACO)
       --concurrency N       Max simultaneous runs (default: 1)
       --proxy               Route Steel calls through proxy
@@ -45,6 +45,9 @@ Options:
       --cases URL|FILE      DRACO cases source (default: pinned perplexity-ai/draco)
       -h, --help            Show this help
 `;
+
+const EXPLORE_DEFAULT_TIMEOUT_MS = 3_600_000;
+const EXPLORE_DEFAULT_TOKEN_LIMIT = 10_000_000;
 
 function fail(message: string): never {
   process.stderr.write(`draco-explore: ${message}\n`);
@@ -62,7 +65,9 @@ function parseJudgeProvider(
 ): "google" | "anthropic" | "openai" | undefined {
   if (raw === undefined) return undefined;
   if (raw === "google" || raw === "anthropic" || raw === "openai") return raw;
-  fail(`--judge-provider must be one of: google, anthropic, openai (got "${raw}")`);
+  fail(
+    `--judge-provider must be one of: google, anthropic, openai (got "${raw}")`,
+  );
 }
 
 function parseGrader(
@@ -84,7 +89,8 @@ function parseVerifierPanel(
 function parseSeconds(raw: string | undefined): number | undefined {
   if (raw === undefined) return undefined;
   const n = Number(raw);
-  if (!Number.isFinite(n) || n < 0) fail(`--timeout must be >= 0 (got "${raw}")`);
+  if (!Number.isFinite(n) || n < 0)
+    fail(`--timeout must be >= 0 (got "${raw}")`);
   return n === 0 ? undefined : Math.floor(n * 1000);
 }
 
@@ -161,8 +167,14 @@ async function main(): Promise<void> {
   const judgeProvider = parseJudgeProvider(values["judge-provider"]);
   const grader = parseGrader(values.grader);
   const verifierPanel = parseVerifierPanel(values["verifier-panel"]);
-  const timeoutMs = parseSeconds(values.timeout);
-  const tokenLimit = parseTokenLimit(values["token-limit"]);
+  const timeoutMs =
+    values.timeout !== undefined
+      ? parseSeconds(values.timeout)
+      : EXPLORE_DEFAULT_TIMEOUT_MS;
+  const tokenLimit =
+    values["token-limit"] !== undefined
+      ? parseTokenLimit(values["token-limit"])
+      : EXPLORE_DEFAULT_TOKEN_LIMIT;
   const concurrency = parsePositiveInt(values.concurrency, "--concurrency", 1);
   const gradeRuns = parsePositiveInt(values["grade-runs"], "--grade-runs", 5);
 
@@ -173,8 +185,8 @@ async function main(): Promise<void> {
     judgeModel: values["judge-model"] ?? "claude-opus-4-6",
     ...(grader ? { grader } : {}),
     ...(verifierPanel ? { verifierPanel } : {}),
-    ...(values.timeout !== undefined ? { timeoutMs } : {}),
-    ...(tokenLimit !== undefined ? { tokenLimit } : {}),
+    timeoutMs,
+    tokenLimit,
     gradeRuns,
     ...(values.proxy === true ? { useProxy: true } : {}),
   });
