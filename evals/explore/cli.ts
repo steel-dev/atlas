@@ -8,6 +8,7 @@ import type { ModelProvider, VerifierPanelMode } from "../../src/research.js";
 import {
   buildEvalOptions,
   buildJudgeSpec,
+  effectiveLeafModel,
   resolveResearchModel,
   resolveResearchProvider,
   DEFAULT_CASES_URL,
@@ -31,13 +32,14 @@ Options:
       --port N              Port (default: 4318)
       --host HOST           Bind host (default: 127.0.0.1)
       --provider NAME       Research provider: anthropic, openai
-      --model NAME          Research model
+      --model NAME          Research (lead) model
+      --leaf-model NAME     Leaf model — extraction & verifier voters (default: claude-haiku-4-5 on anthropic)
       --judge-provider P    Judge provider: google, anthropic, openai
       --judge-model MODEL   Judge model
       --grader MODE         per-criterion | one-shot (default: per-criterion)
       --verifier-panel MODE lens | clone (default: lens)
       --timeout N           Per-run research timeout in seconds (default: 3600; 0 = unlimited)
-      --token-limit N       Per-run token budget (default: 10000000; 0 = unlimited)
+      --token-limit N       Per-run token budget (default: 1000000; 0 = unlimited)
       --grade-runs N        Independent judge gradings per case, averaged ± SD (default: 5, DRACO)
       --concurrency N       Max simultaneous runs (default: 1)
       --proxy               Route Steel calls through proxy
@@ -47,7 +49,7 @@ Options:
 `;
 
 const EXPLORE_DEFAULT_TIMEOUT_MS = 3_600_000;
-const EXPLORE_DEFAULT_TOKEN_LIMIT = 10_000_000;
+const EXPLORE_DEFAULT_TOKEN_LIMIT = 1_000_000;
 
 function fail(message: string): never {
   process.stderr.write(`draco-explore: ${message}\n`);
@@ -133,6 +135,7 @@ async function main(): Promise<void> {
           host: { type: "string" },
           provider: { type: "string" },
           model: { type: "string" },
+          "leaf-model": { type: "string" },
           "judge-provider": { type: "string" },
           "judge-model": { type: "string" },
           grader: { type: "string" },
@@ -181,6 +184,7 @@ async function main(): Promise<void> {
   const opts: EvalOptions = buildEvalOptions({
     ...(provider ? { provider } : {}),
     ...(values.model ? { model: values.model } : {}),
+    ...(values["leaf-model"] ? { leafModel: values["leaf-model"] } : {}),
     judgeProvider: judgeProvider ?? "anthropic",
     judgeModel: values["judge-model"] ?? "claude-opus-4-6",
     ...(grader ? { grader } : {}),
@@ -207,9 +211,11 @@ async function main(): Promise<void> {
     );
   }
 
+  const leafModelId = effectiveLeafModel(opts);
   const { model, leafModel } = await resolveModelSpec({
     provider: opts.provider,
     model: opts.model,
+    ...(leafModelId ? { leafModel: leafModelId } : {}),
   });
   const atlas = new Atlas({
     model,
@@ -239,7 +245,7 @@ async function main(): Promise<void> {
   };
 
   process.stderr.write(
-    `draco-explore: profile research=${profile.research} judge=${profile.judge ?? "(none)"} grader=${profile.grader} grade-runs=${profile.gradeRuns} timeout=${
+    `draco-explore: profile research=${profile.research} leaf=${leafModelId ?? researchModel} judge=${profile.judge ?? "(none)"} grader=${profile.grader} grade-runs=${profile.gradeRuns} timeout=${
       opts.timeoutMs ? `${Math.round(opts.timeoutMs / 1000)}s` : "unlimited"
     } tokens=${opts.tokenLimit ?? "unlimited"}\n`,
   );

@@ -72,6 +72,7 @@ export interface EvalOptions {
   tokenLimit?: number;
   provider?: ModelProvider;
   model?: string;
+  leafModel?: string;
   grader: GraderStrategy;
   judgeProvider?: JudgeProvider;
   judgeModel?: string;
@@ -150,6 +151,12 @@ export const DRACO_DATASET_REVISION =
 export const DEFAULT_CASES_URL = `https://huggingface.co/datasets/perplexity-ai/draco/resolve/${DRACO_DATASET_REVISION}/test.jsonl`;
 const DEFAULT_SEED = "atlas-draco-v1";
 const DEFAULT_TIMEOUT_MS = 900_000;
+// Cheap-by-default eval config: cap research spend and route the high-volume
+// leaf calls (claim extraction, verifier voters) to a small model. Lead
+// orchestration/synthesis stays on the research model. Override per run with
+// --token-limit / --leaf-model (or ATLAS_LEAF_MODEL).
+const DEFAULT_TOKEN_LIMIT = 1_000_000;
+const DEFAULT_LEAF_MODEL = "claude-haiku-4-5";
 const DEFAULT_JUDGE_TIMEOUT_MS = 120_000;
 const DEFAULT_JUDGE_CONCURRENCY = 8;
 const PER_CRITERION_JUDGE_MAX_TOKENS = 8_192;
@@ -389,10 +396,11 @@ Options:
       --domain NAME           Restrict to domain(s); repeat or comma-separate
       --out <file>            Write manifest/results/summary JSONL
       --timeout N             Per-task research timeout in seconds (default: ${DEFAULT_TIMEOUT_MS / 1000}; 0 = unlimited, like DRACO)
-      --token-limit N         Total token budget per task (0 = unlimited)
+      --token-limit N         Total token budget per task (default: ${DEFAULT_TOKEN_LIMIT}; 0 = unlimited)
       --verifier-panel MODE   lens | clone (default: lens — distinct verifier lenses; clone = identical contradiction refuters)
       --provider NAME         Research model provider: anthropic, openai
-      --model NAME            Research model name
+      --model NAME            Research (lead) model name — orchestration & synthesis
+      --leaf-model NAME       Leaf model for claim extraction & verifier voters (default: ${DEFAULT_LEAF_MODEL} on anthropic; lead model otherwise)
       --grader MODE           per-criterion | one-shot (default: per-criterion)
       --judge-provider P      Judge provider: google, anthropic, openai (default: google)
       --judge-model MODEL     Judge model (default: gemini-3.1-pro-preview / claude-sonnet-4-5 / gpt-5.2)
@@ -490,6 +498,7 @@ export function buildEvalOptions(
     domains: new Set<string>(),
     stratify: "domain",
     timeoutMs: DEFAULT_TIMEOUT_MS,
+    tokenLimit: DEFAULT_TOKEN_LIMIT,
     grader: "per-criterion",
     judgeTimeoutMs: DEFAULT_JUDGE_TIMEOUT_MS,
     judgeConcurrency: DEFAULT_JUDGE_CONCURRENCY,
@@ -577,6 +586,11 @@ function parseArgs(argv: string[]): EvalOptions {
     }
     if (arg === "--model") {
       opts.model = readValue(argv, i, arg);
+      i++;
+      continue;
+    }
+    if (arg === "--leaf-model") {
+      opts.leafModel = readValue(argv, i, arg);
       i++;
       continue;
     }
@@ -677,6 +691,18 @@ export function resolveResearchModel(
   return provider === "anthropic"
     ? DEFAULT_ANTHROPIC_MODEL
     : DEFAULT_OPENAI_MODEL;
+}
+
+// The high-volume leaf calls (claim extraction, verifier voters) default to a
+// cheap model so a run does not pay lead-model rates per voter; lead
+// orchestration/synthesis stays on the research model. Precedence:
+// --leaf-model > ATLAS_LEAF_MODEL > anthropic default (haiku) > lead model.
+export function effectiveLeafModel(opts: EvalOptions): string | undefined {
+  const explicit = (opts.leafModel ?? readEnv("ATLAS_LEAF_MODEL"))?.trim();
+  if (explicit) return explicit;
+  return resolveResearchProvider(opts.provider) === "anthropic"
+    ? DEFAULT_LEAF_MODEL
+    : undefined;
 }
 
 function defaultJudgeModel(provider: JudgeProvider): string {
@@ -1238,10 +1264,12 @@ async function runResearch(
   let lastError: unknown;
   for (let attempt = 1; attempt <= attempts; attempt++) {
     try {
+      const leafModel = effectiveLeafModel(opts);
       const atlas = new Atlas({
         ...(await resolveModelSpec({
           provider: opts.provider,
           model: opts.model,
+          ...(leafModel ? { leafModel } : {}),
         })),
         browser: steel({ proxy: opts.useProxy }),
       });
@@ -1807,7 +1835,11 @@ async function main(): Promise<void> {
     grader: opts.grader,
     casesPath: opts.casesPath,
     casesRevision: huggingfaceRevision(opts.casesPath),
-    research: { provider: researchProvider, model: researchModel },
+    research: {
+      provider: researchProvider,
+      model: researchModel,
+      leafModel: effectiveLeafModel(opts) ?? researchModel,
+    },
     judge: { provider: judge.provider, model: judge.modelId },
     timeoutMs: opts.timeoutMs ?? null,
     tokenLimit: opts.tokenLimit ?? null,
