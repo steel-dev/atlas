@@ -358,18 +358,19 @@ async function castVote(
   return vote ? { ...vote, lens: seat.lens } : null;
 }
 
+// Default-survive: a quote-grounded claim that drew a quorum of votes and was
+// not actively refuted survives into the report. Only an explicit refutation
+// quorum kills it; too few votes to adjudicate leaves it unverified (it still
+// reaches the report as a low-confidence candidate). We do NOT additionally
+// require a contradiction-lens vote to have landed — demanding active proof to
+// keep an unrefuted claim is fail-closed and silently drops most findings.
 function settleClaim(claim: ResearchClaim, votes: ClaimVote[]): void {
   claim.votes = votes;
   const refutedVotes = votes.filter((vote) => vote.refuted).length;
-  const contradictionVotes = votes.filter(
-    (vote) => vote.lens === "contradiction",
-  ).length;
   if (votes.length < REFUTATIONS_REQUIRED) {
     claim.status = "unverified";
   } else if (refutedVotes >= REFUTATIONS_REQUIRED) {
     claim.status = "refuted";
-  } else if (contradictionVotes === 0) {
-    claim.status = "unverified";
   } else {
     claim.status = "confirmed";
   }

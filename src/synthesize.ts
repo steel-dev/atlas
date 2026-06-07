@@ -365,20 +365,53 @@ export function inconclusiveReport(opts: {
   return lines.join("\n");
 }
 
-export function fallbackReportFromClaims(
-  question: string,
-  confirmed: ResearchClaim[],
-): string {
-  return [
-    `# Verified findings (synthesis unavailable)`,
+// Deterministic, never-throwing salvage report. When model synthesis fails we
+// still emit every claim that survived verification — confirmed first, then the
+// unrefuted candidates as low confidence, plus the gap assessment and a
+// ruled-out list for transparency. The goal is to never hand back an empty
+// answer because one structured-output call could not be parsed.
+export function fallbackReportFromClaims(opts: {
+  question: string;
+  confirmed: ResearchClaim[];
+  candidates: ResearchClaim[];
+  refuted?: ResearchClaim[];
+  gapsNote?: string;
+}): string {
+  const { question, confirmed, candidates, refuted = [], gapsNote } = opts;
+  const finding = (claim: ResearchClaim): string =>
+    `- ${claim.text} — [${claim.title || claim.url}](${claim.url}) (vote ${voteSplit(claim)}, "${claim.quote}")`;
+  const lines: string[] = [
+    `# Findings`,
     "",
     `**Question:** ${question}`,
     "",
-    `Synthesis failed or returned nothing; the ${confirmed.length} adversarially verified claim${confirmed.length === 1 ? "" : "s"} below are reported unmerged.`,
-    "",
-    ...confirmed.map(
-      (claim) =>
-        `- ${claim.text} — [${claim.title || claim.url}](${claim.url}) (vote ${voteSplit(claim)}, "${claim.quote}")`,
-    ),
-  ].join("\n");
+    "Model synthesis did not complete; the verified material below is reported unmerged, grouped by how strongly it held up.",
+  ];
+  if (confirmed.length > 0) {
+    lines.push(
+      "",
+      `## Verified findings (${confirmed.length})`,
+      ...confirmed.map(finding),
+    );
+  }
+  if (candidates.length > 0) {
+    lines.push(
+      "",
+      `## Unrefuted but unverified (${candidates.length}) — treat as low confidence`,
+      ...candidates.map(finding),
+    );
+  }
+  if (gapsNote) {
+    lines.push("", "## Gap assessment", gapsNote);
+  }
+  if (refuted.length > 0) {
+    lines.push(
+      "",
+      `## Ruled out (${refuted.length})`,
+      ...refuted.map(
+        (claim) => `- "${claim.text}" (${claim.url}, vote ${voteSplit(claim)})`,
+      ),
+    );
+  }
+  return lines.join("\n");
 }

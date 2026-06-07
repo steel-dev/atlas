@@ -278,7 +278,7 @@ describe("verifyClaims", () => {
     expect(target.votes.length).toBeLessThan(2);
   });
 
-  it("leaves a claim unverified when no contradiction lens voted", async () => {
+  it("confirms a quorum-backed claim even when the contradiction lens abstained (default-survive)", async () => {
     const adapter = verdictAdapter((input) =>
       /Your lens: contradiction/.test(JSON.stringify(input.messages))
         ? new Error("contradiction abstained")
@@ -289,9 +289,9 @@ describe("verifyClaims", () => {
 
     const summary = await verifyClaims(ctx, "test question");
 
-    expect(target.status).toBe("unverified");
-    expect(summary.confirmed).toBe(0);
-    expect(summary.unverified).toBe(1);
+    expect(target.status).toBe("confirmed");
+    expect(summary.confirmed).toBe(1);
+    expect(summary.unverified).toBe(0);
     expect(target.votes.some((vote) => vote.lens === "contradiction")).toBe(
       false,
     );
