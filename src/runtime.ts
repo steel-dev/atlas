@@ -4,6 +4,7 @@ import {
   type ModelAdapter,
   type ProviderOptions,
 } from "./model.js";
+import { modelCostWeight } from "./pricing.js";
 import type { WebSearchOutcome } from "./search.js";
 import type { SearchProvider } from "./search-provider.js";
 import type {
@@ -255,16 +256,24 @@ export interface ResearchCtx {
   tools?: ReadonlyMap<string, ResolvedCustomTool>;
 }
 
-function totalUsedTokens(deps: ResearchDeps): number {
+// Tokens charged against the run-wide token budget. The lead model's tokens
+// count as-is; a distinct leaf model's tokens are weighted by their cost
+// relative to the lead (e.g. haiku ≈ 0.2× opus) so a cheap leaf model's
+// high-volume calls draw down the budget at their real cost, not lead rates.
+// Otherwise a tight budget is exhausted by leaf spend before verification can
+// cover the claims the run extracted. The budget is thus denominated in
+// lead-model-equivalent tokens.
+function budgetTokensUsed(deps: ResearchDeps): number {
   const lead = totalUsageTokens(deps.model.usage);
   const leaf = deps.leafModel;
   if (!leaf || leaf.usage === deps.model.usage) return lead;
-  return lead + totalUsageTokens(leaf.usage);
+  const leafWeight = modelCostWeight(leaf.model, deps.model.model);
+  return lead + totalUsageTokens(leaf.usage) * leafWeight;
 }
 
 export function tokenBudgetExhaustedReason(ctx: ResearchCtx): string | null {
   if (!ctx.config.tokenLimit || ctx.config.tokenLimit <= 0) return null;
-  if (totalUsedTokens(ctx.deps) < ctx.config.tokenLimit) return null;
+  if (budgetTokensUsed(ctx.deps) < ctx.config.tokenLimit) return null;
   return "token budget exhausted";
 }
 
@@ -273,7 +282,7 @@ const VERIFY_BUDGET_RESERVE = 0.2;
 export function researchBudgetExhaustedReason(ctx: ResearchCtx): string | null {
   const limit = ctx.config.tokenLimit;
   if (!limit || limit <= 0) return null;
-  if (totalUsedTokens(ctx.deps) < limit * (1 - VERIFY_BUDGET_RESERVE)) {
+  if (budgetTokensUsed(ctx.deps) < limit * (1 - VERIFY_BUDGET_RESERVE)) {
     return null;
   }
   return "research budget exhausted";

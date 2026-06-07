@@ -55,6 +55,21 @@ describe("tokenBudgetExhaustedReason", () => {
     const ctx = budgetCtx({ tokenLimit: 1000, model, leafModel });
     expect(tokenBudgetExhaustedReason(ctx)).toBe("token budget exhausted");
   });
+
+  it("weights a cheap leaf model's tokens by its cost relative to the lead", () => {
+    // Haiku tokens cost ~0.2x opus, so 2000 leaf tokens draw down only ~400 of
+    // the budget — under 1000, where equal weighting would have exhausted it.
+    const model: ModelAdapter = {
+      ...adapterWithTokens(0),
+      model: "claude-opus-4-8",
+    };
+    const leafModel: ModelAdapter = {
+      ...adapterWithTokens(2000),
+      model: "claude-haiku-4-5",
+    };
+    const ctx = budgetCtx({ tokenLimit: 1000, model, leafModel });
+    expect(tokenBudgetExhaustedReason(ctx)).toBeNull();
+  });
 });
 
 describe("researchBudgetExhaustedReason", () => {
