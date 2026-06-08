@@ -40,6 +40,18 @@ function fakeResult(markdown: string): ResearchResult {
       cache_creation_input_tokens: 0,
       cache_read_input_tokens: 0,
     },
+    leadUsage: {
+      input_tokens: 1,
+      output_tokens: 2,
+      cache_creation_input_tokens: 0,
+      cache_read_input_tokens: 0,
+    },
+    leafUsage: {
+      input_tokens: 0,
+      output_tokens: 0,
+      cache_creation_input_tokens: 0,
+      cache_read_input_tokens: 0,
+    },
   };
 }
 

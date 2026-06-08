@@ -5,6 +5,7 @@ import type {
   ProviderOptions,
   UsageSummary,
 } from "./model.js";
+import { emptyUsageSummary } from "./model.js";
 import type { FetchedSource, SourceDocument, CitedSource } from "./sources.js";
 import type { RecordedStep } from "./recording.js";
 import {
@@ -111,6 +112,8 @@ export interface ResearchResult {
    */
   transcript?: RecordedStep[];
   usage: UsageSummary;
+  leadUsage: UsageSummary;
+  leafUsage: UsageSummary;
 }
 
 export interface StructuredResearchResult<T> extends ResearchResult {
@@ -335,6 +338,11 @@ async function runResearch(
       });
     }
 
+    const leadUsage: UsageSummary = { ...resources.modelAdapter.usage };
+    const leafUsage: UsageSummary =
+      resources.leafAdapter === resources.modelAdapter
+        ? emptyUsageSummary()
+        : { ...resources.leafAdapter.usage };
     const result: ResearchResult & {
       data?: unknown;
       basis?: Record<string, FieldBasis>;
@@ -360,13 +368,9 @@ async function runResearch(
       ...(structured
         ? { data: structured.data, basis: structured.basis }
         : {}),
-      usage:
-        resources.leafAdapter === resources.modelAdapter
-          ? { ...resources.modelAdapter.usage }
-          : sumUsage(
-              resources.modelAdapter.usage,
-              resources.leafAdapter.usage,
-            ),
+      leadUsage,
+      leafUsage,
+      usage: sumUsage(leadUsage, leafUsage),
     };
 
     emit({ type: "completed", result });

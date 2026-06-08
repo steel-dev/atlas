@@ -72,24 +72,27 @@ export function costOf(usage: TokenUsage): CostBreakdown {
 
 export interface RunUsage {
   research?: TokenUsage | null;
+  leaf?: TokenUsage | null;
   judge?: (TokenUsage & { calls?: number; gradeRuns?: number }) | null;
 }
 
 export interface RunCost {
   research: CostBreakdown | null;
+  leaf: CostBreakdown | null;
   judge: CostBreakdown | null;
   totalUsd: number | null;
 }
 
 export function runCost(usage: RunUsage | null | undefined): RunCost {
   const research = usage?.research ? costOf(usage.research) : null;
+  const leaf = usage?.leaf ? costOf(usage.leaf) : null;
   const judge = usage?.judge ? costOf(usage.judge) : null;
-  const parts = [research?.usd, judge?.usd].filter(
+  const parts = [research?.usd, leaf?.usd, judge?.usd].filter(
     (v): v is number => typeof v === "number",
   );
   const totalUsd =
     parts.length > 0
       ? Number(parts.reduce((s, v) => s + v, 0).toFixed(4))
       : null;
-  return { research, judge, totalUsd };
+  return { research, leaf, judge, totalUsd };
 }

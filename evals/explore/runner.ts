@@ -6,6 +6,7 @@ import type {
 } from "../../src/research.js";
 import {
   buildResearchRunOptions,
+  effectiveLeafModel,
   gradeResearch,
   type DracoCase,
   type EvalOptions,
@@ -341,6 +342,7 @@ export class DracoRunHost {
     evalResult: EvalResult,
     result: ResearchResult,
   ): void {
+    const leafModelId = effectiveLeafModel(this.opts) ?? this.researchModel;
     this.store.insertRun(
       {
         ...evalResult,
@@ -354,12 +356,23 @@ export class DracoRunHost {
         transcript: result.transcript,
         usage: {
           research: {
-            input: result.usage.input_tokens,
-            output: result.usage.output_tokens,
-            cacheRead: result.usage.cache_read_input_tokens,
-            cacheWrite: result.usage.cache_creation_input_tokens,
+            input: result.leadUsage.input_tokens,
+            output: result.leadUsage.output_tokens,
+            cacheRead: result.leadUsage.cache_read_input_tokens,
+            cacheWrite: result.leadUsage.cache_creation_input_tokens,
             model: this.researchModel,
           },
+          ...(leafModelId !== this.researchModel
+            ? {
+                leaf: {
+                  input: result.leafUsage.input_tokens,
+                  output: result.leafUsage.output_tokens,
+                  cacheRead: result.leafUsage.cache_read_input_tokens,
+                  cacheWrite: result.leafUsage.cache_creation_input_tokens,
+                  model: leafModelId,
+                },
+              }
+            : {}),
           judge: evalResult.judgeUsage
             ? {
                 input: evalResult.judgeUsage.inputTokens,
