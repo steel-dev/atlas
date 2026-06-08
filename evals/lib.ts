@@ -122,8 +122,6 @@ export type EvalTraceEvent = {
   qualityWarnings?: string[];
   sourceId?: string;
   unsupported?: number;
-  clustersFormed?: number;
-  claimsDeduped?: number;
   claims?: number;
   id?: string;
   claim?: string;
@@ -198,12 +196,6 @@ export function traceEvent(
         count: event.count,
         unsupported: event.unsupported,
         ...(event.error ? { error: event.error } : {}),
-      };
-    case "claims_clustered":
-      return {
-        ...base,
-        clustersFormed: event.clustersFormed,
-        claimsDeduped: event.claimsDeduped,
       };
     case "verify_started":
       return { ...base, claims: event.claims };
@@ -286,8 +278,6 @@ export function progressLine(
       return event.error
         ? `${caseId}: claim extraction failed for ${event.url}: ${event.error}`
         : `${caseId}: ${event.count} claim(s) from ${event.url}${event.unsupported ? ` (${event.unsupported} unsupported)` : ""}`;
-    case "claims_clustered":
-      return `${caseId}: merged ${event.claimsDeduped} duplicate claim(s) into ${event.clustersFormed} cluster(s)`;
     case "verify_started":
       return `${caseId}: verifying ${event.claims} claim(s)`;
     case "claim_verified":

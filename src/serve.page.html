@@ -485,7 +485,6 @@
             break;
           }
           case "claims_extracted": if (!e.error) logLine("", "  " + e.count + " claims"); break;
-          case "claims_clustered": logLine("cluster", "merged → " + e.clustersFormed + " clusters"); break;
           case "verify_started": setPhase("verifying", "live"); logLine("verify", e.claims + " claims"); break;
           case "claim_verified":
             if (e.status === "confirmed") { state.verified++; $("c-verified").textContent = state.verified; }

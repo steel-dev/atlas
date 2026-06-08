@@ -81,8 +81,6 @@ export interface ResearchStats {
   refuted: number;
   unverified: number;
   beyondVerifyCap: number;
-  clustersFormed: number;
-  claimsDeduped: number;
   recallUrlDupes: number;
   recallBudgetDropped: number;
   recallSpamDropped: number;
@@ -502,8 +500,6 @@ function buildStats(
     refuted: verify.refuted,
     unverified: verify.unverified,
     beyondVerifyCap: verify.beyondCap,
-    clustersFormed: verify.clustersFormed,
-    claimsDeduped: verify.claimsDeduped,
     recallUrlDupes: recall.urlDupes,
     recallBudgetDropped: recall.budgetDropped,
     recallSpamDropped: recall.spamDropped,

@@ -15,7 +15,6 @@ import {
 import type { ClaimVote, ResearchClaim } from "./claims.js";
 import { runAgentLoop } from "./agent-loop.js";
 import { withRole } from "./recording.js";
-import { clusterClaims, CLUSTER_WINDOW } from "./cluster.js";
 import { execSearch } from "./search-tool.js";
 import { execReadSource, execSearchSources } from "./evidence-tool.js";
 import { execRunCode } from "./code-tool.js";
@@ -71,8 +70,6 @@ export interface VerifySummary {
   refuted: number;
   unverified: number;
   beyondCap: number;
-  clustersFormed: number;
-  claimsDeduped: number;
 }
 
 const VERDICT_OUTPUT_SCHEMA: ModelOutputSchema = {
@@ -403,30 +400,6 @@ async function verifyOneClaim(
   });
 }
 
-function propagateVerdictsToDuplicates(
-  ctx: ResearchCtx,
-  verifiedRepresentatives: ResearchClaim[],
-): void {
-  const settledById = new Map<string, ResearchClaim>();
-  for (const representative of verifiedRepresentatives) {
-    if (
-      representative.status === "quoted" ||
-      representative.status === "refuted"
-    ) {
-      continue;
-    }
-    settledById.set(representative.id, representative);
-  }
-  if (settledById.size === 0) return;
-  for (const claim of ctx.store.claims.claims) {
-    if (!claim.duplicateOf) continue;
-    const representative = settledById.get(claim.duplicateOf);
-    if (!representative) continue;
-    claim.status = representative.status;
-    claim.votes = representative.votes;
-  }
-}
-
 export async function verifyClaims(
   ctx: ResearchCtx,
   question: string,
@@ -440,13 +413,10 @@ export async function verifyClaims(
       refuted: 0,
       unverified: 0,
       beyondCap: 0,
-      clustersFormed: 0,
-      claimsDeduped: 0,
     };
   }
 
-  const cluster = await clusterClaims(ctx, ranked.slice(0, CLUSTER_WINDOW));
-  const representatives = ranked.filter((claim) => !claim.duplicateOf);
+  const representatives = ranked;
 
   const target = Math.max(
     1,
@@ -479,8 +449,6 @@ export async function verifyClaims(
     confirmed += wave.filter((claim) => claim.status === "confirmed").length;
   }
 
-  propagateVerdictsToDuplicates(ctx, representatives.slice(0, cursor));
-
   const verified = representatives.slice(0, cursor);
   const summary: VerifySummary = {
     verified: verified.length,
@@ -489,8 +457,6 @@ export async function verifyClaims(
     unverified: verified.filter((claim) => claim.status === "unverified")
       .length,
     beyondCap: representatives.length - verified.length,
-    clustersFormed: cluster.clustersFormed,
-    claimsDeduped: cluster.claimsDeduped,
   };
   ctx.scope.emit({
     type: "verify_finished",
