@@ -24,16 +24,8 @@ import { errorMessage } from "./errors.js";
 export const REFUTATIONS_REQUIRED = 2;
 export const MAX_VERIFY_CLAIMS = 120;
 const VERIFY_BATCH_SIZE = 16;
-// Backstop on a single voter's tool-using turns — a runaway guard, not the plan.
-// The voter stops when it judges it has investigated enough (no more tool calls)
-// or when its per-vote token budget is spent, usually well before this.
-const MAX_VOTER_TOOL_TURNS = 8;
-// Per-vote input-token budget. Once a single voter has billed this many input
-// tokens across its investigation, the loop stops and the voter is asked to
-// decide on what it has. Sizing depth by tokens, not a turn count, lets a cheap
-// line of search run several turns while a voter reading large sources stops
-// sooner — and keeps each vote's cost bounded under the run-wide governor.
-const VOTER_TOKEN_BUDGET = 60_000;
+const MAX_VOTER_TOOL_TURNS = 2;
+const VOTER_TOKEN_BUDGET = 12_000;
 const VOTER_STEP_MAX_TOKENS = 1_200;
 const VERDICT_MAX_TOKENS = 600;
 const VERIFY_CONCURRENCY = 8;
