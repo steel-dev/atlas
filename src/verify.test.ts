@@ -6,12 +6,10 @@ import {
   MAX_VERIFY_CLAIMS,
 } from "./verify.js";
 import {
-  parseReportData,
   renderConfirmedClaims,
   renderRefutedClaims,
-  reportDataPrompt,
-  synthesizeReportData,
-  writeReportProse,
+  synthesisPrompt,
+  synthesizeReport,
 } from "./synthesize.js";
 import type { ResearchClaim } from "./claims.js";
 import type { ModelAdapter, ModelStepInput } from "./model.js";
@@ -581,8 +579,8 @@ describe("synthesis rendering", () => {
     expect(renderRefutedClaims([refuted])).toContain("vote 0-2");
   });
 
-  it("builds a report-data prompt that carries question, claims, and gaps", () => {
-    const prompt = reportDataPrompt({
+  it("builds a synthesis prompt that carries question, claims, and gaps", () => {
+    const prompt = synthesisPrompt({
       question: "How many units per day?",
       confirmed: [
         claim({
@@ -600,11 +598,11 @@ describe("synthesis rendering", () => {
     expect(prompt).toContain("**Question:** How many units per day?");
     expect(prompt).toContain("## Known gaps");
     expect(prompt).toContain("No 2025 figures found.");
-    expect(prompt).toContain("answer:");
+    expect(prompt).toContain("Write the report");
   });
 
   it("renders unconfirmed candidates and tells the model to mark them low confidence", () => {
-    const prompt = reportDataPrompt({
+    const prompt = synthesisPrompt({
       question: "What is the race name?",
       confirmed: [],
       candidates: [
@@ -618,100 +616,24 @@ describe("synthesis rendering", () => {
   });
 });
 
-describe("structured synthesis", () => {
-  it("parses answer, findings, caveats, and open questions", () => {
-    const parsed = parseReportData(
-      JSON.stringify({
-        answer: "  14,000 units per day.  ",
-        answerConfidence: "high",
-        findings: [
-          {
-            statement: "The plant runs three shifts.",
-            confidence: "high",
-            sources: ["https://example.com/a"],
-          },
-          { statement: "", confidence: "high" },
-          { statement: "Output rose in 2024.", confidence: "bogus" },
-        ],
-        caveats: ["  One source.  ", "One source.", ""],
-        openQuestions: ["What about 2025?"],
-      }),
-    );
-    expect(parsed?.answer).toBe("14,000 units per day.");
-    expect(parsed?.answerConfidence).toBe("high");
-    expect(parsed?.findings).toEqual([
-      {
-        statement: "The plant runs three shifts.",
-        confidence: "high",
-        sources: ["https://example.com/a"],
-      },
-      { statement: "Output rose in 2024.", confidence: "low", sources: [] },
-    ]);
-    expect(parsed?.caveats).toEqual(["One source."]);
-    expect(parsed?.openQuestions).toEqual(["What about 2025?"]);
-  });
-
-  it("returns null for non-JSON or answerless output", () => {
-    expect(parseReportData("not json")).toBeNull();
-    expect(parseReportData(JSON.stringify({ findings: [] }))).toBeNull();
-  });
-
-  it("synthesizes report data from the model with the report_data schema", async () => {
-    const adapter = structureAdapter(() =>
-      JSON.stringify({
-        answer: "42.",
-        findings: [
-          {
-            statement: "Per the source.",
-            confidence: "medium",
-            sources: ["https://example.com/a"],
-          },
-        ],
-        caveats: [],
-        openQuestions: [],
-      }),
+describe("report synthesis", () => {
+  it("writes answer-first markdown directly from the claims, with no output schema", async () => {
+    const adapter = structureAdapter(
+      () => "42, per [the source](https://example.com/a).",
     );
     const ctx = makeCtx(adapter, []);
 
-    const data = await synthesizeReportData(ctx, {
+    const markdown = await synthesizeReport(ctx, {
       question: "What is the answer?",
       confirmed: [claim({ status: "confirmed" })],
       candidates: [],
       refuted: [],
     });
 
-    expect(data?.answer).toBe("42.");
-    expect(data?.findings).toHaveLength(1);
-    expect(adapter.calls[0]?.outputSchema?.name).toBe("report_data");
+    expect(markdown).toBe("42, per [the source](https://example.com/a).");
+    expect(adapter.calls[0]?.outputSchema).toBeUndefined();
     expect(adapter.calls[0]?.messages[0]?.content).toContain(
       "What is the answer?",
     );
-  });
-
-  it("writes answer-first prose from report data", async () => {
-    const adapter = structureAdapter(
-      () => "42, per [the source](https://example.com/a).",
-    );
-    const ctx = makeCtx(adapter, []);
-
-    const markdown = await writeReportProse(ctx, {
-      question: "What is the answer?",
-      data: {
-        answer: "42.",
-        answerConfidence: "high",
-        findings: [
-          {
-            statement: "Per the source.",
-            confidence: "high",
-            sources: ["https://example.com/a"],
-          },
-        ],
-        caveats: [],
-        openQuestions: [],
-      },
-    });
-
-    expect(markdown).toBe("42, per [the source](https://example.com/a).");
-    expect(adapter.calls[0]?.messages[0]?.content).toContain("42.");
   });
 });

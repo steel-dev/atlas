@@ -22,9 +22,7 @@ import {
 import {
   fallbackReportFromClaims,
   inconclusiveReport,
-  synthesizeReportData,
-  writeReportProse,
-  type ReportData,
+  synthesizeReport,
 } from "./synthesize.js";
 import { synthesizeStructured } from "./structured.js";
 import type { FieldBasis } from "./structured.js";
@@ -435,9 +433,6 @@ async function buildReport(
   gapsNote: string,
 ): Promise<BuiltReport> {
   const { confirmed, refuted } = claims;
-  // Fail-open terminal: never hand back nothing. If any claim survived, emit a
-  // deterministic salvage report (it cannot throw); only a truly empty run
-  // degrades to "inconclusive".
   const salvage = (): BuiltReport => ({
     markdown:
       confirmed.length > 0 || candidates.length > 0
@@ -462,53 +457,25 @@ async function buildReport(
   if (confirmed.length === 0 && candidates.length === 0) {
     return salvage();
   }
-  // Structured synthesis is the preferred path but the fragile one: a single
-  // unparseable response must not sink the run. Retry once, then degrade to
-  // the candidate-inclusive salvage rather than dropping the verified material.
-  let data: ReportData | null = null;
-  for (let attempt = 1; attempt <= 2 && !data; attempt++) {
-    try {
-      data = await synthesizeReportData(ctx, {
-        question,
-        confirmed,
-        candidates,
-        refuted,
-        ...(gapsNote ? { gapsNote } : {}),
-      });
-      if (!data && attempt === 2) {
-        ctx.scope.emit({
-          type: "synthesis_failed",
-          reason: "report_data_empty",
-        });
-      }
-    } catch (err) {
-      if (ctx.deps.signal?.aborted) throw err;
-      ctx.scope.emit({
-        type: "synthesis_failed",
-        reason: attempt < 2 ? "report_data_retry" : "report_data_threw",
-        error: err instanceof Error ? err.message : String(err),
-      });
+  try {
+    const markdown = await synthesizeReport(ctx, {
+      question,
+      confirmed,
+      candidates,
+      refuted,
+      ...(gapsNote ? { gapsNote } : {}),
+    });
+    if (markdown) {
+      return { markdown, caveats: [], openQuestions: [] };
     }
-  }
-  if (data) {
-    try {
-      const markdown = await writeReportProse(ctx, { question, data });
-      if (markdown) {
-        return {
-          markdown,
-          caveats: data.caveats,
-          openQuestions: data.openQuestions,
-        };
-      }
-      ctx.scope.emit({ type: "synthesis_failed", reason: "prose_empty" });
-    } catch (err) {
-      if (ctx.deps.signal?.aborted) throw err;
-      ctx.scope.emit({
-        type: "synthesis_failed",
-        reason: "prose_threw",
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
+    ctx.scope.emit({ type: "synthesis_failed", reason: "empty" });
+  } catch (err) {
+    if (ctx.deps.signal?.aborted) throw err;
+    ctx.scope.emit({
+      type: "synthesis_failed",
+      reason: "threw",
+      error: err instanceof Error ? err.message : String(err),
+    });
   }
   return salvage();
 }
