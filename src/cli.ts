@@ -18,6 +18,7 @@ const USAGE = `atlas — deep research from your terminal
 Usage:
   atlas "<question>" [options]
   atlas serve [options]       Launch the local web UI (atlas serve --help)
+  atlas docs                  Print the agent-facing brief (llms.txt)
 
 A research lifecycle scopes the question, searches it from several angles,
 extracts verbatim-quoted claims, chases gaps, adversarially verifies every
@@ -349,6 +350,12 @@ async function runServe(argv: string[]): Promise<void> {
 async function main(): Promise<void> {
   if (process.argv[2] === "serve") {
     await runServe(process.argv.slice(3));
+    return;
+  }
+  if (process.argv[2] === "docs") {
+    process.stdout.write(
+      readFileSync(new URL("../llms.txt", import.meta.url), "utf8"),
+    );
     return;
   }
   const parsed = (() => {

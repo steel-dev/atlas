@@ -1,0 +1,122 @@
+# Atlas (`@steel-dev/atlas`)
+
+> Deep research as a CLI and a TypeScript library. Ask a messy question; Atlas
+> scopes it into search angles, fetches pages through Steel Browser, extracts
+> verbatim-quoted claims, chases the gaps, adversarially verifies every claim
+> with independent voters, and synthesizes a cited Markdown report from the
+> claims that survive. Runs on the Vercel AI SDK, so any model provider works.
+
+The value is the verification pipeline: every claim in the report is backed by a
+verbatim quote from a fetched source and has survived adversarial voting.
+Sources, claims, citations, and structured output are all auditable.
+
+This file is the agent-facing brief — a compact reference for coding agents
+building on Atlas. Print it anytime with `atlas docs`. Full prose lives in
+README.md.
+
+## Install
+
+```bash
+npm install @steel-dev/atlas ai @ai-sdk/anthropic   # + the provider you use
+```
+
+Keys (env): a model provider key (`ANTHROPIC_API_KEY` or `OPENAI_API_KEY`) plus
+`STEEL_API_KEY`.
+
+## CLI
+
+```bash
+npx @steel-dev/atlas "<question>" > report.md
+atlas "<question>" --out report.md --token-limit 5000000
+atlas serve            # local web UI
+atlas docs             # print this brief
+```
+
+Run `atlas --help` for the full flag list.
+
+## SDK — core API
+
+```ts
+import { Atlas } from "@steel-dev/atlas";
+import { anthropic } from "@ai-sdk/anthropic";
+
+const atlas = new Atlas({ model: anthropic("claude-sonnet-4-6") });
+const result = await atlas.research("What's changing in browser automation?");
+result.markdown;            // cited Markdown report
+result.citedSources;        // sources actually cited
+result.claims.confirmed;    // verified claims, with quotes + votes
+result.stats;               // angles, sources, claims extracted/verified
+```
+
+`new Atlas(config)` fields:
+
+- `model` (required) — an AI SDK model instance.
+- `leafModel?` — cheaper model for high-volume leaf calls (claim extraction,
+  verifier voters).
+- `instructions?` — domain framing for the research lead. The main domain knob.
+- `tools?` — `Record<string, ResearchTool>` of domain tools (see below).
+- `browser?` — `steel(...)`; defaults to Steel from env.
+- `search?` — `exa()` / `brave()` to bypass SERP scraping; omit to scrape.
+- `defaults?` — default `RunOptions` applied to every run.
+
+Calls:
+
+- `atlas.research(query, opts?)` → `ResearchResult`.
+- `atlas.research({ query, outputSchema })` → `StructuredResearchResult`: adds
+  `result.data` (typed, filled from verified claims) and `result.basis` (each
+  field path → citations + reasoning). Unsupported fields are flagged, not
+  invented.
+- `atlas.stream(...)` → a handle: `run.fullStream` (async iterable),
+  `run.on(type, listener)` (typed events: `fetching`, `claim_verified`,
+  `report_delta`, …), `run.result` (resolves at the end).
+
+## Custom tools — the extension point for domain researchers
+
+A tool's results become citable sources: anything passed to `ctx.addSource` is
+extracted into claims, adversarially verified, and cited exactly like a fetched
+web page.
+
+```ts
+import { Atlas, researchTool } from "@steel-dev/atlas";
+import { anthropic } from "@ai-sdk/anthropic";
+import { z } from "zod";
+
+const atlas = new Atlas({
+  model: anthropic("claude-sonnet-4-6"),
+  instructions: "You are a clinical evidence analyst. Prefer peer-reviewed sources.",
+  tools: {
+    pubmedSearch: researchTool({
+      description: "Search PubMed. Each result becomes a citable source.",
+      inputSchema: z.object({ query: z.string(), limit: z.number().default(5) }),
+      execute: async ({ query, limit }, ctx) => {
+        const studies = await pubmed.search(query, { limit, signal: ctx.signal });
+        for (const s of studies)
+          ctx.addSource({ url: s.url, title: s.title, content: s.abstract });
+        return studies.map((s) => `- ${s.title} — ${s.url}`).join("\n");
+      },
+    }),
+  },
+});
+```
+
+`ToolContext`: `addSource({ url, title?, content })`, `log(message)`, `signal?`.
+
+`tools` is a record, so the key is the model-facing tool name — pass the same
+tool under different keys to expose different configurations.
+
+## Building a domain researcher
+
+A domain researcher is a small module: `new Atlas({ model, instructions, tools })`,
+optionally with an `outputSchema` per run. Compose domain `researchTool`s and let
+the verification pipeline do the rest. The `atlas-build-researcher` skill scaffolds
+one interactively.
+
+## Notes for agents
+
+- Don't bypass or reimplement the verification pipeline — it is the product.
+  Tools only *add sources*; verification stays in the engine.
+- Contract types (`ResearchResult`, `ResearchClaim`, `CitedSource`,
+  `SourceDocument`, …) are exported from the package. Import them; never copy or
+  fork them.
+- Any model the AI SDK supports works; install its provider package and pass the
+  model instance to `model` (and optionally `leafModel`).
