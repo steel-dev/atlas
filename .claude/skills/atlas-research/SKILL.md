@@ -88,11 +88,11 @@ escape it with the `'\''` dance: `it'\''s great`.
 
 **Defaults are fine.** Only add flags that the current CLI supports and the user clearly asked for:
 
-| Hint                         | Append flag(s)              |
-| ---------------------------- | --------------------------- |
-| "go deeper" / "be thorough"  | `--token-limit 5000000`     |
-| "be quick" / "fast"          | `--token-limit 500000`      |
-| explicit time limit          | `--timeout <seconds>`       |
+| Hint                        | Append flag(s)          |
+| --------------------------- | ----------------------- |
+| "go deeper" / "be thorough" | `--token-limit 5000000` |
+| "be quick" / "fast"         | `--token-limit 500000`  |
+| explicit time limit         | `--timeout <seconds>`   |
 
 If atlas exits non-zero, the user-facing message is the last `atlas: ...` line in `$ATLAS_LOG`.
 Show that and stop — don't retry blindly.
