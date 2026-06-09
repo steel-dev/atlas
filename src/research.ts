@@ -18,7 +18,9 @@ import { runRecall, type RecallOutcome } from "./recall.js";
 import {
   verifyClaims,
   type VerifierPanelMode,
+  type VerifyMode,
   type VerifySummary,
+  confirmQuotedClaims,
 } from "./verify.js";
 import {
   fallbackReportFromClaims,
@@ -56,7 +58,7 @@ export type {
 } from "./model.js";
 export type { FetchedSource, SourceDocument, CitedSource } from "./sources.js";
 export type { BasisCitation, FieldBasis } from "./structured.js";
-export type { VerifierPanelMode } from "./verify.js";
+export type { VerifierPanelMode, VerifyMode } from "./verify.js";
 export type {
   ClaimConfidence,
   ClaimImportance,
@@ -161,6 +163,7 @@ export interface RunOptions {
   finalizeProviderOptions?: ProviderOptions;
   includeSourceDocuments?: boolean;
   verifierPanel?: VerifierPanelMode;
+  verify?: VerifyMode;
   /**
    * Capture a byte-exact transcript of every model step (lead, verifiers, leaf,
    * synthesis) onto `result.transcript`. Off by default — it holds the full,
@@ -299,7 +302,10 @@ async function runResearch(
     }
 
     throwIfAborted();
-    const verify = await verifyClaims(ctx, opts.query, searchIndexRef);
+    const verify =
+      config.verify === "adversarial"
+        ? await verifyClaims(ctx, opts.query, searchIndexRef)
+        : confirmQuotedClaims(ctx);
     const claims = partitionClaims(ctx);
     const candidates = selectCandidates(claims.unverified);
     ctx.scope.emit({

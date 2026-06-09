@@ -56,6 +56,8 @@ export const VOTES_PER_CLAIM = VERIFIER_PANEL.length;
 
 export type VerifierPanelMode = "lens" | "clone";
 
+export type VerifyMode = "claims" | "adversarial";
+
 const CLONE_PANEL: readonly VerifierSeat[] = Array.from(
   { length: VERIFIER_PANEL.length },
   (): VerifierSeat => ({ lens: "contradiction" }),
@@ -71,6 +73,32 @@ export interface VerifySummary {
   refuted: number;
   unverified: number;
   beyondCap: number;
+}
+
+export function confirmQuotedClaims(ctx: ResearchCtx): VerifySummary {
+  const representatives = ctx.store.claims.claims.filter(
+    (claim) => !claim.duplicateOf,
+  );
+  let confirmed = 0;
+  for (const claim of representatives) {
+    if (claim.status === "quoted") {
+      claim.status = "confirmed";
+      confirmed++;
+    }
+  }
+  ctx.scope.emit({
+    type: "verify_finished",
+    confirmed,
+    refuted: 0,
+    unverified: 0,
+  });
+  return {
+    verified: confirmed,
+    confirmed,
+    refuted: 0,
+    unverified: 0,
+    beyondCap: 0,
+  };
 }
 
 const VERDICT_OUTPUT_SCHEMA: ModelOutputSchema = {

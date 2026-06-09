@@ -63,6 +63,7 @@ export interface ResolvedRunConfig {
   browserIdleTtlMs?: number | null;
   search?: SearchProvider;
   agent: ResearchConfig;
+  verify: "claims" | "adversarial";
 }
 
 export interface RunResources {
@@ -124,6 +125,7 @@ export function resolveRunConfig(opts: RunInput): ResolvedRunConfig {
       limits.maxConcurrentModelCalls,
     maxConcurrentSteelCalls: limits.maxConcurrentSteelCalls,
     agent,
+    verify: resolveVerify(opts.verify),
     timeoutDeadlineAt:
       opts.timeoutMs === undefined
         ? undefined
@@ -216,6 +218,13 @@ function resolveVerifierPanel(
 ): "lens" | "clone" | undefined {
   const raw = explicit ?? readEnv("ATLAS_VERIFIER_PANEL");
   return raw === "lens" || raw === "clone" ? raw : undefined;
+}
+
+function resolveVerify(
+  explicit: "claims" | "adversarial" | undefined,
+): "claims" | "adversarial" {
+  const raw = explicit ?? readEnv("ATLAS_VERIFY");
+  return raw === "adversarial" ? "adversarial" : "claims";
 }
 
 function readIntEnv(name: string, min: number): number | undefined {

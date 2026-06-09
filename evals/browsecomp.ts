@@ -728,6 +728,7 @@ async function runCase(
     const run = atlas.stream(evalQuery(entry.query), {
       timeoutMs: opts.timeoutMs,
       tokenLimit: opts.tokenLimit,
+      verify: "adversarial",
       includeSourceDocuments: true,
       exploreProviderOptions: {
         anthropic: { thinking: { type: "adaptive" }, effort: "max" },

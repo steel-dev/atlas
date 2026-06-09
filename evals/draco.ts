@@ -1254,6 +1254,7 @@ export function buildResearchRunOptions(opts: EvalOptions): RunOptions {
     timeoutMs: opts.timeoutMs,
     tokenLimit: opts.tokenLimit,
     includeSourceDocuments: true,
+    verify: "adversarial",
     ...(opts.verifierPanel ? { verifierPanel: opts.verifierPanel } : {}),
     exploreProviderOptions: {
       anthropic: { thinking: { type: "adaptive" }, effort: "max" },
