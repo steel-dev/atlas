@@ -8,7 +8,32 @@ const REPORT_PROSE_MAX_TOKENS = 8_192;
 
 const CONFIDENCE_RANK = { high: 0, medium: 1, low: 2 } as const;
 
-export function renderConfirmedClaims(confirmed: ResearchClaim[]): string {
+const SOURCE_CONTEXT_WINDOW = 500;
+
+function quoteContext(
+  ctx: ResearchCtx,
+  claim: ResearchClaim,
+): string | undefined {
+  const doc = ctx.store.sourceDocumentsById.get(claim.sourceId);
+  if (!doc) return undefined;
+  const idx = doc.markdown.indexOf(claim.quote);
+  if (idx < 0) return undefined;
+  const start = Math.max(0, idx - SOURCE_CONTEXT_WINDOW);
+  const end = Math.min(
+    doc.markdown.length,
+    idx + claim.quote.length + SOURCE_CONTEXT_WINDOW,
+  );
+  return (
+    (start > 0 ? "…" : "") +
+    doc.markdown.slice(start, end) +
+    (end < doc.markdown.length ? "…" : "")
+  );
+}
+
+export function renderConfirmedClaims(
+  confirmed: ResearchClaim[],
+  context?: (claim: ResearchClaim) => string | undefined,
+): string {
   return confirmed
     .map((claim, index) => {
       const supporting = claim.votes
@@ -16,11 +41,13 @@ export function renderConfirmedClaims(confirmed: ResearchClaim[]): string {
         .sort(
           (a, b) => CONFIDENCE_RANK[a.confidence] - CONFIDENCE_RANK[b.confidence],
         )[0];
+      const sourceContext = context?.(claim);
       return (
         `### [${index}] ${claim.text}\n` +
         `Vote: ${voteSplit(claim)} · Source: ${claim.url} (${claim.sourceQuality}` +
         `${claim.publishedTime ? `, published ${claim.publishedTime}` : ""})\n` +
         `Quote: "${claim.quote}"\n` +
+        (sourceContext ? `Source context: ${sourceContext}\n` : "") +
         (claim.corroboration && claim.corroboration > 1
           ? `Corroborated by ${claim.corroboration} independent sources` +
             (claim.corroboratingSources && claim.corroboratingSources.length > 0
@@ -70,6 +97,7 @@ const SYNTHESIS_SYSTEM_PROMPT =
   "Match length to the question: a single fact deserves 1-3 sentences with no headings; a broad question earns proportionally more, but never pad or fill sections. " +
   "Calibrate certainty to the evidence: state a well-confirmed answer plainly; lightly qualify a thin one; for an answer resting on unconfirmed or weak sources, still lead with the best candidate but explicitly flag that it is unverified and why. " +
   "Cite each factual statement inline as a Markdown link to its source URL, using only URLs present in the claims. " +
+  "A confirmed claim may include a 'Source context' excerpt from its page; use it for precise wording and detail, but still cite the claim's source URL. " +
   "Surface a caveat only where it changes how the answer should be read, inline next to the point it qualifies. " +
   "Do not add generic 'Caveats' or 'Open Questions' sections.";
 
@@ -79,6 +107,7 @@ export function synthesisPrompt(opts: {
   candidates: ResearchClaim[];
   refuted: ResearchClaim[];
   gapsNote?: string;
+  context?: (claim: ResearchClaim) => string | undefined;
 }): string {
   return (
     "## Answer the question\n\n" +
@@ -90,7 +119,7 @@ export function synthesisPrompt(opts: {
     ". Merge duplicates and write the report.\n\n" +
     "## Confirmed claims\n" +
     (opts.confirmed.length > 0
-      ? renderConfirmedClaims(opts.confirmed)
+      ? renderConfirmedClaims(opts.confirmed, opts.context)
       : "(none)\n") +
     renderCandidateClaims(opts.candidates) +
     renderRefutedClaims(opts.refuted) +
@@ -117,7 +146,15 @@ export async function synthesizeReport(
 ): Promise<string> {
   const input: ModelStepInput = {
     system: SYNTHESIS_SYSTEM_PROMPT,
-    messages: [{ role: "user", content: synthesisPrompt(opts) }],
+    messages: [
+      {
+        role: "user",
+        content: synthesisPrompt({
+          ...opts,
+          context: (claim) => quoteContext(ctx, claim),
+        }),
+      },
+    ],
     maxTokens: ctx.config.maxOutputTokens ?? REPORT_PROSE_MAX_TOKENS,
     providerOptions: ctx.config.finalizeProviderOptions,
     signal: ctx.deps.signal,
