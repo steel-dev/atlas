@@ -101,6 +101,7 @@ function opts(overrides: Partial<EvalOptions>): EvalOptions {
     domains: new Set(),
     stratify: "domain",
     grader: "per-criterion",
+    gradeRuns: 1,
     judgeTimeoutMs: 1,
     judgeConcurrency: 1,
     concurrency: 1,
