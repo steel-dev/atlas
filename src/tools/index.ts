@@ -6,3 +6,5 @@ export { wikipedia } from "./wikipedia.js";
 export type { WikipediaOptions } from "./wikipedia.js";
 export { openalex } from "./openalex.js";
 export type { OpenAlexOptions } from "./openalex.js";
+export { edgar } from "./edgar.js";
+export type { EdgarOptions } from "./edgar.js";
