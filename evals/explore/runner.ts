@@ -14,7 +14,7 @@ import {
   type JudgeSpec,
 } from "../draco.js";
 import { traceEvent, type EvalTraceEvent } from "../lib.js";
-import { captureCommit } from "./git.js";
+import { captureCommit, type CommitInfo } from "./git.js";
 import type { Store } from "./store.js";
 
 export type RunPhase =
@@ -69,6 +69,7 @@ export interface DracoRunHostOptions {
   store: Store;
   researchProvider: string;
   researchModel: string;
+  startupCommit: CommitInfo;
   maxConcurrent?: number;
 }
 
@@ -87,6 +88,7 @@ export class DracoRunHost {
   private readonly store: Store;
   private readonly researchProvider: string;
   private readonly researchModel: string;
+  private readonly startupCommit: CommitInfo;
   private readonly maxConcurrent: number;
   private active = 0;
   private counter = 0;
@@ -98,6 +100,7 @@ export class DracoRunHost {
     this.store = options.store;
     this.researchProvider = options.researchProvider;
     this.researchModel = options.researchModel;
+    this.startupCommit = options.startupCommit;
     this.maxConcurrent = Math.max(1, options.maxConcurrent ?? 1);
   }
 
@@ -108,15 +111,20 @@ export class DracoRunHost {
   enqueue(caseId: string): DracoRunEntry {
     if (!this.judge) throw new Error("judge not configured");
     const dracoCase = this.loadCase(caseId);
-    const commit = captureCommit();
+    const current = captureCommit();
+    if (current.sha !== this.startupCommit.sha) {
+      process.stderr.write(
+        `draco-explore: ⚠ STALE CODE — server is running ${this.startupCommit.shortSha}, HEAD is now ${current.shortSha}. Runs are tagged ${this.startupCommit.shortSha} (the loaded code); restart the server to test HEAD.\n`,
+      );
+    }
     const id = "run_" + Date.now().toString(36) + (this.counter++).toString(36);
     const entry: DracoRunEntry = {
       id,
       caseId,
       domain: dracoCase.domain,
       dracoCase,
-      commitSha: commit.sha,
-      dirty: commit.dirty,
+      commitSha: this.startupCommit.sha,
+      dirty: this.startupCommit.dirty,
       log: [],
       subs: new Set(),
       phase: "queued",

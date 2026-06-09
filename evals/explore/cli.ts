@@ -16,6 +16,7 @@ import {
   type JudgeSpec,
 } from "../draco.js";
 import { DracoRunHost } from "./runner.js";
+import { captureCommit } from "./git.js";
 import { serveExplore } from "./server.js";
 import { Store } from "./store.js";
 
@@ -223,6 +224,7 @@ async function main(): Promise<void> {
     browser: steel({ proxy: opts.useProxy }),
   });
 
+  const startupCommit = captureCommit();
   const runHost = new DracoRunHost({
     atlas,
     opts,
@@ -230,6 +232,7 @@ async function main(): Promise<void> {
     store,
     researchProvider,
     researchModel,
+    startupCommit,
     maxConcurrent: concurrency,
   });
 
@@ -245,7 +248,7 @@ async function main(): Promise<void> {
   };
 
   process.stderr.write(
-    `draco-explore: profile research=${profile.research} leaf=${leafModelId ?? researchModel} judge=${profile.judge ?? "(none)"} grader=${profile.grader} grade-runs=${profile.gradeRuns} timeout=${
+    `draco-explore: profile code=${startupCommit.shortSha}${startupCommit.dirty ? "+dirty" : ""} research=${profile.research} leaf=${leafModelId ?? researchModel} judge=${profile.judge ?? "(none)"} grader=${profile.grader} grade-runs=${profile.gradeRuns} timeout=${
       opts.timeoutMs ? `${Math.round(opts.timeoutMs / 1000)}s` : "unlimited"
     } tokens=${opts.tokenLimit ?? "unlimited"}\n`,
   );
