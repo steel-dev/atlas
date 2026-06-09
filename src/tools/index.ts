@@ -10,3 +10,5 @@ export { edgar } from "./edgar.js";
 export type { EdgarOptions } from "./edgar.js";
 export { clinicaltrials } from "./clinicaltrials.js";
 export type { ClinicalTrialsOptions } from "./clinicaltrials.js";
+export { semanticScholar } from "./semantic-scholar.js";
+export type { SemanticScholarOptions } from "./semantic-scholar.js";
