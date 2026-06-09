@@ -368,7 +368,7 @@ describe("verifyClaims", () => {
     expect(adapter.calls).toHaveLength(0);
   });
 
-  it("verifies nothing once the token budget is already exhausted", async () => {
+  it("verifies up to the floor even when the token budget is already exhausted", async () => {
     const adapter = verdictAdapter(() => ({ refuted: false }));
     adapter.usage.input_tokens = 10_000;
     const target = claim();
@@ -376,10 +376,9 @@ describe("verifyClaims", () => {
 
     const summary = await verifyClaims(ctx, "test question");
 
-    expect(adapter.calls).toHaveLength(0);
-    expect(target.status).toBe("quoted");
-    expect(summary.verified).toBe(0);
-    expect(summary.beyondCap).toBe(1);
+    expect(adapter.calls.length).toBeGreaterThan(0);
+    expect(summary.verified).toBe(1);
+    expect(target.status).toBe("confirmed");
   });
 
   it("lets a voter investigate past the old two-turn cap up to the backstop", async () => {

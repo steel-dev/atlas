@@ -22,6 +22,7 @@ import { errorMessage } from "./errors.js";
 
 export const REFUTATIONS_REQUIRED = 2;
 export const MAX_VERIFY_CLAIMS = 120;
+const VERIFY_FLOOR = 40;
 const VERIFY_BATCH_SIZE = 16;
 const MAX_VOTER_TOOL_TURNS = 2;
 const VOTER_TOKEN_BUDGET = 12_000;
@@ -292,6 +293,7 @@ async function castVote(
   claim: ResearchClaim,
   seat: VerifierSeat,
   searchIndexRef: { next: number },
+  floorProtected: boolean,
 ): Promise<ClaimVote | null> {
   const model = ctx.deps.leafModel ?? ctx.deps.model;
   const maxTurns = ctx.config.verifierMaxToolTurns ?? MAX_VOTER_TOOL_TURNS;
@@ -313,7 +315,7 @@ async function castVote(
           calls.map((call) => executeVoterTool(ctx, call, searchIndexRef)),
         ),
       shouldStop: ({ inputTokens }) =>
-        tokenBudgetExhaustedReason(ctx) ??
+        (floorProtected ? null : tokenBudgetExhaustedReason(ctx)) ??
         timeoutSynthesisReason(ctx) ??
         (inputTokens >= tokenBudget ? "vote token budget spent" : null),
       signal: ctx.deps.signal,
@@ -323,7 +325,10 @@ async function castVote(
   // A run-wide budget or timeout stop means abstain: there is nothing left to
   // spend on a considered verdict. A per-vote budget stop is different — the
   // voter investigated enough, so fall through and have it decide now.
-  if (tokenBudgetExhaustedReason(ctx) || timeoutSynthesisReason(ctx)) {
+  if (
+    (!floorProtected && tokenBudgetExhaustedReason(ctx)) ||
+    timeoutSynthesisReason(ctx)
+  ) {
     return null;
   }
 
@@ -377,12 +382,15 @@ async function verifyOneClaim(
   gate: ConcurrencyGate,
   searchIndexRef: { next: number },
   panel: readonly VerifierSeat[],
+  floorProtected: boolean,
 ): Promise<void> {
   const votes = (
     await Promise.all(
       panel.map((seat) =>
         gate
-          .run(() => castVote(ctx, question, claim, seat, searchIndexRef))
+          .run(() =>
+            castVote(ctx, question, claim, seat, searchIndexRef, floorProtected),
+          )
           .catch((err: unknown) => {
             if (ctx.deps.signal?.aborted) throw err;
             return null;
@@ -433,17 +441,26 @@ export async function verifyClaims(
   while (
     cursor < maxToVerify &&
     confirmed < target &&
-    !tokenBudgetExhaustedReason(ctx) &&
+    (cursor < VERIFY_FLOOR || !tokenBudgetExhaustedReason(ctx)) &&
     !timeoutSynthesisReason(ctx)
   ) {
     const wave = representatives.slice(
       cursor,
       Math.min(cursor + VERIFY_BATCH_SIZE, maxToVerify),
     );
+    const floorProtected = cursor < VERIFY_FLOOR;
     cursor += wave.length;
     await Promise.all(
       wave.map((claim) =>
-        verifyOneClaim(ctx, question, claim, gate, searchIndexRef, panel),
+        verifyOneClaim(
+          ctx,
+          question,
+          claim,
+          gate,
+          searchIndexRef,
+          panel,
+          floorProtected,
+        ),
       ),
     );
     confirmed += wave.filter((claim) => claim.status === "confirmed").length;
