@@ -422,11 +422,15 @@ export function selectNovelUrls(
   return { ...selection, urlDupes };
 }
 
-async function fetchUrls(ctx: ResearchCtx, urls: string[]): Promise<number> {
+async function fetchUrls(
+  ctx: ResearchCtx,
+  urls: string[],
+  goal?: string,
+): Promise<number> {
   let fetched = 0;
   for (let start = 0; start < urls.length; start += FETCH_BATCH_SIZE) {
     const batch = urls.slice(start, start + FETCH_BATCH_SIZE);
-    const outcome = await execFetch({ urls: batch }, ctx);
+    const outcome = await execFetch({ urls: batch, goal }, ctx);
     fetched += outcome.fetchedUrls?.length ?? 0;
   }
   return fetched;
@@ -514,7 +518,7 @@ export async function runSurvey(
     SURVEY_MAX_FETCH,
   );
   const claimsBefore = ctx.store.claims.claims.length;
-  const sourcesFetched = await fetchUrls(ctx, selection.urls);
+  const sourcesFetched = await fetchUrls(ctx, selection.urls, opts.goal);
   await ctx.store.claims.settle();
 
   return {

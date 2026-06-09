@@ -53,7 +53,7 @@ export interface ResearchClaim {
 export interface ClaimLedger {
   readonly claims: ResearchClaim[];
   readonly unsupportedCount: number;
-  queue(ctx: ResearchCtx, document: SourceDocument): void;
+  queue(ctx: ResearchCtx, document: SourceDocument, goal?: string): void;
   settle(): Promise<void>;
 }
 
@@ -106,7 +106,7 @@ const EXTRACTION_OUTPUT_SCHEMA: ModelOutputSchema = {
 const EXTRACTION_SYSTEM_PROMPT =
   "You extract falsifiable, verbatim-quoted claims from one fetched source document for a research run. Structured output only.";
 
-function extractionPrompt(question: string, document: SourceDocument): string {
+function extractionPrompt(goal: string, document: SourceDocument): string {
   const text = document.markdown.slice(0, EXTRACTION_INPUT_CHARS);
   const truncationNote =
     document.markdown.length > EXTRACTION_INPUT_CHARS
@@ -114,7 +114,7 @@ function extractionPrompt(question: string, document: SourceDocument): string {
       : "";
   return (
     "## Source claim extractor\n\n" +
-    `Research question: "${question}"\n\n` +
+    `Research goal: "${goal}"\n\n` +
     "Source:\n" +
     `- URL: ${document.url}\n` +
     `- Title: ${document.title}\n` +
@@ -125,10 +125,10 @@ function extractionPrompt(question: string, document: SourceDocument): string {
     truncationNote +
     "\n\n## Task\n" +
     '1. Assess source quality: primary research/official/institutional data → "primary"; reputable secondary reporting → "secondary"; personal blog or opinion → "blog"; forum or user-generated content → "forum"; spam, ads, paywalled stubs, or irrelevant pages → "unreliable".\n' +
-    "2. Extract 2-5 falsifiable claims that bear on the research question. Each claim must:\n" +
+    "2. Extract 2-5 falsifiable claims that bear on the research goal. Each claim must:\n" +
     "   - be a concrete, checkable statement that preserves exact values, dates, and named entities\n" +
     "   - include a supporting quote copied VERBATIM from the source text above — it is string-matched against the stored text, so never paraphrase, correct, reorder, or splice\n" +
-    "   - be rated central, supporting, or tangential to the research question\n" +
+    "   - be rated central, supporting, or tangential to the research goal\n" +
     "3. Record the publish date if the text states one.\n\n" +
     "If the source is irrelevant, empty, or low-value, return claims: [] with the appropriate sourceQuality.\n" +
     "Structured output only."
@@ -199,6 +199,7 @@ interface ExtractionOutcome {
 async function extractClaims(
   ctx: ResearchCtx,
   document: SourceDocument,
+  goal?: string,
 ): Promise<ExtractionOutcome> {
   const model = ctx.deps.leafModel ?? ctx.deps.model;
   const result = await withRole("extract", () =>
@@ -207,7 +208,10 @@ async function extractClaims(
       messages: [
         {
           role: "user",
-          content: extractionPrompt(ctx.scope.query ?? "", document),
+          content: extractionPrompt(
+            goal?.trim() || ctx.scope.query || "",
+            document,
+          ),
         },
       ],
       maxTokens: EXTRACTION_MAX_TOKENS,
@@ -270,14 +274,14 @@ export function createClaimLedger(): ClaimLedger {
   let nextClaimNumber = 1;
   let unsupportedCount = 0;
 
-  function queue(ctx: ResearchCtx, document: SourceDocument): void {
+  function queue(ctx: ResearchCtx, document: SourceDocument, goal?: string): void {
     if (queuedSourceIds.has(document.sourceId)) return;
     queuedSourceIds.add(document.sourceId);
     if (!isEvidenceSource(document)) return;
     if (researchBudgetExhaustedReason(ctx)) return;
 
     const task = gate
-      .run(() => extractClaims(ctx, document))
+      .run(() => extractClaims(ctx, document, goal))
       .then(({ quoted, unsupported }) => {
         for (const claim of quoted) {
           claim.id = `claim_${nextClaimNumber++}`;

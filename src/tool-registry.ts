@@ -201,6 +201,11 @@ const RESEARCH_TOOL_REGISTRY: RegisteredTool[] = [
             },
             description: "Several absolute http(s) URLs to fetch in parallel.",
           },
+          goal: {
+            type: "string",
+            description:
+              "What you are trying to learn from these pages. Claims are extracted against this goal; omit to use the overall research question.",
+          },
           preview_chars: {
             type: "integer",
             minimum: 1,

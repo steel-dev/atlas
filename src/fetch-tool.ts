@@ -25,6 +25,7 @@ import { normalizeUrlForSource } from "./url.js";
 export interface FetchToolInput {
   url?: string;
   urls?: string[];
+  goal?: string;
   preview_chars?: number;
   max_chars?: number;
 }
@@ -601,6 +602,7 @@ async function fetchSourceDocument(
   ctx: ResearchCtx,
   url: string,
   sourceId: string,
+  goal: string,
 ): Promise<SourceDocument | null> {
   ctx.scope.emit({ type: "fetching", url });
 
@@ -655,7 +657,7 @@ async function fetchSourceDocument(
   });
   ctx.store.sourceDocuments.set(normalizeUrlForSource(url), document);
   ctx.store.sourceDocumentsById.set(document.sourceId, document);
-  ctx.store.claims.queue(ctx, document);
+  ctx.store.claims.queue(ctx, document, goal);
 
   ctx.scope.emit({
     type: "source_fetched",
@@ -678,6 +680,7 @@ async function fetchOneUrl(
   requestedUrl: string,
   previewChars: number,
   ctx: ResearchCtx,
+  goal: string,
 ): Promise<SingleFetchOutcome> {
   const validationError = validateHttpUrl(requestedUrl);
   if (validationError) return { ok: false, error: validationError };
@@ -703,6 +706,7 @@ async function fetchOneUrl(
       ctx,
       url,
       reservation.sourceId,
+      goal,
     ).finally(() => {
       ctx.store.sourceReservations.documents.delete(normalizedUrl);
       releaseSourceReservation(ctx, reservation);
@@ -733,6 +737,10 @@ async function fetchOneUrl(
   }
 }
 
+function resolveFetchGoal(args: FetchToolInput, ctx: ResearchCtx): string {
+  return args.goal?.trim() || ctx.scope.query || "";
+}
+
 export async function execFetch(
   args: FetchToolInput,
   ctx: ResearchCtx,
@@ -748,6 +756,7 @@ export async function execFetch(
     String(args.url ?? "").trim(),
     previewChars,
     ctx,
+    resolveFetchGoal(args, ctx),
   );
   if (!outcome.ok) return { text: outcome.error };
   return {
@@ -785,7 +794,12 @@ async function fetchManyUrls(
 
   const outcomes = await Promise.all(
     urls.map(async (url) => {
-      const outcome = await fetchOneUrl(url, previewChars, ctx);
+      const outcome = await fetchOneUrl(
+        url,
+        previewChars,
+        ctx,
+        resolveFetchGoal(args, ctx),
+      );
       if (!outcome.ok) return { url, error: outcome.error };
       return {
         url,
