@@ -402,8 +402,8 @@ Options:
       --model NAME            Research (lead) model name — orchestration & synthesis
       --leaf-model NAME       Leaf model for claim extraction & verifier voters (default: ${DEFAULT_LEAF_MODEL} on anthropic; lead model otherwise)
       --grader MODE           per-criterion | one-shot (default: per-criterion)
-      --judge-provider P      Judge provider: google, anthropic, openai (default: google)
-      --judge-model MODEL     Judge model (default: gemini-3.1-pro-preview / claude-sonnet-4-5 / gpt-5.2)
+      --judge-provider P      Judge provider: google, anthropic, openai (default: anthropic; google uses a moving preview model)
+      --judge-model MODEL     Judge model (default: claude-sonnet-4-5 for anthropic / gpt-5.2 / gemini-3.1-pro-preview)
       --judge-timeout N       Per-criterion judge timeout in seconds (default: ${DEFAULT_JUDGE_TIMEOUT_MS / 1000})
       --judge-concurrency N   Parallel judge calls per task (default: ${DEFAULT_JUDGE_CONCURRENCY})
       --concurrency N         Parallel tasks (default: 1)
@@ -712,8 +712,19 @@ function defaultJudgeModel(provider: JudgeProvider): string {
 }
 
 export function buildJudgeSpec(opts: EvalOptions): JudgeSpec {
-  const provider = opts.judgeProvider ?? "google";
+  const provider = opts.judgeProvider ?? "anthropic";
   const modelId = opts.judgeModel ?? defaultJudgeModel(provider);
+  if (provider !== "google") {
+    const researchProvider = resolveResearchProvider(opts.provider);
+    if (
+      provider === researchProvider &&
+      modelId === resolveResearchModel(researchProvider, opts.model)
+    ) {
+      process.stderr.write(
+        `warning: judge ${provider}/${modelId} is the model under test; self-grading inflates scores — pass --judge-model for an independent judge\n`,
+      );
+    }
+  }
   if (provider === "google") {
     const apiKey = readEnv(
       "ATLAS_GOOGLE_API_KEY",

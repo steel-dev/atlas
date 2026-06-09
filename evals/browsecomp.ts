@@ -105,8 +105,8 @@ Options:
       --provider NAME      Model provider: anthropic, openai
       --model NAME         Model name
       --judge              Grade responses with an LLM judge
-      --judge-provider P   Judge provider: anthropic, openai (default: run provider/env)
-      --judge-model MODEL  Judge model (default: provider-specific/env)
+      --judge-provider P   Judge provider: anthropic, openai (default: anthropic, independent of the model under test)
+      --judge-model MODEL  Judge model (default: claude-opus-4-8 for anthropic)
       --judge-timeout N    Per-judge timeout in seconds (default: 60)
       --concurrency N      Parallel cases (default: 1)
       --proxy              Route Steel calls through proxy
@@ -330,9 +330,24 @@ function createOpenAIModelAdapter(opts: {
   });
 }
 
+const DEFAULT_JUDGE_PROVIDER: ModelProvider = "anthropic";
+
+function defaultJudgeModel(provider: ModelProvider): string {
+  return provider === "openai" ? DEFAULT_OPENAI_MODEL : "claude-opus-4-8";
+}
+
 function createJudgeAdapter(opts: EvalOptions): ModelAdapter {
-  const provider = resolveEvalProvider(opts.judgeProvider ?? opts.provider);
-  const model = resolveEvalModel(provider, opts.judgeModel ?? opts.model);
+  const provider = resolveEvalProvider(
+    opts.judgeProvider ?? DEFAULT_JUDGE_PROVIDER,
+  );
+  const model = opts.judgeModel?.trim() || defaultJudgeModel(provider);
+  const runProvider = resolveEvalProvider(opts.provider);
+  const runModel = resolveEvalModel(runProvider, opts.model);
+  if (provider === runProvider && model === runModel) {
+    process.stderr.write(
+      `warning: judge ${provider}/${model} is the model under test; self-grading inflates scores — pass --judge-model for an independent judge\n`,
+    );
+  }
   if (provider === "anthropic") {
     const apiKey = readEnv("ATLAS_ANTHROPIC_API_KEY", "ANTHROPIC_API_KEY");
     if (!apiKey) {
