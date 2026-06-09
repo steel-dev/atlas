@@ -138,6 +138,7 @@ export interface EvalResult {
   judgeErrors?: number;
   error?: string;
   finishReason?: string;
+  capBound?: boolean;
   markdown?: string;
   latencyMs: number;
   trace: EvalTraceEvent[];
@@ -1415,6 +1416,7 @@ export async function gradeResearch(
     report,
     ...(judgeErrors ? { judgeErrors } : {}),
     finishReason: result.finishReason,
+    capBound: result.capBound,
     markdown: result.markdown,
     latencyMs,
     trace,
@@ -1594,6 +1596,7 @@ function summarize(results: EvalResult[]) {
     0,
   );
   const coverage = totalCriteria === 0 ? 1 : gradedCriteria / totalCriteria;
+  const capBound = completed.filter((result) => result.capBound).length;
   return {
     type: "summary" as const,
     total: results.length,
@@ -1611,6 +1614,7 @@ function summarize(results: EvalResult[]) {
     scoreValid: coverage >= COVERAGE_FLOOR,
     normalizedScore: mean(scored.map((result) => result.score.normalizedScore)),
     passRate: mean(scored.map((result) => result.score.passRate)),
+    capBoundRate: completed.length === 0 ? 0 : capBound / completed.length,
     domains,
     sections,
     medianLatencyMs: median(completed.map((result) => result.latencyMs)),
@@ -1679,6 +1683,7 @@ function printSummary(
       `cases: ${summary.total} (scored ${summary.scored}, errors ${summary.errors})`,
       `normalized score: ${(summary.normalizedScore * 100).toFixed(1)}%`,
       `pass rate: ${(summary.passRate * 100).toFixed(1)}%`,
+      `cap-bound rate: ${(summary.capBoundRate * 100).toFixed(1)}% (harness-limited runs)`,
       `judge: ${judge.provider}/${judge.modelId} (${grader})`,
       ...(summary.judgeErrors ? [`judge errors: ${summary.judgeErrors}`] : []),
       `grading coverage: ${(summary.coverage * 100).toFixed(1)}% (${summary.gradedCriteria}/${summary.totalCriteria} criteria graded${

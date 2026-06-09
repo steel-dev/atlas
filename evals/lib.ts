@@ -248,6 +248,7 @@ export function traceEvent(
         reason: event.reason,
         ...(event.error ? { error: event.error } : {}),
       };
+    case "cap_bound":
     case "research_started":
     case "report_boundary":
     case "report_delta":
@@ -260,6 +261,8 @@ export function progressLine(
   event: ResearchEvent,
 ): string | null {
   switch (event.type) {
+    case "cap_bound":
+      return `${caseId}: cap-bound — ${event.stage} hit a harness limit (${event.reason})`;
     case "scope_completed":
       return `${caseId}: scoped into ${event.angles.length} angle(s): ${event.angles.map((angle) => angle.label).join(", ")}`;
     case "searching":

@@ -77,6 +77,7 @@ interface EvalResult {
   judgeError?: string;
   error?: string;
   finishReason?: string;
+  capBound?: boolean;
   markdown?: string;
   latencyMs: number;
   trace: EvalTraceEvent[];
@@ -780,6 +781,7 @@ async function runCase(
       ...(judgeResult ? { judge: judgeResult } : {}),
       ...(judgeError ? { judgeError } : {}),
       finishReason: result.finishReason,
+      capBound: result.capBound,
       markdown: result.markdown,
       latencyMs,
       trace,
@@ -844,6 +846,7 @@ function summarize(results: EvalResult[]) {
   const exactCorrect = results.filter((result) => result.exactCorrect).length;
   const judged = results.filter((result) => result.judge !== undefined);
   const judgeCorrect = judged.filter((result) => result.judge?.correct).length;
+  const capBound = completed.filter((result) => result.capBound).length;
   const totalLeadToolCalls = completed.reduce(
     (sum, result) => sum + (result.metrics?.leadToolCalls ?? 0),
     0,
@@ -864,6 +867,7 @@ function summarize(results: EvalResult[]) {
     accuracy: results.length === 0 ? 0 : correct / results.length,
     exactAccuracy: results.length === 0 ? 0 : exactCorrect / results.length,
     judgeAccuracy: judged.length === 0 ? null : judgeCorrect / judged.length,
+    capBoundRate: completed.length === 0 ? 0 : capBound / completed.length,
     medianLatencyMs: median(completed.map((result) => result.latencyMs)),
     averageLeadToolCalls:
       completed.length === 0 ? 0 : totalLeadToolCalls / completed.length,
@@ -948,6 +952,7 @@ async function main(): Promise<void> {
         ? "judge accuracy: n/a"
         : `judge accuracy: ${(summary.judgeAccuracy * 100).toFixed(1)}% (${summary.judgeCorrect}/${summary.judged})`,
       `errors: ${summary.errors}`,
+      `cap-bound rate: ${(summary.capBoundRate * 100).toFixed(1)}% (harness-limited runs)`,
       `median latency: ${(summary.medianLatencyMs / 1000).toFixed(1)}s`,
       `avg lead tool calls: ${summary.averageLeadToolCalls.toFixed(1)} (surveys ${summary.averageSurveys.toFixed(1)})`,
       `claims: extracted=${summary.claimHealth.extracted}, unsupported=${summary.claimHealth.unsupported}, confirmed=${summary.claimHealth.confirmed}, refuted=${summary.claimHealth.refuted}`,
