@@ -14,7 +14,7 @@ import {
 } from "./tool-contract.js";
 import { normalizeUrlForSource } from "./url.js";
 
-const BROWSER_CDP_OUTPUT_CHARS = 60_000;
+const BROWSER_CDP_OUTPUT_CHARS = 12_000;
 const BROWSER_CDP_ALLOWED_PREFIXES = [
   "Accessibility.",
   "DOM.",

@@ -183,7 +183,7 @@ const RESEARCH_TOOL_REGISTRY: RegisteredTool[] = [
     definition: {
       name: "fetch",
       description:
-        "Fetch one or more URLs, store each page's full extracted text as a source document (its claims are extracted into the ledger automatically), and return a compact source card per page. Raw text is not returned: use search_sources to find passages and read_source to read or quote them.",
+        "Fetch one or more URLs, store each page's full extracted text as a source document (its claims are extracted into the ledger automatically), and return a compact source card per page including a short preview. Full page text is not returned inline: use search_sources to find passages and read_source to read or quote them.",
       input_schema: {
         type: "object",
         properties: {
