@@ -8,3 +8,5 @@ export { openalex } from "./openalex.js";
 export type { OpenAlexOptions } from "./openalex.js";
 export { edgar } from "./edgar.js";
 export type { EdgarOptions } from "./edgar.js";
+export { clinicaltrials } from "./clinicaltrials.js";
+export type { ClinicalTrialsOptions } from "./clinicaltrials.js";
