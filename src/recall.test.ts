@@ -395,12 +395,13 @@ describe("runRecall", () => {
 
     const outcome = await runRecall(ctx, "test question");
 
-    expect(outcome.budgetDropped).toBe(3);
-    expect(outcome.sourcesFetched).toBe(RECALL_MAX_FETCH);
+    expect(outcome.budgetDropped).toBe(0);
+    expect(outcome.sourcesFetched).toBe(18);
+    expect(outcome.sourcesFetched).toBeLessThanOrEqual(RECALL_MAX_FETCH);
     const batches = execFetchMock.mock.calls.map(
       (call) => (call[0].urls ?? []).length,
     );
-    expect(batches).toEqual([12, 3]);
+    expect(batches).toEqual([12, 6]);
   });
 });
 

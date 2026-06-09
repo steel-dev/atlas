@@ -6,8 +6,8 @@ import { runSearchQueries, type MergedSearchResult } from "./search-tool.js";
 import { execFetch } from "./fetch-tool.js";
 import { normalizeUrlForSource } from "./url.js";
 
-export const RECALL_MAX_FETCH = 15;
-export const SURVEY_MAX_FETCH = 5;
+export const RECALL_MAX_FETCH = 40;
+export const SURVEY_MAX_FETCH = 15;
 const RESULTS_PER_QUERY = 6;
 const FETCH_BATCH_SIZE = 12;
 const SCOPE_MAX_TOKENS = 1_500;
@@ -464,6 +464,13 @@ export async function runRecall(
     searches.map((outcome) => outcome.results),
     RECALL_MAX_FETCH,
   );
+  if (selection.budgetDropped > 0) {
+    ctx.scope.emit({
+      type: "cap_bound",
+      stage: "recall",
+      reason: `recall fetch cap (${RECALL_MAX_FETCH}) dropped ${selection.budgetDropped} relevant source(s)`,
+    });
+  }
   const claimsBefore = ctx.store.claims.claims.length;
   const sourcesFetched = await fetchUrls(ctx, selection.urls);
   await ctx.store.claims.settle();
@@ -517,6 +524,13 @@ export async function runSurvey(
     [search.results],
     SURVEY_MAX_FETCH,
   );
+  if (selection.budgetDropped > 0) {
+    ctx.scope.emit({
+      type: "cap_bound",
+      stage: "survey",
+      reason: `survey fetch cap (${SURVEY_MAX_FETCH}) dropped ${selection.budgetDropped} relevant source(s)`,
+    });
+  }
   const claimsBefore = ctx.store.claims.claims.length;
   const sourcesFetched = await fetchUrls(ctx, selection.urls, opts.goal);
   await ctx.store.claims.settle();
