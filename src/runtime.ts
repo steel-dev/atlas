@@ -324,6 +324,13 @@ export function timeoutSynthesisReason(ctx: ResearchCtx): string | null {
   return `timeout approaching (${remainingSeconds}s remaining)`;
 }
 
+export function isCapBoundReason(reason: string): boolean {
+  return (
+    reason.includes("budget exhausted") ||
+    reason.startsWith("timeout approaching")
+  );
+}
+
 export type ResearchLoopEvent =
   | { type: "research_started" }
   | {
@@ -397,6 +404,7 @@ export type ResearchLoopEvent =
       tokensBefore: number;
       droppedMessages: number;
     }
+  | { type: "cap_bound"; stage: string; reason: string }
   | { type: "report_boundary" }
   | { type: "report_delta"; text: string }
   | { type: "synthesis_failed"; reason: string; error?: string }

@@ -41,6 +41,7 @@ import {
   createAgentScope,
   createSourceStore,
   createConcurrencyGate,
+  isCapBoundReason,
   type ResearchCtx,
   type ResearchLoopEvent,
 } from "./runtime.js";
@@ -104,6 +105,8 @@ export interface ResearchResult {
   citationsNotConfirmed: string[];
   citationsNotFetched: string[];
   finishReason: string;
+  capBound: boolean;
+  capBoundReason?: string;
   sourceDocuments?: SourceDocument[];
   /**
    * Byte-exact transcript of every model step taken during the run — present
@@ -286,6 +289,15 @@ async function runResearch(
     });
     await ctx.store.claims.settle();
 
+    const capBound = isCapBoundReason(loop.finishReason);
+    if (capBound) {
+      ctx.scope.emit({
+        type: "cap_bound",
+        stage: "research",
+        reason: loop.finishReason,
+      });
+    }
+
     throwIfAborted();
     const verify = await verifyClaims(ctx, opts.query, searchIndexRef);
     const claims = partitionClaims(ctx);
@@ -359,6 +371,8 @@ async function runResearch(
       citationsNotConfirmed: citations.citationsNotConfirmed,
       citationsNotFetched: citations.citationsNotFetched,
       finishReason: loop.finishReason,
+      capBound,
+      ...(capBound ? { capBoundReason: loop.finishReason } : {}),
       ...(opts.includeSourceDocuments
         ? { sourceDocuments: [...ctx.store.sourceDocuments.values()] }
         : {}),

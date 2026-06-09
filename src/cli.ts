@@ -193,6 +193,11 @@ function prettyEventBody(e: ResearchEvent): string {
         DIM,
         `    ⤵ context re-anchored — dropped ${e.droppedMessages} message${e.droppedMessages === 1 ? "" : "s"} (~${Math.round(e.tokensBefore / 1000)}k tok)`,
       );
+    case "cap_bound":
+      return paint(
+        YELLOW,
+        `    ⚠ cap-bound — ${e.stage} hit a harness limit (${e.reason}), not a model-decided stop`,
+      );
     case "searching":
       return paint(DIM, `    search:`) + ` ${e.query}`;
     case "search_results":
