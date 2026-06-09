@@ -362,9 +362,10 @@ function deriveKey(password: string, length: number): Buffer {
 function decryptBrowseCompValue(value: string, canary: string): string {
   const encrypted = Buffer.from(value, "base64");
   const key = deriveKey(canary, encrypted.length);
-  return Buffer.from(
+  const decoded = Buffer.from(
     encrypted.map((byte, index) => byte ^ key[index]),
-  ).toString("utf8");
+  );
+  return new TextDecoder("utf-8", { fatal: true }).decode(decoded);
 }
 
 function optionalString(raw: unknown): string | undefined {
@@ -414,8 +415,10 @@ function maybeDecryptBrowseCompRecord(
     if (!value) continue;
     try {
       decrypted[field] = decryptBrowseCompValue(value, canary);
-    } catch {
-      decrypted[field] = value;
+    } catch (err) {
+      fail(
+        `browsecomp: failed to decrypt "${field}" with the row canary; refusing to grade ciphertext (dataset or canary mismatch): ${err instanceof Error ? err.message : String(err)}`,
+      );
     }
   }
   return decrypted;
