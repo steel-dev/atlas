@@ -49,7 +49,7 @@ Options:
       --judge-provider P  Judge provider: google, anthropic, openai (default: anthropic)
       --judge-model M     Judge model id (default per provider)
       --grader G          per-criterion | one-shot (default: per-criterion)
-      --judge-concurrency N  Parallel judge calls per run (default: 4)
+      --judge-concurrency N  Parallel judge calls per run (default: 2)
       --judge-timeout N      Per-criterion judge timeout in seconds (default: 120)
   -h, --help            Show this help
 `;
@@ -245,7 +245,7 @@ async function main(): Promise<void> {
       judgeConcurrency: parsePositiveInt(
         values["judge-concurrency"],
         "--judge-concurrency",
-        4,
+        2,
       ),
       judgeTimeoutMs: Math.floor(
         (parsePositiveNumber(values["judge-timeout"], "--judge-timeout") ??

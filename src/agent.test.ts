@@ -80,6 +80,28 @@ function leadModel(): MockLanguageModelV3 {
   });
 }
 
+function leadModelNoVerify(): MockLanguageModelV3 {
+  let step = 0;
+  return new MockLanguageModelV3({
+    provider: "mock-provider",
+    modelId: "lead-model",
+    doGenerate: async () => {
+      step++;
+      if (step === 1) {
+        return toolCallResult(
+          "spawn",
+          {
+            role: "research",
+            task: "Establish the tower's height. Original question: how tall is the tower?",
+          },
+          "Plan: spawn one research subagent on the tower's height.",
+        );
+      }
+      return textResult("I have the claim but I'm stopping without verifying.");
+    },
+  });
+}
+
 function researchModel(): MockLanguageModelV3 {
   let step = 0;
   return new MockLanguageModelV3({
@@ -150,8 +172,7 @@ function writeModel(): MockLanguageModelV3 {
         {
           type: "text-delta",
           id: "t1",
-          delta:
-            "The tower is 330 meters tall. {{claim_1}}",
+          delta: "The tower is 330 meters tall. {{claim_1}}",
         },
         { type: "text-end", id: "t1" },
         {
@@ -246,13 +267,55 @@ describe("emergent multi-agent run", () => {
     expect(types).toContain("claim.extracted");
     expect(types).toContain("claim.verified");
     expect(types).toContain("citation.bound");
-    expect(types.filter((type) => type === "report.delta").length).toBeGreaterThan(0);
+    expect(
+      types.filter((type) => type === "report.delta").length,
+    ).toBeGreaterThan(0);
 
     const spawned = events.filter(
       (event): event is Extract<ResearchEvent, { type: "agent.spawned" }> =>
         event.type === "agent.spawned",
     );
-    expect(spawned.filter((event) => event.role === "research")).toHaveLength(1);
+    expect(spawned.filter((event) => event.role === "research")).toHaveLength(
+      1,
+    );
+    expect(spawned.filter((event) => event.role === "verify")).toHaveLength(3);
+  });
+
+  it("force-verifies claims the lead never checked, from the reserve", async () => {
+    const atlas = new Atlas({
+      model: leadModelNoVerify() as unknown as ResolvedModel,
+      models: {
+        research: researchModel() as unknown as ResolvedModel,
+        extract: extractModel() as unknown as ResolvedModel,
+        verify: verifyModel() as unknown as ResolvedModel,
+        write: writeModel() as unknown as ResolvedModel,
+      },
+      search: stubSearch,
+      fetch: stubFetch,
+      effort: "fast",
+      safety: { allowPrivateNetworks: true },
+    });
+
+    const run = atlas.start("how tall is the tower?");
+    const events: ResearchEvent[] = [];
+    const drain = (async () => {
+      for await (const event of run.events()) events.push(event);
+    })();
+    const result = await run.result();
+    await drain;
+
+    expect(result.claims.confirmed).toHaveLength(1);
+    expect(result.claims.confirmed[0].id).toBe("claim_1");
+    expect(result.stats.claimsConfirmed).toBe(1);
+    expect(events.map((event) => event.type)).toContain("claim.verified");
+
+    const spawned = events.filter(
+      (event): event is Extract<ResearchEvent, { type: "agent.spawned" }> =>
+        event.type === "agent.spawned",
+    );
+    expect(spawned.filter((event) => event.role === "research")).toHaveLength(
+      1,
+    );
     expect(spawned.filter((event) => event.role === "verify")).toHaveLength(3);
   });
 });

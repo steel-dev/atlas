@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { generateObject } from "ai";
 import { z } from "zod";
-import { createConcurrencyGate } from "./async.js";
+import { createConcurrencyGate, mapWithConcurrency } from "./async.js";
 import { bindCitations, type Citation } from "./bind.js";
 import {
   createBudgetMeter,
@@ -112,8 +112,53 @@ const SYNTHESIS_FRACTION = 0.15;
 const SYNTHESIS_MIN_USD = 0.05;
 const VERIFY_RESERVE_FRACTION = 0.2;
 const VERIFY_RESERVE_MIN_USD = 0.05;
+const VERIFY_SWEEP_FRACTION = 0.08;
+const VERIFY_SWEEP_MIN_USD = 0.03;
+const VERIFY_SWEEP_CONCURRENCY = 4;
+const VERIFY_SWEEP_MAX_CLAIMS = 64;
+const IMPORTANCE_RANK: Record<string, number> = {
+  central: 0,
+  supporting: 1,
+  tangential: 2,
+};
 const TIMEOUT_SYNTHESIS_RESERVE_MS = 120_000;
 const BUDGET_WARNING_FRACTIONS = [0.5, 0.8, 0.95];
+
+async function sweepVerification(
+  rctx: RunCtx,
+  reserve: BudgetGrant,
+): Promise<void> {
+  if (reserve.floored()) return;
+  const pending = rctx.ledger.claims
+    .filter((claim) => !claim.duplicateOf && claim.votes.length === 0)
+    .sort(
+      (a, b) =>
+        (IMPORTANCE_RANK[a.importance] ?? 3) -
+        (IMPORTANCE_RANK[b.importance] ?? 3),
+    )
+    .slice(0, VERIFY_SWEEP_MAX_CLAIMS);
+  if (pending.length === 0) return;
+  await mapWithConcurrency(pending, VERIFY_SWEEP_CONCURRENCY, async (claim) => {
+    if (reserve.floored() || rctx.signal?.aborted) return;
+    const grant = reserve.grant({
+      fraction: VERIFY_SWEEP_FRACTION,
+      minUSD: VERIFY_SWEEP_MIN_USD,
+    });
+    if (!grant) return;
+    try {
+      await rctx.verifySpawn({
+        claimIds: [claim.id],
+        grant,
+        parentId: "agent_1",
+        depth: 1,
+      });
+    } catch (err) {
+      if (rctx.signal?.aborted) throw err;
+    } finally {
+      grant.release();
+    }
+  });
+}
 
 interface EventSubscriber {
   queue: ResearchEvent[];
@@ -482,12 +527,17 @@ async function executeRun(args: ExecuteRunArgs): Promise<ResearchResult> {
     };
   } finally {
     if (researchGrant !== meter) researchGrant.release();
-    if (verifyReserve !== meter) verifyReserve.release();
   }
   await ledger.settle();
   args.hardSignal.throwIfAborted();
   if (args.isPaused()) {
     throw new AtlasError("run paused", "paused");
+  }
+
+  try {
+    await sweepVerification(rctx, verifyReserve);
+  } finally {
+    if (verifyReserve !== meter) verifyReserve.release();
   }
 
   const partition = partitionClaims(ledger.claims);
