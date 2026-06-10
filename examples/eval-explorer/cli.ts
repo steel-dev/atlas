@@ -14,8 +14,13 @@ import {
   DEFAULT_OPENAI_MODEL,
 } from "../../src/defaults.js";
 import { readEnv } from "../../src/env.js";
-import { DEFAULT_CASES_URL } from "../../evals/draco.js";
-import { DracoRunHost } from "./runner.js";
+import {
+  DEFAULT_CASES_URL,
+  DEFAULT_LEAF_MODEL,
+  buildJudgeSpec,
+  type EvalOptions,
+} from "../../evals/draco.js";
+import { DracoRunHost, type GradeConfig } from "./runner.js";
 import { captureCommit } from "./git.js";
 import { serveExplore } from "./server.js";
 import { Store } from "./store.js";
@@ -25,20 +30,27 @@ const USAGE = `draco explore — local web UI to inspect & run the DRACO benchma
 Usage:
   npm run eval:draco:explore -- [options]
 
-Runs research per case with the v2 engine and persists ungraded results;
-use eval:draco for graded benchmark runs.
+Runs research per case with the v2 engine. Ungraded by default; pass --grade
+to judge each run against its DRACO rubric (one pass, no variance).
 
 Options:
       --port N          Port (default: 4318)
       --host HOST       Bind host (default: 127.0.0.1)
       --provider NAME   Research provider: anthropic, openai
-      --model NAME      Research model id
+      --model NAME      Research (lead) model id
+      --leaf-model NAME Model for extraction & verification (default: ${DEFAULT_LEAF_MODEL} on anthropic; lead model otherwise)
       --effort LEVEL    fast | balanced | deep | max (default: balanced)
       --budget USD      Per-run spend cap in USD
       --timeout N       Per-run wall-clock cap in seconds
       --concurrency N   Max simultaneous runs (default: 1)
       --db PATH         SQLite path (default: eval-runs/draco-explore.db)
       --cases URL|FILE  DRACO cases source (default: pinned perplexity-ai/draco)
+      --grade           Judge each run against its DRACO rubric (off by default)
+      --judge-provider P  Judge provider: google, anthropic, openai (default: anthropic)
+      --judge-model M     Judge model id (default per provider)
+      --grader G          per-criterion | one-shot (default: per-criterion)
+      --judge-concurrency N  Parallel judge calls per run (default: 4)
+      --judge-timeout N      Per-criterion judge timeout in seconds (default: 120)
   -h, --help            Show this help
 `;
 
@@ -81,7 +93,14 @@ function parsePositiveInt(
 function resolveResearchModel(
   providerFlag: string | undefined,
   modelFlag: string | undefined,
-): { provider: string; modelId: string; model: AtlasConfig["model"] } {
+  leafFlag: string | undefined,
+): {
+  provider: string;
+  modelId: string;
+  model: AtlasConfig["model"];
+  leafModelId?: string;
+  models?: AtlasConfig["models"];
+} {
   const provider = providerFlag ?? readEnv("ATLAS_PROVIDER") ?? "anthropic";
   if (provider !== "anthropic" && provider !== "openai") {
     fail(`--provider must be one of: anthropic, openai (got "${provider}")`);
@@ -90,14 +109,38 @@ function resolveResearchModel(
     modelFlag ??
     readEnv("ATLAS_MODEL") ??
     (provider === "anthropic" ? DEFAULT_ANTHROPIC_MODEL : DEFAULT_OPENAI_MODEL);
-  if (provider === "anthropic") {
-    const apiKey = readEnv("ATLAS_ANTHROPIC_API_KEY", "ANTHROPIC_API_KEY");
-    if (!apiKey) fail("ANTHROPIC_API_KEY is required for provider=anthropic");
-    return { provider, modelId, model: createAnthropic({ apiKey })(modelId) };
+  const make =
+    provider === "anthropic"
+      ? (() => {
+          const apiKey = readEnv(
+            "ATLAS_ANTHROPIC_API_KEY",
+            "ANTHROPIC_API_KEY",
+          );
+          if (!apiKey)
+            fail("ANTHROPIC_API_KEY is required for provider=anthropic");
+          return createAnthropic({ apiKey });
+        })()
+      : (() => {
+          const apiKey = readEnv("ATLAS_OPENAI_API_KEY", "OPENAI_API_KEY");
+          if (!apiKey) fail("OPENAI_API_KEY is required for provider=openai");
+          return createOpenAI({ apiKey });
+        })();
+  const model = make(modelId);
+  const leafModelId =
+    leafFlag ??
+    readEnv("ATLAS_LEAF_MODEL") ??
+    (provider === "anthropic" ? DEFAULT_LEAF_MODEL : undefined);
+  if (leafModelId && leafModelId !== modelId) {
+    const leaf = make(leafModelId);
+    return {
+      provider,
+      modelId,
+      model,
+      leafModelId,
+      models: { extract: leaf, verify: leaf },
+    };
   }
-  const apiKey = readEnv("ATLAS_OPENAI_API_KEY", "OPENAI_API_KEY");
-  if (!apiKey) fail("OPENAI_API_KEY is required for provider=openai");
-  return { provider, modelId, model: createOpenAI({ apiKey })(modelId) };
+  return { provider, modelId, model };
 }
 
 async function main(): Promise<void> {
@@ -117,12 +160,19 @@ async function main(): Promise<void> {
           host: { type: "string" },
           provider: { type: "string" },
           model: { type: "string" },
+          "leaf-model": { type: "string" },
           effort: { type: "string" },
           budget: { type: "string" },
           timeout: { type: "string" },
           concurrency: { type: "string" },
           db: { type: "string" },
           cases: { type: "string" },
+          grade: { type: "boolean" },
+          "judge-provider": { type: "string" },
+          "judge-model": { type: "string" },
+          grader: { type: "string" },
+          "judge-concurrency": { type: "string" },
+          "judge-timeout": { type: "string" },
           help: { type: "boolean", short: "h" },
         },
       });
@@ -156,11 +206,53 @@ async function main(): Promise<void> {
   const dbPath = values.db ?? "eval-runs/draco-explore.db";
   const store = new Store(dbPath);
 
-  const { provider, modelId, model } = resolveResearchModel(
-    values.provider,
-    values.model,
-  );
-  const atlas = new Atlas({ model });
+  const { provider, modelId, model, leafModelId, models } =
+    resolveResearchModel(values.provider, values.model, values["leaf-model"]);
+  const atlas = new Atlas({ model, ...(models ? { models } : {}) });
+
+  let grade: GradeConfig | undefined;
+  if (values.grade) {
+    const judgeProvider = values["judge-provider"] ?? "anthropic";
+    if (
+      judgeProvider !== "google" &&
+      judgeProvider !== "anthropic" &&
+      judgeProvider !== "openai"
+    ) {
+      fail(
+        `--judge-provider must be one of: google, anthropic, openai (got "${judgeProvider}")`,
+      );
+    }
+    const grader = values.grader ?? "per-criterion";
+    if (grader !== "per-criterion" && grader !== "one-shot") {
+      fail(
+        `--grader must be one of: per-criterion, one-shot (got "${grader}")`,
+      );
+    }
+    let judge: ReturnType<typeof buildJudgeSpec>;
+    try {
+      judge = buildJudgeSpec({
+        judgeProvider,
+        judgeModel: values["judge-model"],
+        provider,
+        model: modelId,
+      } as unknown as EvalOptions);
+    } catch (err) {
+      fail(err instanceof Error ? err.message : String(err));
+    }
+    grade = {
+      judge,
+      grader,
+      judgeConcurrency: parsePositiveInt(
+        values["judge-concurrency"],
+        "--judge-concurrency",
+        4,
+      ),
+      judgeTimeoutMs: Math.floor(
+        (parsePositiveNumber(values["judge-timeout"], "--judge-timeout") ??
+          120) * 1000,
+      ),
+    };
+  }
 
   const startupCommit = captureCommit();
   const runHost = new DracoRunHost({
@@ -172,12 +264,13 @@ async function main(): Promise<void> {
     ...(effort ? { effort } : {}),
     ...(Object.keys(budget).length > 0 ? { budget } : {}),
     maxConcurrent: concurrency,
+    ...(grade ? { grade } : {}),
   });
 
   const profile = {
     research: `${provider}/${modelId}`,
-    judge: null,
-    grader: null,
+    judge: grade ? `${grade.judge.provider}/${grade.judge.modelId}` : null,
+    grader: grade ? grade.grader : null,
     verifierPanel: null,
     effort: effort ?? "balanced",
     budgetUSD: maxUSD ?? null,
@@ -187,9 +280,9 @@ async function main(): Promise<void> {
   };
 
   process.stderr.write(
-    `draco-explore: profile code=${startupCommit.shortSha}${startupCommit.dirty ? "+dirty" : ""} research=${profile.research} effort=${profile.effort} budget=${maxUSD !== undefined ? `$${maxUSD}` : "envelope"} timeout=${
+    `draco-explore: profile code=${startupCommit.shortSha}${startupCommit.dirty ? "+dirty" : ""} research=${profile.research}${leafModelId ? ` leaf=${leafModelId}` : ""} effort=${profile.effort} budget=${maxUSD !== undefined ? `$${maxUSD}` : "envelope"} timeout=${
       timeoutSeconds !== undefined ? `${timeoutSeconds}s` : "unlimited"
-    } concurrency=${concurrency} (ungraded runs; use eval:draco for scoring)\n`,
+    } concurrency=${concurrency} ${grade ? `judge=${profile.judge} grader=${profile.grader}` : "(ungraded runs; use eval:draco for scoring)"}\n`,
   );
 
   await serveExplore({

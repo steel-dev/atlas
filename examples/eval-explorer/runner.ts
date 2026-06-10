@@ -7,6 +7,16 @@ import {
   type ResearchRun,
 } from "../../src/index.js";
 import { traceEvent, type EvalTraceEvent } from "../../evals/lib.js";
+import {
+  gradeRubric,
+  aggregateGrading,
+  emptyJudgeUsage,
+  type DracoCase,
+  type JudgeSpec,
+  type CriterionReport,
+  type RubricScore,
+  type JudgeUsage,
+} from "../../evals/draco.js";
 import { captureCommit, type CommitInfo } from "./git.js";
 import type { Store } from "./store.js";
 
@@ -34,18 +44,25 @@ export type WireEvent =
 
 type Subscriber = (event: WireEvent | null, seq: number) => void;
 
-interface ExplorerCase {
-  id: string;
-  domain: string;
-  problem: string;
-  criteria: unknown[];
+export interface GradeConfig {
+  judge: JudgeSpec;
+  grader: "per-criterion" | "one-shot";
+  judgeConcurrency: number;
+  judgeTimeoutMs: number;
+}
+
+interface GradeOutcome {
+  score?: RubricScore | undefined;
+  report: CriterionReport[];
+  judgeErrors: number;
+  usage: JudgeUsage;
 }
 
 interface DracoRunEntry {
   id: string;
   caseId: string;
   domain: string;
-  dracoCase: ExplorerCase;
+  dracoCase: DracoCase;
   commitSha: string;
   dirty: boolean;
   run?: ResearchRun;
@@ -71,6 +88,7 @@ export interface DracoRunHostOptions {
   effort?: Effort;
   budget?: Budget;
   maxConcurrent?: number;
+  grade?: GradeConfig;
 }
 
 const MAX_RUNS = 200;
@@ -90,6 +108,7 @@ export class DracoRunHost {
   private readonly effort: Effort | undefined;
   private readonly budget: Budget | undefined;
   private readonly maxConcurrent: number;
+  private readonly grade: GradeConfig | undefined;
   private active = 0;
   private counter = 0;
 
@@ -102,6 +121,7 @@ export class DracoRunHost {
     this.effort = options.effort;
     this.budget = options.budget;
     this.maxConcurrent = Math.max(1, options.maxConcurrent ?? 1);
+    this.grade = options.grade;
   }
 
   get canRun(): boolean {
@@ -202,14 +222,17 @@ export class DracoRunHost {
       }));
   }
 
-  private loadCase(caseId: string): ExplorerCase {
+  private loadCase(caseId: string): DracoCase {
     const row = this.store.caseRubric(caseId);
     if (!row) throw new Error(`case not found: ${caseId}`);
     return {
       id: caseId,
       domain: (row.domain as string) ?? "Unknown",
       problem: (row.problem as string) ?? "",
+      rubricId: (row.rubric_id as string) ?? caseId,
+      sections: JSON.parse((row.sections_json as string) ?? "[]"),
       criteria: JSON.parse((row.criteria_json as string) ?? "[]"),
+      raw: {},
     };
   }
 
@@ -258,22 +281,28 @@ export class DracoRunHost {
         push(event);
       }
       const result = await run.result();
+      const grading = this.grade
+        ? await this.gradeRun(entry, result, push, this.grade)
+        : undefined;
       push({
         type: "grade_finished",
-        status: "ungraded",
-        normalized: null,
-        passRate: null,
+        status: grading?.score ? "scored" : "ungraded",
+        normalized: grading?.score?.normalizedScore ?? null,
+        passRate: grading?.score?.passRate ?? null,
       });
       entry.phase = "persisting";
-      this.persist(entry, result, trace, Date.now() - started);
+      this.persist(entry, result, trace, Date.now() - started, grading);
       push({
         type: "persisted",
         commit: entry.commitSha,
         caseId: entry.caseId,
       });
       entry.phase = "done";
+      const verdict = grading?.score
+        ? `scored ${(grading.score.normalizedScore * 100).toFixed(1)}% (pass ${(grading.score.passRate * 100).toFixed(0)}%)`
+        : "ungraded";
       process.stderr.write(
-        `draco-explore: ${entry.caseId} done — ungraded ($${result.stats.costUSD.toFixed(4)}, ${result.sources.length} sources)\n`,
+        `draco-explore: ${entry.caseId} done — ${verdict} ($${result.stats.costUSD.toFixed(4)}, ${result.sources.length} sources)\n`,
       );
     } catch (err) {
       const message = messageOf(err);
@@ -290,7 +319,38 @@ export class DracoRunHost {
     }
   }
 
-  private persistMeta(entry: DracoRunEntry) {
+  private async gradeRun(
+    entry: DracoRunEntry,
+    result: ResearchResult,
+    push: (event: WireEvent) => void,
+    grade: GradeConfig,
+  ): Promise<GradeOutcome> {
+    entry.phase = "grading";
+    push({ type: "phase", phase: "grading" });
+    entry.gradeDone = 0;
+    entry.gradeTotal = entry.dracoCase.criteria.length;
+    const usage = emptyJudgeUsage();
+    const reports = await gradeRubric({
+      judge: grade.judge,
+      grader: grade.grader,
+      criteria: entry.dracoCase.criteria,
+      response: result.report,
+      query: entry.dracoCase.problem,
+      concurrency: grade.judgeConcurrency,
+      timeoutMs: grade.judgeTimeoutMs,
+      usage,
+      onProgress: (done, total) => {
+        entry.gradeDone = done;
+        entry.gradeTotal = total;
+        push({ type: "grade_progress", done, total });
+      },
+    });
+    const { report, score } = aggregateGrading([reports], entry.dracoCase);
+    const judgeErrors = report.filter((r) => r.judgeError).length;
+    return { score, report, judgeErrors, usage };
+  }
+
+  private persistMeta(entry: DracoRunEntry, graded: boolean) {
     return {
       runId: entry.id,
       commitSha: entry.commitSha,
@@ -298,9 +358,9 @@ export class DracoRunHost {
       source: "run",
       researchProvider: this.researchProvider,
       researchModel: this.researchModel,
-      judgeProvider: null,
-      judgeModel: null,
-      grader: null,
+      judgeProvider: graded && this.grade ? this.grade.judge.provider : null,
+      judgeModel: graded && this.grade ? this.grade.judge.modelId : null,
+      grader: graded && this.grade ? this.grade.grader : null,
       createdAt: Date.now(),
     };
   }
@@ -310,6 +370,7 @@ export class DracoRunHost {
     result: ResearchResult,
     trace: EvalTraceEvent[],
     latencyMs: number,
+    grading?: GradeOutcome,
   ): void {
     const tokens = Object.values(result.stats.tokens);
     const inputTokens = tokens.reduce((sum, t) => sum + t.input, 0);
@@ -319,6 +380,9 @@ export class DracoRunHost {
         id: entry.caseId,
         domain: entry.domain,
         markdown: result.report,
+        ...(grading?.score ? { score: grading.score } : {}),
+        ...(grading ? { report: grading.report } : {}),
+        ...(grading?.judgeErrors ? { judgeErrors: grading.judgeErrors } : {}),
         metrics: {
           provider: this.researchProvider,
           model: this.researchModel,
@@ -331,7 +395,7 @@ export class DracoRunHost {
             output: outputTokens,
             model: this.researchModel,
           },
-          judge: null,
+          judge: grading?.usage ?? null,
         },
         diagnostics: {
           stats: result.stats,
@@ -347,7 +411,7 @@ export class DracoRunHost {
           : "completed",
         latencyMs,
       },
-      this.persistMeta(entry),
+      this.persistMeta(entry, Boolean(grading)),
     );
   }
 
@@ -363,7 +427,7 @@ export class DracoRunHost {
         error: message,
         latencyMs,
       },
-      this.persistMeta(entry),
+      this.persistMeta(entry, false),
     );
   }
 

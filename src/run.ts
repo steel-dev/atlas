@@ -110,6 +110,8 @@ export interface ResearchRun {
 
 const SYNTHESIS_FRACTION = 0.15;
 const SYNTHESIS_MIN_USD = 0.05;
+const VERIFY_RESERVE_FRACTION = 0.2;
+const VERIFY_RESERVE_MIN_USD = 0.05;
 const TIMEOUT_SYNTHESIS_RESERVE_MS = 120_000;
 const BUDGET_WARNING_FRACTIONS = [0.5, 0.8, 0.95];
 
@@ -368,6 +370,7 @@ async function executeRun(args: ExecuteRunArgs): Promise<ResearchResult> {
     question,
     config: resolved,
     meter,
+    verifyReserve: null as never,
     usage,
     pricing,
     ledger: null as never,
@@ -452,6 +455,12 @@ async function executeRun(args: ExecuteRunArgs): Promise<ResearchResult> {
   const synthesisGrant =
     meter.grant({ fraction: SYNTHESIS_FRACTION, minUSD: SYNTHESIS_MIN_USD }) ??
     meter;
+  const verifyReserve =
+    meter.grant({
+      fraction: VERIFY_RESERVE_FRACTION,
+      minUSD: VERIFY_RESERVE_MIN_USD,
+    }) ?? meter;
+  (rctx as { verifyReserve: BudgetGrant }).verifyReserve = verifyReserve;
   const researchGrant = meter.grant({ fraction: 1 }) ?? meter;
 
   let orchestrator: Awaited<ReturnType<typeof runOrchestrator>>;
@@ -473,6 +482,7 @@ async function executeRun(args: ExecuteRunArgs): Promise<ResearchResult> {
     };
   } finally {
     if (researchGrant !== meter) researchGrant.release();
+    if (verifyReserve !== meter) verifyReserve.release();
   }
   await ledger.settle();
   args.hardSignal.throwIfAborted();

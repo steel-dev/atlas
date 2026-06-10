@@ -553,7 +553,7 @@ export class Store {
   caseRubric(caseId: string): Record<string, unknown> | undefined {
     return this.db
       .prepare(
-        "SELECT case_id, domain, problem, sections_json, criteria_json FROM cases WHERE case_id = ?",
+        "SELECT case_id, domain, problem, rubric_id, sections_json, criteria_json FROM cases WHERE case_id = ?",
       )
       .get(caseId) as Record<string, unknown> | undefined;
   }

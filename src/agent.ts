@@ -6,7 +6,12 @@ import { renderLedgerDigest } from "./ledger.js";
 import { MODEL_CALL_MAX_RETRIES, type ModelRole } from "./model.js";
 import { RESEARCH_AGENT_SYSTEM } from "./prompts.js";
 import { budgetStatusLine, type RunCtx } from "./state.js";
-import { buildAgentTools, type AgentCtx, type SpawnInput, type ToolName } from "./tools.js";
+import {
+  buildAgentTools,
+  type AgentCtx,
+  type SpawnInput,
+  type ToolName,
+} from "./tools.js";
 
 const RESEARCH_TOOLS: ToolName[] = [
   "spawn",
@@ -19,6 +24,7 @@ const RESEARCH_TOOLS: ToolName[] = [
 
 const DEFAULT_RESEARCH_FRACTION = 0.15;
 const DEFAULT_VERIFY_FRACTION = 0.08;
+const VERIFY_SPAWN_MIN_USD = 0.03;
 const RESEARCH_MAX_TURNS = 30;
 const TASK_PREVIEW_CHARS = 300;
 const NOTE_PREVIEW_CHARS = 600;
@@ -258,11 +264,12 @@ async function executeVerifySpawn(
   if (unknown.length > 0) {
     return `Spawn refused: unknown claim ids: ${unknown.join(", ")}.`;
   }
-  const grant = parentActx.grant.grant({
+  const grant = rctx.verifyReserve.grant({
     fraction: input.budget_fraction ?? DEFAULT_VERIFY_FRACTION,
+    minUSD: VERIFY_SPAWN_MIN_USD,
   });
   if (!grant) {
-    return "Spawn refused: insufficient budget remaining — do the work inline or finish.";
+    return "Spawn refused: verification budget reserve is exhausted — finish and report.";
   }
   try {
     const outcome = await rctx.verifySpawn({

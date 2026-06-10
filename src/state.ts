@@ -77,6 +77,7 @@ export interface RunCtx {
   question: string;
   config: ResolvedRunConfig;
   meter: BudgetMeter;
+  verifyReserve: BudgetGrant;
   usage: RunUsage;
   pricing: PricingTable;
   ledger: Ledger;

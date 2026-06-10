@@ -155,7 +155,7 @@ export const DEFAULT_CASES_URL = `https://huggingface.co/datasets/perplexity-ai/
 const DEFAULT_SEED = "atlas-draco-v1";
 const DEFAULT_TIMEOUT_MS = 900_000;
 const DEFAULT_EFFORT: Effort = "deep";
-const DEFAULT_LEAF_MODEL = "claude-haiku-4-5";
+export const DEFAULT_LEAF_MODEL = "claude-haiku-4-5";
 const DEFAULT_JUDGE_TIMEOUT_MS = 120_000;
 const DEFAULT_JUDGE_CONCURRENCY = 8;
 const PER_CRITERION_JUDGE_MAX_TOKENS = 8_192;
@@ -402,7 +402,7 @@ Options:
       --leaf-model NAME       Leaf model for claim extraction & verification (default: ${DEFAULT_LEAF_MODEL} on anthropic; lead model otherwise)
       --grader MODE           per-criterion | one-shot (default: per-criterion)
       --judge-provider P      Judge provider: google, anthropic, openai (default: anthropic; google uses a moving preview model)
-      --judge-model MODEL     Judge model (default: claude-sonnet-4-5 for anthropic / gpt-5.2 / gemini-3.1-pro-preview)
+      --judge-model MODEL     Judge model (default: claude-sonnet-4-6 for anthropic / gpt-5.2 / gemini-3.1-pro-preview)
       --judge-timeout N       Per-criterion judge timeout in seconds (default: ${DEFAULT_JUDGE_TIMEOUT_MS / 1000})
       --judge-concurrency N   Parallel judge calls per task (default: ${DEFAULT_JUDGE_CONCURRENCY})
       --concurrency N         Parallel tasks (default: 1)
@@ -482,12 +482,7 @@ function readStratify(raw: string): "domain" | "none" {
 }
 
 function readEffort(raw: string): Effort {
-  if (
-    raw === "fast" ||
-    raw === "balanced" ||
-    raw === "deep" ||
-    raw === "max"
-  ) {
+  if (raw === "fast" || raw === "balanced" || raw === "deep" || raw === "max") {
     return raw;
   }
   fail(`--effort must be one of: fast, balanced, deep, max (got "${raw}")`);
@@ -735,7 +730,7 @@ export function buildAtlasConfig(opts: EvalOptions): AtlasConfig {
 
 function defaultJudgeModel(provider: JudgeProvider): string {
   if (provider === "google") return "gemini-3.1-pro-preview";
-  if (provider === "anthropic") return "claude-sonnet-4-5";
+  if (provider === "anthropic") return "claude-sonnet-4-6";
   return "gpt-5.2";
 }
 
@@ -1279,9 +1274,7 @@ export async function gradeRubric(opts: {
 export function buildResearchRunOptions(opts: EvalOptions): ResearchOptions {
   const budget = {
     ...(opts.budgetUSD !== undefined ? { maxUSD: opts.budgetUSD } : {}),
-    ...(opts.timeoutMs !== undefined
-      ? { maxDurationMs: opts.timeoutMs }
-      : {}),
+    ...(opts.timeoutMs !== undefined ? { maxDurationMs: opts.timeoutMs } : {}),
   };
   return {
     effort: opts.effort,
