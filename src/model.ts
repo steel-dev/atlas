@@ -8,6 +8,7 @@ import type {
   LanguageModelV3StreamPart,
   LanguageModelV3Usage,
 } from "@ai-sdk/provider";
+import { sleep } from "./async.js";
 import type { ConcurrencyGate } from "./async.js";
 import {
   addTokenUsage,
@@ -52,6 +53,12 @@ export function tokenUsageFromV3(usage: LanguageModelV3Usage): TokenUsage {
   };
 }
 
+export interface RateLimitNotice {
+  attempt: number;
+  delayMs: number;
+  error: unknown;
+}
+
 export interface EngineModelHooks {
   role: ModelRole;
   grant: BudgetGrant;
@@ -62,6 +69,7 @@ export interface EngineModelHooks {
   replay?: ReplayCache | undefined;
   onCost?: ((usd: number) => void) | undefined;
   onUnknownModel?: ((modelId: string) => void) | undefined;
+  onRateLimit?: ((notice: RateLimitNotice) => void) | undefined;
 }
 
 function callKey(
@@ -139,6 +147,99 @@ function withCacheBreakpoint(
   return { ...params, prompt };
 }
 
+const RETRY_MAX_ATTEMPTS = 6; // 1 initial try + up to 5 retries
+const RETRY_BASE_DELAY_MS = 1_000;
+const RETRY_MAX_DELAY_MS = 30_000; // cap so a sustained limit can't hang minutes per attempt
+
+interface RetryClassification {
+  retryable: boolean;
+  retryAfterMs?: number;
+}
+
+function isAbortError(err: unknown): boolean {
+  return (
+    err instanceof Error &&
+    (err.name === "AbortError" || err.name === "TimeoutError")
+  );
+}
+
+function parseRetryAfterMs(
+  headers: Record<string, string> | undefined,
+): number | undefined {
+  const raw = headers?.["retry-after"] ?? headers?.["Retry-After"];
+  if (!raw) return undefined;
+  const seconds = Number(raw);
+  if (Number.isFinite(seconds)) return Math.max(0, seconds * 1_000);
+  const at = Date.parse(raw);
+  if (Number.isFinite(at)) return Math.max(0, at - Date.now());
+  return undefined;
+}
+
+function classifyRetry(err: unknown): RetryClassification {
+  if (isAbortError(err)) return { retryable: false };
+  const e = err as {
+    statusCode?: number;
+    isRetryable?: boolean;
+    responseHeaders?: Record<string, string>;
+    message?: string;
+  };
+  const retryAfterMs = parseRetryAfterMs(e.responseHeaders);
+  const withDelay = (): RetryClassification =>
+    retryAfterMs !== undefined
+      ? { retryable: true, retryAfterMs }
+      : { retryable: true };
+  if (typeof e.isRetryable === "boolean") {
+    return e.isRetryable ? withDelay() : { retryable: false };
+  }
+  const status = typeof e.statusCode === "number" ? e.statusCode : undefined;
+  const retryableStatus =
+    status === 408 ||
+    status === 409 ||
+    status === 429 ||
+    (status !== undefined && status >= 500);
+  const message = (e.message ?? "").toLowerCase();
+  const retryableMessage =
+    /rate limit|too many requests|overloaded|concurrent connections|timeout|timed out|econnreset|etimedout|eai_again|socket hang up|fetch failed|network error/.test(
+      message,
+    );
+  return retryableStatus || retryableMessage
+    ? withDelay()
+    : { retryable: false };
+}
+
+function backoffDelayMs(
+  attempt: number,
+  retryAfterMs: number | undefined,
+): number {
+  const exponential = Math.min(
+    RETRY_MAX_DELAY_MS,
+    RETRY_BASE_DELAY_MS * 2 ** (attempt - 1),
+  );
+  const jittered = exponential / 2 + Math.random() * (exponential / 2);
+  return Math.min(RETRY_MAX_DELAY_MS, Math.max(retryAfterMs ?? 0, jittered));
+}
+
+async function callWithRetry<T>(
+  attempt: () => Promise<T>,
+  signal: AbortSignal | undefined,
+  onRateLimit: ((notice: RateLimitNotice) => void) | undefined,
+): Promise<T> {
+  let tries = 0;
+  for (;;) {
+    tries++;
+    try {
+      return await attempt();
+    } catch (err) {
+      const { retryable, retryAfterMs } = classifyRetry(err);
+      if (!retryable || tries >= RETRY_MAX_ATTEMPTS || signal?.aborted)
+        throw err;
+      const delayMs = backoffDelayMs(tries, retryAfterMs);
+      onRateLimit?.({ attempt: tries, delayMs, error: err });
+      await sleep(delayMs, signal);
+    }
+  }
+}
+
 export function engineModel(
   model: ResolvedModel,
   hooks: EngineModelHooks,
@@ -172,7 +273,11 @@ export function engineModel(
           warnings: [],
         };
       }
-      const result = await hooks.gate.run(() => Promise.resolve(doGenerate()));
+      const result = await callWithRetry(
+        () => hooks.gate.run(() => Promise.resolve(doGenerate())),
+        params.abortSignal,
+        hooks.onRateLimit,
+      );
       settle(result.usage);
       if (hooks.journal) {
         const record = serializeResult(result);
@@ -180,10 +285,17 @@ export function engineModel(
       }
       return result;
     },
-    wrapStream: async ({ doStream }) => {
-      const result = await hooks.gate.run(() => Promise.resolve(doStream()));
+    wrapStream: async ({ doStream, params }) => {
+      const result = await callWithRetry(
+        () => hooks.gate.run(() => Promise.resolve(doStream())),
+        params.abortSignal,
+        hooks.onRateLimit,
+      );
       const metered = result.stream.pipeThrough(
-        new TransformStream<LanguageModelV3StreamPart, LanguageModelV3StreamPart>({
+        new TransformStream<
+          LanguageModelV3StreamPart,
+          LanguageModelV3StreamPart
+        >({
           transform(part, controller) {
             if (part.type === "finish") settle(part.usage);
             controller.enqueue(part);
@@ -197,4 +309,4 @@ export function engineModel(
   return wrapLanguageModel({ model: inner, middleware }) as LanguageModelV3;
 }
 
-export const MODEL_CALL_MAX_RETRIES = 5;
+export const MODEL_CALL_MAX_RETRIES = 0;

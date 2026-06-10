@@ -1,5 +1,6 @@
 import type { FlexibleSchema } from "ai";
 import { ConfigError } from "./errors.js";
+import { readEnv } from "./env.js";
 import type { ModelRole, ResolvedModel } from "./model.js";
 import type { PricingTable } from "./budget.js";
 import type { SafetyPolicy } from "./safety.js";
@@ -112,6 +113,14 @@ export interface ResolvedRunConfig {
 const DEFAULT_MODEL_CONCURRENCY = 8;
 const DEFAULT_IO_CONCURRENCY = 10;
 
+function concurrencyFromEnv(fallback: number, ...keys: string[]): number {
+  const raw = readEnv(...keys);
+  if (raw === undefined) return fallback;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed < 1) return fallback;
+  return Math.floor(parsed);
+}
+
 export function resolveRunConfig(
   config: AtlasConfig,
   options: ResearchOptions,
@@ -153,7 +162,13 @@ export function resolveRunConfig(
     sourceFilter: options.sources,
     instructions: config.instructions,
     output: options.output ?? { kind: "report" },
-    maxConcurrentModelCalls: DEFAULT_MODEL_CONCURRENCY,
-    maxConcurrentIo: DEFAULT_IO_CONCURRENCY,
+    maxConcurrentModelCalls: concurrencyFromEnv(
+      DEFAULT_MODEL_CONCURRENCY,
+      "ATLAS_MODEL_CONCURRENCY",
+    ),
+    maxConcurrentIo: concurrencyFromEnv(
+      DEFAULT_IO_CONCURRENCY,
+      "ATLAS_IO_CONCURRENCY",
+    ),
   };
 }

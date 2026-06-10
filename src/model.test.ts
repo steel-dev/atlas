@@ -136,4 +136,74 @@ describe("engineModel", () => {
     const last = params.prompt[params.prompt.length - 1];
     expect(last.providerOptions?.anthropic).toBeUndefined();
   });
+
+  it("retries a retryable failure and reports it via onRateLimit", async () => {
+    let calls = 0;
+    const inner = new MockLanguageModelV3({
+      provider: "mock-provider",
+      modelId: "claude-sonnet-4-6",
+      doGenerate: async () => {
+        calls++;
+        if (calls === 1) {
+          throw Object.assign(
+            new Error(
+              "Number of concurrent connections has exceeded your rate limit",
+            ),
+            { statusCode: 429, isRetryable: true },
+          );
+        }
+        return RESULT;
+      },
+    });
+    const notices: number[] = [];
+    const model = engineModel(inner as unknown as ResolvedModel, {
+      role: "lead",
+      grant: createBudgetMeter(10),
+      pricing: {},
+      gate: createConcurrencyGate(2),
+      usage: createRunUsage(),
+      onRateLimit: (notice) => notices.push(notice.attempt),
+    });
+    const result = await generateText({
+      model: model as LanguageModelV3,
+      prompt: "hi",
+      maxRetries: 0,
+    });
+    expect(result.text).toBe("hello");
+    expect(calls).toBe(2);
+    expect(notices).toEqual([1]);
+  });
+
+  it("does not retry a non-retryable failure", async () => {
+    let calls = 0;
+    const inner = new MockLanguageModelV3({
+      provider: "mock-provider",
+      modelId: "claude-sonnet-4-6",
+      doGenerate: async () => {
+        calls++;
+        throw Object.assign(new Error("invalid request"), {
+          statusCode: 400,
+          isRetryable: false,
+        });
+      },
+    });
+    const notices: number[] = [];
+    const model = engineModel(inner as unknown as ResolvedModel, {
+      role: "lead",
+      grant: createBudgetMeter(10),
+      pricing: {},
+      gate: createConcurrencyGate(2),
+      usage: createRunUsage(),
+      onRateLimit: (notice) => notices.push(notice.attempt),
+    });
+    await expect(
+      generateText({
+        model: model as LanguageModelV3,
+        prompt: "hi",
+        maxRetries: 0,
+      }),
+    ).rejects.toThrow(/invalid request/);
+    expect(calls).toBe(1);
+    expect(notices).toEqual([]);
+  });
 });

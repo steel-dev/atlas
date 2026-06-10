@@ -46,11 +46,7 @@ import {
   type ClaimPartition,
 } from "./synthesize.js";
 import { synthesizeStructured, type FieldBasis } from "./structured.js";
-import {
-  createRunCounters,
-  createSourceStore,
-  type RunCtx,
-} from "./state.js";
+import { createRunCounters, createSourceStore, type RunCtx } from "./state.js";
 import { runVerifySpawn } from "./verify.js";
 import { EVENT_SCHEMA_VERSION } from "./events.js";
 
@@ -260,7 +256,10 @@ export function startRun(start: StartRunOptions): ResearchRun {
       if (pauseRequested) {
         statusValue = "paused";
         journal.event("run.paused", { runId });
-        throw new AtlasError("run paused; resume with Atlas.resume()", "paused");
+        throw new AtlasError(
+          "run paused; resume with Atlas.resume()",
+          "paused",
+        );
       }
       if (hardController.signal.aborted) {
         statusValue = "cancelled";
@@ -407,6 +406,11 @@ async function executeRun(args: ExecuteRunArgs): Promise<ResearchResult> {
             detail: `no pricing entry for model "${modelId}"; charging conservative default rates`,
           });
         },
+        onRateLimit: ({ delayMs }) =>
+          emit({
+            type: "rate.limited",
+            retryAfterSeconds: Math.max(1, Math.round(delayMs / 1000)),
+          }),
       }),
     rawModel: (role: ModelRole) => resolved.models[role],
     verifySpawn: (spawnArgs) => runVerifySpawn(rctx, spawnArgs),
@@ -450,8 +454,26 @@ async function executeRun(args: ExecuteRunArgs): Promise<ResearchResult> {
     meter;
   const researchGrant = meter.grant({ fraction: 1 }) ?? meter;
 
-  const orchestrator = await runOrchestrator(rctx, researchGrant);
-  if (researchGrant !== meter) researchGrant.release();
+  let orchestrator: Awaited<ReturnType<typeof runOrchestrator>>;
+  try {
+    orchestrator = await runOrchestrator(rctx, researchGrant);
+  } catch (err) {
+    if (args.hardSignal.aborted || args.isPaused()) throw err;
+    emit({
+      type: "run.error",
+      message: `lead agent failed: ${errorMessage(err)}`,
+      recoverable: true,
+    });
+    orchestrator = {
+      agentId: "agent_1",
+      note: `The lead agent terminated early (${errorMessage(err)}). This report is synthesized from the evidence gathered before that point.`,
+      claimsAdded: [],
+      spentUSD: researchGrant.spentUSD(),
+      stopReason: "error",
+    };
+  } finally {
+    if (researchGrant !== meter) researchGrant.release();
+  }
   await ledger.settle();
   args.hardSignal.throwIfAborted();
   if (args.isPaused()) {
@@ -557,8 +579,7 @@ async function executeRun(args: ExecuteRunArgs): Promise<ResearchResult> {
       unverified: ledger
         .representatives()
         .filter(
-          (claim) =>
-            claim.status === "quoted" || claim.status === "unverified",
+          (claim) => claim.status === "quoted" || claim.status === "unverified",
         ),
     },
     openQuestions,
@@ -688,8 +709,7 @@ function buildStats(opts: {
     tokens,
     costUSD: Math.round(rctx.meter.totalSpentUSD() * 10_000) / 10_000,
     durationMs: opts.durationMs,
-    budgetExhausted:
-      rctx.meter.totalSpentUSD() >= rctx.meter.totalUSD - 0.01,
+    budgetExhausted: rctx.meter.totalSpentUSD() >= rctx.meter.totalUSD - 0.01,
   };
 }
 
@@ -706,10 +726,7 @@ export async function resumeRun(
   }
   const meta = await loadRunMeta(store, runId);
   if (!meta || typeof meta.question !== "string") {
-    throw new AtlasError(
-      `no journaled run found for "${runId}"`,
-      "resume",
-    );
+    throw new AtlasError(`no journaled run found for "${runId}"`, "resume");
   }
   const replay = await loadReplayCache(store, runId);
   const options: ResearchOptions = {

@@ -106,6 +106,47 @@ describe("startRun end to end", () => {
     expect(types).toContain("run.completed");
   });
 
+  it("survives an unrecoverable lead-agent model error with a fallback report", async () => {
+    const model = new MockLanguageModelV3({
+      provider: "mock-provider",
+      modelId: "claude-sonnet-4-6",
+      doGenerate: async (options: LanguageModelV3CallOptions) => {
+        if (options.responseFormat?.type === "json") {
+          return textResult(JSON.stringify({ openQuestions: [] }));
+        }
+        throw Object.assign(new Error("unrecoverable lead model error"), {
+          statusCode: 400,
+          isRetryable: false,
+        });
+      },
+    });
+    const atlas = new Atlas({
+      model: model as unknown as ResolvedModel,
+      search: stubSearch,
+      effort: "fast",
+    });
+    const run = atlas.start("test question", { runId: "run_lead_fail" });
+    const events: ResearchEvent[] = [];
+    const drain = (async () => {
+      for await (const event of run.events()) events.push(event);
+    })();
+    const result = await run.result();
+    await drain;
+
+    expect(run.status()).toBe("completed");
+    expect(result.report.length).toBeGreaterThan(0);
+
+    const runErrors = events.filter(
+      (event): event is Extract<ResearchEvent, { type: "run.error" }> =>
+        event.type === "run.error",
+    );
+    expect(runErrors.some((event) => event.recoverable)).toBe(true);
+    expect(
+      runErrors.some((event) => /lead agent failed/.test(event.message)),
+    ).toBe(true);
+    expect(events.map((event) => event.type)).toContain("run.completed");
+  });
+
   it("resumes a completed run entirely from the journal replay", async () => {
     const store = memoryStore();
     const firstModel = scriptedModel();
