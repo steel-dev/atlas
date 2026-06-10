@@ -2,10 +2,10 @@ import { createHash } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import type {
-  ModelProvider,
   ResearchEvent,
   ResearchResult,
-} from "../src/research.js";
+  RunStats,
+} from "../src/index.js";
 
 export async function mapWithConcurrency<T, R>(
   items: T[],
@@ -96,164 +96,177 @@ export async function writeJsonl(path: string, rows: unknown[]): Promise<void> {
   );
 }
 
+export type EvalTraceEventName =
+  | "research_started"
+  | "plan_updated"
+  | "agent_spawned"
+  | "agent_returned"
+  | "search_results"
+  | "search_failed"
+  | "source_fetched"
+  | "source_error"
+  | "claims_extracted"
+  | "claim_verified"
+  | "report_drafting"
+  | "citation_bound"
+  | "budget_warning"
+  | "safety_flag"
+  | "rate_limited"
+  | "tool_event"
+  | "completed"
+  | "run_error";
+
 export type EvalTraceEvent = {
   atMs: number;
-  event: ResearchEvent["type"];
-  index?: number;
+  event: EvalTraceEventName;
   query?: string;
+  provider?: string;
   count?: number;
-  results?: Array<{
-    url: string;
-    domain: string;
-    title?: string;
-    snippet?: string;
-  }>;
-  strategy?: string;
-  angles?: Array<{ label: string; query: string }>;
   url?: string;
   title?: string;
   method?: string;
+  markdownChars?: number;
+  qualityWarnings?: string[];
   error?: string;
   reason?: string;
-  retryAfterSeconds?: number;
-  attempt?: number;
-  maxAttempts?: number;
-  attempts?: Array<{ method: string; ok: boolean; note: string }>;
-  qualityWarnings?: string[];
   sourceId?: string;
   unsupported?: number;
-  claims?: number;
   id?: string;
-  claim?: string;
-  vote?: string;
   status?: string;
-  confirmed?: number;
-  refuted?: number;
-  unverified?: number;
-  sourcesFetched?: number;
-  markdownChars?: number;
-  tokensBefore?: number;
-  droppedMessages?: number;
+  vote?: string;
+  ok?: boolean;
+  agentId?: string;
+  parentId?: string;
+  role?: string;
+  task?: string;
+  depth?: number;
+  grantUSD?: number;
+  note?: string;
+  claimsAdded?: number;
+  spentUSD?: number;
+  stopReason?: string;
+  retryAfterSeconds?: number;
+  kind?: string;
+  detail?: string;
+  limitUSD?: number;
+  fraction?: number;
   tool?: string;
   data?: unknown;
-  result?: {
-    citedSources: number;
-    citationsNotFetched: number;
-    markdownChars: number;
-    confirmed: number;
-  };
+  stats?: RunStats;
 };
 
 export function traceEvent(
   event: ResearchEvent,
   started: number,
-): EvalTraceEvent {
-  const base = { atMs: Date.now() - started, event: event.type };
+): EvalTraceEvent | null {
+  const base = (name: EvalTraceEventName): EvalTraceEvent => ({
+    atMs: Date.now() - started,
+    event: name,
+  });
   switch (event.type) {
-    case "scope_completed":
-      return { ...base, strategy: event.strategy, angles: event.angles };
-    case "searching":
-      return { ...base, index: event.index, query: event.query };
-    case "search_results":
+    case "run.started":
+      return base("research_started");
+    case "plan.updated":
+      return { ...base("plan_updated"), reason: event.rationale };
+    case "agent.spawned":
       return {
-        ...base,
-        index: event.index,
-        count: event.count,
-        ...(event.results ? { results: event.results } : {}),
+        ...base("agent_spawned"),
+        agentId: event.agentId,
+        ...(event.parentId ? { parentId: event.parentId } : {}),
+        role: event.role,
+        task: event.task,
+        grantUSD: event.grantUSD,
+        depth: event.depth,
       };
-    case "search_failed":
-      return { ...base, index: event.index, error: event.error };
-    case "fetching":
-      return { ...base, url: event.url };
-    case "rate_limited":
+    case "agent.returned":
       return {
-        ...base,
-        retryAfterSeconds: event.retryAfterSeconds,
-        attempt: event.attempt,
-        maxAttempts: event.maxAttempts,
+        ...base("agent_returned"),
+        agentId: event.agentId,
+        role: event.role,
+        note: event.note,
+        claimsAdded: event.claimsAdded,
+        spentUSD: event.spentUSD,
+        stopReason: event.stopReason,
       };
-    case "source_fetched":
+    case "search.completed":
       return {
-        ...base,
+        ...base("search_results"),
+        query: event.query,
+        provider: event.provider,
+        count: event.results,
+      };
+    case "search.failed":
+      return { ...base("search_failed"), query: event.query, error: event.error };
+    case "source.fetched":
+      return {
+        ...base("source_fetched"),
+        sourceId: event.sourceId,
         url: event.url,
         title: event.title,
-        ...(event.method ? { method: event.method } : {}),
-        ...(event.markdownChars !== undefined
-          ? { markdownChars: event.markdownChars }
-          : {}),
-        ...(event.attempts ? { attempts: event.attempts } : {}),
-        ...(event.qualityWarnings
-          ? { qualityWarnings: event.qualityWarnings }
-          : {}),
+        method: event.via,
+        markdownChars: event.chars,
+        ...(event.warnings ? { qualityWarnings: event.warnings } : {}),
       };
-    case "source_error":
-      return { ...base, url: event.url, error: event.error };
-    case "claims_extracted":
+    case "source.failed":
+      return { ...base("source_error"), url: event.url, error: event.reason };
+    case "extraction.completed":
       return {
-        ...base,
+        ...base("claims_extracted"),
         sourceId: event.sourceId,
         url: event.url,
         count: event.count,
         unsupported: event.unsupported,
         ...(event.error ? { error: event.error } : {}),
       };
-    case "verify_started":
-      return { ...base, claims: event.claims };
-    case "claim_verified":
+    case "claim.verified":
       return {
-        ...base,
-        id: event.id,
-        claim: event.claim,
-        vote: event.vote,
+        ...base("claim_verified"),
+        id: event.claimId,
         status: event.status,
+        vote: event.votes,
       };
-    case "verify_finished":
+    case "report.drafting":
+      return base("report_drafting");
+    case "citation.bound":
+      return { ...base("citation_bound"), id: event.claimId, ok: event.ok };
+    case "budget.warning":
       return {
-        ...base,
-        confirmed: event.confirmed,
-        refuted: event.refuted,
-        unverified: event.unverified,
+        ...base("budget_warning"),
+        spentUSD: event.spentUSD,
+        limitUSD: event.limitUSD,
+        fraction: event.fraction,
       };
-    case "research_finished":
-      return { ...base, sourcesFetched: event.sourcesFetched };
-    case "context_reanchored":
+    case "safety.flag":
       return {
-        ...base,
-        tokensBefore: event.tokensBefore,
-        droppedMessages: event.droppedMessages,
+        ...base("safety_flag"),
+        kind: event.kind,
+        detail: event.detail,
+        ...(event.url ? { url: event.url } : {}),
       };
-    case "citations_not_fetched":
-      return { ...base, count: event.count };
-    case "written":
-      return { ...base, markdownChars: event.markdownChars };
-    case "completed":
+    case "rate.limited":
       return {
-        ...base,
-        result: {
-          citedSources: event.result.citedSources.length,
-          citationsNotFetched: event.result.citationsNotFetched.length,
-          markdownChars: event.result.markdown.length,
-          confirmed: event.result.claims.confirmed.length,
-        },
+        ...base("rate_limited"),
+        retryAfterSeconds: event.retryAfterSeconds,
       };
-    case "tool_event":
+    case "tool.event":
       return {
-        ...base,
+        ...base("tool_event"),
         tool: event.tool,
         ...(event.data !== undefined ? { data: event.data } : {}),
       };
-    case "synthesis_failed":
-      return {
-        ...base,
-        reason: event.reason,
-        ...(event.error ? { error: event.error } : {}),
-      };
-    case "cap_bound":
-    case "research_started":
-    case "report_boundary":
-    case "report_delta":
-      return base;
+    case "run.completed":
+      return { ...base("completed"), stats: event.stats };
+    case "run.error":
+      return { ...base("run_error"), error: event.message };
+    case "claim.extracted":
+    case "report.delta":
+      return null;
   }
+}
+
+function truncate(text: string, max: number): string {
+  const single = text.replace(/\s+/g, " ").trim();
+  return single.length > max ? `${single.slice(0, max - 1)}…` : single;
 }
 
 export function progressLine(
@@ -261,111 +274,115 @@ export function progressLine(
   event: ResearchEvent,
 ): string | null {
   switch (event.type) {
-    case "cap_bound":
-      return `${caseId}: cap-bound — ${event.stage} hit a harness limit (${event.reason})`;
-    case "scope_completed":
-      return `${caseId}: scoped into ${event.angles.length} angle(s): ${event.angles.map((angle) => angle.label).join(", ")}`;
-    case "searching":
-      return `${caseId}: search[${event.index}] ${event.query}`;
-    case "search_results":
-      return `${caseId}: search[${event.index}] ${event.count} result(s)`;
-    case "search_failed":
-      return `${caseId}: search[${event.index}] failed: ${event.error}`;
-    case "fetching":
-      return `${caseId}: fetch ${event.url}`;
-    case "source_fetched":
-      return `${caseId}: fetched ${event.url}${event.method ? ` (${event.method})` : ""}`;
-    case "source_error":
-      return `${caseId}: source error ${event.url}: ${event.error}`;
-    case "claims_extracted":
+    case "plan.updated":
+      return `${caseId}: plan updated — ${truncate(event.rationale, 140)}`;
+    case "agent.spawned":
+      return `${caseId}: agent ${event.agentId} spawned (${event.role}, depth ${event.depth}, $${event.grantUSD.toFixed(2)}): ${truncate(event.task, 100)}`;
+    case "agent.returned":
+      return `${caseId}: agent ${event.agentId} returned (${event.role}, ${event.stopReason}) — +${event.claimsAdded} claim(s), $${event.spentUSD.toFixed(2)} spent`;
+    case "search.completed":
+      return `${caseId}: search "${truncate(event.query, 80)}" → ${event.results} result(s) [${event.provider}]`;
+    case "search.failed":
+      return `${caseId}: search "${truncate(event.query, 80)}" failed: ${event.error}`;
+    case "source.fetched":
+      return `${caseId}: fetched ${event.url} (${event.via}, ${event.chars} chars)`;
+    case "source.failed":
+      return `${caseId}: source error ${event.url}: ${event.reason}`;
+    case "extraction.completed":
       return event.error
         ? `${caseId}: claim extraction failed for ${event.url}: ${event.error}`
         : `${caseId}: ${event.count} claim(s) from ${event.url}${event.unsupported ? ` (${event.unsupported} unsupported)` : ""}`;
-    case "verify_started":
-      return `${caseId}: verifying ${event.claims} claim(s)`;
-    case "claim_verified":
-      return `${caseId}: claim ${event.id} ${event.vote} ${event.status}`;
-    case "verify_finished":
-      return `${caseId}: verify done — ${event.confirmed} confirmed, ${event.refuted} refuted, ${event.unverified} unverified`;
-    case "rate_limited":
+    case "claim.verified":
+      return `${caseId}: claim ${event.claimId} ${event.status} (${event.votes})`;
+    case "report.drafting":
+      return `${caseId}: drafting report`;
+    case "citation.bound":
+      return event.ok
+        ? null
+        : `${caseId}: unsupported sentence: ${truncate(event.sentence, 100)}`;
+    case "budget.warning":
+      return `${caseId}: budget ${Math.round(event.fraction * 100)}% used ($${event.spentUSD.toFixed(2)}/$${event.limitUSD.toFixed(2)})`;
+    case "safety.flag":
+      return `${caseId}: safety flag ${event.kind}: ${truncate(event.detail, 120)}`;
+    case "rate.limited":
       return `${caseId}: rate limited, waiting ${event.retryAfterSeconds}s`;
-    case "research_finished":
-      return `${caseId}: research finished with ${event.sourcesFetched} source(s)`;
-    case "context_reanchored":
-      return `${caseId}: context re-anchored (~${Math.round(event.tokensBefore / 1000)}k tok dropped)`;
-    case "citations_not_fetched":
-      return `${caseId}: ${event.count} citation(s) not fetched`;
-    case "written":
-      return `${caseId}: wrote ${event.markdownChars} markdown chars`;
-    case "synthesis_failed":
-      return `${caseId}: synthesis failed (${event.reason}${event.error ? `: ${event.error}` : ""}) — falling back to raw claims`;
-    case "completed":
-    case "research_started":
-    case "report_boundary":
-    case "report_delta":
-    case "tool_event":
+    case "run.error":
+      return `${caseId}: run error${event.recoverable ? " (recoverable)" : ""}: ${event.message}`;
+    case "run.started":
+    case "run.completed":
+    case "claim.extracted":
+    case "report.delta":
+    case "tool.event":
       return null;
   }
 }
 
 export interface RunMetrics {
-  provider: ModelProvider;
-  model: string;
-  finishReason: string;
-  leadToolCalls: number;
-  surveys: number;
-  reanchors: number;
-  angles: number;
+  effort: string;
+  searches: number;
   sourcesFetched: number;
+  sourcesFailed: number;
   claimsExtracted: number;
   claimsUnsupported: number;
   claimsVerified: number;
   confirmed: number;
+  contested: number;
   refuted: number;
-  unverified: number;
-  beyondVerifyCap: number;
-  citedSources: number;
-  citationsNotFetched: number;
+  citationsBound: number;
+  citationsUnsupported: number;
+  dupesDropped: number;
+  agentsSpawned: number;
+  maxDepth: number;
+  singleAgent: boolean;
+  costUSD: number;
+  durationMs: number;
+  budgetExhausted: boolean;
   inputTokens: number;
   outputTokens: number;
 }
 
 export function summarizeRun(result: ResearchResult): RunMetrics {
+  const stats = result.stats;
+  let inputTokens = 0;
+  let outputTokens = 0;
+  for (const usage of Object.values(stats.tokens)) {
+    inputTokens += usage.input;
+    outputTokens += usage.output;
+  }
   return {
-    provider: result.provider,
-    model: result.model,
-    finishReason: result.finishReason,
-    leadToolCalls: result.stats.leadToolCalls,
-    surveys: result.stats.surveys,
-    reanchors: result.stats.reanchors,
-    angles: result.stats.angles,
-    sourcesFetched: result.stats.sourcesFetched,
-    claimsExtracted: result.stats.claimsExtracted,
-    claimsUnsupported: result.stats.claimsUnsupported,
-    claimsVerified: result.stats.claimsVerified,
-    confirmed: result.stats.confirmed,
-    refuted: result.stats.refuted,
-    unverified: result.stats.unverified,
-    beyondVerifyCap: result.stats.beyondVerifyCap,
-    citedSources: result.citedSources.length,
-    citationsNotFetched: result.citationsNotFetched.length,
-    inputTokens:
-      result.usage.input_tokens +
-      result.usage.cache_creation_input_tokens +
-      result.usage.cache_read_input_tokens,
-    outputTokens: result.usage.output_tokens,
+    effort: stats.effort,
+    searches: stats.searches,
+    sourcesFetched: stats.sourcesFetched,
+    sourcesFailed: stats.sourcesFailed,
+    claimsExtracted: stats.claimsExtracted,
+    claimsUnsupported: stats.claimsUnsupported,
+    claimsVerified: stats.claimsVerified,
+    confirmed: stats.claimsConfirmed,
+    contested: stats.claimsContested,
+    refuted: stats.claimsRefuted,
+    citationsBound: stats.citationsBound,
+    citationsUnsupported: stats.citationsUnsupported,
+    dupesDropped: stats.dupesDropped,
+    agentsSpawned: stats.agentsSpawned,
+    maxDepth: stats.maxDepth,
+    singleAgent: stats.singleAgent,
+    costUSD: stats.costUSD,
+    durationMs: stats.durationMs,
+    budgetExhausted: stats.budgetExhausted,
+    inputTokens,
+    outputTokens,
   };
 }
 
 export interface EvalDiagnostics {
   search: {
     events: number;
+    failed: number;
   };
   fetch: {
     fetched: number;
     rejected: number;
     fetchedByMethod: Record<string, number>;
-    failedAttemptsByMethod: Record<string, number>;
     qualityWarningsByCode: Record<string, number>;
     sourceErrorsByCode: Record<string, number>;
     fetchedHosts: Record<string, number>;
@@ -380,15 +397,19 @@ export interface EvalDiagnostics {
     extractionErrors: number;
     verified: number;
     confirmed: number;
+    contested: number;
     refuted: number;
     unverified: number;
     votesByStatus: Record<string, number>;
   };
+  citations: {
+    bound: number;
+    unsupported: number;
+  };
   cost: {
     latencyMs: number;
-    leadToolCalls?: number;
-    surveys?: number;
-    reanchors?: number;
+    costUSD?: number;
+    agentsSpawned?: number;
     inputTokens?: number;
     outputTokens?: number;
   };
@@ -406,7 +427,6 @@ export function buildDiagnostics(opts: {
   metrics?: RunMetrics;
 }): EvalDiagnostics {
   const fetchedByMethod: Record<string, number> = {};
-  const failedAttemptsByMethod: Record<string, number> = {};
   const qualityWarningsByCode: Record<string, number> = {};
   const sourceErrorsByCode: Record<string, number> = {};
   const fetchedHosts: Record<string, number> = {};
@@ -418,18 +438,23 @@ export function buildDiagnostics(opts: {
   let rejected = 0;
   let totalFetchedMarkdownChars = 0;
   let searchEvents = 0;
+  let searchFailures = 0;
   let claimsExtracted = 0;
   let claimsUnsupported = 0;
   let extractionErrors = 0;
   let verified = 0;
-  let confirmed = 0;
-  let refutedCount = 0;
-  let unverified = 0;
+  let citationsBound = 0;
+  let citationsUnsupported = 0;
 
   for (const event of opts.trace) {
     if (!event) continue;
-    if (event.event === "searching") {
+    if (event.event === "search_results") {
       searchEvents++;
+      continue;
+    }
+    if (event.event === "search_failed") {
+      searchEvents++;
+      searchFailures++;
       continue;
     }
     if (event.event === "source_fetched") {
@@ -443,9 +468,6 @@ export function buildDiagnostics(opts: {
       }
       for (const warning of event.qualityWarnings ?? []) {
         increment(qualityWarningsByCode, codeFromMessage(warning));
-      }
-      for (const attempt of event.attempts ?? []) {
-        if (!attempt.ok) increment(failedAttemptsByMethod, attempt.method);
       }
       continue;
     }
@@ -466,20 +488,18 @@ export function buildDiagnostics(opts: {
       increment(votesByStatus, event.status ?? "unknown");
       continue;
     }
-    if (event.event === "verify_finished") {
-      confirmed += event.confirmed ?? 0;
-      refutedCount += event.refuted ?? 0;
-      unverified += event.unverified ?? 0;
+    if (event.event === "citation_bound") {
+      if (event.ok) citationsBound++;
+      else citationsUnsupported++;
     }
   }
 
   return {
-    search: { events: searchEvents },
+    search: { events: searchEvents, failed: searchFailures },
     fetch: {
       fetched,
       rejected,
       fetchedByMethod,
-      failedAttemptsByMethod,
       qualityWarningsByCode,
       sourceErrorsByCode,
       fetchedHosts,
@@ -493,18 +513,22 @@ export function buildDiagnostics(opts: {
       unsupported: claimsUnsupported,
       extractionErrors,
       verified,
-      confirmed,
-      refuted: refutedCount,
-      unverified,
+      confirmed: votesByStatus.confirmed ?? 0,
+      contested: votesByStatus.contested ?? 0,
+      refuted: votesByStatus.refuted ?? 0,
+      unverified: votesByStatus.unverified ?? 0,
       votesByStatus,
+    },
+    citations: {
+      bound: citationsBound,
+      unsupported: citationsUnsupported,
     },
     cost: {
       latencyMs: opts.latencyMs,
       ...(opts.metrics
         ? {
-            leadToolCalls: opts.metrics.leadToolCalls,
-            surveys: opts.metrics.surveys,
-            reanchors: opts.metrics.reanchors,
+            costUSD: opts.metrics.costUSD,
+            agentsSpawned: opts.metrics.agentsSpawned,
             inputTokens: opts.metrics.inputTokens,
             outputTokens: opts.metrics.outputTokens,
           }

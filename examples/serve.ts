@@ -1,210 +1,66 @@
-import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+#!/usr/bin/env node
+import {
+  createServer,
+  type IncomingMessage,
+  type ServerResponse,
+} from "node:http";
 import { readFileSync } from "node:fs";
-import { Atlas } from "../src/atlas.js";
-import { resolveModelSpec } from "../src/config-resolution.js";
-import { steel } from "../src/steel.js";
-import { exa, brave, type SearchProvider } from "../src/search-provider.js";
-import type {
-  ModelProvider,
-  ResearchEvent,
-  ResearchResult,
-  ResearchStream,
-} from "../src/research.js";
+import { parseArgs } from "node:util";
+import { createAnthropic } from "@ai-sdk/anthropic";
+import { createOpenAI } from "@ai-sdk/openai";
+import { Atlas, type AtlasConfig, type Effort } from "../src/index.js";
+import {
+  DEFAULT_ANTHROPIC_MODEL,
+  DEFAULT_OPENAI_MODEL,
+} from "../src/defaults.js";
+import { readEnv } from "../src/env.js";
 
-export interface ServeOptions {
-  port: number;
-  host: string;
-  provider?: ModelProvider;
-  model?: string;
-  leafModel?: string;
-  searchProvider?: string;
-  proxy?: boolean;
+const USAGE = `atlas serve — minimal local web UI for deep research
+
+Usage:
+  tsx examples/serve.ts [options]
+
+Options:
+      --port N          Port to listen on (default: 4317)
+      --host HOST       Host to bind (default: 127.0.0.1)
+      --provider NAME   anthropic | openai (default: ATLAS_PROVIDER or anthropic)
+      --model ID        Model id (default: ATLAS_MODEL or provider default)
+  -h, --help            Show this help
+
+API:
+  POST /research {"question": "...", "effort": "balanced"}
+    → SSE stream of research events, ending with {"type":"result","result":...}
+`;
+
+function fail(message: string): never {
+  process.stderr.write(`atlas-serve: ${message}\n`);
+  process.exit(1);
 }
-
-type WireEvent = ResearchEvent | { type: "error"; message: string };
-type Subscriber = (event: WireEvent | null, seq: number) => void;
-
-interface RunEntry {
-  id: string;
-  query: string;
-  run: ResearchStream;
-  log: WireEvent[];
-  subs: Set<Subscriber>;
-  done: boolean;
-  startedAt: number;
-  endedAt?: number;
-  error?: string;
-  result?: ResearchResult;
-  sources: number;
-  confirmed: number;
-  angles: number;
-  reaper?: ReturnType<typeof setTimeout>;
-}
-
-const RUN_OPTS = {
-  exploreProviderOptions: { anthropic: { thinking: { type: "adaptive" } } },
-  finalizeProviderOptions: {
-    anthropic: { thinking: { type: "adaptive" }, effort: "high" },
-    openai: { reasoningEffort: "high" },
-  },
-};
-
-const ABANDON_MS = 90_000;
-const MAX_RUNS = 50;
 
 function messageOf(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-class RunHost {
-  private readonly runs = new Map<string, RunEntry>();
-  private counter = 0;
-
-  constructor(private readonly atlas: Atlas) {}
-
-  create(query: string): RunEntry {
-    const id = "run_" + Date.now().toString(36) + (this.counter++).toString(36);
-    const run = this.atlas.stream(query, RUN_OPTS);
-    const entry: RunEntry = {
-      id,
-      query,
-      run,
-      log: [],
-      subs: new Set(),
-      done: false,
-      startedAt: Date.now(),
-      sources: 0,
-      confirmed: 0,
-      angles: 0,
-    };
-    this.runs.set(id, entry);
-    this.evict();
-    void this.drain(entry);
-    this.armReaper(entry);
-    return entry;
+function resolveModel(
+  providerFlag: string | undefined,
+  modelFlag: string | undefined,
+): AtlasConfig["model"] {
+  const provider = providerFlag ?? readEnv("ATLAS_PROVIDER") ?? "anthropic";
+  if (provider !== "anthropic" && provider !== "openai") {
+    fail(`provider must be one of: anthropic, openai (got "${provider}")`);
   }
-
-  get(id: string): RunEntry | undefined {
-    return this.runs.get(id);
+  const modelId =
+    modelFlag ??
+    readEnv("ATLAS_MODEL") ??
+    (provider === "anthropic" ? DEFAULT_ANTHROPIC_MODEL : DEFAULT_OPENAI_MODEL);
+  if (provider === "anthropic") {
+    const apiKey = readEnv("ATLAS_ANTHROPIC_API_KEY", "ANTHROPIC_API_KEY");
+    if (!apiKey) fail("ANTHROPIC_API_KEY is required for provider=anthropic");
+    return createAnthropic({ apiKey })(modelId);
   }
-
-  attach(entry: RunEntry, fn: Subscriber): void {
-    entry.subs.add(fn);
-    if (entry.reaper) {
-      clearTimeout(entry.reaper);
-      entry.reaper = undefined;
-    }
-  }
-
-  detach(entry: RunEntry, fn: Subscriber): void {
-    entry.subs.delete(fn);
-    if (entry.subs.size === 0 && !entry.done) this.armReaper(entry);
-  }
-
-  stop(id: string): boolean {
-    const entry = this.runs.get(id);
-    if (!entry || entry.done) return false;
-    entry.run.stop();
-    return true;
-  }
-
-  abort(id: string): boolean {
-    const entry = this.runs.get(id);
-    if (!entry || entry.done) return false;
-    entry.run.abort();
-    return true;
-  }
-
-  list(): Array<Record<string, unknown>> {
-    return [...this.runs.values()]
-      .sort((a, b) => b.startedAt - a.startedAt)
-      .map((e) => ({
-        id: e.id,
-        query: e.query,
-        status: this.status(e),
-        startedAt: e.startedAt,
-        endedAt: e.endedAt ?? null,
-        sources: e.sources,
-        confirmed: e.confirmed,
-        angles: e.angles,
-      }));
-  }
-
-  private status(entry: RunEntry): string {
-    if (entry.error) return "error";
-    if (!entry.done) return "running";
-    return entry.result ? "done" : "stopped";
-  }
-
-  private armReaper(entry: RunEntry): void {
-    if (entry.reaper) clearTimeout(entry.reaper);
-    entry.reaper = setTimeout(() => {
-      if (entry.subs.size === 0 && !entry.done) entry.run.abort();
-    }, ABANDON_MS);
-  }
-
-  private async drain(entry: RunEntry): Promise<void> {
-    const push = (event: WireEvent) => {
-      entry.log.push(event);
-      const seq = entry.log.length;
-      for (const fn of entry.subs) fn(event, seq);
-    };
-    try {
-      for await (const event of entry.run.fullStream) {
-        if (event.type === "scope_completed") entry.angles = event.angles.length;
-        else if (event.type === "source_fetched") entry.sources++;
-        else if (event.type === "claim_verified" && event.status === "confirmed")
-          entry.confirmed++;
-        else if (event.type === "completed") entry.result = event.result;
-        push(event);
-      }
-    } catch (err) {
-      const event: WireEvent = { type: "error", message: messageOf(err) };
-      entry.error = event.message;
-      push(event);
-    } finally {
-      entry.done = true;
-      entry.endedAt = Date.now();
-      if (entry.reaper) {
-        clearTimeout(entry.reaper);
-        entry.reaper = undefined;
-      }
-      for (const fn of entry.subs) fn(null, entry.log.length);
-    }
-  }
-
-  private evict(): void {
-    if (this.runs.size <= MAX_RUNS) return;
-    const oldestFirst = [...this.runs.values()].sort(
-      (a, b) => a.startedAt - b.startedAt,
-    );
-    for (const entry of oldestFirst) {
-      if (this.runs.size <= MAX_RUNS) break;
-      if (entry.done) this.runs.delete(entry.id);
-    }
-  }
-}
-
-let cachedPage: string | undefined;
-
-function page(): string {
-  if (cachedPage === undefined) {
-    cachedPage = readFileSync(
-      new URL("./serve.page.html", import.meta.url),
-      "utf8",
-    );
-  }
-  return cachedPage;
-}
-
-function resolveSearch(raw: string | undefined): SearchProvider | undefined {
-  const kind = (raw ?? "").trim().toLowerCase();
-  if (!kind || kind === "web") return undefined;
-  if (kind === "exa") return exa();
-  if (kind === "brave") return brave();
-  throw new Error(
-    `--search-provider must be one of: web, exa, brave (got "${raw}")`,
-  );
+  const apiKey = readEnv("ATLAS_OPENAI_API_KEY", "OPENAI_API_KEY");
+  if (!apiKey) fail("OPENAI_API_KEY is required for provider=openai");
+  return createOpenAI({ apiKey })(modelId);
 }
 
 function readBody(req: IncomingMessage): Promise<string> {
@@ -224,26 +80,36 @@ function readBody(req: IncomingMessage): Promise<string> {
 }
 
 function sendJson(res: ServerResponse, status: number, body: unknown): void {
-  const text = JSON.stringify(body);
-  res.writeHead(status, {
-    "Content-Type": "application/json; charset=utf-8",
-    "Cache-Control": "no-store",
-  });
-  res.end(text);
+  res.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
+  res.end(JSON.stringify(body));
 }
 
-function streamRun(
+function parseEffort(raw: unknown): Effort | undefined {
+  if (raw === "fast" || raw === "balanced" || raw === "deep" || raw === "max") {
+    return raw;
+  }
+  return undefined;
+}
+
+async function handleResearch(
+  atlas: Atlas,
   req: IncomingMessage,
   res: ServerResponse,
-  host: RunHost,
-  entry: RunEntry,
-  fromParam: string | null,
-): void {
-  const headerId = req.headers["last-event-id"];
-  const fromRaw =
-    fromParam ?? (typeof headerId === "string" ? headerId : null) ?? "0";
-  let from = Number(fromRaw);
-  if (!Number.isFinite(from) || from < 0) from = 0;
+): Promise<void> {
+  const body = await readBody(req).catch(() => "");
+  let question = "";
+  let effort: Effort | undefined;
+  try {
+    const parsed = JSON.parse(body || "{}") as Record<string, unknown>;
+    if (typeof parsed.question === "string") question = parsed.question.trim();
+    effort = parseEffort(parsed.effort);
+  } catch {
+    question = "";
+  }
+  if (!question) {
+    sendJson(res, 400, { error: "question is required" });
+    return;
+  }
 
   res.writeHead(200, {
     "Content-Type": "text/event-stream; charset=utf-8",
@@ -252,123 +118,93 @@ function streamRun(
     "X-Accel-Buffering": "no",
   });
 
-  for (let i = from; i < entry.log.length; i++) {
-    res.write(`id: ${i + 1}\ndata: ${JSON.stringify(entry.log[i])}\n\n`);
-  }
-  if (entry.done) {
+  const run = atlas.start(question, effort ? { effort } : {});
+  let finished = false;
+  res.on("close", () => {
+    if (!finished) void run.cancel();
+  });
+
+  const send = (payload: unknown) =>
+    res.write(`data: ${JSON.stringify(payload)}\n\n`);
+
+  try {
+    for await (const event of run.events()) send(event);
+    const result = await run.result();
+    send({ type: "result", result });
+  } catch (err) {
+    send({ type: "run.error", message: messageOf(err), recoverable: false });
+  } finally {
+    finished = true;
     res.end();
-    return;
   }
-
-  const fn: Subscriber = (event, seq) => {
-    if (event) res.write(`id: ${seq}\ndata: ${JSON.stringify(event)}\n\n`);
-    else res.end();
-  };
-  host.attach(entry, fn);
-  res.on("close", () => host.detach(entry, fn));
 }
 
-async function route(
-  req: IncomingMessage,
-  res: ServerResponse,
-  host: RunHost,
-): Promise<void> {
-  const url = new URL(req.url ?? "/", "http://localhost");
-  const path = url.pathname;
-  const method = req.method ?? "GET";
+function page(): string {
+  return readFileSync(new URL("./serve.page.html", import.meta.url), "utf8");
+}
 
-  if (method === "GET" && (path === "/" || path === "/index.html")) {
-    res.writeHead(200, {
-      "Content-Type": "text/html; charset=utf-8",
-      "Cache-Control": "no-store",
-    });
-    res.end(page());
-    return;
+async function main(): Promise<void> {
+  try {
+    process.loadEnvFile();
+  } catch {
+    void 0;
   }
-
-  if (method === "GET" && path === "/api/runs") {
-    sendJson(res, 200, { runs: host.list() });
-    return;
-  }
-
-  if (method === "POST" && path === "/api/runs") {
-    const body = await readBody(req).catch(() => "");
-    let query = "";
+  const { values } = (() => {
     try {
-      const parsed = JSON.parse(body || "{}") as { query?: unknown };
-      if (typeof parsed.query === "string") query = parsed.query.trim();
-    } catch {
-      query = "";
+      return parseArgs({
+        args: process.argv.slice(2),
+        allowPositionals: false,
+        options: {
+          port: { type: "string" },
+          host: { type: "string" },
+          provider: { type: "string" },
+          model: { type: "string" },
+          help: { type: "boolean", short: "h" },
+        },
+      });
+    } catch (err) {
+      fail(messageOf(err));
     }
-    if (!query) {
-      sendJson(res, 400, { error: "query is required" });
-      return;
-    }
-    const entry = host.create(query);
-    sendJson(res, 201, { runId: entry.id });
+  })();
+
+  if (values.help) {
+    process.stdout.write(USAGE);
     return;
   }
 
-  const runMatch = path.match(/^\/api\/runs\/([^/]+)(\/stream|\/stop|\/abort)?$/);
-  if (runMatch) {
-    const id = decodeURIComponent(runMatch[1]);
-    const action = runMatch[2];
-    const entry = host.get(id);
-    if (!entry) {
-      sendJson(res, 404, { error: "run not found" });
-      return;
-    }
-    if (method === "GET" && action === "/stream") {
-      streamRun(req, res, host, entry, url.searchParams.get("from"));
-      return;
-    }
-    if (method === "POST" && action === "/stop") {
-      sendJson(res, 200, { stopped: host.stop(id) });
-      return;
-    }
-    if (method === "POST" && action === "/abort") {
-      sendJson(res, 200, { aborted: host.abort(id) });
-      return;
-    }
+  const port = values.port === undefined ? 4317 : Number(values.port);
+  if (!Number.isInteger(port) || port < 0 || port > 65535) {
+    fail(`--port must be a valid port 0-65535 (got "${values.port}")`);
   }
+  const host = values.host ?? "127.0.0.1";
 
-  res.writeHead(404, { "Content-Type": "text/plain" });
-  res.end("not found");
-}
-
-export async function serve(opts: ServeOptions): Promise<void> {
-  const { model, leafModel } = await resolveModelSpec({
-    provider: opts.provider,
-    model: opts.model,
-    leafModel: opts.leafModel,
-  });
-  const search = resolveSearch(opts.searchProvider);
-  const atlas = new Atlas({
-    model,
-    ...(leafModel ? { leafModel } : {}),
-    ...(search ? { search } : {}),
-    ...(opts.proxy ? { browser: steel({ proxy: true }) } : {}),
-  });
-  const host = new RunHost(atlas);
+  const atlas = new Atlas({ model: resolveModel(values.provider, values.model) });
 
   const server = createServer((req, res) => {
-    void route(req, res, host).catch((err) => {
-      if (!res.headersSent) res.writeHead(500, { "Content-Type": "text/plain" });
-      res.end(messageOf(err));
-    });
+    const path = new URL(req.url ?? "/", "http://localhost").pathname;
+    if (req.method === "GET" && (path === "/" || path === "/index.html")) {
+      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+      res.end(page());
+      return;
+    }
+    if (req.method === "POST" && path === "/research") {
+      void handleResearch(atlas, req, res).catch((err) => {
+        if (!res.headersSent) sendJson(res, 500, { error: messageOf(err) });
+        else res.end();
+      });
+      return;
+    }
+    res.writeHead(404, { "Content-Type": "text/plain" });
+    res.end("not found");
   });
 
   await new Promise<void>((resolve, reject) => {
-    const onError = (err: unknown) => reject(err);
-    server.once("error", onError);
-    server.listen(opts.port, opts.host, () => {
-      server.off("error", onError);
-      resolve();
-    });
+    server.once("error", reject);
+    server.listen(port, host, () => resolve());
   });
-
-  const shownHost =
-    opts.host === "0.0.0.0" || opts.host === "::" ? "localhost" : opts.host;
-  process.stderr.write(`atlas: web UI on http://${shownHost}:${opts.port}\n`);
-  process.stderr.write("atlas: press Ctrl-C to stop\n");
+  const shownHost = host === "0.0.0.0" || host === "::" ? "localhost" : host;
+  process.stderr.write(`atlas-serve: web UI on http://${shownHost}:${port}\n`);
+  process.stderr.write("atlas-serve: press Ctrl-C to stop\n");
 }
+
+main().catch((err) => fail(messageOf(err)));

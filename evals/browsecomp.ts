@@ -1,5 +1,6 @@
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { createOpenAI } from "@ai-sdk/openai";
+import { generateText } from "ai";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
@@ -8,11 +9,7 @@ import {
   DEFAULT_ANTHROPIC_MODEL,
   DEFAULT_OPENAI_MODEL,
 } from "../src/defaults.js";
-import { createAISdkModelAdapter, type ModelAdapter } from "../src/model.js";
-import { type ModelProvider } from "../src/research.js";
-import { Atlas } from "../src/atlas.js";
-import { steel } from "../src/steel.js";
-import { resolveModelSpec } from "../src/config-resolution.js";
+import { Atlas, type AtlasConfig, type Effort } from "../src/index.js";
 import {
   buildDiagnostics,
   formatCountMap,
@@ -29,6 +26,9 @@ import {
   type RunMetrics,
 } from "./lib.js";
 
+type ModelProvider = "anthropic" | "openai";
+type ResearchModel = AtlasConfig["model"];
+
 interface EvalCase {
   id: string;
   query: string;
@@ -43,7 +43,8 @@ interface EvalOptions {
   caseIds: Set<string>;
   outPath?: string;
   timeoutMs?: number;
-  tokenLimit?: number;
+  budgetUSD?: number;
+  effort: Effort;
   provider?: ModelProvider;
   model?: string;
   judge: boolean;
@@ -51,8 +52,13 @@ interface EvalOptions {
   judgeModel?: string;
   judgeTimeoutMs: number;
   concurrency: number;
-  useProxy: boolean;
   dryRun: boolean;
+}
+
+interface JudgeSpec {
+  provider: ModelProvider;
+  modelId: string;
+  model: ResearchModel;
 }
 
 interface JudgeResult {
@@ -76,7 +82,6 @@ interface EvalResult {
   judge?: JudgeResult;
   judgeError?: string;
   error?: string;
-  finishReason?: string;
   capBound?: boolean;
   markdown?: string;
   latencyMs: number;
@@ -90,6 +95,7 @@ const OFFICIAL_BROWSECOMP_CASES_URL =
   "https://openaipublic.blob.core.windows.net/simple-evals/browse_comp_test_set.csv";
 const DEFAULT_TIMEOUT_MS = 300_000;
 const DEFAULT_JUDGE_TIMEOUT_MS = 60_000;
+const DEFAULT_EFFORT: Effort = "deep";
 
 function usage(): string {
   return `Usage:
@@ -102,7 +108,8 @@ Options:
       --case-id ID         Run one case ID; repeat or comma-separate
       --out <file>         Write manifest/results/summary JSONL
       --timeout N          Per-case timeout in seconds (default: 300)
-      --token-limit N      Total token budget per case (e.g. 1000000, 3000000, 10000000)
+      --budget N           Per-case budget in USD (default: effort envelope)
+      --effort LEVEL       Research effort: fast, balanced, deep, max (default: ${DEFAULT_EFFORT})
       --provider NAME      Model provider: anthropic, openai
       --model NAME         Model name
       --judge              Grade responses with an LLM judge
@@ -110,7 +117,6 @@ Options:
       --judge-model MODEL  Judge model (default: claude-opus-4-8 for anthropic)
       --judge-timeout N    Per-judge timeout in seconds (default: 60)
       --concurrency N      Parallel cases (default: 1)
-      --proxy              Route Steel calls through proxy
       --dry-run            Print selected case IDs without calling APIs
       --help               Show this help
 
@@ -149,17 +155,21 @@ function readPositiveNumber(raw: string, name: string): number {
   return n;
 }
 
-function readNonNegativeInt(raw: string, name: string): number {
-  const n = Number(raw);
-  if (!Number.isInteger(n) || n < 0) {
-    fail(`${name} must be a non-negative integer (got "${raw}")`);
-  }
-  return n;
-}
-
 function readProvider(raw: string): ModelProvider {
   if (raw === "anthropic" || raw === "openai") return raw;
   fail(`--provider must be one of: anthropic, openai (got "${raw}")`);
+}
+
+function readEffort(raw: string): Effort {
+  if (
+    raw === "fast" ||
+    raw === "balanced" ||
+    raw === "deep" ||
+    raw === "max"
+  ) {
+    return raw;
+  }
+  fail(`--effort must be one of: fast, balanced, deep, max (got "${raw}")`);
 }
 
 function parseArgs(argv: string[]): EvalOptions {
@@ -169,10 +179,10 @@ function parseArgs(argv: string[]): EvalOptions {
     seed: "atlas-browsecomp-v1",
     caseIds,
     timeoutMs: DEFAULT_TIMEOUT_MS,
+    effort: DEFAULT_EFFORT,
     judge: false,
     judgeTimeoutMs: DEFAULT_JUDGE_TIMEOUT_MS,
     concurrency: 1,
-    useProxy: false,
     dryRun: false,
   };
 
@@ -217,8 +227,13 @@ function parseArgs(argv: string[]): EvalOptions {
       i++;
       continue;
     }
-    if (arg === "--token-limit") {
-      opts.tokenLimit = readNonNegativeInt(readValue(argv, i, arg), arg);
+    if (arg === "--budget") {
+      opts.budgetUSD = readPositiveNumber(readValue(argv, i, arg), arg);
+      i++;
+      continue;
+    }
+    if (arg === "--effort") {
+      opts.effort = readEffort(readValue(argv, i, arg));
       i++;
       continue;
     }
@@ -256,10 +271,6 @@ function parseArgs(argv: string[]): EvalOptions {
     if (arg === "--concurrency") {
       opts.concurrency = readPositiveInt(readValue(argv, i, arg), arg);
       i++;
-      continue;
-    }
-    if (arg === "--proxy") {
-      opts.useProxy = true;
       continue;
     }
     if (arg === "--dry-run") {
@@ -305,30 +316,23 @@ function resolveEvalModel(
     : DEFAULT_OPENAI_MODEL;
 }
 
-function createAnthropicModelAdapter(opts: {
-  apiKey: string;
-  model: string;
-}): ModelAdapter {
-  const provider = createAnthropic({ apiKey: opts.apiKey });
-  return createAISdkModelAdapter({
-    model: provider(opts.model),
-    provider: "anthropic",
-    modelId: opts.model,
-  });
-}
-
-function createOpenAIModelAdapter(opts: {
-  apiKey: string;
-  model: string;
-}): ModelAdapter {
-  const provider = createOpenAI({
-    apiKey: opts.apiKey,
-  });
-  return createAISdkModelAdapter({
-    model: provider(opts.model),
-    provider: "openai",
-    modelId: opts.model,
-  });
+function buildModel(provider: ModelProvider, modelId: string): ResearchModel {
+  if (provider === "anthropic") {
+    const apiKey = readEnv("ATLAS_ANTHROPIC_API_KEY", "ANTHROPIC_API_KEY");
+    if (!apiKey) {
+      fail(
+        "ANTHROPIC_API_KEY or ATLAS_ANTHROPIC_API_KEY is required for provider=anthropic",
+      );
+    }
+    return createAnthropic({ apiKey })(modelId);
+  }
+  const apiKey = readEnv("ATLAS_OPENAI_API_KEY", "OPENAI_API_KEY");
+  if (!apiKey) {
+    fail(
+      "OPENAI_API_KEY or ATLAS_OPENAI_API_KEY is required for provider=openai",
+    );
+  }
+  return createOpenAI({ apiKey })(modelId);
 }
 
 const DEFAULT_JUDGE_PROVIDER: ModelProvider = "anthropic";
@@ -337,35 +341,19 @@ function defaultJudgeModel(provider: ModelProvider): string {
   return provider === "openai" ? DEFAULT_OPENAI_MODEL : "claude-opus-4-8";
 }
 
-function createJudgeAdapter(opts: EvalOptions): ModelAdapter {
+function createJudge(opts: EvalOptions): JudgeSpec {
   const provider = resolveEvalProvider(
     opts.judgeProvider ?? DEFAULT_JUDGE_PROVIDER,
   );
-  const model = opts.judgeModel?.trim() || defaultJudgeModel(provider);
+  const modelId = opts.judgeModel?.trim() || defaultJudgeModel(provider);
   const runProvider = resolveEvalProvider(opts.provider);
   const runModel = resolveEvalModel(runProvider, opts.model);
-  if (provider === runProvider && model === runModel) {
+  if (provider === runProvider && modelId === runModel) {
     process.stderr.write(
-      `warning: judge ${provider}/${model} is the model under test; self-grading inflates scores — pass --judge-model for an independent judge\n`,
+      `warning: judge ${provider}/${modelId} is the model under test; self-grading inflates scores — pass --judge-model for an independent judge\n`,
     );
   }
-  if (provider === "anthropic") {
-    const apiKey = readEnv("ATLAS_ANTHROPIC_API_KEY", "ANTHROPIC_API_KEY");
-    if (!apiKey) {
-      fail(
-        "judge: ANTHROPIC_API_KEY or ATLAS_ANTHROPIC_API_KEY is required for provider=anthropic",
-      );
-    }
-    return createAnthropicModelAdapter({ apiKey, model });
-  }
-
-  const apiKey = readEnv("ATLAS_OPENAI_API_KEY", "OPENAI_API_KEY");
-  if (!apiKey) {
-    fail(
-      "judge: OPENAI_API_KEY or ATLAS_OPENAI_API_KEY is required for provider=openai",
-    );
-  }
-  return createOpenAIModelAdapter({ apiKey, model });
+  return { provider, modelId, model: buildModel(provider, modelId) };
 }
 
 function deriveKey(password: string, length: number): Buffer {
@@ -660,39 +648,31 @@ function parseJudgeConfidence(raw: string | null): number | null {
 }
 
 async function judgeResponse(opts: {
-  judge: ModelAdapter;
+  judge: JudgeSpec;
   question: string;
   correctAnswer: string;
   response: string;
   timeoutMs: number;
 }): Promise<JudgeResult> {
-  const signal = AbortSignal.timeout(opts.timeoutMs);
-  const resp = await opts.judge.step({
+  const { text } = await generateText({
+    model: opts.judge.model,
     system:
       "You are a strict evaluator for BrowseComp-style answers. Grade only answer equivalence.",
-    messages: [
-      {
-        role: "user",
-        content: judgePrompt({
-          question: opts.question,
-          correctAnswer: opts.correctAnswer,
-          response: opts.response,
-        }),
-      },
-    ],
-    maxTokens: 1024,
-    signal,
+    prompt: judgePrompt({
+      question: opts.question,
+      correctAnswer: opts.correctAnswer,
+      response: opts.response,
+    }),
+    maxOutputTokens: 1024,
+    abortSignal: AbortSignal.timeout(opts.timeoutMs),
   });
-  const raw = resp.content
-    .map((block) => (block.type === "text" ? block.text : ""))
-    .join("")
-    .trim();
+  const raw = text.trim();
   const correctRaw = readJudgeField(raw, "correct")?.toLowerCase() ?? "";
   const extracted = readJudgeField(raw, "extracted_final_answer");
   const confidence = parseJudgeConfidence(readJudgeField(raw, "confidence"));
   return {
     provider: opts.judge.provider,
-    model: opts.judge.model,
+    model: opts.judge.modelId,
     correct: /^yes\b/.test(correctRaw),
     extractedFinalAnswer:
       extracted && extracted.toLowerCase() !== "none" ? extracted : null,
@@ -705,7 +685,8 @@ async function judgeResponse(opts: {
 async function runCase(
   entry: EvalCase,
   opts: EvalOptions,
-  judge: ModelAdapter | undefined,
+  atlas: Atlas,
+  judge: JudgeSpec | undefined,
 ): Promise<EvalResult> {
   const started = Date.now();
   const trace: EvalTraceEvent[] = [];
@@ -718,36 +699,24 @@ async function runCase(
     );
   }, 30_000);
   try {
-    const atlas = new Atlas({
-      ...(await resolveModelSpec({
-        provider: opts.provider,
-        model: opts.model,
-      })),
-      browser: steel({ proxy: opts.useProxy }),
-    });
-    const run = atlas.stream(evalQuery(entry.query), {
-      timeoutMs: opts.timeoutMs,
-      tokenLimit: opts.tokenLimit,
-      verify: "adversarial",
-      includeSourceDocuments: true,
-      exploreProviderOptions: {
-        anthropic: { thinking: { type: "adaptive" }, effort: "max" },
-        openai: { reasoningEffort: "high" },
-      },
-      finalizeProviderOptions: {
-        anthropic: { thinking: { type: "adaptive" }, effort: "max" },
-        openai: { reasoningEffort: "high" },
+    const run = atlas.start(evalQuery(entry.query), {
+      effort: opts.effort,
+      budget: {
+        ...(opts.budgetUSD !== undefined ? { maxUSD: opts.budgetUSD } : {}),
+        ...(opts.timeoutMs !== undefined
+          ? { maxDurationMs: opts.timeoutMs }
+          : {}),
       },
     });
-    for await (const event of run.events) {
+    for await (const event of run.events()) {
       const traced = traceEvent(event, started);
       if (traced) trace.push(traced);
       const line = progressLine(entry.id, event);
       if (line) process.stderr.write(`eval:browsecomp: ${line}\n`);
     }
-    const result = await run.result;
+    const result = await run.result();
     clearInterval(heartbeat);
-    const predictedAnswer = extractFinalAnswer(result.markdown);
+    const predictedAnswer = extractFinalAnswer(result.report);
     const exactCorrect = gradeAnswer(predictedAnswer, entry.answers);
     let judgeResult: JudgeResult | undefined;
     let judgeError: string | undefined;
@@ -761,8 +730,8 @@ async function runCase(
           question: entry.query,
           correctAnswer: entry.answers.join(" OR "),
           response: predictedAnswer
-            ? `${result.markdown}\n\nFinal answer: ${predictedAnswer}`
-            : result.markdown,
+            ? `${result.report}\n\nFinal answer: ${predictedAnswer}`
+            : result.report,
           timeoutMs: opts.judgeTimeoutMs,
         });
       } catch (err) {
@@ -781,9 +750,8 @@ async function runCase(
       correct: judgeResult?.correct ?? exactCorrect,
       ...(judgeResult ? { judge: judgeResult } : {}),
       ...(judgeError ? { judgeError } : {}),
-      finishReason: result.finishReason,
-      capBound: result.capBound,
-      markdown: result.markdown,
+      capBound: result.stats.budgetExhausted,
+      markdown: result.report,
       latencyMs,
       trace,
       diagnostics: buildDiagnostics({ trace, latencyMs, metrics }),
@@ -848,12 +816,12 @@ function summarize(results: EvalResult[]) {
   const judged = results.filter((result) => result.judge !== undefined);
   const judgeCorrect = judged.filter((result) => result.judge?.correct).length;
   const capBound = completed.filter((result) => result.capBound).length;
-  const totalLeadToolCalls = completed.reduce(
-    (sum, result) => sum + (result.metrics?.leadToolCalls ?? 0),
+  const totalCostUSD = completed.reduce(
+    (sum, result) => sum + (result.metrics?.costUSD ?? 0),
     0,
   );
-  const totalSurveys = completed.reduce(
-    (sum, result) => sum + (result.metrics?.surveys ?? 0),
+  const totalAgentsSpawned = completed.reduce(
+    (sum, result) => sum + (result.metrics?.agentsSpawned ?? 0),
     0,
   );
   return {
@@ -870,12 +838,12 @@ function summarize(results: EvalResult[]) {
     judgeAccuracy: judged.length === 0 ? null : judgeCorrect / judged.length,
     capBoundRate: completed.length === 0 ? 0 : capBound / completed.length,
     medianLatencyMs: median(completed.map((result) => result.latencyMs)),
-    averageLeadToolCalls:
-      completed.length === 0 ? 0 : totalLeadToolCalls / completed.length,
-    averageSurveys:
-      completed.length === 0 ? 0 : totalSurveys / completed.length,
-    totalCitationsNotFetched: completed.reduce(
-      (sum, result) => sum + (result.metrics?.citationsNotFetched ?? 0),
+    totalCostUSD,
+    averageCostUSD: completed.length === 0 ? 0 : totalCostUSD / completed.length,
+    averageAgentsSpawned:
+      completed.length === 0 ? 0 : totalAgentsSpawned / completed.length,
+    totalCitationsUnsupported: completed.reduce(
+      (sum, result) => sum + (result.metrics?.citationsUnsupported ?? 0),
       0,
     ),
     claimHealth: summarizeClaimHealth(results),
@@ -906,17 +874,18 @@ async function main(): Promise<void> {
     casesPath: opts.casesPath,
     seed: opts.seed,
     sample: opts.sample ?? null,
+    effort: opts.effort,
     timeoutMs: opts.timeoutMs ?? null,
-    tokenLimit: opts.tokenLimit ?? null,
+    budgetUSD: opts.budgetUSD ?? null,
     judge: opts.judge,
     judgeProvider: opts.judge
-      ? resolveEvalProvider(opts.judgeProvider ?? opts.provider)
+      ? resolveEvalProvider(opts.judgeProvider ?? DEFAULT_JUDGE_PROVIDER)
       : null,
     judgeModel: opts.judge
-      ? resolveEvalModel(
-          resolveEvalProvider(opts.judgeProvider ?? opts.provider),
-          opts.judgeModel ?? opts.model,
-        )
+      ? (opts.judgeModel?.trim() ||
+        defaultJudgeModel(
+          resolveEvalProvider(opts.judgeProvider ?? DEFAULT_JUDGE_PROVIDER),
+        ))
       : null,
     selectedCaseIds: selected.map((entry) => entry.id),
     startedAt: new Date().toISOString(),
@@ -927,9 +896,12 @@ async function main(): Promise<void> {
     return;
   }
 
-  const judge = opts.judge ? createJudgeAdapter(opts) : undefined;
+  const provider = resolveEvalProvider(opts.provider);
+  const modelId = resolveEvalModel(provider, opts.model);
+  const atlas = new Atlas({ model: buildModel(provider, modelId) });
+  const judge = opts.judge ? createJudge(opts) : undefined;
   process.stderr.write(
-    `eval:browsecomp: running ${selected.length} case(s), seed=${opts.seed}, timeout=${Math.round((opts.timeoutMs ?? 0) / 1000)}s${judge ? `, judge=${judge.provider}/${judge.model}` : ""}\n`,
+    `eval:browsecomp: running ${selected.length} case(s), seed=${opts.seed}, model=${provider}/${modelId}, effort=${opts.effort}, timeout=${Math.round((opts.timeoutMs ?? 0) / 1000)}s${judge ? `, judge=${judge.provider}/${judge.modelId}` : ""}\n`,
   );
   const results = await mapWithConcurrency(
     selected,
@@ -938,7 +910,7 @@ async function main(): Promise<void> {
       process.stderr.write(
         `eval:browsecomp: [${index + 1}/${selected.length}] ${entry.id}\n`,
       );
-      return runCase(entry, opts, judge);
+      return runCase(entry, opts, atlas, judge);
     },
   );
   const summary = summarize(results);
@@ -953,10 +925,11 @@ async function main(): Promise<void> {
         ? "judge accuracy: n/a"
         : `judge accuracy: ${(summary.judgeAccuracy * 100).toFixed(1)}% (${summary.judgeCorrect}/${summary.judged})`,
       `errors: ${summary.errors}`,
-      `cap-bound rate: ${(summary.capBoundRate * 100).toFixed(1)}% (harness-limited runs)`,
+      `budget-exhausted rate: ${(summary.capBoundRate * 100).toFixed(1)}%`,
       `median latency: ${(summary.medianLatencyMs / 1000).toFixed(1)}s`,
-      `avg lead tool calls: ${summary.averageLeadToolCalls.toFixed(1)} (surveys ${summary.averageSurveys.toFixed(1)})`,
+      `avg cost: $${summary.averageCostUSD.toFixed(2)} (agents spawned ${summary.averageAgentsSpawned.toFixed(1)})`,
       `claims: extracted=${summary.claimHealth.extracted}, unsupported=${summary.claimHealth.unsupported}, confirmed=${summary.claimHealth.confirmed}, refuted=${summary.claimHealth.refuted}`,
+      `citations unsupported: ${summary.totalCitationsUnsupported}`,
       `fetch health: fetched=${summary.fetchHealth.fetched}, rejected=${summary.fetchHealth.rejected}, blocked_or_thin=${summary.fetchHealth.blockedOrThin}, methods=${formatCountMap(summary.fetchHealth.fetchedByMethod)}`,
       `results: ${outPath}`,
     ].join("\n") + "\n",

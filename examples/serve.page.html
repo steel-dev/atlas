@@ -3,628 +3,181 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Atlas</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link
-      href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500;600;700&display=swap"
-      rel="stylesheet"
-    />
+    <title>atlas</title>
     <style>
-      :root {
-        color: #ededed;
-        background: #000;
-        font-family: "Geist Mono", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
-        font-variant-numeric: tabular-nums;
-        font-synthesis: none;
-        text-rendering: optimizeLegibility;
-        -webkit-font-smoothing: antialiased;
-      }
+      :root { color-scheme: dark; }
       * { box-sizing: border-box; }
-      body { margin: 0; min-width: 320px; min-height: 100vh; background: #000; }
-      button { font: inherit; }
-      button:not(:disabled) { cursor: pointer; }
-      button:disabled { cursor: not-allowed; opacity: 0.52; }
-      button:focus-visible { outline: 1px solid #ededed; outline-offset: 2px; }
-      ::selection { background: #1f3a2c; }
-      .app { width: min(880px, calc(100vw - 32px)); margin: 0 auto; padding: 20px 0 64px; }
-
-      .topbar { display: flex; align-items: center; justify-content: space-between; height: 48px; margin-bottom: 14px; border-bottom: 1px solid #1f1f1f; }
-      .brand { display: flex; align-items: baseline; gap: 10px; border: 0; background: transparent; padding: 0; }
-      .brand b { color: #fff; font-size: 15px; font-weight: 700; letter-spacing: -0.02em; }
-      .brand span { color: #888; font-size: 12px; }
-      .brand:hover span { color: #aaa; }
-
-      .statusLabel { display: inline-flex; align-items: center; gap: 7px; color: #d4d4d4; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
-      .dot { flex: 0 0 auto; width: 7px; height: 7px; border-radius: 999px; background: #777; }
-      .dot.live { background: #3ecf8e; animation: pulse 1.2s infinite; }
-      .dot.ok { background: #3ecf8e; }
-      .dot.warn { background: #f5a524; }
-      .dot.err { background: #ff6b6b; }
-      .dot.idle { background: #888; }
-      @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
-
-      .btn { display: inline-flex; align-items: center; gap: 8px; border: 1px solid #2a2a2a; border-radius: 6px; padding: 7px 11px; color: #d4d4d4; background: #0a0a0a; font: inherit; font-size: 12px; white-space: nowrap; transition: border-color 120ms ease, background 120ms ease, color 120ms ease; }
-      .btn:not(:disabled):hover { border-color: #3a3a3a; color: #fff; background: #111; }
-      .btn:not(:disabled):active { background: #181818; }
-      .btn.primary { border-color: #fff; color: #000; background: #fff; }
-      .btn.primary:not(:disabled):hover { border-color: #d4d4d4; background: #dcdcdc; }
-      .btn.primary:not(:disabled):active { background: #c9c9c9; }
-      kbd { border: 1px solid #2a2a2a; border-radius: 4px; padding: 1px 5px; color: #a3a3a3; background: #050505; font: inherit; font-size: 11px; }
-      .primary kbd { border-color: #d4d4d4; color: #525252; background: #f5f5f5; }
-
-      .commandBar { display: flex; align-items: center; gap: 10px; min-height: 46px; border: 1px solid #242424; border-radius: 10px; padding: 0 10px 0 14px; background: #050505; transition: border-color 120ms ease; }
-      .commandBar:focus-within { border-color: #2f2f2f; }
-      .commandInput { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0; }
-      .commandInput .prompt { color: #3ecf8e; font-size: 12px; flex: 0 0 auto; }
-      .commandInput input { flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; color: #ededed; font: inherit; font-size: 13px; padding: 13px 0; caret-color: #3ecf8e; }
-      .commandInput input::placeholder { color: #5a5a5a; }
-
-      main { margin-top: 16px; }
-      #doc { display: grid; gap: 12px; }
-      .q { margin: 0; color: #fff; font-size: clamp(20px, 2.7vw, 28px); line-height: 1.2; letter-spacing: -0.04em; }
-      .meta { display: flex; flex-wrap: wrap; align-items: center; gap: 9px; color: #888; font-size: 12px; }
-      .meta b { color: #d4d4d4; font-weight: 600; }
-      .meta .sep { color: #333; }
-      .chips { display: flex; flex-wrap: wrap; gap: 6px; }
-      .chip { border: 1px solid #1f1f1f; border-radius: 999px; padding: 4px 11px; color: #9a9a9a; background: #080808; font-size: 11px; }
-
-      .card { border: 1px solid #242424; border-radius: 10px; background: #050505; overflow: hidden; }
-      .cardHead { display: flex; align-items: center; justify-content: space-between; gap: 12px; height: 40px; border-bottom: 1px solid #1f1f1f; padding: 0 8px 0 14px; }
-      .cardHead .lbl { color: #888; font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; }
-      .cardHead .right { display: inline-flex; align-items: center; gap: 12px; color: #525252; font-size: 11px; }
-      .cardHead .right .ph { color: #3ecf8e; text-transform: uppercase; letter-spacing: 0.06em; }
-      .cardHead button.link { border: 0; background: transparent; color: #888; font: inherit; font-size: 11px; padding: 6px; transition: color 120ms ease; }
-      .cardHead button.link:hover { color: #ededed; }
-      .card.collapsed .cardBody { display: none; }
-
-      .dash { display: grid; grid-template-columns: 1fr 1fr; }
-      .dash .col { min-width: 0; padding: 11px 14px 13px; }
-      .dash .col + .col { border-left: 1px solid #1f1f1f; }
-      .colHead { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; color: #525252; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em; }
-      .colHead b { color: #888; font-weight: 600; }
-      .list { max-height: 240px; overflow: auto; }
-      .colEmpty { color: #3a3a3a; font-size: 11.5px; padding: 4px 0; }
-
-      .qrow { padding: 7px 0; border-top: 1px solid #121212; font-size: 12px; }
-      .qrow:first-child { border-top: 0; }
-      .qtop { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
-      .qq { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #cfcfcf; }
-      .qn { flex: 0 0 auto; color: #3ecf8e; font-size: 11px; }
-      .qn.pending { color: #4a4a4a; }
-      .qn.fail { color: #f5a524; }
-      .qres { margin-top: 5px; display: grid; gap: 3px; padding-left: 10px; border-left: 1px solid #1a1a1a; }
-      .qres a { display: block; color: #888; font-size: 11px; text-decoration: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-      .qres a:hover { color: #ededed; }
-      .qres a .qd { color: #3ecf8e; }
-
-      .drow { display: grid; grid-template-columns: 8px minmax(0, 1fr) auto; gap: 9px; align-items: start; padding: 7px 0; border-top: 1px solid #121212; font-size: 12px; }
-      .drow:first-child { border-top: 0; }
-      .drow .dot { margin-top: 4px; width: 7px; height: 7px; }
-      .dmain { min-width: 0; }
-      .dname { color: #cfcfcf; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-      a.durl { display: block; margin-top: 2px; color: #525252; font-size: 10.5px; text-decoration: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-      a.durl:hover { color: #3ecf8e; }
-      .dmeta { flex: 0 0 auto; color: #525252; font-size: 11px; margin-top: 1px; }
-      .dmeta.live { color: #3ecf8e; }
-      .dmeta.ok { color: #888; }
-      .dmeta.err { color: #f5a524; }
-
-      .trace pre.log { min-height: 0; max-height: 300px; }
-      pre.log { margin: 0; padding: 14px 16px; overflow: auto; color: #d4d4d4; background: #000; font-family: inherit; font-size: 12px; line-height: 1.75; }
-      .tline { display: grid; grid-template-columns: auto minmax(0, 1fr); column-gap: 12px; margin: 0 -6px; padding: 0 6px; border-radius: 4px; }
-      .tline:last-child { background: #080808; }
-      .ttime { color: #525252; }
-      .ttext { color: #d4d4d4; white-space: pre-wrap; word-break: break-word; }
-      .ttok { color: #3ecf8e; }
-      .ttok.warn { color: #f5a524; }
-      .ttok.err { color: #ff6b6b; }
-
-      .reportBody { padding: 30px 34px 36px; }
-      .reportBody.empty { display: grid; place-items: center; min-height: 180px; color: #5a5a5a; font-size: 12.5px; text-align: center; padding: 24px; }
-      .report { color: #cfcfcf; font-size: 13.5px; line-height: 1.85; }
-      .report > :first-child { margin-top: 0; }
-      .report h1 { color: #fff; font-size: 22px; letter-spacing: -0.04em; line-height: 1.2; margin: 0 0 16px; }
-      .report h2 { color: #ededed; font-size: 16px; letter-spacing: -0.02em; margin: 28px 0 9px; }
-      .report h3 { color: #ededed; font-size: 13.5px; margin: 20px 0 7px; }
-      .report p { margin: 0 0 13px; }
-      .report ul, .report ol { margin: 0 0 13px; padding-left: 20px; }
-      .report li { margin: 4px 0; }
-      .report a { color: #3ecf8e; text-decoration: none; border-bottom: 1px solid rgba(62, 207, 142, 0.3); }
-      .report a:hover { border-bottom-color: #3ecf8e; }
-      .report a.cited { cursor: help; }
-      .report code { background: #0d0d0d; border: 1px solid #1f1f1f; padding: 1px 5px; border-radius: 4px; color: #ededed; font-size: 0.9em; }
-      .report pre { margin: 0 0 13px; padding: 13px 15px; border: 1px solid #1f1f1f; border-radius: 8px; background: #000; color: #d4d4d4; font-size: 12px; line-height: 1.7; overflow: auto; }
-      .report pre code { background: transparent; border: 0; padding: 0; }
-      .report blockquote { margin: 0 0 13px; padding: 2px 14px; border-left: 2px solid #2a2a2a; color: #9a9a9a; }
-      .errBox { margin: 16px; border: 1px solid #5b2b2b; border-radius: 8px; background: #1a0f10; color: #ff9b95; padding: 16px 18px; font-size: 12.5px; line-height: 1.6; }
-
-      .sourcesBody { padding: 4px 14px 12px; }
-      .sources { margin: 0; padding: 0; list-style: none; counter-reset: s; }
-      .sources li { display: grid; grid-template-columns: 22px minmax(0, 1fr); gap: 9px; border-top: 1px solid #161616; padding: 12px 0; }
-      .sources li:first-child { border-top: 0; }
-      .sources li::before { counter-increment: s; content: counter(s); color: #525252; font-size: 11px; padding-top: 2px; }
-      .sources a { display: block; color: #ededed; font-size: 12.5px; font-weight: 600; text-decoration: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-      .sources a:hover { color: #3ecf8e; }
-      .sources .u { margin-top: 3px; color: #525252; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-      .sources .q { margin-top: 7px; color: #9a9a9a; font-size: 11.5px; line-height: 1.55; }
-      .sources .q + .q { margin-top: 4px; }
-      .sources .q .vote { color: #3ecf8e; font-size: 10px; }
-
-      .runsBody { padding: 2px 14px; }
-      .runs { margin: 0; padding: 0; list-style: none; }
-      .runrow { display: grid; grid-template-columns: 8px minmax(0, 1fr) auto; gap: 10px; align-items: center; border-top: 1px solid #161616; padding: 12px 0; }
-      .runrow:first-child { border-top: 0; }
-      .runrow:hover .rq { color: #fff; }
-      .runrow .dot { width: 7px; height: 7px; }
-      .rq { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #cfcfcf; font-size: 12.5px; }
-      .rmeta { justify-self: end; color: #525252; font-size: 11px; white-space: nowrap; }
-
-      .emptyWorkspace { position: relative; display: grid; min-height: 460px; overflow: hidden; border: 1px solid #242424; border-radius: 10px; background: #050505; }
-      .emptyGrid { position: absolute; inset: -28% 0; background-image: linear-gradient(#181818 1px, transparent 1px), linear-gradient(90deg, #181818 1px, transparent 1px); background-size: 34px 34px; mask-image: radial-gradient(340px circle at center, black, transparent 72%); transform: skewY(-10deg); opacity: 0.7; }
-      .emptyContent { position: relative; display: grid; width: min(520px, calc(100% - 48px)); margin: auto; gap: 16px; place-items: center; text-align: center; }
-      .emptyContent h1 { margin: 0; color: #ededed; font-size: clamp(19px, 2.4vw, 26px); letter-spacing: -0.05em; }
-      .emptyContent p { max-width: 440px; margin: 0; color: #888; font-size: 13px; line-height: 1.7; }
-      .emptyContent .hint { color: #5a5a5a; font-size: 12px; }
-      .emptyContent .hint .prompt { color: #3ecf8e; }
-
-      @media (max-width: 640px) {
-        .commandBar { flex-wrap: wrap; padding: 8px 10px; }
-        .reportBody { padding: 22px 18px 26px; }
-        .dash { grid-template-columns: 1fr; }
-        .dash .col + .col { border-left: 0; border-top: 1px solid #1f1f1f; }
+      body {
+        margin: 0; background: #101014; color: #e8e8ea;
+        font: 14px/1.5 ui-sans-serif, system-ui, sans-serif;
       }
+      main { max-width: 1100px; margin: 0 auto; padding: 24px 20px 60px; }
+      h1 { font-size: 18px; margin: 0 0 16px; }
+      form { display: flex; gap: 8px; margin-bottom: 20px; }
+      input[type="text"] {
+        flex: 1; padding: 10px 12px; border-radius: 8px;
+        border: 1px solid #2c2c33; background: #18181d; color: inherit;
+      }
+      select, button {
+        padding: 10px 14px; border-radius: 8px; border: 1px solid #2c2c33;
+        background: #18181d; color: inherit; cursor: pointer;
+      }
+      button:disabled { opacity: 0.5; cursor: default; }
+      .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+      @media (max-width: 800px) { .cols { grid-template-columns: 1fr; } }
+      .panel {
+        border: 1px solid #2c2c33; border-radius: 10px; background: #131318;
+        padding: 12px; min-height: 200px; max-height: 75vh; overflow: auto;
+      }
+      .panel h2 {
+        font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em;
+        color: #8a8a93; margin: 0 0 8px;
+      }
+      #log { font: 12px/1.5 ui-monospace, monospace; white-space: pre-wrap; }
+      #log .warn { color: #e8c468; }
+      #log .ok { color: #6fcf97; }
+      #log .dim { color: #8a8a93; }
+      #report { white-space: pre-wrap; font-size: 13px; }
+      #stats { margin-top: 10px; color: #8a8a93; font-size: 12px; }
     </style>
   </head>
   <body>
-    <div class="app">
-      <header class="topbar">
-        <button class="brand" id="brand" type="button"><b>Atlas</b><span>deep research</span></button>
-        <span class="statusLabel"><span class="dot idle" id="dot"></span><span id="phase">idle</span></span>
-      </header>
-
-      <section class="commandBar">
-        <div class="commandInput">
-          <span class="prompt">research</span>
-          <input id="q" type="text" placeholder="Ask a research question…" autocomplete="off" autofocus />
-        </div>
-        <button id="run" class="btn primary" type="button">Run <kbd>&#9166;</kbd></button>
-        <button id="stop" class="btn" type="button" disabled>Stop</button>
-      </section>
-
-      <main>
-        <div id="home">
-          <section class="card" id="runsCard" style="display:none">
-            <div class="cardHead"><span class="lbl">recent runs</span><span class="right" id="runsCount"></span></div>
-            <div class="runsBody"><ol class="runs" id="runs"></ol></div>
-          </section>
-          <section class="emptyWorkspace" id="empty">
-            <div class="emptyGrid" aria-hidden="true"></div>
-            <div class="emptyContent">
-              <span class="statusLabel"><span class="dot idle"></span>no runs yet</span>
-              <h1>Ask a research question</h1>
-              <p>
-                Atlas scopes it into angles, reads sources through a live browser, extracts
-                verbatim claims, adversarially verifies each one, and writes a cited report
-                from the survivors.
-              </p>
-              <span class="hint"><span class="prompt">research</span> &gt; type above and press Run</span>
-            </div>
-          </section>
-        </div>
-
-        <div id="doc" style="display:none">
-          <h1 class="q" id="q-title"></h1>
-          <div class="meta" id="meta">
-            <span><b id="c-search">0</b> searches</span><span class="sep">·</span>
-            <span><b id="c-source">0</b> sources</span><span class="sep">·</span>
-            <span><b id="c-verified">0</b> verified</span><span class="sep">·</span>
-            <span id="c-elapsed">0:00</span>
-            <span class="sep" id="model-sep" style="display:none">·</span>
-            <span id="c-model"></span>
-          </div>
-          <div class="chips" id="angles"></div>
-
-          <section class="card" id="dash">
-            <div class="cardHead">
-              <span class="lbl">live</span>
-              <span class="right"><span class="ph" id="dashPhase"></span><button class="link" id="dashToggle" type="button">hide</button></span>
-            </div>
-            <div class="cardBody dash">
-              <div class="col">
-                <div class="colHead"><span>searches</span><b id="qCount">0</b></div>
-                <div class="list" id="qlist"><div class="colEmpty">No searches yet.</div></div>
-              </div>
-              <div class="col">
-                <div class="colHead"><span>documents</span><b id="dCount">0</b></div>
-                <div class="list" id="dlist"><div class="colEmpty">No documents yet.</div></div>
-              </div>
-            </div>
-          </section>
-
-          <section class="card trace" id="trace">
-            <div class="cardHead">
-              <span class="lbl">activity</span>
-              <span class="right"><span id="stepCount"></span><button class="link" id="traceToggle" type="button">hide</button></span>
-            </div>
-            <div class="cardBody"><pre class="log" id="log"></pre></div>
-          </section>
-
-          <section class="card">
-            <div class="cardHead"><span class="lbl">report</span></div>
-            <div class="reportBody empty" id="reportBody">Researching… the report streams here.</div>
-          </section>
-
-          <section class="card" id="sourcesCard" style="display:none">
-            <div class="cardHead"><span class="lbl">sources</span><span class="right" id="sourceCount"></span></div>
-            <div class="sourcesBody"><ol class="sources" id="sources"></ol></div>
-          </section>
-        </div>
-      </main>
-    </div>
-
+    <main>
+      <h1>atlas — deep research</h1>
+      <form id="form">
+        <input id="question" type="text" placeholder="Ask a research question…" autofocus />
+        <select id="effort">
+          <option value="fast">fast</option>
+          <option value="balanced" selected>balanced</option>
+          <option value="deep">deep</option>
+          <option value="max">max</option>
+        </select>
+        <button id="go" type="submit">Research</button>
+      </form>
+      <div class="cols">
+        <section class="panel"><h2>Progress</h2><div id="log"></div></section>
+        <section class="panel">
+          <h2>Report</h2>
+          <div id="report"></div>
+          <div id="stats"></div>
+        </section>
+      </div>
+    </main>
     <script>
       const $ = (id) => document.getElementById(id);
-      const qInput = $("q"), runBtn = $("run"), stopBtn = $("stop"), brand = $("brand");
-      const dot = $("dot"), phaseEl = $("phase"), dashPhase = $("dashPhase");
-      const homeEl = $("home"), docEl = $("doc"), emptyEl = $("empty");
-      const runsCard = $("runsCard"), runsEl = $("runs"), runsCount = $("runsCount");
-      const reportBody = $("reportBody"), logEl = $("log"), anglesEl = $("angles");
-      const qlist = $("qlist"), dlist = $("dlist"), qCount = $("qCount"), dCount = $("dCount");
-      const stepCount = $("stepCount");
-      const sourcesCard = $("sourcesCard"), sourcesEl = $("sources"), sourceCount = $("sourceCount");
+      const log = $("log"), report = $("report"), stats = $("stats");
 
-      let es = null;
-      let currentId = null;
-      let currentMeta = null;
-      let runList = [];
-      let state = fresh();
-      let citeMap = {};
-      let reportDirty = false;
-      let steps = 0;
-      let timer = null;
-      let startedAt = 0;
-
-      function fresh() {
-        return { searches: 0, sources: 0, verified: 0, report: "", result: null, active: false, q: [], qById: {}, docs: [], docByUrl: {} };
-      }
-      function escapeHtml(s) { return String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
-      function escapeAttr(s) { return escapeHtml(s).replace(/\n/g, " "); }
-      function clock() { const d = new Date(); return [d.getHours(), d.getMinutes(), d.getSeconds()].map((n) => String(n).padStart(2, "0")).join(":"); }
-      function fmtElapsed(ms) { const s = Math.max(0, Math.floor(ms / 1000)); return Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0"); }
-      function tick() { if (startedAt) $("c-elapsed").textContent = fmtElapsed(Date.now() - startedAt); }
-      function domain(u) { try { return new URL(u).hostname.replace(/^www\./, ""); } catch (e) { return u; } }
-      function fmtChars(n) { if (n == null) return ""; return n >= 1000 ? (n / 1000).toFixed(n >= 10000 ? 0 : 1) + "k" : String(n); }
-      function timeAgo(ts) {
-        const s = Math.max(0, Math.floor((Date.now() - ts) / 1000));
-        if (s < 45) return "just now";
-        if (s < 3600) return Math.round(s / 60) + "m ago";
-        if (s < 86400) return Math.round(s / 3600) + "h ago";
-        return Math.round(s / 86400) + "d ago";
-      }
-      function statusKind(st) { return st === "running" ? "live" : st === "error" ? "err" : st === "stopped" ? "idle" : "ok"; }
-
-      function setPhase(text, kind) {
-        phaseEl.textContent = text;
-        dot.className = "dot " + (kind || "idle");
-        dashPhase.textContent = kind === "live" ? text : "";
+      function line(text, cls) {
+        const div = document.createElement("div");
+        div.textContent = text;
+        if (cls) div.className = cls;
+        log.appendChild(div);
+        log.parentElement.scrollTop = log.parentElement.scrollHeight;
       }
 
-      function logLine(tok, text, cls) {
-        const line = document.createElement("span");
-        line.className = "tline";
-        const time = document.createElement("span");
-        time.className = "ttime"; time.textContent = clock();
-        const body = document.createElement("span");
-        body.className = "ttext";
-        if (tok) {
-          const t = document.createElement("span");
-          t.className = "ttok" + (cls ? " " + cls : "");
-          t.textContent = tok;
-          body.appendChild(t);
-          body.appendChild(document.createTextNode(" " + text));
-        } else { body.textContent = text; }
-        line.appendChild(time); line.appendChild(body);
-        logEl.appendChild(line);
-        while (logEl.childElementCount > 600) logEl.removeChild(logEl.firstChild);
-        logEl.scrollTop = logEl.scrollHeight;
-        steps++; stepCount.textContent = steps + (steps === 1 ? " step" : " steps");
-      }
-
-      function votes(c) { const v = c.votes || []; if (!v.length) return ""; return v.filter((x) => !x.refuted).length + "/" + v.length + " verified"; }
-
-      function renderSearches(scroll) {
-        qCount.textContent = state.q.length;
-        if (!state.q.length) { qlist.innerHTML = '<div class="colEmpty">No searches yet.</div>'; return; }
-        qlist.innerHTML = state.q.map((r) => {
-          const n = r.failed ? '<span class="qn fail">failed</span>' : r.count == null ? '<span class="qn pending">·</span>' : '<span class="qn">' + r.count + "</span>";
-          const top = '<div class="qtop"><span class="qq">' + escapeHtml(r.query) + "</span>" + n + "</div>";
-          let res = "";
-          const list = r.results || [];
-          if (list.length) {
-            const items = list.map((x) => {
-              const safe = /^https?:\/\//i.test(x.url || "") ? x.url : "#";
-              return '<a href="' + escapeHtml(safe) + '" target="_blank" rel="noopener" title="' + escapeAttr(x.snippet || x.title || x.url || "") + '"><span class="qd">' + escapeHtml(x.domain || domain(x.url || "")) + "</span> · " + escapeHtml(x.title || x.url || "") + "</a>";
-            }).join("");
-            res = '<div class="qres">' + items + "</div>";
-          }
-          return '<div class="qrow">' + top + res + "</div>";
-        }).join("");
-        if (scroll) qlist.scrollTop = qlist.scrollHeight;
-      }
-
-      function renderDocs(scroll) {
-        dCount.textContent = state.docs.length;
-        if (!state.docs.length) { dlist.innerHTML = '<div class="colEmpty">No documents yet.</div>'; return; }
-        dlist.innerHTML = state.docs.map((d) => {
-          const kind = d.status === "fetched" ? "ok" : d.status === "error" ? "err" : "live";
-          const meta = d.status === "fetched" ? (fmtChars(d.chars) || "read") : d.status === "error" ? "error" : "reading…";
-          const name = d.title || domain(d.url);
-          const safe = /^https?:\/\//i.test(d.url || "") ? d.url : "#";
-          return '<div class="drow"><span class="dot ' + kind + '"></span><div class="dmain"><div class="dname">' + escapeHtml(name) + '</div><a class="durl" href="' + escapeHtml(safe) + '" target="_blank" rel="noopener">' + escapeHtml(d.url) + '</a></div><span class="dmeta ' + kind + '">' + escapeHtml(meta) + "</span></div>";
-        }).join("");
-        if (scroll) dlist.scrollTop = dlist.scrollHeight;
-      }
-
-      function renderAngles(angles) {
-        anglesEl.innerHTML = angles.map((a) => '<span class="chip">' + escapeHtml(a.label) + "</span>").join("");
-      }
-
-      function buildCiteMap(result) {
-        const map = {};
-        for (const c of (result.claims && result.claims.confirmed) || []) {
-          if (!c.url || map[c.url]) continue;
-          map[c.url] = "“" + c.quote + "” — " + votes(c);
-        }
-        return map;
-      }
-      function renderLink(text, url) {
-        const tip = citeMap[url];
-        const cls = tip ? ' class="cited"' : "";
-        const title = tip ? ' title="' + escapeAttr(tip) + '"' : "";
-        const safe = /^https?:\/\//i.test(url) ? url : "#";
-        return '<a href="' + escapeHtml(safe) + '" target="_blank" rel="noopener"' + cls + title + ">" + text + "</a>";
-      }
-      function inline(s) {
-        let t = escapeHtml(s);
-        t = t.replace(/`([^`]+)`/g, "<code>$1</code>");
-        t = t.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
-        t = t.replace(/\*([^*]+)\*/g, "<em>$1</em>");
-        t = t.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (m, txt, url) => renderLink(txt, url));
-        return t;
-      }
-      function renderMarkdown(md) {
-        const lines = md.replace(/\r\n/g, "\n").split("\n");
-        const out = [];
-        let para = [], list = null, code = null;
-        const fp = () => { if (para.length) { out.push("<p>" + inline(para.join(" ")) + "</p>"); para = []; } };
-        const fl = () => { if (list) { out.push("<" + list.tag + ">" + list.items.map((i) => "<li>" + inline(i) + "</li>").join("") + "</" + list.tag + ">"); list = null; } };
-        for (const line of lines) {
-          if (/^\s*```/.test(line)) {
-            if (code !== null) { out.push("<pre><code>" + escapeHtml(code.join("\n")) + "</code></pre>"); code = null; }
-            else { fp(); fl(); code = []; }
-            continue;
-          }
-          if (code !== null) { code.push(line); continue; }
-          const h = line.match(/^(#{1,6})\s+(.*)$/);
-          if (h) { fp(); fl(); out.push("<h" + h[1].length + ">" + inline(h[2]) + "</h" + h[1].length + ">"); continue; }
-          const ul = line.match(/^\s*[-*]\s+(.*)$/);
-          if (ul) { fp(); if (!list || list.tag !== "ul") { fl(); list = { tag: "ul", items: [] }; } list.items.push(ul[1]); continue; }
-          const ol = line.match(/^\s*\d+\.\s+(.*)$/);
-          if (ol) { fp(); if (!list || list.tag !== "ol") { fl(); list = { tag: "ol", items: [] }; } list.items.push(ol[1]); continue; }
-          const bq = line.match(/^>\s?(.*)$/);
-          if (bq) { fp(); fl(); out.push("<blockquote>" + inline(bq[1]) + "</blockquote>"); continue; }
-          if (line.trim() === "") { fp(); fl(); continue; }
-          para.push(line.trim());
-        }
-        if (code !== null) out.push("<pre><code>" + escapeHtml(code.join("\n")) + "</code></pre>");
-        fp(); fl();
-        return out.join("\n");
-      }
-      function paintReport() { reportBody.className = "reportBody"; reportBody.innerHTML = '<div class="report">' + renderMarkdown(state.report) + "</div>"; }
-      function scheduleReport() {
-        if (reportDirty) return;
-        reportDirty = true;
-        requestAnimationFrame(() => { reportDirty = false; if (state.report) paintReport(); });
-      }
-
-      function renderSources(result) {
-        const cited = (result.citedSources) || [];
-        sourceCount.textContent = cited.length ? cited.length + (cited.length === 1 ? " source" : " sources") : "";
-        if (!cited.length) { sourcesCard.style.display = "none"; return; }
-        const byUrl = {};
-        for (const c of (result.claims && result.claims.confirmed) || []) (byUrl[c.url] = byUrl[c.url] || []).push(c);
-        sourcesEl.innerHTML = cited.map((s) => {
-          const q = (byUrl[s.url] || []).slice(0, 2).map((c) => '<div class="q">“' + escapeHtml(c.quote) + '” <span class="vote">' + escapeHtml(votes(c)) + "</span></div>").join("");
-          return "<li><div><a href=\"" + escapeHtml(s.url) + "\" target=\"_blank\" rel=\"noopener\">" + escapeHtml(s.title || s.url) + "</a><div class=\"u\">" + escapeHtml(s.url) + "</div>" + q + "</div></li>";
-        }).join("");
-        sourcesCard.style.display = "";
-      }
-
-      function handle(e) {
+      function describe(e) {
         switch (e.type) {
-          case "research_started": setPhase("scoping", "live"); logLine("scope", "research started"); break;
-          case "scope_completed": setPhase("searching", "live"); renderAngles(e.angles || []); logLine("scope", "+" + (e.angles || []).length + " angles"); break;
-          case "searching": {
-            const r = { query: e.query, count: null, failed: false, results: [] };
-            state.q.push(r); if (e.index != null) state.qById[e.index] = r;
-            state.searches++; $("c-search").textContent = state.searches;
-            renderSearches(true); logLine("search", e.query);
-            break;
-          }
-          case "search_results": {
-            const r = e.index != null ? state.qById[e.index] : null;
-            if (r) { r.count = e.count; r.results = e.results || r.results || []; renderSearches(false); }
-            logLine("", "  " + e.count + " results");
-            break;
-          }
-          case "search_failed": {
-            const r = e.index != null ? state.qById[e.index] : null;
-            if (r) { r.failed = true; renderSearches(false); }
-            logLine("search", "failed: " + e.error, "warn");
-            break;
-          }
-          case "fetching": {
-            if (!state.docByUrl[e.url]) { const d = { url: e.url, title: "", status: "reading" }; state.docs.push(d); state.docByUrl[e.url] = d; renderDocs(true); }
-            logLine("fetch", e.url);
-            break;
-          }
-          case "source_fetched": {
-            let d = state.docByUrl[e.url];
-            if (!d) { d = { url: e.url }; state.docs.push(d); state.docByUrl[e.url] = d; }
-            d.status = "fetched"; d.title = e.title || d.title; d.chars = e.markdownChars;
-            state.sources++; $("c-source").textContent = state.sources;
-            renderDocs(false); logLine("✓", e.title || e.url);
-            break;
-          }
-          case "source_error": {
-            let d = state.docByUrl[e.url];
-            if (!d) { d = { url: e.url }; state.docs.push(d); state.docByUrl[e.url] = d; }
-            d.status = "error"; d.error = e.error;
-            renderDocs(false); logLine("error", e.url, "warn");
-            break;
-          }
-          case "claims_extracted": if (!e.error) logLine("", "  " + e.count + " claims"); break;
-          case "verify_started": setPhase("verifying", "live"); logLine("verify", e.claims + " claims"); break;
-          case "claim_verified":
-            if (e.status === "confirmed") { state.verified++; $("c-verified").textContent = state.verified; }
-            logLine(e.status === "confirmed" ? "✓" : "✗", e.claim, e.status === "confirmed" ? "" : "warn");
-            break;
-          case "verify_finished": logLine("verify", e.confirmed + " confirmed, " + e.refuted + " refuted"); break;
-          case "research_finished": logLine("done", e.sourcesFetched + " sources fetched"); break;
-          case "context_reanchored": logLine("anchor", "context re-anchored"); break;
-          case "report_boundary":
-            setPhase("writing", "live");
-            state.report = "";
-            collapse("dash", "dashToggle", true);
-            collapse("trace", "traceToggle", true);
-            reportBody.className = "reportBody"; reportBody.innerHTML = '<div class="report"></div>';
-            break;
-          case "report_delta": state.report += e.text; scheduleReport(); break;
-          case "written": logLine("report", e.markdownChars.toLocaleString() + " chars"); break;
-          case "completed":
-            state.result = e.result;
-            citeMap = buildCiteMap(e.result);
-            state.report = e.result.markdown || state.report;
-            paintReport();
-            renderSources(e.result);
-            if (e.result.model) { $("c-model").textContent = e.result.model; $("model-sep").style.display = ""; }
-            finish("done", "ok");
-            break;
-          case "error": showError(e.message); finish("error", "err"); break;
+          case "run.started":
+            return [`run ${e.runId} — ${e.effort}, $${e.budgetUSD.toFixed(2)} budget`, "dim"];
+          case "plan.updated":
+            return [`plan: ${e.rationale}`, "dim"];
+          case "agent.spawned":
+            return [`+ ${e.role}: ${e.task} ($${e.grantUSD.toFixed(2)})`, "dim"];
+          case "agent.returned":
+            return [`- ${e.role}: ${e.claimsAdded} claims, $${e.spentUSD.toFixed(2)} (${e.stopReason})`, "dim"];
+          case "search.completed":
+            return [`search: ${e.query} → ${e.results} via ${e.provider}`, "dim"];
+          case "search.failed":
+            return [`! search failed: ${e.query} — ${e.error}`, "warn"];
+          case "source.fetched":
+            return [`✓ ${e.url} (${e.via}, ${e.chars} chars)`, "ok"];
+          case "source.failed":
+            return [`! ${e.url} — ${e.reason}`, "warn"];
+          case "extraction.completed":
+            return [`  ↳ ${e.count} claims from ${e.url}`, "dim"];
+          case "claim.verified":
+            return [`${e.status === "confirmed" ? "✓" : "✗"} claim ${e.claimId} ${e.status}`, e.status === "confirmed" ? "ok" : "warn"];
+          case "report.drafting":
+            return ["drafting report…", "dim"];
+          case "budget.warning":
+            return [`! budget ${Math.round(e.fraction * 100)}% — $${e.spentUSD.toFixed(2)} of $${e.limitUSD.toFixed(2)}`, "warn"];
+          case "safety.flag":
+            return [`! safety ${e.kind}: ${e.detail}`, "warn"];
+          case "rate.limited":
+            return [`! rate limited — waiting ${e.retryAfterSeconds}s`, "warn"];
+          case "run.error":
+            return [`! error: ${e.message}`, "warn"];
+          case "run.completed":
+            return ["✓ run completed", "ok"];
+          default:
+            return null;
         }
       }
 
-      function collapse(cardId, btnId, on) { $(cardId).classList.toggle("collapsed", on); $(btnId).textContent = on ? "show" : "hide"; }
-      function showError(msg) { reportBody.className = "reportBody"; reportBody.innerHTML = '<div class="errBox">' + escapeHtml(msg) + "</div>"; }
-
-      function finish(phase, kind) {
-        state.active = false;
-        setPhase(phase, kind);
-        runBtn.disabled = false; stopBtn.disabled = true;
-        if (timer) { clearInterval(timer); timer = null; }
-        if (currentMeta && currentMeta.endedAt) $("c-elapsed").textContent = fmtElapsed(currentMeta.endedAt - startedAt);
-        else tick();
+      function finish(result) {
+        report.textContent = result.report;
+        const s = result.stats;
+        stats.textContent =
+          `$${s.costUSD.toFixed(4)} · ${result.sources.length} sources · ` +
+          `${s.claimsConfirmed} confirmed / ${s.claimsContested} contested / ${s.claimsRefuted} refuted · ` +
+          `${s.agentsSpawned} agents · ${(s.durationMs / 1000).toFixed(0)}s`;
       }
 
-      function resetDoc(query) {
-        state = fresh(); state.active = true; citeMap = {}; steps = 0;
-        $("q-title").textContent = query;
-        $("c-search").textContent = $("c-source").textContent = $("c-verified").textContent = "0";
-        $("c-elapsed").textContent = "0:00"; $("c-model").textContent = ""; $("model-sep").style.display = "none";
-        anglesEl.innerHTML = ""; logEl.innerHTML = ""; stepCount.textContent = "";
-        renderSearches(false); renderDocs(false);
-        collapse("dash", "dashToggle", false);
-        collapse("trace", "traceToggle", false);
-        reportBody.className = "reportBody empty"; reportBody.textContent = "Researching… the report streams here.";
-        sourcesCard.style.display = "none"; sourcesEl.innerHTML = "";
+      async function research(question, effort) {
+        const res = await fetch("/research", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ question, effort }),
+        });
+        if (!res.ok || !res.body) {
+          const body = await res.text().catch(() => "");
+          throw new Error(`HTTP ${res.status} ${body}`);
+        }
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        for (;;) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          let idx;
+          while ((idx = buffer.indexOf("\n\n")) >= 0) {
+            const chunk = buffer.slice(0, idx);
+            buffer = buffer.slice(idx + 2);
+            const data = chunk.split("\n")
+              .filter((l) => l.startsWith("data: "))
+              .map((l) => l.slice(6))
+              .join("\n");
+            if (!data) continue;
+            const event = JSON.parse(data);
+            if (event.type === "report.delta") {
+              report.textContent += event.text;
+            } else if (event.type === "result") {
+              finish(event.result);
+            } else {
+              const out = describe(event);
+              if (out) line(out[0], out[1]);
+            }
+          }
+        }
       }
 
-      function closeStream() { if (es) { es.close(); es = null; } }
-
-      function attach(id, meta) {
-        closeStream();
-        currentId = id; currentMeta = meta;
-        localStorage.setItem("atlas.runId", id);
-        homeEl.style.display = "none"; docEl.style.display = "";
-        resetDoc(meta.query);
-        startedAt = meta.startedAt || Date.now();
-        if (timer) { clearInterval(timer); timer = null; }
-        const running = !meta.status || meta.status === "running";
-        if (running) { setPhase("connecting", "live"); timer = setInterval(tick, 1000); }
-        else { setPhase(meta.status, statusKind(meta.status)); }
-        tick();
-        runBtn.disabled = false; stopBtn.disabled = !running;
-        es = new EventSource("/api/runs/" + encodeURIComponent(id) + "/stream");
-        es.onmessage = (ev) => {
-          let d; try { d = JSON.parse(ev.data); } catch (err) { return; }
-          handle(d);
-          if (d.type === "completed" || d.type === "error") closeStream();
-        };
-        es.onerror = () => {};
-      }
-
-      async function fetchRuns() {
+      $("form").addEventListener("submit", async (ev) => {
+        ev.preventDefault();
+        const question = $("question").value.trim();
+        if (!question) return;
+        $("go").disabled = true;
+        log.textContent = "";
+        report.textContent = "";
+        stats.textContent = "";
         try {
-          const resp = await fetch("/api/runs");
-          const data = await resp.json();
-          runList = (data && data.runs) || [];
-        } catch (err) { runList = []; }
-        return runList;
-      }
-      function renderRuns() {
-        runsCount.textContent = runList.length ? String(runList.length) : "";
-        if (!runList.length) { runsCard.style.display = "none"; emptyEl.style.display = ""; return; }
-        emptyEl.style.display = "none"; runsCard.style.display = "";
-        runsEl.innerHTML = runList.map((r) => {
-          const bits = [r.status];
-          if (r.sources) bits.push(r.sources + (r.sources === 1 ? " source" : " sources"));
-          bits.push(timeAgo(r.startedAt));
-          return '<li class="runrow" data-id="' + escapeAttr(r.id) + '"><span class="dot ' + statusKind(r.status) + '"></span><span class="rq">' + escapeHtml(r.query) + '</span><span class="rmeta">' + bits.join(" · ") + "</span></li>";
-        }).join("");
-      }
-
-      async function showHome() {
-        closeStream();
-        if (timer) { clearInterval(timer); timer = null; }
-        currentId = null; currentMeta = null;
-        localStorage.removeItem("atlas.runId");
-        docEl.style.display = "none"; homeEl.style.display = "";
-        setPhase("idle", "idle");
-        await fetchRuns(); renderRuns();
-      }
-
-      async function startNew(query) {
-        try {
-          const resp = await fetch("/api/runs", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ query }) });
-          const data = await resp.json().catch(() => ({}));
-          if (!resp.ok || !data.runId) { homeEl.style.display = ""; docEl.style.display = "none"; alert((data && data.error) || ("server returned " + resp.status)); return; }
-          attach(data.runId, { id: data.runId, query, status: "running", startedAt: Date.now() });
-        } catch (err) { alert(err && err.message ? err.message : String(err)); }
-      }
-
-      async function init() {
-        await fetchRuns();
-        const saved = localStorage.getItem("atlas.runId");
-        const meta = saved ? runList.find((r) => r.id === saved) : null;
-        if (meta) attach(meta.id, meta);
-        else { renderRuns(); }
-      }
-
-      qInput.addEventListener("keydown", (ev) => { if (ev.key === "Enter") { ev.preventDefault(); runBtn.click(); } });
-      runBtn.addEventListener("click", () => { const query = qInput.value.trim(); if (!query) return; startNew(query); });
-      stopBtn.addEventListener("click", () => { if (!currentId) return; stopBtn.disabled = true; fetch("/api/runs/" + encodeURIComponent(currentId) + "/stop", { method: "POST" }).catch(() => {}); });
-      brand.addEventListener("click", () => { showHome(); });
-      runsEl.addEventListener("click", (ev) => {
-        const li = ev.target.closest(".runrow");
-        if (!li) return;
-        const meta = runList.find((r) => r.id === li.dataset.id);
-        if (meta) attach(meta.id, meta);
+          await research(question, $("effort").value);
+        } catch (err) {
+          line(`! ${err && err.message ? err.message : err}`, "warn");
+        } finally {
+          $("go").disabled = false;
+        }
       });
-      $("dashToggle").addEventListener("click", () => { const c = $("dash").classList.toggle("collapsed"); $("dashToggle").textContent = c ? "show" : "hide"; });
-      $("traceToggle").addEventListener("click", () => { const c = $("trace").classList.toggle("collapsed"); $("traceToggle").textContent = c ? "show" : "hide"; });
-
-      init();
     </script>
   </body>
 </html>

@@ -1,18 +1,11 @@
-import { Atlas } from "../../src/atlas.js";
-import type {
-  ResearchEvent,
-  ResearchResult,
-  ResearchStream,
-} from "../../src/research.js";
 import {
-  buildResearchRunOptions,
-  effectiveLeafModel,
-  gradeResearch,
-  type DracoCase,
-  type EvalOptions,
-  type EvalResult,
-  type JudgeSpec,
-} from "../../evals/draco.js";
+  Atlas,
+  type Budget,
+  type Effort,
+  type ResearchEvent,
+  type ResearchResult,
+  type ResearchRun,
+} from "../../src/index.js";
 import { traceEvent, type EvalTraceEvent } from "../../evals/lib.js";
 import { captureCommit, type CommitInfo } from "./git.js";
 import type { Store } from "./store.js";
@@ -41,14 +34,21 @@ export type WireEvent =
 
 type Subscriber = (event: WireEvent | null, seq: number) => void;
 
+interface ExplorerCase {
+  id: string;
+  domain: string;
+  problem: string;
+  criteria: unknown[];
+}
+
 interface DracoRunEntry {
   id: string;
   caseId: string;
   domain: string;
-  dracoCase: DracoCase;
+  dracoCase: ExplorerCase;
   commitSha: string;
   dirty: boolean;
-  run?: ResearchStream;
+  run?: ResearchRun;
   log: WireEvent[];
   subs: Set<Subscriber>;
   phase: RunPhase;
@@ -64,12 +64,12 @@ interface DracoRunEntry {
 
 export interface DracoRunHostOptions {
   atlas: Atlas;
-  opts: EvalOptions;
-  judge: JudgeSpec | null;
   store: Store;
   researchProvider: string;
   researchModel: string;
   startupCommit: CommitInfo;
+  effort?: Effort;
+  budget?: Budget;
   maxConcurrent?: number;
 }
 
@@ -83,33 +83,32 @@ export class DracoRunHost {
   private readonly runs = new Map<string, DracoRunEntry>();
   private readonly queue: DracoRunEntry[] = [];
   private readonly atlas: Atlas;
-  private readonly opts: EvalOptions;
-  private readonly judge: JudgeSpec | null;
   private readonly store: Store;
   private readonly researchProvider: string;
   private readonly researchModel: string;
   private readonly startupCommit: CommitInfo;
+  private readonly effort: Effort | undefined;
+  private readonly budget: Budget | undefined;
   private readonly maxConcurrent: number;
   private active = 0;
   private counter = 0;
 
   constructor(options: DracoRunHostOptions) {
     this.atlas = options.atlas;
-    this.opts = options.opts;
-    this.judge = options.judge;
     this.store = options.store;
     this.researchProvider = options.researchProvider;
     this.researchModel = options.researchModel;
     this.startupCommit = options.startupCommit;
+    this.effort = options.effort;
+    this.budget = options.budget;
     this.maxConcurrent = Math.max(1, options.maxConcurrent ?? 1);
   }
 
   get canRun(): boolean {
-    return this.judge !== null;
+    return true;
   }
 
   enqueue(caseId: string): DracoRunEntry {
-    if (!this.judge) throw new Error("judge not configured");
     const dracoCase = this.loadCase(caseId);
     const current = captureCommit();
     if (current.sha !== this.startupCommit.sha) {
@@ -160,6 +159,14 @@ export class DracoRunHost {
   }
 
   stop(id: string): boolean {
+    return this.cancel(id);
+  }
+
+  abort(id: string): boolean {
+    return this.cancel(id);
+  }
+
+  private cancel(id: string): boolean {
     const entry = this.runs.get(id);
     if (!entry) return false;
     if (entry.phase === "queued") {
@@ -168,25 +175,7 @@ export class DracoRunHost {
       return true;
     }
     if (entry.run && entry.phase === "researching") {
-      entry.run.stop();
-      return true;
-    }
-    return false;
-  }
-
-  abort(id: string): boolean {
-    const entry = this.runs.get(id);
-    if (!entry) return false;
-    if (entry.phase === "queued") {
-      entry.phase = "stopped";
-      entry.endedAt = Date.now();
-      return true;
-    }
-    if (
-      entry.run &&
-      (entry.phase === "researching" || entry.phase === "grading")
-    ) {
-      entry.run.abort();
+      void entry.run.cancel();
       return true;
     }
     return false;
@@ -213,17 +202,14 @@ export class DracoRunHost {
       }));
   }
 
-  private loadCase(caseId: string): DracoCase {
+  private loadCase(caseId: string): ExplorerCase {
     const row = this.store.caseRubric(caseId);
     if (!row) throw new Error(`case not found: ${caseId}`);
     return {
       id: caseId,
       domain: (row.domain as string) ?? "Unknown",
       problem: (row.problem as string) ?? "",
-      rubricId: caseId,
-      sections: JSON.parse((row.sections_json as string) ?? "[]"),
       criteria: JSON.parse((row.criteria_json as string) ?? "[]"),
-      raw: {},
     };
   }
 
@@ -254,20 +240,16 @@ export class DracoRunHost {
     try {
       entry.phase = "researching";
       push({ type: "phase", phase: "researching" });
-      const run = this.atlas.stream(entry.dracoCase.problem, {
-        ...buildResearchRunOptions(this.opts),
-        // Full visibility for offline analysis: capture the byte-exact model
-        // transcript and keep every fetched source's body.
-        recordTranscript: true,
-        includeSourceDocuments: true,
+      const run = this.atlas.start(entry.dracoCase.problem, {
+        ...(this.effort ? { effort: this.effort } : {}),
+        ...(this.budget ? { budget: this.budget } : {}),
       });
       entry.run = run;
-      for await (const event of run.fullStream) {
-        if (event.type === "scope_completed")
-          entry.angles = event.angles.length;
-        else if (event.type === "source_fetched") entry.sources++;
+      for await (const event of run.events()) {
+        if (event.type === "agent.spawned") entry.angles++;
+        else if (event.type === "source.fetched") entry.sources++;
         else if (
-          event.type === "claim_verified" &&
+          event.type === "claim.verified" &&
           event.status === "confirmed"
         )
           entry.confirmed++;
@@ -275,33 +257,15 @@ export class DracoRunHost {
         if (traced) trace.push(traced);
         push(event);
       }
-      const result = await run.result;
-      entry.phase = "grading";
-      entry.gradeTotal = entry.dracoCase.criteria.length;
-      push({ type: "phase", phase: "grading" });
-      const judge = this.judge;
-      if (!judge) throw new Error("judge not configured");
-      const evalResult = await gradeResearch(
-        entry.dracoCase,
-        this.opts,
-        judge,
-        result,
-        trace,
-        started,
-        (done, total) => {
-          entry.gradeDone = done;
-          entry.gradeTotal = total;
-          push({ type: "grade_progress", done, total });
-        },
-      );
+      const result = await run.result();
       push({
         type: "grade_finished",
-        status: evalResult.score ? "scored" : "ungraded",
-        normalized: evalResult.score?.normalizedScore ?? null,
-        passRate: evalResult.score?.passRate ?? null,
+        status: "ungraded",
+        normalized: null,
+        passRate: null,
       });
       entry.phase = "persisting";
-      this.persist(entry, evalResult, result);
+      this.persist(entry, result, trace, Date.now() - started);
       push({
         type: "persisted",
         commit: entry.commitSha,
@@ -309,11 +273,7 @@ export class DracoRunHost {
       });
       entry.phase = "done";
       process.stderr.write(
-        `draco-explore: ${entry.caseId} done — ${
-          evalResult.score
-            ? `${(evalResult.score.normalizedScore * 100).toFixed(1)}%`
-            : "ungraded"
-        }\n`,
+        `draco-explore: ${entry.caseId} done — ungraded ($${result.stats.costUSD.toFixed(4)}, ${result.sources.length} sources)\n`,
       );
     } catch (err) {
       const message = messageOf(err);
@@ -338,61 +298,54 @@ export class DracoRunHost {
       source: "run",
       researchProvider: this.researchProvider,
       researchModel: this.researchModel,
-      judgeProvider: this.judge?.provider ?? null,
-      judgeModel: this.judge?.modelId ?? null,
-      grader: this.opts.grader,
+      judgeProvider: null,
+      judgeModel: null,
+      grader: null,
       createdAt: Date.now(),
     };
   }
 
   private persist(
     entry: DracoRunEntry,
-    evalResult: EvalResult,
     result: ResearchResult,
+    trace: EvalTraceEvent[],
+    latencyMs: number,
   ): void {
-    const leafModelId = effectiveLeafModel(this.opts) ?? this.researchModel;
+    const tokens = Object.values(result.stats.tokens);
+    const inputTokens = tokens.reduce((sum, t) => sum + t.input, 0);
+    const outputTokens = tokens.reduce((sum, t) => sum + t.output, 0);
     this.store.insertRun(
       {
-        ...evalResult,
-        claims: result.claims,
-        sources: result.sourceDocuments,
-        citations: {
-          citedSources: result.citedSources,
-          citationsNotConfirmed: result.citationsNotConfirmed,
-          citationsNotFetched: result.citationsNotFetched,
+        id: entry.caseId,
+        domain: entry.domain,
+        markdown: result.report,
+        metrics: {
+          provider: this.researchProvider,
+          model: this.researchModel,
+          inputTokens,
+          outputTokens,
         },
-        transcript: result.transcript,
         usage: {
           research: {
-            input: result.leadUsage.input_tokens,
-            output: result.leadUsage.output_tokens,
-            cacheRead: result.leadUsage.cache_read_input_tokens,
-            cacheWrite: result.leadUsage.cache_creation_input_tokens,
+            input: inputTokens,
+            output: outputTokens,
             model: this.researchModel,
           },
-          ...(leafModelId !== this.researchModel
-            ? {
-                leaf: {
-                  input: result.leafUsage.input_tokens,
-                  output: result.leafUsage.output_tokens,
-                  cacheRead: result.leafUsage.cache_read_input_tokens,
-                  cacheWrite: result.leafUsage.cache_creation_input_tokens,
-                  model: leafModelId,
-                },
-              }
-            : {}),
-          judge: evalResult.judgeUsage
-            ? {
-                input: evalResult.judgeUsage.inputTokens,
-                output: evalResult.judgeUsage.outputTokens,
-                cacheRead: evalResult.judgeUsage.cacheReadInputTokens,
-                cacheWrite: evalResult.judgeUsage.cacheWriteInputTokens,
-                calls: evalResult.judgeUsage.calls,
-                model: this.judge?.modelId ?? null,
-                gradeRuns: this.opts.gradeRuns ?? null,
-              }
-            : null,
+          judge: null,
         },
+        diagnostics: {
+          stats: result.stats,
+          openQuestions: result.openQuestions,
+          unsupportedSentences: result.unsupportedSentences,
+        },
+        trace,
+        claims: result.claims,
+        sources: result.sources,
+        citations: { citations: result.citations },
+        finishReason: result.stats.budgetExhausted
+          ? "budget-exhausted"
+          : "completed",
+        latencyMs,
       },
       this.persistMeta(entry),
     );

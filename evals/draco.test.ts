@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
+  buildEvalOptions,
   scoreReports,
   selectCases,
   type CriterionReport,
@@ -94,22 +95,15 @@ const CASES: DracoCase[] = DOMAINS.flatMap((d) =>
 );
 
 function opts(overrides: Partial<EvalOptions>): EvalOptions {
-  return {
+  return buildEvalOptions({
     casesPath: "x",
     seed: "seed-1",
-    caseIds: new Set(),
-    domains: new Set(),
-    stratify: "domain",
-    grader: "per-criterion",
     gradeRuns: 1,
     judgeTimeoutMs: 1,
     judgeConcurrency: 1,
-    concurrency: 1,
     retries: 0,
-    useProxy: false,
-    dryRun: false,
     ...overrides,
-  };
+  });
 }
 
 describe("selectCases", () => {

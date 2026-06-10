@@ -1,7 +1,12 @@
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { generateObject, jsonSchema, type LanguageModelUsage } from "ai";
+import {
+  generateObject,
+  jsonSchema,
+  type LanguageModel,
+  type LanguageModelUsage,
+} from "ai";
 import { createGoogleGenerativeAI } from "@ai-sdk/google";
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { createOpenAI } from "@ai-sdk/openai";
@@ -10,15 +15,12 @@ import {
   DEFAULT_OPENAI_MODEL,
 } from "../src/defaults.js";
 import {
-  type LanguageModel,
-  type ModelProvider,
+  Atlas,
+  type AtlasConfig,
+  type Effort,
+  type ResearchOptions,
   type ResearchResult,
-  type RunOptions,
-  type VerifierPanelMode,
-} from "../src/research.js";
-import { Atlas } from "../src/atlas.js";
-import { steel } from "../src/steel.js";
-import { resolveModelSpec } from "../src/config-resolution.js";
+} from "../src/index.js";
 import {
   buildDiagnostics,
   formatCountMap,
@@ -38,6 +40,8 @@ import {
   type RunMetrics,
 } from "./lib.js";
 
+type ModelProvider = "anthropic" | "openai";
+type ResearchModel = AtlasConfig["model"];
 type JudgeProvider = "google" | "anthropic" | "openai";
 type Verdict = "MET" | "UNMET";
 type GraderStrategy = "per-criterion" | "one-shot";
@@ -69,7 +73,8 @@ export interface EvalOptions {
   stratify: "domain" | "none";
   outPath?: string;
   timeoutMs?: number;
-  tokenLimit?: number;
+  budgetUSD?: number;
+  effort: Effort;
   provider?: ModelProvider;
   model?: string;
   leafModel?: string;
@@ -82,9 +87,7 @@ export interface EvalOptions {
   concurrency: number;
   retries: number;
   regrade?: string;
-  useProxy: boolean;
   dryRun: boolean;
-  verifierPanel?: VerifierPanelMode;
 }
 
 export interface JudgeSpec {
@@ -137,7 +140,6 @@ export interface EvalResult {
   report?: CriterionReport[];
   judgeErrors?: number;
   error?: string;
-  finishReason?: string;
   capBound?: boolean;
   markdown?: string;
   latencyMs: number;
@@ -152,11 +154,7 @@ export const DRACO_DATASET_REVISION =
 export const DEFAULT_CASES_URL = `https://huggingface.co/datasets/perplexity-ai/draco/resolve/${DRACO_DATASET_REVISION}/test.jsonl`;
 const DEFAULT_SEED = "atlas-draco-v1";
 const DEFAULT_TIMEOUT_MS = 900_000;
-// Cheap-by-default eval config: cap research spend and route the high-volume
-// leaf calls (claim extraction, verifier voters) to a small model. Lead
-// orchestration/synthesis stays on the research model. Override per run with
-// --token-limit / --leaf-model (or ATLAS_LEAF_MODEL).
-const DEFAULT_TOKEN_LIMIT = 1_000_000;
+const DEFAULT_EFFORT: Effort = "deep";
 const DEFAULT_LEAF_MODEL = "claude-haiku-4-5";
 const DEFAULT_JUDGE_TIMEOUT_MS = 120_000;
 const DEFAULT_JUDGE_CONCURRENCY = 8;
@@ -397,11 +395,11 @@ Options:
       --domain NAME           Restrict to domain(s); repeat or comma-separate
       --out <file>            Write manifest/results/summary JSONL
       --timeout N             Per-task research timeout in seconds (default: ${DEFAULT_TIMEOUT_MS / 1000}; 0 = unlimited, like DRACO)
-      --token-limit N         Total token budget per task (default: ${DEFAULT_TOKEN_LIMIT}; 0 = unlimited)
-      --verifier-panel MODE   lens | clone (default: lens — distinct verifier lenses; clone = identical contradiction refuters)
+      --budget N              Per-task research budget in USD (default: effort envelope)
+      --effort LEVEL          Research effort: fast, balanced, deep, max (default: ${DEFAULT_EFFORT})
       --provider NAME         Research model provider: anthropic, openai
       --model NAME            Research (lead) model name — orchestration & synthesis
-      --leaf-model NAME       Leaf model for claim extraction & verifier voters (default: ${DEFAULT_LEAF_MODEL} on anthropic; lead model otherwise)
+      --leaf-model NAME       Leaf model for claim extraction & verification (default: ${DEFAULT_LEAF_MODEL} on anthropic; lead model otherwise)
       --grader MODE           per-criterion | one-shot (default: per-criterion)
       --judge-provider P      Judge provider: google, anthropic, openai (default: anthropic; google uses a moving preview model)
       --judge-model MODEL     Judge model (default: claude-sonnet-4-5 for anthropic / gpt-5.2 / gemini-3.1-pro-preview)
@@ -410,7 +408,6 @@ Options:
       --concurrency N         Parallel tasks (default: 1)
       --retries N             Retry a task's research run on transient errors (default: 1)
       --regrade <file>        Re-judge a prior results JSONL (no research); reuses saved reports
-      --proxy                 Route Steel calls through proxy
       --dry-run               Print the selected tasks without calling APIs
       --help                  Show this help
 
@@ -484,9 +481,16 @@ function readStratify(raw: string): "domain" | "none" {
   fail(`--stratify must be one of: domain, none (got "${raw}")`);
 }
 
-function readVerifierPanel(raw: string): VerifierPanelMode {
-  if (raw === "lens" || raw === "clone") return raw;
-  fail(`--verifier-panel must be one of: lens, clone (got "${raw}")`);
+function readEffort(raw: string): Effort {
+  if (
+    raw === "fast" ||
+    raw === "balanced" ||
+    raw === "deep" ||
+    raw === "max"
+  ) {
+    return raw;
+  }
+  fail(`--effort must be one of: fast, balanced, deep, max (got "${raw}")`);
 }
 
 export function buildEvalOptions(
@@ -499,14 +503,13 @@ export function buildEvalOptions(
     domains: new Set<string>(),
     stratify: "domain",
     timeoutMs: DEFAULT_TIMEOUT_MS,
-    tokenLimit: DEFAULT_TOKEN_LIMIT,
+    effort: DEFAULT_EFFORT,
     grader: "per-criterion",
     judgeTimeoutMs: DEFAULT_JUDGE_TIMEOUT_MS,
     judgeConcurrency: DEFAULT_JUDGE_CONCURRENCY,
     gradeRuns: 5,
     concurrency: 1,
     retries: 1,
-    useProxy: false,
     dryRun: false,
     ...overrides,
   };
@@ -570,13 +573,13 @@ function parseArgs(argv: string[]): EvalOptions {
       i++;
       continue;
     }
-    if (arg === "--token-limit") {
-      opts.tokenLimit = readNonNegativeInt(readValue(argv, i, arg), arg);
+    if (arg === "--budget") {
+      opts.budgetUSD = readPositiveNumber(readValue(argv, i, arg), arg);
       i++;
       continue;
     }
-    if (arg === "--verifier-panel") {
-      opts.verifierPanel = readVerifierPanel(readValue(argv, i, arg));
+    if (arg === "--effort") {
+      opts.effort = readEffort(readValue(argv, i, arg));
       i++;
       continue;
     }
@@ -642,10 +645,6 @@ function parseArgs(argv: string[]): EvalOptions {
       i++;
       continue;
     }
-    if (arg === "--proxy") {
-      opts.useProxy = true;
-      continue;
-    }
     if (arg === "--dry-run") {
       opts.dryRun = true;
       continue;
@@ -694,16 +693,44 @@ export function resolveResearchModel(
     : DEFAULT_OPENAI_MODEL;
 }
 
-// The high-volume leaf calls (claim extraction, verifier voters) default to a
-// cheap model so a run does not pay lead-model rates per voter; lead
-// orchestration/synthesis stays on the research model. Precedence:
-// --leaf-model > ATLAS_LEAF_MODEL > anthropic default (haiku) > lead model.
 export function effectiveLeafModel(opts: EvalOptions): string | undefined {
   const explicit = (opts.leafModel ?? readEnv("ATLAS_LEAF_MODEL"))?.trim();
   if (explicit) return explicit;
   return resolveResearchProvider(opts.provider) === "anthropic"
     ? DEFAULT_LEAF_MODEL
     : undefined;
+}
+
+function buildResearchModel(
+  provider: ModelProvider,
+  modelId: string,
+): ResearchModel {
+  if (provider === "anthropic") {
+    const apiKey = readEnv("ATLAS_ANTHROPIC_API_KEY", "ANTHROPIC_API_KEY");
+    if (!apiKey) {
+      fail(
+        "ANTHROPIC_API_KEY or ATLAS_ANTHROPIC_API_KEY is required for provider=anthropic",
+      );
+    }
+    return createAnthropic({ apiKey })(modelId);
+  }
+  const apiKey = readEnv("ATLAS_OPENAI_API_KEY", "OPENAI_API_KEY");
+  if (!apiKey) {
+    fail(
+      "OPENAI_API_KEY or ATLAS_OPENAI_API_KEY is required for provider=openai",
+    );
+  }
+  return createOpenAI({ apiKey })(modelId);
+}
+
+export function buildAtlasConfig(opts: EvalOptions): AtlasConfig {
+  const provider = resolveResearchProvider(opts.provider);
+  const modelId = resolveResearchModel(provider, opts.model);
+  const model = buildResearchModel(provider, modelId);
+  const leafModelId = effectiveLeafModel(opts);
+  if (!leafModelId || leafModelId === modelId) return { model };
+  const leaf = buildResearchModel(provider, leafModelId);
+  return { model, models: { extract: leaf, verify: leaf } };
 }
 
 function defaultJudgeModel(provider: JudgeProvider): string {
@@ -1249,21 +1276,16 @@ export async function gradeRubric(opts: {
   );
 }
 
-export function buildResearchRunOptions(opts: EvalOptions): RunOptions {
+export function buildResearchRunOptions(opts: EvalOptions): ResearchOptions {
+  const budget = {
+    ...(opts.budgetUSD !== undefined ? { maxUSD: opts.budgetUSD } : {}),
+    ...(opts.timeoutMs !== undefined
+      ? { maxDurationMs: opts.timeoutMs }
+      : {}),
+  };
   return {
-    timeoutMs: opts.timeoutMs,
-    tokenLimit: opts.tokenLimit,
-    includeSourceDocuments: true,
-    verify: "adversarial",
-    ...(opts.verifierPanel ? { verifierPanel: opts.verifierPanel } : {}),
-    exploreProviderOptions: {
-      anthropic: { thinking: { type: "adaptive" }, effort: "max" },
-      openai: { reasoningEffort: "high" },
-    },
-    finalizeProviderOptions: {
-      anthropic: { thinking: { type: "adaptive" }, effort: "max" },
-      openai: { reasoningEffort: "high" },
-    },
+    effort: opts.effort,
+    ...(Object.keys(budget).length > 0 ? { budget } : {}),
   };
 }
 
@@ -1277,23 +1299,15 @@ async function runResearch(
   let lastError: unknown;
   for (let attempt = 1; attempt <= attempts; attempt++) {
     try {
-      const leafModel = effectiveLeafModel(opts);
-      const atlas = new Atlas({
-        ...(await resolveModelSpec({
-          provider: opts.provider,
-          model: opts.model,
-          ...(leafModel ? { leafModel } : {}),
-        })),
-        browser: steel({ proxy: opts.useProxy }),
-      });
-      const run = atlas.stream(entry.problem, buildResearchRunOptions(opts));
-      for await (const event of run.events) {
+      const atlas = new Atlas(buildAtlasConfig(opts));
+      const run = atlas.start(entry.problem, buildResearchRunOptions(opts));
+      for await (const event of run.events()) {
         const traced = traceEvent(event, started);
         if (traced) trace.push(traced);
         const line = progressLine(entry.id, event);
         if (line) process.stderr.write(`eval:draco: ${line}\n`);
       }
-      return await run.result;
+      return await run.result();
     } catch (err) {
       lastError = err;
       const message = err instanceof Error ? err.message : String(err);
@@ -1395,7 +1409,7 @@ export async function gradeResearch(
       judge,
       grader: opts.grader,
       criteria: entry.criteria,
-      response: result.markdown,
+      response: result.report,
       query: entry.problem,
       concurrency: opts.judgeConcurrency,
       timeoutMs: opts.judgeTimeoutMs,
@@ -1416,9 +1430,8 @@ export async function gradeResearch(
     ...(score ? { score } : {}),
     report,
     ...(judgeErrors ? { judgeErrors } : {}),
-    finishReason: result.finishReason,
-    capBound: result.capBound,
-    markdown: result.markdown,
+    capBound: result.stats.budgetExhausted,
+    markdown: result.report,
     latencyMs,
     trace,
     diagnostics: buildDiagnostics({ trace, latencyMs, metrics }),
@@ -1515,6 +1528,7 @@ function summarizeClaimHealth(results: EvalResult[]) {
       summary.unsupported += claims.unsupported;
       summary.verified += claims.verified;
       summary.confirmed += claims.confirmed;
+      summary.contested += claims.contested;
       summary.refuted += claims.refuted;
       summary.unverified += claims.unverified;
       return summary;
@@ -1524,6 +1538,7 @@ function summarizeClaimHealth(results: EvalResult[]) {
       unsupported: 0,
       verified: 0,
       confirmed: 0,
+      contested: 0,
       refuted: 0,
       unverified: 0,
     },
@@ -1568,12 +1583,12 @@ function summarize(results: EvalResult[]) {
       };
     })
     .filter((section) => section.tasks > 0);
-  const totalLeadToolCalls = completed.reduce(
-    (sum, result) => sum + (result.metrics?.leadToolCalls ?? 0),
+  const totalCostUSD = completed.reduce(
+    (sum, result) => sum + (result.metrics?.costUSD ?? 0),
     0,
   );
-  const totalSurveys = completed.reduce(
-    (sum, result) => sum + (result.metrics?.surveys ?? 0),
+  const totalAgentsSpawned = completed.reduce(
+    (sum, result) => sum + (result.metrics?.agentsSpawned ?? 0),
     0,
   );
   const totalInputTokens = completed.reduce(
@@ -1619,10 +1634,11 @@ function summarize(results: EvalResult[]) {
     domains,
     sections,
     medianLatencyMs: median(completed.map((result) => result.latencyMs)),
-    averageLeadToolCalls:
-      completed.length === 0 ? 0 : totalLeadToolCalls / completed.length,
-    averageSurveys:
-      completed.length === 0 ? 0 : totalSurveys / completed.length,
+    totalCostUSD,
+    averageCostUSD:
+      completed.length === 0 ? 0 : totalCostUSD / completed.length,
+    averageAgentsSpawned:
+      completed.length === 0 ? 0 : totalAgentsSpawned / completed.length,
     averageLatencyMs:
       completed.length === 0 ? 0 : totalLatencyMs / completed.length,
     averageInputTokens:
@@ -1631,12 +1647,12 @@ function summarize(results: EvalResult[]) {
       completed.length === 0 ? 0 : totalOutputTokens / completed.length,
     totalInputTokens,
     totalOutputTokens,
-    totalCitedSources: completed.reduce(
-      (sum, result) => sum + (result.metrics?.citedSources ?? 0),
+    totalCitationsBound: completed.reduce(
+      (sum, result) => sum + (result.metrics?.citationsBound ?? 0),
       0,
     ),
-    totalCitationsNotFetched: completed.reduce(
-      (sum, result) => sum + (result.metrics?.citationsNotFetched ?? 0),
+    totalCitationsUnsupported: completed.reduce(
+      (sum, result) => sum + (result.metrics?.citationsUnsupported ?? 0),
       0,
     ),
     fetchHealth: summarizeFetchHealth(results),
@@ -1684,7 +1700,7 @@ function printSummary(
       `cases: ${summary.total} (scored ${summary.scored}, errors ${summary.errors})`,
       `normalized score: ${(summary.normalizedScore * 100).toFixed(1)}%`,
       `pass rate: ${(summary.passRate * 100).toFixed(1)}%`,
-      `cap-bound rate: ${(summary.capBoundRate * 100).toFixed(1)}% (harness-limited runs)`,
+      `budget-exhausted rate: ${(summary.capBoundRate * 100).toFixed(1)}%`,
       `judge: ${judge.provider}/${judge.modelId} (${grader})`,
       ...(summary.judgeErrors ? [`judge errors: ${summary.judgeErrors}`] : []),
       `grading coverage: ${(summary.coverage * 100).toFixed(1)}% (${summary.gradedCriteria}/${summary.totalCriteria} criteria graded${
@@ -1707,9 +1723,9 @@ function printSummary(
       ),
       `avg latency: ${(summary.averageLatencyMs / 1000).toFixed(1)}s, avg input tokens: ${Math.round(summary.averageInputTokens).toLocaleString("en-US")}, avg output tokens: ${Math.round(summary.averageOutputTokens).toLocaleString("en-US")}`,
       `median latency: ${(summary.medianLatencyMs / 1000).toFixed(1)}s`,
-      `avg lead tool calls: ${summary.averageLeadToolCalls.toFixed(1)} (surveys ${summary.averageSurveys.toFixed(1)})`,
-      `cited sources: ${summary.totalCitedSources}, citations not fetched: ${summary.totalCitationsNotFetched}`,
-      `claims: extracted=${summary.claimHealth.extracted}, unsupported=${summary.claimHealth.unsupported}, verified=${summary.claimHealth.verified}, confirmed=${summary.claimHealth.confirmed}, refuted=${summary.claimHealth.refuted}, unverified=${summary.claimHealth.unverified}`,
+      `avg cost: $${summary.averageCostUSD.toFixed(2)} (total $${summary.totalCostUSD.toFixed(2)}, agents spawned ${summary.averageAgentsSpawned.toFixed(1)}/task)`,
+      `citations: bound=${summary.totalCitationsBound}, unsupported=${summary.totalCitationsUnsupported}`,
+      `claims: extracted=${summary.claimHealth.extracted}, unsupported=${summary.claimHealth.unsupported}, verified=${summary.claimHealth.verified}, confirmed=${summary.claimHealth.confirmed}, contested=${summary.claimHealth.contested}, refuted=${summary.claimHealth.refuted}, unverified=${summary.claimHealth.unverified}`,
       `fetch health: fetched=${summary.fetchHealth.fetched}, rejected=${summary.fetchHealth.rejected}, blocked_or_thin=${summary.fetchHealth.blockedOrThin}, methods=${formatCountMap(summary.fetchHealth.fetchedByMethod)}`,
       `results: ${outPath}`,
     ].join("\n") + "\n",
@@ -1773,7 +1789,7 @@ async function regradeCase(
     ...(score ? { score } : {}),
     report,
     ...(judgeErrors ? { judgeErrors } : {}),
-    ...(prior.finishReason ? { finishReason: prior.finishReason } : {}),
+    ...(prior.capBound !== undefined ? { capBound: prior.capBound } : {}),
     ...(prior.markdown ? { markdown: prior.markdown } : {}),
     latencyMs: prior.latencyMs ?? 0,
     trace: prior.trace ?? [],
@@ -1858,9 +1874,9 @@ async function main(): Promise<void> {
       leafModel: effectiveLeafModel(opts) ?? researchModel,
     },
     judge: { provider: judge.provider, model: judge.modelId },
+    effort: opts.effort,
     timeoutMs: opts.timeoutMs ?? null,
-    tokenLimit: opts.tokenLimit ?? null,
-    verifierPanel: opts.verifierPanel ?? "lens",
+    budgetUSD: opts.budgetUSD ?? null,
     cases: selected.map((entry) => ({
       id: entry.id,
       domain: entry.domain,
