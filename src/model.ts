@@ -1,572 +1,200 @@
+import { createHash } from "node:crypto";
+import { wrapLanguageModel, type LanguageModel } from "ai";
+import type {
+  LanguageModelV3,
+  LanguageModelV3CallOptions,
+  LanguageModelV3GenerateResult,
+  LanguageModelV3Middleware,
+  LanguageModelV3StreamPart,
+  LanguageModelV3Usage,
+} from "@ai-sdk/provider";
+import type { ConcurrencyGate } from "./async.js";
 import {
-  generateText,
-  generateObject,
-  streamText,
-  jsonSchema,
-  tool,
-  type LanguageModel,
-  type ModelMessage as AiModelMessage,
-  type AssistantContent,
-  type ToolContent,
-  type ToolSet,
-  type LanguageModelUsage,
-  type JSONValue,
-} from "ai";
-import { errorMessage } from "./errors.js";
-import { sleep } from "./async.js";
-import type { AdaptiveConcurrencyGate, ConcurrencyGate } from "./runtime.js";
+  addTokenUsage,
+  emptyTokenUsage,
+  resolvePricing,
+  usageCostUSD,
+  type BudgetGrant,
+  type PricingTable,
+  type TokenUsage,
+} from "./budget.js";
+import type { JournalWriter, ReplayCache } from "./providers/store.js";
 
-export type { LanguageModel } from "ai";
+export type ModelRole = "lead" | "research" | "verify" | "extract" | "write";
 
-/**
- * Provider label for a model, derived from the AI SDK model's `provider`
- * (e.g. "anthropic", "openai", "google"). Not a closed set — any AI SDK
- * provider is accepted; the string is used only as a human-readable label.
- */
-export type ModelProvider = string;
+export type ResolvedModel = Exclude<LanguageModel, string>;
 
-export interface UsageSummary {
-  input_tokens: number;
-  output_tokens: number;
-  cache_creation_input_tokens: number;
-  cache_read_input_tokens: number;
+export interface RunUsage {
+  byRole: Map<string, TokenUsage>;
 }
 
-export interface ModelToolDefinition {
-  name: string;
-  description: string;
-  input_schema: Record<string, unknown>;
+export function createRunUsage(): RunUsage {
+  return { byRole: new Map() };
 }
 
-export interface ModelOutputSchema {
-  name: string;
-  schema: Record<string, unknown>;
-  strict?: boolean;
+function trackUsage(runUsage: RunUsage, role: string, usage: TokenUsage): void {
+  const existing = runUsage.byRole.get(role) ?? emptyTokenUsage();
+  addTokenUsage(existing, usage);
+  runUsage.byRole.set(role, existing);
 }
 
-interface ModelTextBlock {
-  type: "text";
-  text: string;
-}
-
-export interface ModelToolCall {
-  type: "tool_call";
-  id: string;
-  name: string;
-  input: unknown;
-}
-
-export interface ModelToolResult {
-  type: "tool_result";
-  tool_call_id: string;
-  content: string;
-  is_error?: boolean;
-}
-
-interface ModelThinkingBlock {
-  type: "thinking";
-  thinking: string;
-  signature: string;
-  providerMetadata?: Record<string, unknown>;
-}
-
-interface ModelRedactedThinkingBlock {
-  type: "redacted_thinking";
-  data: string;
-  providerMetadata?: Record<string, unknown>;
-}
-
-export type ModelAssistantBlock =
-  | ModelTextBlock
-  | ModelToolCall
-  | ModelThinkingBlock
-  | ModelRedactedThinkingBlock;
-
-export type ModelMessage =
-  | { role: "user"; content: string | ModelToolResult[] }
-  | { role: "assistant"; content: ModelAssistantBlock[] };
-
-export type ProviderOptions = Record<string, Record<string, JSONValue>>;
-
-export interface ModelStepInput {
-  system: string;
-  tools?: ModelToolDefinition[];
-  messages: ModelMessage[];
-  maxTokens: number;
-  providerOptions?: ProviderOptions;
-  outputSchema?: ModelOutputSchema;
-  signal?: AbortSignal;
-}
-
-export interface ModelStepResult {
-  content: ModelAssistantBlock[];
-  inputTokens?: number;
-}
-
-export interface ModelStreamCallbacks {
-  onText: (text: string) => void;
-  onStart?: () => void;
-}
-
-export interface ModelAdapter {
-  provider: ModelProvider;
-  model: string;
-  usage: UsageSummary;
-  step(input: ModelStepInput): Promise<ModelStepResult>;
-  stepStream?(
-    input: ModelStepInput,
-    callbacks: ModelStreamCallbacks,
-  ): Promise<ModelStepResult>;
-}
-
-export function emptyUsageSummary(): UsageSummary {
+export function tokenUsageFromV3(usage: LanguageModelV3Usage): TokenUsage {
+  const cacheRead = usage.inputTokens.cacheRead ?? 0;
+  const cacheWrite = usage.inputTokens.cacheWrite ?? 0;
+  const input =
+    usage.inputTokens.noCache ??
+    Math.max(0, (usage.inputTokens.total ?? 0) - cacheRead - cacheWrite);
   return {
-    input_tokens: 0,
-    output_tokens: 0,
-    cache_creation_input_tokens: 0,
-    cache_read_input_tokens: 0,
+    input,
+    output: usage.outputTokens.total ?? 0,
+    cacheRead,
+    cacheWrite,
   };
 }
 
-export function totalUsageTokens(usage: UsageSummary): number {
-  return (
-    usage.input_tokens +
-    usage.output_tokens +
-    usage.cache_creation_input_tokens +
-    usage.cache_read_input_tokens
-  );
+export interface EngineModelHooks {
+  role: ModelRole;
+  grant: BudgetGrant;
+  pricing: PricingTable;
+  gate: ConcurrencyGate;
+  usage: RunUsage;
+  journal?: JournalWriter | undefined;
+  replay?: ReplayCache | undefined;
+  onCost?: ((usd: number) => void) | undefined;
+  onUnknownModel?: ((modelId: string) => void) | undefined;
 }
 
-function addUsage(
-  target: UsageSummary,
-  usage: Partial<UsageSummary> | undefined,
-): void {
-  if (!usage) return;
-  target.input_tokens += usage.input_tokens ?? 0;
-  target.output_tokens += usage.output_tokens ?? 0;
-  target.cache_creation_input_tokens += usage.cache_creation_input_tokens ?? 0;
-  target.cache_read_input_tokens += usage.cache_read_input_tokens ?? 0;
-}
-
-const EPHEMERAL_CACHE: Record<string, JSONValue> = {
-  cacheControl: { type: "ephemeral" },
-};
-
-export function createAISdkModelAdapter(opts: {
-  model: LanguageModel;
-  provider: ModelProvider;
-  modelId: string;
-}): ModelAdapter {
-  const usage = emptyUsageSummary();
-
-  const runGenerate = async (
-    input: ModelStepInput,
-  ): Promise<ModelStepResult> => {
-    const messages = withCacheBreakpoint(toAiMessages(input.messages));
-    const providerOptions = input.providerOptions;
-
-    if (input.outputSchema) {
-      const result = await generateObject({
-        model: opts.model,
-        system: input.system,
-        messages,
-        schema: jsonSchema(input.outputSchema.schema),
-        maxOutputTokens: input.maxTokens,
-        maxRetries: 0,
-        abortSignal: input.signal,
-        ...(providerOptions ? { providerOptions } : {}),
-      });
-      addUsage(usage, fromAiUsage(result.usage));
-      return {
-        content: [{ type: "text", text: JSON.stringify(result.object) }],
-        inputTokens: totalInputTokens(result.usage),
-      };
-    }
-
-    const result = await generateText({
-      model: opts.model,
-      system: input.system,
-      messages,
-      ...(input.tools ? { tools: toAiTools(input.tools) } : {}),
-      maxOutputTokens: input.maxTokens,
-      maxRetries: 0,
-      abortSignal: input.signal,
-      ...(providerOptions ? { providerOptions } : {}),
-    });
-    addUsage(usage, fromAiUsage(result.usage));
-    return {
-      content: fromAiContent(result.content),
-      inputTokens: totalInputTokens(result.usage),
-    };
+function callKey(
+  model: LanguageModelV3,
+  params: LanguageModelV3CallOptions,
+  role: string,
+): string {
+  const material = {
+    role,
+    provider: model.provider,
+    modelId: model.modelId,
+    prompt: params.prompt,
+    tools: params.tools?.map((tool) => ({
+      type: tool.type,
+      name: "name" in tool ? tool.name : undefined,
+      description: "description" in tool ? tool.description : undefined,
+      inputSchema: "inputSchema" in tool ? tool.inputSchema : undefined,
+    })),
+    toolChoice: params.toolChoice,
+    responseFormat: params.responseFormat,
+    maxOutputTokens: params.maxOutputTokens,
   };
-
-  const runStream = async (
-    input: ModelStepInput,
-    callbacks: ModelStreamCallbacks,
-  ): Promise<ModelStepResult> => {
-    if (input.outputSchema) return runGenerate(input);
-    const messages = withCacheBreakpoint(toAiMessages(input.messages));
-    const providerOptions = input.providerOptions;
-    let streamError: unknown;
-    const result = streamText({
-      model: opts.model,
-      system: input.system,
-      messages,
-      ...(input.tools ? { tools: toAiTools(input.tools) } : {}),
-      maxOutputTokens: input.maxTokens,
-      maxRetries: 0,
-      abortSignal: input.signal,
-      ...(providerOptions ? { providerOptions } : {}),
-      onError: ({ error }) => {
-        streamError = error;
-      },
-    });
-    let started = false;
-    for await (const delta of result.textStream) {
-      if (!delta) continue;
-      if (!started) {
-        started = true;
-        callbacks.onStart?.();
-      }
-      callbacks.onText(delta);
-    }
-    if (streamError !== undefined) throw streamError;
-    const content = await result.content;
-    const usageResult = await result.usage;
-    addUsage(usage, fromAiUsage(usageResult));
-    return {
-      content: fromAiContent(content),
-      inputTokens: totalInputTokens(usageResult),
-    };
-  };
-
-  return {
-    provider: opts.provider,
-    model: opts.modelId,
-    usage,
-    step: runGenerate,
-    stepStream: runStream,
-  };
+  return createHash("sha256")
+    .update(JSON.stringify(material))
+    .digest("hex")
+    .slice(0, 40);
 }
 
-function toAiTools(tools: ModelToolDefinition[]): ToolSet {
-  const set: ToolSet = {};
-  for (const t of tools) {
-    set[t.name] = tool({
-      description: t.description,
-      inputSchema: jsonSchema(t.input_schema),
-    });
-  }
-  return set;
+interface JournaledCall {
+  content: LanguageModelV3GenerateResult["content"];
+  finishReason: LanguageModelV3GenerateResult["finishReason"];
+  usage: LanguageModelV3Usage;
+  providerMetadata?: LanguageModelV3GenerateResult["providerMetadata"];
 }
 
-function toAiMessages(messages: ModelMessage[]): AiModelMessage[] {
-  const toolNameById = new Map<string, string>();
-  for (const message of messages) {
-    if (message.role !== "assistant") continue;
-    for (const block of message.content) {
-      if (block.type === "tool_call") toolNameById.set(block.id, block.name);
-    }
-  }
-
-  return messages.map((message): AiModelMessage => {
-    if (message.role === "user") {
-      if (typeof message.content === "string") {
-        return { role: "user", content: message.content };
-      }
-      const content: ToolContent = message.content.map((result) => ({
-        type: "tool-result",
-        toolCallId: result.tool_call_id,
-        toolName: toolNameById.get(result.tool_call_id) ?? "tool",
-        output: result.is_error
-          ? { type: "error-text", value: result.content }
-          : { type: "text", value: result.content },
-      }));
-      return { role: "tool", content };
-    }
-
-    const content: AssistantContent = message.content.map((block) => {
-      switch (block.type) {
-        case "text":
-          return { type: "text", text: block.text };
-        case "tool_call":
-          return {
-            type: "tool-call",
-            toolCallId: block.id,
-            toolName: block.name,
-            input: block.input,
-          };
-        case "thinking":
-          return {
-            type: "reasoning",
-            text: block.thinking,
-            ...(reasoningProviderOptions(block.providerMetadata, {
-              signature: block.signature,
-            })
-              ? {
-                  providerOptions: reasoningProviderOptions(
-                    block.providerMetadata,
-                    { signature: block.signature },
-                  ),
-                }
-              : {}),
-          };
-        case "redacted_thinking":
-          return {
-            type: "reasoning",
-            text: "",
-            providerOptions: reasoningProviderOptions(block.providerMetadata, {
-              redactedData: block.data,
-            }) ?? { anthropic: { redactedData: block.data } },
-          };
-      }
-    });
-    return { role: "assistant", content };
-  });
-}
-
-function reasoningProviderOptions(
-  providerMetadata: Record<string, unknown> | undefined,
-  fallbackAnthropic: Record<string, JSONValue>,
-): Record<string, Record<string, JSONValue>> | undefined {
-  if (providerMetadata && Object.keys(providerMetadata).length > 0) {
-    return providerMetadata as unknown as Record<
-      string,
-      Record<string, JSONValue>
-    >;
-  }
-  const hasValue = Object.values(fallbackAnthropic).some(
-    (v) => v !== undefined && v !== "",
-  );
-  return hasValue ? { anthropic: fallbackAnthropic } : undefined;
-}
-
-function withCacheBreakpoint(messages: AiModelMessage[]): AiModelMessage[] {
-  if (messages.length === 0) return messages;
-  const last = messages[messages.length - 1];
-  const withCache = {
-    ...last,
-    providerOptions: { ...last.providerOptions, anthropic: EPHEMERAL_CACHE },
-  } as AiModelMessage;
-  return [...messages.slice(0, -1), withCache];
-}
-
-type AiContentPart = Awaited<
-  ReturnType<typeof generateText>
->["content"][number];
-
-function fromAiContent(content: AiContentPart[]): ModelAssistantBlock[] {
-  const blocks: ModelAssistantBlock[] = [];
-  for (const part of content) {
-    if (part.type === "text") {
-      if (part.text) blocks.push({ type: "text", text: part.text });
-    } else if (part.type === "reasoning") {
-      const meta = part.providerMetadata as
-        | Record<string, Record<string, unknown>>
-        | undefined;
-      const redactedData = meta?.anthropic?.redactedData;
-      if (typeof redactedData === "string") {
-        blocks.push({
-          type: "redacted_thinking",
-          data: redactedData,
-          ...(meta ? { providerMetadata: meta } : {}),
-        });
-      } else {
-        const signature = meta?.anthropic?.signature;
-        blocks.push({
-          type: "thinking",
-          thinking: part.text,
-          signature: typeof signature === "string" ? signature : "",
-          ...(meta ? { providerMetadata: meta } : {}),
-        });
-      }
-    } else if (part.type === "tool-call") {
-      blocks.push({
-        type: "tool_call",
-        id: part.toolCallId,
-        name: part.toolName,
-        input: part.input,
-      });
-    }
-  }
-  return blocks;
-}
-
-function fromAiUsage(u: LanguageModelUsage): Partial<UsageSummary> {
-  const cacheRead =
-    u.inputTokenDetails?.cacheReadTokens ?? u.cachedInputTokens ?? 0;
-  const cacheWrite = u.inputTokenDetails?.cacheWriteTokens ?? 0;
-  const noCache =
-    u.inputTokenDetails?.noCacheTokens ??
-    Math.max(0, (u.inputTokens ?? 0) - cacheRead - cacheWrite);
-  return {
-    input_tokens: noCache,
-    output_tokens: u.outputTokens ?? 0,
-    cache_creation_input_tokens: cacheWrite,
-    cache_read_input_tokens: cacheRead,
-  };
-}
-
-function totalInputTokens(u: LanguageModelUsage): number {
-  if (typeof u.inputTokens === "number") return u.inputTokens;
-  return (
-    (u.inputTokenDetails?.noCacheTokens ?? 0) +
-    (u.inputTokenDetails?.cacheReadTokens ?? 0) +
-    (u.inputTokenDetails?.cacheWriteTokens ?? 0)
-  );
-}
-
-const MODEL_RETRY_MAX_ATTEMPTS = 8;
-const MODEL_RETRY_BASE_MS = 1_000;
-const MODEL_RETRY_MAX_MS = 30_000;
-
-export interface ModelRetryInfo {
-  attempt: number;
-  maxAttempts: number;
-  delayMs: number;
-  concurrency: boolean;
-}
-
-interface ModelConcurrencyOptions {
-  onRetry?: (info: ModelRetryInfo) => void;
-}
-
-export function wrapModelAdapterWithConcurrency(
-  adapter: ModelAdapter,
-  gate: ConcurrencyGate,
-  options: ModelConcurrencyOptions = {},
-): ModelAdapter {
-  const adaptive = isAdaptiveGate(gate) ? gate : null;
-  const runWithRetry = async <T>(
-    signal: AbortSignal | undefined,
-    call: () => Promise<T>,
-  ): Promise<T> => {
-    for (let attempt = 1; ; attempt++) {
-      try {
-        const result = await gate.run(call);
-        adaptive?.relax();
-        return result;
-      } catch (err) {
-        if (signal?.aborted) throw err;
-        const classified = classifyModelError(err);
-        if (!classified.retryable || attempt >= MODEL_RETRY_MAX_ATTEMPTS) {
-          throw err;
-        }
-        if (classified.concurrency) adaptive?.throttle();
-        const delayMs = retryDelayMs(attempt, classified.retryAfterMs);
-        options.onRetry?.({
-          attempt,
-          maxAttempts: MODEL_RETRY_MAX_ATTEMPTS,
-          delayMs,
-          concurrency: classified.concurrency,
-        });
-        await sleep(delayMs, signal);
-      }
-    }
-  };
-  const innerStepStream = adapter.stepStream?.bind(adapter);
-  return {
-    provider: adapter.provider,
-    model: adapter.model,
-    usage: adapter.usage,
-    step: (input) => runWithRetry(input.signal, () => adapter.step(input)),
-    ...(innerStepStream
-      ? {
-          stepStream: (input, callbacks) =>
-            runWithRetry(input.signal, () => innerStepStream(input, callbacks)),
-        }
+function serializeResult(
+  result: LanguageModelV3GenerateResult,
+): JournaledCall | null {
+  const record: JournaledCall = {
+    content: result.content,
+    finishReason: result.finishReason,
+    usage: result.usage,
+    ...(result.providerMetadata
+      ? { providerMetadata: result.providerMetadata }
       : {}),
   };
-}
-
-function isAdaptiveGate(
-  gate: ConcurrencyGate,
-): gate is AdaptiveConcurrencyGate {
-  return (
-    typeof (gate as Partial<AdaptiveConcurrencyGate>).throttle === "function"
-  );
-}
-
-interface ModelErrorClassification {
-  retryable: boolean;
-  concurrency: boolean;
-  retryAfterMs: number | null;
-}
-
-function classifyModelError(err: unknown): ModelErrorClassification {
-  const e = err as {
-    statusCode?: number;
-    status?: number;
-    isRetryable?: boolean;
-  };
-  const status = e?.statusCode ?? e?.status;
-  const message = errorMessage(err);
-  const concurrency = /concurrent connections/i.test(message);
-  const rateLimited =
-    status === 429 ||
-    /\b(rate.?limit|too many requests)\b/i.test(message) ||
-    concurrency;
-  const overloaded = status === 529 || /\boverloaded\b/i.test(message);
-  const transientServer =
-    status === 500 || status === 502 || status === 503 || status === 504;
-  const connectionError =
-    status === undefined &&
-    /(connection|econnreset|etimedout|epipe|socket|network|fetch failed|terminated|timeout)/i.test(
-      message,
-    );
-  const sdkRetryable =
-    typeof e?.isRetryable === "boolean" ? e.isRetryable : false;
-  return {
-    retryable:
-      sdkRetryable ||
-      rateLimited ||
-      overloaded ||
-      transientServer ||
-      connectionError,
-    concurrency,
-    retryAfterMs: readRetryAfterMs(err),
-  };
-}
-
-function retryDelayMs(attempt: number, retryAfterMs: number | null): number {
-  const exponential = Math.min(
-    MODEL_RETRY_MAX_MS,
-    MODEL_RETRY_BASE_MS * 2 ** (attempt - 1),
-  );
-  const jittered = exponential / 2 + Math.random() * (exponential / 2);
-  return Math.max(retryAfterMs ?? 0, Math.round(jittered));
-}
-
-function readRetryAfterMs(err: unknown): number | null {
-  const headers =
-    (err as { responseHeaders?: unknown })?.responseHeaders ??
-    (err as { headers?: unknown })?.headers;
-  const raw = readHeaderValue(headers, "retry-after");
-  if (!raw) return null;
-  const seconds = Number(raw);
-  if (Number.isFinite(seconds) && seconds >= 0) {
-    return Math.ceil(seconds * 1000);
+  try {
+    JSON.stringify(record);
+    return record;
+  } catch {
+    return null;
   }
-  const dateMs = Date.parse(raw);
-  if (Number.isFinite(dateMs)) return Math.max(0, dateMs - Date.now());
-  return null;
 }
 
-function readHeaderValue(headers: unknown, name: string): string | undefined {
-  if (!headers) return undefined;
-  if (typeof (headers as { get?: unknown }).get === "function") {
-    const value = (headers as { get: (key: string) => string | null }).get(
-      name,
-    );
-    return value ?? undefined;
-  }
-  const record = headers as Record<string, unknown>;
-  const value = record[name] ?? record[name.toLowerCase()];
-  return typeof value === "string" ? value : undefined;
+function isAnthropicModel(model: LanguageModelV3): boolean {
+  return model.provider.toLowerCase().includes("anthropic");
 }
 
-export const __testing = {
-  toAiMessages,
-  fromAiContent,
-  fromAiUsage,
-};
+function withCacheBreakpoint(
+  params: LanguageModelV3CallOptions,
+): LanguageModelV3CallOptions {
+  if (params.prompt.length === 0) return params;
+  const prompt = [...params.prompt];
+  const last = prompt[prompt.length - 1];
+  prompt[prompt.length - 1] = {
+    ...last,
+    providerOptions: {
+      ...last.providerOptions,
+      anthropic: {
+        ...last.providerOptions?.anthropic,
+        cacheControl: { type: "ephemeral" },
+      },
+    },
+  } as typeof last;
+  return { ...params, prompt };
+}
+
+export function engineModel(
+  model: ResolvedModel,
+  hooks: EngineModelHooks,
+): LanguageModelV3 {
+  const inner = model as LanguageModelV3;
+  const settle = (usage: LanguageModelV3Usage): void => {
+    const tokens = tokenUsageFromV3(usage);
+    const { pricing, known } = resolvePricing(inner.modelId, hooks.pricing);
+    if (!known) hooks.onUnknownModel?.(inner.modelId);
+    const cost = usageCostUSD(tokens, pricing);
+    hooks.grant.charge(cost);
+    trackUsage(hooks.usage, hooks.role, tokens);
+    hooks.onCost?.(cost);
+  };
+
+  const middleware: LanguageModelV3Middleware = {
+    specificationVersion: "v3",
+    transformParams: async ({ params }) =>
+      isAnthropicModel(inner) ? withCacheBreakpoint(params) : params,
+    wrapGenerate: async ({ doGenerate, params }) => {
+      const key = callKey(inner, params, hooks.role);
+      const cached = hooks.replay?.take(key) as JournaledCall | undefined;
+      if (cached) {
+        return {
+          content: cached.content,
+          finishReason: cached.finishReason,
+          usage: cached.usage,
+          ...(cached.providerMetadata
+            ? { providerMetadata: cached.providerMetadata }
+            : {}),
+          warnings: [],
+        };
+      }
+      const result = await hooks.gate.run(() => Promise.resolve(doGenerate()));
+      settle(result.usage);
+      if (hooks.journal) {
+        const record = serializeResult(result);
+        if (record) hooks.journal.call(key, record);
+      }
+      return result;
+    },
+    wrapStream: async ({ doStream }) => {
+      const result = await hooks.gate.run(() => Promise.resolve(doStream()));
+      const metered = result.stream.pipeThrough(
+        new TransformStream<LanguageModelV3StreamPart, LanguageModelV3StreamPart>({
+          transform(part, controller) {
+            if (part.type === "finish") settle(part.usage);
+            controller.enqueue(part);
+          },
+        }),
+      );
+      return { ...result, stream: metered };
+    },
+  };
+
+  return wrapLanguageModel({ model: inner, middleware }) as LanguageModelV3;
+}
+
+export const MODEL_CALL_MAX_RETRIES = 5;

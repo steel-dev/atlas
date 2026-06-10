@@ -1,0 +1,206 @@
+export interface ModelPricing {
+  inputPerMTok: number;
+  outputPerMTok: number;
+  cacheReadPerMTok?: number;
+  cacheWritePerMTok?: number;
+}
+
+export type PricingTable = Record<string, ModelPricing>;
+
+export const DEFAULT_PRICING: PricingTable = {
+  "claude-fable-5": { inputPerMTok: 10, outputPerMTok: 50 },
+  "claude-opus-4-8": { inputPerMTok: 5, outputPerMTok: 25 },
+  "claude-opus-4-7": { inputPerMTok: 5, outputPerMTok: 25 },
+  "claude-opus-4-6": { inputPerMTok: 5, outputPerMTok: 25 },
+  "claude-opus-4-5": { inputPerMTok: 5, outputPerMTok: 25 },
+  "claude-opus-4-1": { inputPerMTok: 15, outputPerMTok: 75 },
+  "claude-sonnet-4-6": { inputPerMTok: 3, outputPerMTok: 15 },
+  "claude-sonnet-4-5": { inputPerMTok: 3, outputPerMTok: 15 },
+  "claude-haiku-4-5": { inputPerMTok: 1, outputPerMTok: 5 },
+  "gpt-5.5": { inputPerMTok: 1.25, outputPerMTok: 10 },
+  "gpt-5.1": { inputPerMTok: 1.25, outputPerMTok: 10 },
+  "gpt-5": { inputPerMTok: 1.25, outputPerMTok: 10 },
+  "gpt-5-mini": { inputPerMTok: 0.25, outputPerMTok: 2 },
+  "gpt-5-nano": { inputPerMTok: 0.05, outputPerMTok: 0.4 },
+  "gpt-4o": { inputPerMTok: 2.5, outputPerMTok: 10 },
+  "gpt-4o-mini": { inputPerMTok: 0.15, outputPerMTok: 0.6 },
+  "o4-mini-deep-research": { inputPerMTok: 2, outputPerMTok: 8 },
+  "gemini-2.5-pro": { inputPerMTok: 1.25, outputPerMTok: 10 },
+  "gemini-2.5-flash": { inputPerMTok: 0.3, outputPerMTok: 2.5 },
+};
+
+const UNKNOWN_MODEL_PRICING: ModelPricing = {
+  inputPerMTok: 10,
+  outputPerMTok: 50,
+};
+
+const CACHE_READ_FACTOR = 0.1;
+const CACHE_WRITE_FACTOR = 1.25;
+
+export interface TokenUsage {
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+}
+
+export function emptyTokenUsage(): TokenUsage {
+  return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+}
+
+export function addTokenUsage(target: TokenUsage, delta: TokenUsage): void {
+  target.input += delta.input;
+  target.output += delta.output;
+  target.cacheRead += delta.cacheRead;
+  target.cacheWrite += delta.cacheWrite;
+}
+
+export function resolvePricing(
+  modelId: string | undefined,
+  table: PricingTable,
+): { pricing: ModelPricing; known: boolean } {
+  if (!modelId) return { pricing: UNKNOWN_MODEL_PRICING, known: false };
+  const direct = table[modelId];
+  if (direct) return { pricing: direct, known: true };
+  const undated = modelId.replace(/-\d{8}$/, "");
+  if (table[undated]) return { pricing: table[undated], known: true };
+  const parts = undated.split(".");
+  for (let i = 1; i < parts.length; i++) {
+    const candidate = table[parts.slice(i).join(".")];
+    if (candidate) return { pricing: candidate, known: true };
+  }
+  for (const key of Object.keys(table)) {
+    if (undated.startsWith(`${key}-`) || undated.endsWith(`.${key}`)) {
+      return { pricing: table[key], known: true };
+    }
+  }
+  return { pricing: UNKNOWN_MODEL_PRICING, known: false };
+}
+
+export function usageCostUSD(
+  usage: TokenUsage,
+  pricing: ModelPricing,
+): number {
+  const cacheRead =
+    pricing.cacheReadPerMTok ?? pricing.inputPerMTok * CACHE_READ_FACTOR;
+  const cacheWrite =
+    pricing.cacheWritePerMTok ?? pricing.inputPerMTok * CACHE_WRITE_FACTOR;
+  return (
+    (usage.input * pricing.inputPerMTok +
+      usage.output * pricing.outputPerMTok +
+      usage.cacheRead * cacheRead +
+      usage.cacheWrite * cacheWrite) /
+    1_000_000
+  );
+}
+
+const GRANT_FLOOR_USD = 0.02;
+const DEFAULT_GRANT_FRACTION = 0.15;
+
+export interface GrantOptions {
+  fraction?: number;
+  maxUSD?: number;
+  minUSD?: number;
+}
+
+export interface BudgetGrant {
+  readonly limitUSD: number;
+  spentUSD(): number;
+  remainingUSD(): number;
+  floored(): boolean;
+  charge(usd: number): void;
+  grant(opts?: GrantOptions): BudgetGrant | null;
+  release(): void;
+}
+
+export interface BudgetMeter extends BudgetGrant {
+  readonly totalUSD: number;
+  totalSpentUSD(): number;
+}
+
+interface SharedSpend {
+  spent: number;
+}
+
+class GrantNode implements BudgetGrant {
+  readonly limitUSD: number;
+  protected used = 0;
+  protected childReserved = 0;
+  private active = true;
+
+  constructor(
+    limitUSD: number,
+    protected readonly shared: SharedSpend,
+    private readonly parent: GrantNode | null,
+  ) {
+    this.limitUSD = limitUSD;
+  }
+
+  spentUSD(): number {
+    return this.used;
+  }
+
+  remainingUSD(): number {
+    return Math.max(0, this.limitUSD - this.used - this.childReserved);
+  }
+
+  floored(): boolean {
+    return this.remainingUSD() < GRANT_FLOOR_USD;
+  }
+
+  charge(usd: number): void {
+    if (!Number.isFinite(usd) || usd <= 0) return;
+    this.used += usd;
+    this.shared.spent += usd;
+  }
+
+  grant(opts: GrantOptions = {}): BudgetGrant | null {
+    const remaining = this.remainingUSD();
+    if (remaining < GRANT_FLOOR_USD) return null;
+    const fraction = clampFraction(opts.fraction);
+    let want = opts.maxUSD ?? remaining * fraction;
+    want = Math.max(want, opts.minUSD ?? GRANT_FLOOR_USD);
+    const amount = Math.min(want, remaining);
+    if (amount < GRANT_FLOOR_USD) return null;
+    this.childReserved += amount;
+    return new GrantNode(amount, this.shared, this);
+  }
+
+  release(): void {
+    if (!this.active || !this.parent) return;
+    this.active = false;
+    this.parent.absorbChild(this.limitUSD, this.used);
+  }
+
+  protected absorbChild(limit: number, used: number): void {
+    this.childReserved = Math.max(0, this.childReserved - limit);
+    this.used += used;
+  }
+}
+
+class RootMeter extends GrantNode implements BudgetMeter {
+  readonly totalUSD: number;
+
+  constructor(totalUSD: number, shared: SharedSpend) {
+    super(totalUSD, shared, null);
+    this.totalUSD = totalUSD;
+  }
+
+  totalSpentUSD(): number {
+    return this.shared.spent;
+  }
+}
+
+function clampFraction(fraction: number | undefined): number {
+  if (fraction === undefined || !Number.isFinite(fraction)) {
+    return DEFAULT_GRANT_FRACTION;
+  }
+  return Math.min(1, Math.max(0.01, fraction));
+}
+
+export function createBudgetMeter(totalUSD: number): BudgetMeter {
+  if (!Number.isFinite(totalUSD) || totalUSD <= 0) {
+    throw new Error(`budget: totalUSD must be > 0 (got ${totalUSD})`);
+  }
+  return new RootMeter(totalUSD, { spent: 0 });
+}

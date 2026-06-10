@@ -1,4 +1,3 @@
-import type { ResearchCtx } from "./runtime.js";
 import type {
   SourceChunk,
   SourceDocument,
@@ -53,25 +52,6 @@ export function createSourceDocument(
   };
 }
 
-export function findSourceDocumentByUrl(
-  ctx: ResearchCtx,
-  normalizedUrl: string,
-): SourceDocument | undefined {
-  return ctx.store.sourceDocuments.get(normalizedUrl);
-}
-
-export function findSourceDocumentById(
-  ctx: ResearchCtx,
-  sourceId: string,
-): SourceDocument | undefined {
-  const indexed = ctx.store.sourceDocumentsById?.get(sourceId);
-  if (indexed) return indexed;
-  for (const document of ctx.store.sourceDocuments.values()) {
-    if (document.sourceId === sourceId) return document;
-  }
-  return undefined;
-}
-
 function buildExtractionMetadata(opts: {
   method: string;
   markdownChars: number;
@@ -109,22 +89,6 @@ function buildExtractionMetadata(opts: {
     ...(page?.jsonLd !== undefined ? { jsonLd: page.jsonLd } : {}),
     extractionNotes: [opts.leadNote, ...(opts.notes ?? [])],
   };
-}
-
-export function extractionMetadataFromBrowser(opts: {
-  markdownChars: number;
-  finalUrl?: string;
-  notes?: string[];
-  attempts?: SourceExtractionAttempt[];
-  qualityWarnings?: string[];
-  discoveredLinks?: SourceDiscoveredLink[];
-  pageMetadata?: HtmlPageMetadata;
-}): SourceExtractionMetadata {
-  return buildExtractionMetadata({
-    ...opts,
-    method: "browser_cdp",
-    leadNote: "Fetched with browser session via Chrome DevTools Protocol.",
-  });
 }
 
 export function extractionMetadataFromPdf(opts: {
