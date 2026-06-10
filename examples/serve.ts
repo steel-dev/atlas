@@ -1,15 +1,15 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { readFileSync } from "node:fs";
-import { Atlas } from "./atlas.js";
-import { resolveModelSpec } from "./config-resolution.js";
-import { steel } from "./steel.js";
-import { exa, brave, type SearchProvider } from "./search-provider.js";
+import { Atlas } from "../src/atlas.js";
+import { resolveModelSpec } from "../src/config-resolution.js";
+import { steel } from "../src/steel.js";
+import { exa, brave, type SearchProvider } from "../src/search-provider.js";
 import type {
   ModelProvider,
   ResearchEvent,
   ResearchResult,
   ResearchStream,
-} from "./research.js";
+} from "../src/research.js";
 
 export interface ServeOptions {
   port: number;

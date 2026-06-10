@@ -14,7 +14,7 @@ import {
   DEFAULT_CASES_URL,
   type EvalOptions,
   type JudgeSpec,
-} from "../draco.js";
+} from "../../evals/draco.js";
 import { DracoRunHost } from "./runner.js";
 import { captureCommit } from "./git.js";
 import { serveExplore } from "./server.js";

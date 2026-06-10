@@ -12,8 +12,8 @@ import {
   type EvalOptions,
   type EvalResult,
   type JudgeSpec,
-} from "../draco.js";
-import { traceEvent, type EvalTraceEvent } from "../lib.js";
+} from "../../evals/draco.js";
+import { traceEvent, type EvalTraceEvent } from "../../evals/lib.js";
 import { captureCommit, type CommitInfo } from "./git.js";
 import type { Store } from "./store.js";
 

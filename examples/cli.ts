@@ -6,11 +6,11 @@ import {
   type ResearchEvent,
   type ResearchResult,
   type ResearchStream,
-} from "./research.js";
-import { Atlas } from "./atlas.js";
-import { resolveModelSpec } from "./config-resolution.js";
-import { steel } from "./steel.js";
-import { exa, brave, type SearchProvider } from "./search-provider.js";
+} from "../src/research.js";
+import { Atlas } from "../src/atlas.js";
+import { resolveModelSpec } from "../src/config-resolution.js";
+import { steel } from "../src/steel.js";
+import { exa, brave, type SearchProvider } from "../src/search-provider.js";
 import { serve } from "./serve.js";
 
 const USAGE = `atlas — deep research from your terminal

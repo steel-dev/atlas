@@ -3,9 +3,9 @@ import {
   researchTool,
   type ResearchTool,
   type ToolContext,
-} from "../custom-tools.js";
-import { errorMessage } from "../errors.js";
-import { readEnv } from "../env.js";
+} from "../../src/custom-tools.js";
+import { errorMessage } from "../../src/errors.js";
+import { readEnv } from "../../src/env.js";
 import { USER_AGENT, buildContent, clampLimit, collapse, manifest } from "./shared.js";
 
 export interface SemanticScholarOptions {

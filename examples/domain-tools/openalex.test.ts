@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { openalex } from "./openalex.js";
-import type { ToolContext } from "../custom-tools.js";
+import type { ToolContext } from "../../src/custom-tools.js";
 
 function makeCtx(signal?: AbortSignal) {
   const sources: { url: string; title?: string; content: string }[] = [];

@@ -1,7 +1,7 @@
 import { jsonSchema } from "ai";
-import { researchTool, type ResearchTool } from "../custom-tools.js";
-import { errorMessage } from "../errors.js";
-import { readEnv } from "../env.js";
+import { researchTool, type ResearchTool } from "../../src/custom-tools.js";
+import { errorMessage } from "../../src/errors.js";
+import { readEnv } from "../../src/env.js";
 import { clampLimit, collapse } from "./shared.js";
 
 export interface EdgarOptions {

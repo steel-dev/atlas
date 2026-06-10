@@ -3,8 +3,8 @@ import {
   researchTool,
   type ResearchTool,
   type ToolContext,
-} from "../custom-tools.js";
-import { errorMessage } from "../errors.js";
+} from "../../src/custom-tools.js";
+import { errorMessage } from "../../src/errors.js";
 import {
   buildContent,
   clampLimit,
