@@ -931,25 +931,33 @@ function handleEvent(e: WireEvent, caseId: string): void {
   if (!live) return;
   const t = e.type;
   if (t === "phase") live.phase = e.phase as string;
-  else if (t === "scope_completed") {
-    live.angles = (e.angles as unknown[]).length;
-    live.trace.push("scope: " + live.angles + " angles");
-  } else if (t === "searching") live.trace.push("search: " + (e.query || ""));
-  else if (t === "fetching") live.trace.push("fetch: " + e.url);
-  else if (t === "source_fetched") {
+  else if (t === "plan.updated") live.trace.push("plan: " + String(e.rationale ?? ""));
+  else if (t === "agent.spawned") {
+    live.angles++;
+    live.trace.push("spawn " + String(e.role) + " ($" + Number(e.grantUSD).toFixed(2) + ")");
+  } else if (t === "agent.returned")
+    live.trace.push("← " + String(e.role) + " +" + String(e.claimsAdded) + " claims");
+  else if (t === "search.completed")
+    live.trace.push("search: " + String(e.query ?? "") + " (" + String(e.results) + ")");
+  else if (t === "search.failed") live.trace.push("✗ search: " + String(e.query ?? ""));
+  else if (t === "source.fetched") {
     live.sources++;
-    live.trace.push("✓ " + (e.title || e.url));
-  } else if (t === "source_error") live.trace.push("✗ " + e.url);
-  else if (t === "claims_extracted") live.trace.push("claims +" + e.count);
-  else if (t === "verify_started") {
-    live.phase = "verifying";
-    live.trace.push("verify " + e.claims + " claims");
-  } else if (t === "claim_verified") {
+    live.trace.push("✓ " + String(e.title || e.url));
+  } else if (t === "source.failed") live.trace.push("✗ " + String(e.url));
+  else if (t === "extraction.completed") live.trace.push("claims +" + String(e.count));
+  else if (t === "claim.verified") {
     if (e.status === "confirmed") live.confirmed++;
-  } else if (t === "verify_finished")
-    live.trace.push("verified: " + e.confirmed + " confirmed, " + e.refuted + " refuted");
-  else if (t === "research_finished")
-    live.trace.push("research done: " + e.sourcesFetched + " sources");
+    live.trace.push(String(e.status) + " " + String(e.claimId) + " (" + String(e.votes) + ")");
+  } else if (t === "report.drafting") live.trace.push("synthesizing report…");
+  else if (t === "citation.bound")
+    live.trace.push("citation " + (e.ok ? "✓" : "✗") + " " + String(e.claimId));
+  else if (t === "budget.warning")
+    live.trace.push(
+      "budget: $" + Number(e.spentUSD).toFixed(2) + " of $" + Number(e.limitUSD).toFixed(2),
+    );
+  else if (t === "safety.flag")
+    live.trace.push("⚠ " + String(e.kind) + ": " + String(e.detail));
+  else if (t === "run.completed") live.trace.push("research done");
   else if (t === "grade_progress") {
     live.phase = "grading";
     live.gradeDone = e.done as number;
