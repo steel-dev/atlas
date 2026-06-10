@@ -329,6 +329,9 @@ async function executeRun(args: ExecuteRunArgs): Promise<ResearchResult> {
     ? startedAt + resolved.maxDurationMs
     : undefined;
 
+  const budgetExhausted = (): boolean =>
+    meter.totalSpentUSD() >= meter.totalUSD - 0.01;
+
   const emit = (event: ResearchEvent): void => {
     args.hub.emit(event);
     args.journal.event(event.type, event);
@@ -415,14 +418,14 @@ async function executeRun(args: ExecuteRunArgs): Promise<ResearchResult> {
       ) {
         return "timeout approaching";
       }
-      if (meter.floored()) return "budget exhausted";
+      if (budgetExhausted()) return "budget exhausted";
       return null;
     },
   };
   const ledger = createLedger({
     emit,
     signal: args.hardSignal,
-    shouldExtract: () => !meter.floored(),
+    shouldExtract: () => !budgetExhausted(),
   });
   (rctx as { ledger: typeof ledger }).ledger = ledger;
 
@@ -685,7 +688,8 @@ function buildStats(opts: {
     tokens,
     costUSD: Math.round(rctx.meter.totalSpentUSD() * 10_000) / 10_000,
     durationMs: opts.durationMs,
-    budgetExhausted: rctx.meter.floored(),
+    budgetExhausted:
+      rctx.meter.totalSpentUSD() >= rctx.meter.totalUSD - 0.01,
   };
 }
 

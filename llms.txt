@@ -1,18 +1,19 @@
 # Atlas (`@steel-dev/atlas`)
 
-> Deep research as a CLI and a TypeScript library. Ask a messy question; Atlas
-> scopes it into search angles, fetches pages through Steel Browser, extracts
-> verbatim-quoted claims, chases the gaps, adversarially verifies every claim
-> with independent voters, and synthesizes a cited Markdown report from the
-> claims that survive. Runs on the Vercel AI SDK, so any model provider works.
+> Deep research as a TypeScript library. One recursive agent primitive under a
+> tree-shared USD budget: a lead agent plans, spawns research and verify
+> subagents (or answers inline — topology emerges, it is never configured),
+> writes verbatim-quoted claims into one shared ledger, and a final binding
+> pass machine-checks every cited sentence of the report. Runs on the Vercel
+> AI SDK 6, so any model provider works.
 
-The value is the verification pipeline: every claim in the report is backed by a
-verbatim quote from a fetched source and has survived adversarial voting.
-Sources, claims, citations, and structured output are all auditable.
+The value is the verification pipeline: every claim carries a verbatim quote
+string-checked against the stored source text, central claims are adversarially
+verified by independent lens voters, and the drafted report is re-checked
+sentence by sentence (citation binding) before it is returned.
 
 This file is the agent-facing brief — a compact reference for coding agents
-building on Atlas. Print it anytime with `atlas docs`. Full prose lives in
-README.md.
+building on Atlas. Full prose lives in README.md.
 
 ## Install
 
@@ -20,19 +21,10 @@ README.md.
 npm install @steel-dev/atlas ai @ai-sdk/anthropic   # + the provider you use
 ```
 
-Keys (env): a model provider key (`ANTHROPIC_API_KEY` or `OPENAI_API_KEY`) plus
-`STEEL_API_KEY`.
-
-## CLI
-
-```bash
-npx @steel-dev/atlas "<question>" > report.md
-atlas "<question>" --out report.md --token-limit 5000000
-atlas serve            # local web UI
-atlas docs             # print this brief
-```
-
-Run `atlas --help` for the full flag list.
+Keys (env): a model provider key (`ANTHROPIC_API_KEY` or `OPENAI_API_KEY`).
+Optional: `TAVILY_API_KEY` / `EXA_API_KEY` / `BRAVE_API_KEY` (search adapters;
+falls back to the model's native server-side search) and `STEEL_API_KEY`
+(escalates blocked/JS-rendered pages through Steel).
 
 ## SDK — core API
 
@@ -40,41 +32,50 @@ Run `atlas --help` for the full flag list.
 import { Atlas } from "@steel-dev/atlas";
 import { anthropic } from "@ai-sdk/anthropic";
 
-const atlas = new Atlas({ model: anthropic("claude-sonnet-4-6") });
+const atlas = new Atlas({ model: anthropic("claude-fable-5") });
 const result = await atlas.research("What's changing in browser automation?");
-result.markdown;            // cited Markdown report
-result.citedSources;        // sources actually cited
-result.claims.confirmed;    // verified claims, with quotes + votes
-result.stats;               // angles, sources, claims extracted/verified
+result.report;              // cited Markdown report
+result.citations;           // [{ sentenceSpan, claimId, sourceId, quote, verified }]
+result.claims.confirmed;    // survived adversarial verification
+result.claims.contested;    // sources disagree — surfaced, not buried
+result.findings;            // statements + confidence + claim/source ids
+result.stats;               // costUSD, tokens per role, agentsSpawned, singleAgent, …
 ```
 
 `new Atlas(config)` fields:
 
 - `model` (required) — an AI SDK model instance.
-- `leafModel?` — cheaper model for high-volume leaf calls (claim extraction,
-  verifier voters).
-- `instructions?` — domain framing for the research lead. The main domain knob.
+- `models?` — per-role overrides: `{ lead?, research?, verify?, extract?, write? }`.
+  A cheap `extract`/`verify` model stretches the budget much further.
+- `effort?` — `"fast" | "balanced" | "deep" | "max"` (default balanced); sets
+  the budget envelope and spawn depth/breadth caps.
+- `budget?` — `{ maxUSD?, maxDurationMs?, maxSources? }`; `maxUSD` is the hard
+  ceiling and the only test-time-compute knob.
+- `search?` — `tavily()` / `exa()` / `brave()` / `nativeModelSearch({model})`,
+  one or an array (results are rank-fused).
+- `fetch?` — fetch chain, default `[basicFetch()]` + `steel()` when keyed.
+- `store?` — `memoryStore()` (default) or `fileStore(dir)`; enables resume.
+- `instructions?` — domain framing appended to the lead agent's system prompt.
 - `tools?` — `Record<string, ResearchTool>` of domain tools (see below).
-- `browser?` — `steel(...)`; defaults to Steel from env.
-- `search?` — `exa()` / `brave()` to bypass SERP scraping; omit to scrape.
-- `defaults?` — default `RunOptions` applied to every run.
+- `pricing?` — per-model USD pricing overrides; `safety?` — SSRF/quarantine knobs.
 
 Calls:
 
-- `atlas.research(query, opts?)` → `ResearchResult`.
-- `atlas.research({ query, outputSchema })` → `StructuredResearchResult`: adds
-  `result.data` (typed, filled from verified claims) and `result.basis` (each
-  field path → citations + reasoning). Unsupported fields are flagged, not
-  invented.
-- `atlas.stream(...)` → a handle: `run.fullStream` (async iterable),
-  `run.on(type, listener)` (typed events: `fetching`, `claim_verified`,
-  `report_delta`, …), `run.result` (resolves at the end).
+- `atlas.research(question, opts?)` → `Promise<ResearchResult>`.
+- `atlas.research(question, { output: { kind: "structured", schema } })` →
+  adds `result.structured` (typed, filled from verified claims) and
+  `result.structuredBasis` (field path → citations + reasoning).
+- `atlas.start(question, opts?)` → run handle: `run.events()` (async iterable
+  of typed events: `plan.updated`, `agent.spawned`, `claim.verified`,
+  `report.delta`, `budget.warning`, …), `run.result()`, `run.cancel()`,
+  `run.pause()`, `run.status()`.
+- `Atlas.resume(runId, config)` — replay the journal from `config.store`;
+  completed model calls are served from the journal at zero cost.
 
 ## Custom tools — the extension point for domain researchers
 
 A tool's results become citable sources: anything passed to `ctx.addSource` is
-extracted into claims, adversarially verified, and cited exactly like a fetched
-web page.
+extracted into ledger claims, verified, and cited exactly like a fetched page.
 
 ```ts
 import { Atlas, researchTool } from "@steel-dev/atlas";
@@ -82,7 +83,7 @@ import { anthropic } from "@ai-sdk/anthropic";
 import { z } from "zod";
 
 const atlas = new Atlas({
-  model: anthropic("claude-sonnet-4-6"),
+  model: anthropic("claude-fable-5"),
   instructions: "You are a clinical evidence analyst. Prefer peer-reviewed sources.",
   tools: {
     pubmedSearch: researchTool({
@@ -100,23 +101,24 @@ const atlas = new Atlas({
 ```
 
 `ToolContext`: `addSource({ url, title?, content })`, `log(message)`, `signal?`.
-
-`tools` is a record, so the key is the model-facing tool name — pass the same
-tool under different keys to expose different configurations.
+Custom tools are reachable from the lead and research agents, never from
+verifiers (read-only verification is an invariant).
 
 ## Building a domain researcher
 
 A domain researcher is a small module: `new Atlas({ model, instructions, tools })`,
-optionally with an `outputSchema` per run. Compose domain `researchTool`s and let
-the verification pipeline do the rest. The `atlas-build-researcher` skill scaffolds
-one interactively.
+optionally with a structured `output` per run. Compose domain `researchTool`s and
+let the verification pipeline do the rest.
 
 ## Notes for agents
 
 - Don't bypass or reimplement the verification pipeline — it is the product.
-  Tools only *add sources*; verification stays in the engine.
-- Contract types (`ResearchResult`, `ResearchClaim`, `CitedSource`,
-  `SourceDocument`, …) are exported from the package. Import them; never copy or
-  fork them.
-- Any model the AI SDK supports works; install its provider package and pass the
-  model instance to `model` (and optionally `leafModel`).
+  Tools only *add sources*; extraction, verification, and binding stay in the
+  engine.
+- Contract types (`ResearchResult`, `ResearchClaim`, `Citation`, `RunStats`,
+  `ResearchEvent`, …) are exported from the package. Import them; never copy
+  or fork them.
+- Any model the AI SDK supports works; install its provider package and pass
+  the model instance to `model` (and per-role overrides via `models`).
+- Budget is the knob. Don't add loops or retries around `research()` to "try
+  harder" — raise `effort` or `budget.maxUSD` instead.

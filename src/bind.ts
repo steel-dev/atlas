@@ -96,6 +96,7 @@ async function runEntailmentChecks(
   items: EntailmentItem[],
 ): Promise<Map<number, boolean>> {
   const supported = new Map<number, boolean>();
+  if (items.length === 0) return supported;
   const model = rctx.bindModel("verify", grant);
   for (
     let offset = 0;
