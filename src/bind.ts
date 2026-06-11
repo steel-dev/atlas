@@ -4,6 +4,7 @@ import type { BudgetGrant } from "./budget.js";
 import { quoteAppearsInSource, type ResearchClaim } from "./ledger.js";
 import { MODEL_CALL_MAX_RETRIES } from "./model.js";
 import type { RunCtx } from "./state.js";
+import { quoteContext } from "./synthesize.js";
 
 export interface Citation {
   sentenceSpan: [number, number];
@@ -88,6 +89,7 @@ interface EntailmentItem {
   index: number;
   sentence: string;
   claim: ResearchClaim;
+  context?: string | undefined;
 }
 
 async function runEntailmentChecks(
@@ -105,11 +107,14 @@ async function runEntailmentChecks(
   ) {
     const batch = items.slice(offset, offset + ENTAILMENT_BATCH_SIZE);
     const prompt =
-      "For each numbered item, judge whether the report sentence is entailed by the claim and its verbatim source quote — i.e. every factual assertion in the sentence is supported by them. Judge entailment only; ignore style.\n\n" +
+      "For each numbered item, judge whether the report sentence is entailed by the claim, its verbatim source quote, and (when given) the quote's surrounding source context — i.e. every factual assertion in the sentence is supported by them. Judge entailment only; ignore style.\n\n" +
       batch
         .map(
           (item) =>
-            `[${item.index}]\nSentence: "${item.sentence}"\nClaim: "${item.claim.text}"\nQuote: "${item.claim.quote}"`,
+            `[${item.index}]\nSentence: "${item.sentence}"\nClaim: "${item.claim.text}"\nQuote: "${item.claim.quote}"` +
+            (item.context
+              ? `\nSource context around the quote: "${item.context}"`
+              : ""),
         )
         .join("\n\n") +
       "\n\nReturn one verdict per index.";
@@ -232,6 +237,7 @@ export async function bindCitations(
           index: itemIndex,
           sentence,
           claim,
+          context: quoteContext(rctx, claim),
         });
       }
       itemIndex++;

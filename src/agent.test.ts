@@ -1,4 +1,4 @@
-import { convertArrayToReadableStream, MockLanguageModelV3 } from "ai/test";
+import { MockLanguageModelV3 } from "ai/test";
 import type {
   LanguageModelV3CallOptions,
   LanguageModelV3GenerateResult,
@@ -197,23 +197,8 @@ function writeModel(): MockLanguageModelV3 {
   return new MockLanguageModelV3({
     provider: "mock-provider",
     modelId: "write-model",
-    doStream: async () => ({
-      stream: convertArrayToReadableStream([
-        { type: "stream-start", warnings: [] },
-        { type: "text-start", id: "t1" },
-        {
-          type: "text-delta",
-          id: "t1",
-          delta: "The tower is 330 meters tall. {{claim_1}}",
-        },
-        { type: "text-end", id: "t1" },
-        {
-          type: "finish",
-          usage: USAGE,
-          finishReason: { unified: "stop", raw: undefined },
-        },
-      ]),
-    }),
+    doGenerate: async () =>
+      textResult("The tower is 330 meters tall. {{claim_1}}"),
   });
 }
 

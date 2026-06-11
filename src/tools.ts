@@ -66,7 +66,7 @@ const SEARCH_LISTING_TITLE_PATTERN =
   /\b(?:search results?|advanced search|site search)\b/i;
 
 function withBudgetLine(rctx: RunCtx, actx: AgentCtx, content: string): string {
-  if (actx.role === "verify") return content;
+  if (actx.role === "verify" || actx.role === "write") return content;
   return `${content}\n\n[${budgetStatusLine(rctx)}]`;
 }
 
@@ -685,7 +685,7 @@ export function buildAgentTools(
     });
   }
 
-  if (actx.role !== "verify") {
+  if (actx.role !== "verify" && actx.role !== "write") {
     for (const custom of rctx.customTools.values()) {
       tools[custom.name] = tool({
         description: custom.description,

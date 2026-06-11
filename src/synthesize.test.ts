@@ -1,9 +1,14 @@
 import { MockLanguageModelV3 } from "ai/test";
+import type {
+  LanguageModelV3GenerateResult,
+} from "@ai-sdk/provider";
 import { describe, expect, it } from "vitest";
 import type { BindOutcome } from "./bind.js";
 import { createBudgetMeter } from "./budget.js";
+import type { ResearchEvent } from "./events.js";
 import type { ResearchClaim } from "./ledger.js";
-import { repairReport } from "./synthesize.js";
+import { createSourceDocument } from "./source-documents.js";
+import { repairReport, synthesizeReport } from "./synthesize.js";
 import type { RunCtx } from "./state.js";
 
 const USAGE = {
@@ -42,6 +47,7 @@ function fakeRctx(model: MockLanguageModelV3): RunCtx {
   return {
     question: "how tall is the tower?",
     bindModel: () => model,
+    config: { envelope: { maxReportTokens: 8_192 } },
     ledger: {
       byId: (id: string) => (id === "claim_1" ? fakeClaim("claim_1") : undefined),
       digest: () => "[claim_1·central·primary] The tower is 330 meters tall",
@@ -71,6 +77,78 @@ function boundWith(opts: {
     unsupportedSentences: opts.unsupportedSentences ?? [],
   };
 }
+
+describe("synthesizeReport with tools", () => {
+  it("lets the writer consult sources before producing the report", async () => {
+    const report = "The tower is 330 meters tall. {{claim_1}}";
+    let step = 0;
+    const writer = new MockLanguageModelV3({
+      doGenerate: async (): Promise<LanguageModelV3GenerateResult> => {
+        step++;
+        if (step === 1) {
+          return {
+            content: [
+              {
+                type: "tool-call",
+                toolCallId: "call_1",
+                toolName: "search_sources",
+                input: JSON.stringify({ query: "tower height" }),
+              },
+            ],
+            finishReason: { unified: "tool-calls", raw: undefined },
+            usage: USAGE,
+            warnings: [],
+          };
+        }
+        return {
+          content: [{ type: "text", text: report }],
+          finishReason: { unified: "stop", raw: undefined },
+          usage: USAGE,
+          warnings: [],
+        };
+      },
+    });
+    const markdown =
+      "The official register lists the tower at 330 meters tall.".padEnd(
+        250,
+        " filler",
+      );
+    const document = createSourceDocument(
+      "https://example.com",
+      "Register",
+      markdown,
+      { markdownChars: markdown.length, extractionNotes: [] },
+      markdown.length,
+      "source_1",
+    );
+    const events: ResearchEvent[] = [];
+    const rctx = {
+      question: "how tall is the tower?",
+      bindModel: () => writer,
+      config: { envelope: { maxReportTokens: 8_192 } },
+      sources: {
+        byId: new Map([["source_1", document]]),
+        byUrl: new Map([["https://example.com", document]]),
+      },
+      emit: (event: ResearchEvent) => events.push(event),
+      signal: undefined,
+    } as unknown as RunCtx;
+    const result = await synthesizeReport(rctx, createBudgetMeter(1), {
+      partition: {
+        confirmed: [fakeClaim("claim_1")],
+        contested: [],
+        refuted: [],
+        candidates: [],
+      },
+    });
+    expect(result).toBe(report);
+    expect(step).toBe(2);
+    expect(events.map((event) => event.type)).toEqual([
+      "report.drafting",
+      "report.delta",
+    ]);
+  });
+});
 
 describe("repairReport", () => {
   it("rewrites the draft when a citation fails entailment", async () => {

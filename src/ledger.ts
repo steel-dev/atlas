@@ -52,7 +52,9 @@ export interface ResearchClaim {
 }
 
 export const EXTRACTION_INPUT_CHARS = 40_000;
-const EXTRACTION_MAX_TOKENS = 2_000;
+const EXTRACTION_BASE_TOKENS = 500;
+const EXTRACTION_TOKENS_PER_CLAIM = 300;
+const DEFAULT_CLAIMS_PER_SOURCE = 5;
 const EXTRACTION_CONCURRENCY = 8;
 const MIN_EXTRACTABLE_CHARS = 200;
 const LEDGER_DIGEST_MAX_CLAIMS = 60;
@@ -68,25 +70,31 @@ const QUALITY_VALUES = [
   "unreliable",
 ] as const;
 
-const extractionSchema = z.object({
-  sourceQuality: z.enum(QUALITY_VALUES),
-  publishDate: z.string().optional(),
-  claims: z
-    .array(
-      z.object({
-        claim: z.string(),
-        quote: z.string(),
-        importance: z.enum(IMPORTANCE_VALUES),
-      }),
-    )
-    .max(5),
-});
+function extractionSchema(maxClaims: number) {
+  return z.object({
+    sourceQuality: z.enum(QUALITY_VALUES),
+    publishDate: z.string().optional(),
+    claims: z
+      .array(
+        z.object({
+          claim: z.string(),
+          quote: z.string(),
+          importance: z.enum(IMPORTANCE_VALUES),
+        }),
+      )
+      .max(maxClaims),
+  });
+}
 
 const EXTRACTION_SYSTEM_PROMPT =
   "You extract falsifiable, verbatim-quoted claims from one fetched source document for a research run. " +
   QUARANTINE_NOTE;
 
-function extractionPrompt(goal: string, document: SourceDocument): string {
+function extractionPrompt(
+  goal: string,
+  document: SourceDocument,
+  maxClaims: number,
+): string {
   const text = document.markdown.slice(0, EXTRACTION_INPUT_CHARS);
   const truncationNote =
     document.markdown.length > EXTRACTION_INPUT_CHARS
@@ -104,7 +112,7 @@ function extractionPrompt(goal: string, document: SourceDocument): string {
     truncationNote +
     "\n\n## Task\n" +
     '1. Assess source quality: primary research/official/institutional data → "primary"; reputable secondary reporting → "secondary"; personal blog or opinion → "blog"; forum or user-generated content → "forum"; spam, ads, paywalled stubs, or irrelevant pages → "unreliable".\n' +
-    "2. Extract 2-5 falsifiable claims that bear on the research goal. Each claim must:\n" +
+    `2. Extract 2-${maxClaims} falsifiable claims that bear on the research goal. Each claim must:\n` +
     "   - be a concrete, checkable statement that preserves exact values, dates, and named entities\n" +
     "   - include a supporting quote copied VERBATIM from the source text above — it is string-matched against the stored text, so never paraphrase, correct, reorder, or splice\n" +
     "   - be rated central, supporting, or tangential to the research goal\n" +
@@ -195,6 +203,7 @@ export interface LedgerContext {
   signal?: AbortSignal | undefined;
   shouldExtract(): boolean;
   onClaim?(claim: ResearchClaim): void;
+  claimsPerSource?: number;
 }
 
 interface RawExtractedClaim {
@@ -254,12 +263,14 @@ export function createLedger(ctx: LedgerContext): Ledger {
     document: SourceDocument,
     opts: LedgerQueueOptions,
   ): Promise<void> {
+    const maxClaims = ctx.claimsPerSource ?? DEFAULT_CLAIMS_PER_SOURCE;
     const result = await generateObject({
       model: opts.model,
       system: EXTRACTION_SYSTEM_PROMPT,
-      prompt: extractionPrompt(opts.goal, document),
-      schema: extractionSchema,
-      maxOutputTokens: EXTRACTION_MAX_TOKENS,
+      prompt: extractionPrompt(opts.goal, document, maxClaims),
+      schema: extractionSchema(maxClaims),
+      maxOutputTokens:
+        EXTRACTION_BASE_TOKENS + EXTRACTION_TOKENS_PER_CLAIM * maxClaims,
       maxRetries: MODEL_CALL_MAX_RETRIES,
       abortSignal: ctx.signal,
     });

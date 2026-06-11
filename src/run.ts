@@ -486,6 +486,7 @@ async function executeRun(args: ExecuteRunArgs): Promise<ResearchResult> {
     emit,
     signal: args.hardSignal,
     shouldExtract: () => !budgetExhausted(),
+    claimsPerSource: resolved.envelope.maxClaimsPerSource,
     onClaim: (claim) => {
       if (claim.importance !== "central") return;
       if (eagerVerifyStarted >= EAGER_VERIFY_MAX_CLAIMS) return;
@@ -590,7 +591,10 @@ async function executeRun(args: ExecuteRunArgs): Promise<ResearchResult> {
     if (verifyReserve !== meter) verifyReserve.release();
   }
 
-  const partition = partitionClaims(ledger.claims);
+  const partition = partitionClaims(
+    ledger.claims,
+    resolved.envelope.maxReportCandidates,
+  );
   let draft: string;
   if (
     partition.confirmed.length === 0 &&

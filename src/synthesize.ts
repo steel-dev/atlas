@@ -1,12 +1,14 @@
-import { generateText, streamText } from "ai";
+import { generateText, stepCountIs } from "ai";
 import type { BindOutcome } from "./bind.js";
 import type { BudgetGrant } from "./budget.js";
 import { MODEL_CALL_MAX_RETRIES } from "./model.js";
 import type { RunCtx } from "./state.js";
+import { buildAgentTools, type AgentCtx, type ToolName } from "./tools.js";
 import { voteSplit } from "./verify.js";
 import type { ResearchClaim } from "./ledger.js";
 
-const REPORT_MAX_TOKENS = 8_192;
+const WRITE_MAX_TURNS = 8;
+const WRITER_TOOLS: ToolName[] = ["search_sources", "read_source", "run_code"];
 const SOURCE_CONTEXT_WINDOW = 500;
 const CONFIDENCE_RANK = { high: 0, medium: 1, low: 2 } as const;
 const CANDIDATE_IMPORTANCE_RANK = {
@@ -30,7 +32,10 @@ export interface ClaimPartition {
   candidates: ResearchClaim[];
 }
 
-export function partitionClaims(claims: ResearchClaim[]): ClaimPartition {
+export function partitionClaims(
+  claims: ResearchClaim[],
+  maxCandidates: number = MAX_REPORT_CANDIDATES,
+): ClaimPartition {
   const representatives = claims.filter((claim) => !claim.duplicateOf);
   const confirmed = representatives.filter(
     (claim) => claim.status === "confirmed",
@@ -51,11 +56,14 @@ export function partitionClaims(claims: ResearchClaim[]): ClaimPartition {
         CANDIDATE_QUALITY_RANK[a.sourceQuality] -
           CANDIDATE_QUALITY_RANK[b.sourceQuality],
     )
-    .slice(0, MAX_REPORT_CANDIDATES);
+    .slice(0, maxCandidates);
   return { confirmed, contested, refuted, candidates };
 }
 
-function quoteContext(rctx: RunCtx, claim: ResearchClaim): string | undefined {
+export function quoteContext(
+  rctx: RunCtx,
+  claim: ResearchClaim,
+): string | undefined {
   const doc = rctx.sources.byId.get(claim.sourceId);
   if (!doc) return undefined;
   const idx = doc.markdown.indexOf(claim.quote);
@@ -168,6 +176,9 @@ const SYNTHESIS_SYSTEM_PROMPT =
   "Cite each factual statement inline as a Markdown link to its source URL, using only URLs present in the claims. " +
   "ADDITIONALLY, after every sentence that asserts a fact drawn from a claim, append a claim marker of the form {{claim_3}} (or {{claim_3,claim_7}} when a sentence rests on several claims), using the bracketed ids shown with each claim. The markers are machine-checked and stripped before the user sees the report — never omit them, never invent ids. " +
   "A confirmed claim may include a 'Source context' excerpt from its page; use it for precise wording and detail, but still cite the claim's source URL. " +
+  "You may consult the stored sources before writing: search_sources finds passages, read_source reads exact text, run_code computes over them. " +
+  "Use them to merge duplicates confidently and to recover precise wording, figures, units, and dates around the listed claims' quotes — a few tool turns at most; your final reply with no tool calls is the report itself. " +
+  "Source detail may sharpen a sentence, but every factual sentence still carries its {{claim_id}} marker and must stay within what that claim's source supports — markers are machine-checked against the claim, its quote, and the surrounding source text. " +
   "Surface a caveat only where it changes how the answer should be read, inline next to the point it qualifies. " +
   "Do not add generic 'Caveats' or 'Open Questions' sections.";
 
@@ -195,6 +206,7 @@ export function synthesisPrompt(opts: {
     renderRefutedClaims(refuted) +
     (opts.closingNote ? `\n## Lead agent's closing note\n${opts.closingNote}\n` : "") +
     "\n## Write the report\n" +
+    "Consult the stored sources first (search_sources, read_source, run_code) when exact wording, figures, or context matter; then write. " +
     "Merge claims that say the same thing and combine their sources. " +
     "Lead with the direct answer in the first sentence, then the supporting detail. " +
     "Prefer confirmed claims; if they do not answer, you may answer from the single best-supported candidate and flag it low confidence, never from a refuted claim, never invented. " +
@@ -214,7 +226,18 @@ export async function synthesizeReport(
 ): Promise<string> {
   const model = rctx.bindModel("write", grant);
   rctx.emit({ type: "report.drafting" });
-  const result = streamText({
+  const actx: AgentCtx = {
+    agentId: "agent_write",
+    role: "write",
+    grant,
+    depth: 0,
+    spawnsThisStep: { count: 0 },
+    extractModel: model,
+    spawn: async () => "Spawning is unavailable during synthesis.",
+  };
+  const tools = buildAgentTools(rctx, actx, WRITER_TOOLS);
+  let lastText = "";
+  const result = await generateText({
     model,
     system: SYNTHESIS_SYSTEM_PROMPT,
     prompt: synthesisPrompt({
@@ -223,14 +246,18 @@ export async function synthesizeReport(
       closingNote: opts.closingNote,
       context: (claim) => quoteContext(rctx, claim),
     }),
-    maxOutputTokens: REPORT_MAX_TOKENS,
+    tools,
+    stopWhen: [stepCountIs(WRITE_MAX_TURNS), () => grant.floored()],
+    maxOutputTokens: rctx.config.envelope.maxReportTokens,
     maxRetries: MODEL_CALL_MAX_RETRIES,
     abortSignal: rctx.signal,
+    onStepFinish: (step) => {
+      if (step.text?.trim()) lastText = step.text.trim();
+    },
   });
-  for await (const delta of result.textStream) {
-    if (delta) rctx.emit({ type: "report.delta", text: delta });
-  }
-  return (await result.text).trim();
+  const report = (result.text.trim() || lastText).trim();
+  if (report) rctx.emit({ type: "report.delta", text: report });
+  return report;
 }
 
 const REPAIR_MAX_PROBLEMS = 24;
@@ -286,7 +313,7 @@ export async function repairReport(
       "\n\n## Claim ledger digest\n" +
       (rctx.ledger.digest() || "(empty)") +
       "\n\nReturn the corrected draft.",
-    maxOutputTokens: REPORT_MAX_TOKENS,
+    maxOutputTokens: rctx.config.envelope.maxReportTokens,
     maxRetries: MODEL_CALL_MAX_RETRIES,
     abortSignal: rctx.signal,
   });

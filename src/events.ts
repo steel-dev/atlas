@@ -1,7 +1,7 @@
 import type { Effort } from "./config.js";
 import type { ClaimImportance, ClaimStatus } from "./ledger.js";
 
-export type AgentRole = "orchestrator" | "research" | "verify";
+export type AgentRole = "orchestrator" | "research" | "verify" | "write";
 
 export interface RunStats {
   effort: Effort;
