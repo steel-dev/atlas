@@ -183,6 +183,7 @@ export interface Ledger {
   readonly dupesDropped: number;
   queue(document: SourceDocument, opts: LedgerQueueOptions): void;
   settle(): Promise<void>;
+  flush(agentId?: string): Promise<void>;
   byId(claimId: string): ResearchClaim | undefined;
   representatives(): ResearchClaim[];
   digest(maxClaims?: number): string;
@@ -211,7 +212,7 @@ export function createLedger(ctx: LedgerContext): Ledger {
   const claimsById = new Map<string, ResearchClaim>();
   const representativeByText = new Map<string, string>();
   const queuedSourceIds = new Set<string>();
-  const pending = new Set<Promise<void>>();
+  const pending = new Set<{ task: Promise<void>; agentId: string }>();
   const gate = createConcurrencyGate(EXTRACTION_CONCURRENCY);
   let nextClaimNumber = 1;
   let unsupportedCount = 0;
@@ -330,14 +331,22 @@ export function createLedger(ctx: LedgerContext): Ledger {
           error: errorMessage(err),
         });
       });
-    pending.add(task);
-    void task.finally(() => pending.delete(task));
+    const entry = { task, agentId: opts.agentId };
+    pending.add(entry);
+    void task.finally(() => pending.delete(entry));
   }
 
   async function settle(): Promise<void> {
     while (pending.size > 0) {
-      await Promise.all([...pending]);
+      await Promise.all([...pending].map((entry) => entry.task));
     }
+  }
+
+  async function flush(agentId?: string): Promise<void> {
+    const tasks = [...pending]
+      .filter((entry) => agentId === undefined || entry.agentId === agentId)
+      .map((entry) => entry.task);
+    if (tasks.length > 0) await Promise.all(tasks);
   }
 
   return {
@@ -350,6 +359,7 @@ export function createLedger(ctx: LedgerContext): Ledger {
     },
     queue,
     settle,
+    flush,
     byId: (claimId) => claimsById.get(claimId),
     representatives: () => claims.filter((claim) => !claim.duplicateOf),
     digest: (maxClaims) => renderLedgerDigest(claims, maxClaims),

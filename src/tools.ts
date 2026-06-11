@@ -33,7 +33,8 @@ export type ToolName =
   | "fetch"
   | "read_source"
   | "search_sources"
-  | "run_code";
+  | "run_code"
+  | "ledger";
 
 export interface SpawnInput {
   role: "research" | "verify";
@@ -565,6 +566,40 @@ export function buildAgentTools(
               : JSON.stringify(outcomes[0].result, null, 2)
             : JSON.stringify({ sources: outcomes }, null, 2);
         return withBudgetLine(rctx, actx, body);
+      },
+    });
+  }
+
+  if (enabled.has("ledger")) {
+    tools.ledger = tool({
+      description:
+        "Render the shared claim ledger digest: every representative claim with its id, importance, source quality, verification status, and corroboration count. Waits for in-flight claim extraction to finish first, so the digest is current. Use it to judge coverage against the question, pick claim_ids for verify spawns, and spot gaps, duplicates, or disagreements.",
+      inputSchema: z.object({
+        max_claims: z.number().int().min(1).max(200).optional(),
+      }),
+      execute: async ({ max_claims }) => {
+        await rctx.ledger.flush();
+        const representatives = rctx.ledger.representatives();
+        if (representatives.length === 0) {
+          return withBudgetLine(
+            rctx,
+            actx,
+            "Ledger is empty: no claims extracted yet.",
+          );
+        }
+        const counts = new Map<string, number>();
+        for (const claim of representatives) {
+          counts.set(claim.status, (counts.get(claim.status) ?? 0) + 1);
+        }
+        const summary = [...counts.entries()]
+          .map(([status, count]) => `${count} ${status}`)
+          .join(", ");
+        return withBudgetLine(
+          rctx,
+          actx,
+          `${representatives.length} claim(s): ${summary}\n` +
+            rctx.ledger.digest(max_claims),
+        );
       },
     });
   }

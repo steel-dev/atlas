@@ -102,6 +102,38 @@ function leadModelNoVerify(): MockLanguageModelV3 {
   });
 }
 
+function inlineLeadModel(): MockLanguageModelV3 {
+  let step = 0;
+  return new MockLanguageModelV3({
+    provider: "mock-provider",
+    modelId: "lead-model",
+    doGenerate: async (options: LanguageModelV3CallOptions) => {
+      step++;
+      if (step === 1) {
+        return toolCallResult(
+          "fetch",
+          { url: "https://data.example.com/tower" },
+          "Plan: fetch the official register inline, then verify the claim.",
+        );
+      }
+      if (step === 2) {
+        return toolCallResult("ledger", {});
+      }
+      if (step === 3) {
+        if (!promptText(options).includes("claim_1")) {
+          return textResult("Ledger digest did not surface my claim.");
+        }
+        return toolCallResult("spawn", {
+          role: "verify",
+          claim_ids: ["claim_1"],
+          task: "Verify the height claim.",
+        });
+      }
+      return textResult("Verified inline; stopping.");
+    },
+  });
+}
+
 function researchModel(): MockLanguageModelV3 {
   let step = 0;
   return new MockLanguageModelV3({
@@ -277,6 +309,42 @@ describe("emergent multi-agent run", () => {
     );
     expect(spawned.filter((event) => event.role === "research")).toHaveLength(
       1,
+    );
+    expect(spawned.filter((event) => event.role === "verify")).toHaveLength(3);
+  });
+
+  it("lets an inline lead read the ledger and verify its own claims", async () => {
+    const atlas = new Atlas({
+      model: inlineLeadModel() as unknown as ResolvedModel,
+      models: {
+        extract: extractModel() as unknown as ResolvedModel,
+        verify: verifyModel() as unknown as ResolvedModel,
+        write: writeModel() as unknown as ResolvedModel,
+      },
+      search: stubSearch,
+      fetch: stubFetch,
+      effort: "fast",
+      safety: { allowPrivateNetworks: true },
+    });
+
+    const run = atlas.start("how tall is the tower?");
+    const events: ResearchEvent[] = [];
+    const drain = (async () => {
+      for await (const event of run.events()) events.push(event);
+    })();
+    const result = await run.result();
+    await drain;
+
+    expect(result.claims.confirmed).toHaveLength(1);
+    expect(result.claims.confirmed[0].id).toBe("claim_1");
+    expect(result.stats.claimsVerified).toBe(1);
+
+    const spawned = events.filter(
+      (event): event is Extract<ResearchEvent, { type: "agent.spawned" }> =>
+        event.type === "agent.spawned",
+    );
+    expect(spawned.filter((event) => event.role === "research")).toHaveLength(
+      0,
     );
     expect(spawned.filter((event) => event.role === "verify")).toHaveLength(3);
   });

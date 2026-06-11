@@ -20,6 +20,7 @@ const RESEARCH_TOOLS: ToolName[] = [
   "read_source",
   "search_sources",
   "run_code",
+  "ledger",
 ];
 
 const DEFAULT_RESEARCH_FRACTION = 0.15;
@@ -133,6 +134,10 @@ export async function runAgent(
       }
     },
   });
+
+  if (spec.role !== "verify") {
+    await rctx.ledger.flush(agentId);
+  }
 
   const note = result.text.trim() || lastText;
   const ownClaims = rctx.ledger.claims

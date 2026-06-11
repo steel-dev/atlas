@@ -161,6 +161,90 @@ describe("ledger extraction and merge", () => {
   });
 });
 
+describe("ledger flush", () => {
+  function deferredExtractionModel(
+    claims: Array<{ claim: string; quote: string; importance: string }>,
+    gate: Promise<void>,
+  ): LanguageModelV3 {
+    return new MockLanguageModelV3({
+      doGenerate: async () => {
+        await gate;
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({ sourceQuality: "secondary", claims }),
+            },
+          ],
+          finishReason: { unified: "stop", raw: undefined },
+          usage: {
+            inputTokens: {
+              total: 100,
+              noCache: 100,
+              cacheRead: 0,
+              cacheWrite: 0,
+            },
+            outputTokens: { total: 50, text: 50, reasoning: 0 },
+          },
+          warnings: [],
+        };
+      },
+    }) as LanguageModelV3;
+  }
+
+  it("waits for the agent's pending extractions", async () => {
+    const ledger = makeLedger();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    ledger.queue(
+      makeDocument(
+        "source_1",
+        "https://a.example.com/1",
+        "The tower is 330 meters tall today.",
+      ),
+      {
+        goal: "g",
+        agentId: "agent_1",
+        model: deferredExtractionModel(
+          [
+            {
+              claim: "The tower is 330 meters tall",
+              quote: "330 meters tall",
+              importance: "central",
+            },
+          ],
+          gate,
+        ),
+      },
+    );
+    const flushed = ledger.flush("agent_1").then(() => ledger.claims.length);
+    expect(ledger.claims).toHaveLength(0);
+    release();
+    expect(await flushed).toBe(1);
+  });
+
+  it("does not wait on other agents' extractions", async () => {
+    const ledger = makeLedger();
+    const gate = new Promise<void>(() => {});
+    ledger.queue(
+      makeDocument(
+        "source_1",
+        "https://a.example.com/1",
+        "The tower is 330 meters tall today.",
+      ),
+      {
+        goal: "g",
+        agentId: "agent_1",
+        model: deferredExtractionModel([], gate),
+      },
+    );
+    await ledger.flush("agent_2");
+    expect(ledger.claims).toHaveLength(0);
+  });
+});
+
 describe("renderLedgerDigest", () => {
   it("renders representatives with corroboration and hides duplicates", async () => {
     const ledger = makeLedger();
