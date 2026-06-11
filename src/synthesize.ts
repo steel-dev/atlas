@@ -2,6 +2,7 @@ import { generateText, stepCountIs, streamText } from "ai";
 import { createMarkerStripper, type BindOutcome } from "./bind.js";
 import type { BudgetGrant } from "./budget.js";
 import { MODEL_CALL_MAX_RETRIES } from "./model.js";
+import { todayLine } from "./prompts.js";
 import type { RunCtx } from "./state.js";
 import { buildAgentTools, type AgentCtx, type ToolName } from "./tools.js";
 import { voteSplit } from "./verify.js";
@@ -201,6 +202,7 @@ const SYNTHESIS_SYSTEM_PROMPT =
   "A confirmed claim may include a 'Source context' excerpt from its page; use it for precise wording and detail, but still cite the claim's source URL. " +
   "You may consult the stored sources before writing: search_sources finds passages, read_source reads exact text, run_code computes over them. " +
   "Use them to merge duplicates confidently and to recover precise wording, figures, units, and dates around the listed claims' quotes — a few tool turns at most; your final reply with no tool calls is the report itself. " +
+  "That final reply must begin with the report's first sentence — no preamble, no announcement that you are about to write, no leading horizontal rule. " +
   "Source detail may sharpen a sentence, but every factual sentence still carries its {{claim_id}} marker and must stay within what that claim's source supports — markers are machine-checked against the claim, its quote, and the surrounding source text. " +
   "Surface a caveat only where it changes how the answer should be read, inline next to the point it qualifies. " +
   "Do not add generic 'Caveats' or 'Open Questions' sections.";
@@ -242,6 +244,36 @@ export function synthesisPrompt(opts: {
   );
 }
 
+const PREAMBLE_MAX_CHARS = 300;
+
+function looksLikeNarration(block: string): boolean {
+  const trimmed = block.trim();
+  return (
+    trimmed.length <= PREAMBLE_MAX_CHARS &&
+    !trimmed.startsWith("#") &&
+    !trimmed.includes("{{") &&
+    !trimmed.includes("](")
+  );
+}
+
+export function stripReportPreamble(report: string): string {
+  const rule = /^([\s\S]*?)\n\s*(?:-{3,}|\*{3,}|_{3,})\s*\n/.exec(report);
+  if (rule && looksLikeNarration(rule[1])) {
+    return report.slice(rule[0].length).trim();
+  }
+  const blocks = report.split(/\n{2,}/);
+  const first = blocks[0]?.trim() ?? "";
+  if (
+    blocks.length > 1 &&
+    first.length > 0 &&
+    looksLikeNarration(first) &&
+    blocks[1].trim().startsWith("#")
+  ) {
+    return blocks.slice(1).join("\n\n").trim();
+  }
+  return report;
+}
+
 export async function synthesizeReport(
   rctx: RunCtx,
   grant: BudgetGrant,
@@ -264,7 +296,7 @@ export async function synthesizeReport(
   const tools = buildAgentTools(rctx, actx, WRITER_TOOLS);
   const result = streamText({
     model,
-    system: SYNTHESIS_SYSTEM_PROMPT,
+    system: `${SYNTHESIS_SYSTEM_PROMPT}\n\n${todayLine()}`,
     prompt: synthesisPrompt({
       question: rctx.question,
       partition: opts.partition,
@@ -307,7 +339,7 @@ export async function synthesizeReport(
     }
   }
   rctx.signal?.throwIfAborted();
-  return lastText.trim();
+  return stripReportPreamble(lastText.trim());
 }
 
 const REPAIR_MAX_PROBLEMS = 24;
@@ -367,7 +399,7 @@ export async function repairReport(
     maxRetries: MODEL_CALL_MAX_RETRIES,
     abortSignal: rctx.signal,
   });
-  const repaired = result.text.trim();
+  const repaired = stripReportPreamble(result.text.trim());
   return repaired || undefined;
 }
 

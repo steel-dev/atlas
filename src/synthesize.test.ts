@@ -9,7 +9,11 @@ import { createBudgetMeter } from "./budget.js";
 import type { ResearchEvent } from "./events.js";
 import type { ResearchClaim } from "./ledger.js";
 import { createSourceDocument } from "./source-documents.js";
-import { repairReport, synthesizeReport } from "./synthesize.js";
+import {
+  repairReport,
+  stripReportPreamble,
+  synthesizeReport,
+} from "./synthesize.js";
 import type { RunCtx } from "./state.js";
 
 const USAGE = {
@@ -214,5 +218,41 @@ describe("repairReport", () => {
       }),
     });
     expect(repaired).toBeUndefined();
+  });
+});
+
+describe("stripReportPreamble", () => {
+  it("drops a narration line before a horizontal rule", () => {
+    const report =
+      "I have what I need. Writing the report.\n\n---\n\nLand reform across these states shows X [](https://example.com). {{claim_1}}";
+    expect(stripReportPreamble(report)).toBe(
+      "Land reform across these states shows X [](https://example.com). {{claim_1}}",
+    );
+  });
+
+  it("drops a bare leading horizontal rule", () => {
+    const report = "\n---\n# Findings\n\nBody. {{claim_1}}";
+    expect(stripReportPreamble(report)).toBe("# Findings\n\nBody. {{claim_1}}");
+  });
+
+  it("drops a narration paragraph before a heading", () => {
+    const report = "Writing the report now.\n\n# Findings\n\nBody. {{claim_1}}";
+    expect(stripReportPreamble(report)).toBe("# Findings\n\nBody. {{claim_1}}");
+  });
+
+  it("keeps an opening paragraph that carries citations", () => {
+    const report =
+      "The tower is [330 meters tall](https://example.com). {{claim_1}}\n\n---\n\nMore detail. {{claim_2}}";
+    expect(stripReportPreamble(report)).toBe(report);
+  });
+
+  it("keeps a report that starts with a heading", () => {
+    const report = "# Findings\n\n---\n\nBody. {{claim_1}}";
+    expect(stripReportPreamble(report)).toBe(report);
+  });
+
+  it("keeps a short answer with no rules or headings", () => {
+    const report = "The tower is 330 meters tall. {{claim_1}}";
+    expect(stripReportPreamble(report)).toBe(report);
   });
 });

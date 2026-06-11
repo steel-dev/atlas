@@ -5,7 +5,7 @@ import { errorMessage } from "./errors.js";
 import type { AgentRole } from "./events.js";
 import { renderLedgerDigest } from "./ledger.js";
 import { MODEL_CALL_MAX_RETRIES, type ModelRole } from "./model.js";
-import { RESEARCH_AGENT_SYSTEM } from "./prompts.js";
+import { researchAgentSystem } from "./prompts.js";
 import { ROLE_CAPABILITIES } from "./roles.js";
 import { budgetStatusLine, type RunCtx } from "./state.js";
 import {
@@ -212,7 +212,7 @@ async function executeSpawn(
       role: "research",
       modelRole: "research",
       task,
-      system: RESEARCH_AGENT_SYSTEM,
+      system: researchAgentSystem(),
       tools: RESEARCH_TOOLS,
       grant,
       depth: childDepth,
