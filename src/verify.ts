@@ -74,6 +74,7 @@ function voterPrompt(
   question: string,
   claim: ResearchClaim,
   lens: VerifierLens,
+  rivals: ResearchClaim[] = [],
 ): string {
   return (
     "## Claim under review\n" +
@@ -83,6 +84,14 @@ function voterPrompt(
     `Research question: "${question}"\n\n` +
     `## Your lens: ${lens}\n` +
     LENS_INSTRUCTIONS[lens] +
+    (rivals.length > 0
+      ? "\n\n## Conflicting ledger claims\n" +
+        "The run's own ledger holds claims that appear to contradict this one:\n" +
+        rivals
+          .map((rival) => `- ${rival.id} (${rival.url}): "${rival.text}"`)
+          .join("\n") +
+        "\nAdjudicate the conflict: search for evidence showing which side is right. refuted=true if the evidence favors a conflicting claim."
+      : "") +
     "\n\n" +
     "Use your tools to investigate as far as the claim warrants — a turn or two is usual, more when it is genuinely contested. Stop as soon as you can judge it; do not run searches you do not need. When you stop calling tools, briefly state your finding."
   );
@@ -115,7 +124,13 @@ async function castVote(
 ): Promise<ClaimVote | null> {
   if (args.grant.floored()) return null;
   try {
-    const task = voterPrompt(rctx.question, claim, lens);
+    const rivals =
+      lens === "contradiction"
+        ? (claim.conflictsWith ?? [])
+            .map((id) => rctx.ledger.byId(id))
+            .filter((rival): rival is ResearchClaim => rival !== undefined)
+        : [];
+    const task = voterPrompt(rctx.question, claim, lens, rivals);
     const voter = await runAgent(rctx, {
       role: "verify",
       modelRole: "verify",
@@ -296,7 +311,8 @@ export async function runVerifySpawn(
     }
     const job = (async () => {
       let votes: ClaimVote[] | null = null;
-      if (!lensesExplicit && claim.importance !== "central") {
+      const conflicted = (claim.conflictsWith?.length ?? 0) > 0;
+      if (!lensesExplicit && claim.importance !== "central" && !conflicted) {
         votes = await screenClaim(rctx, args.grant, claim);
       }
       if (!votes) {

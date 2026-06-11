@@ -49,6 +49,7 @@ export interface ResearchClaim {
   duplicateOf?: string;
   corroboration?: number;
   corroboratingSources?: string[];
+  conflictsWith?: string[];
 }
 
 export const EXTRACTION_INPUT_CHARS = 40_000;

@@ -4,6 +4,7 @@ import type { BudgetGrant } from "./budget.js";
 import { MODEL_CALL_MAX_RETRIES } from "./model.js";
 import { normalizeForQuoteMatch, type ResearchClaim } from "./ledger.js";
 import type { RunCtx } from "./state.js";
+import { voteSplit } from "./verify.js";
 
 const SIMILARITY_THRESHOLD = 0.3;
 const MAX_PAIRS = 150;
@@ -11,13 +12,17 @@ const PAIR_BATCH_SIZE = 40;
 const JUDGE_MAX_TOKENS = 2_000;
 
 const JUDGE_SYSTEM =
-  "You judge whether pairs of extracted research claims assert the same fact. " +
-  "A pair is duplicate when both claims would be corroborated by the same evidence: the same entity and the same quantity, date, or event, allowing wording, rounding, and unit-format differences. " +
-  "Claims about different aspects, periods, quantities, or entities are not duplicates. Structured output only.";
+  "You judge pairs of extracted research claims. " +
+  '"duplicate": both claims assert the same fact about the same entity — the same quantity, date, or event, allowing wording, rounding, and unit-format differences; the same evidence would corroborate both. ' +
+  '"contradicts": the claims make incompatible assertions about the same entity and aspect — values, dates, rankings, or outcomes that cannot both be true as stated. Different aspects, periods, or measurement bases are not contradictions. ' +
+  '"distinct": anything else. Structured output only.';
 
 const verdictSchema = z.object({
   verdicts: z.array(
-    z.object({ index: z.number().int(), duplicate: z.boolean() }),
+    z.object({
+      index: z.number().int(),
+      verdict: z.enum(["duplicate", "contradicts", "distinct"]),
+    }),
   ),
 });
 
@@ -51,6 +56,9 @@ export function candidateDuplicatePairs(
 ): CandidatePair[] {
   const tokens = claims.map((claim) => tokensOf(claim.text));
   const numbers = tokens.map(numericTokens);
+  const words = tokens.map(
+    (set) => new Set([...set].filter((token) => !/\d/.test(token))),
+  );
   const pairs: CandidatePair[] = [];
   for (let i = 0; i < claims.length; i++) {
     for (let j = i + 1; j < claims.length; j++) {
@@ -62,7 +70,13 @@ export function candidateDuplicatePairs(
             break;
           }
         }
-        if (!sharedNumber) continue;
+        if (!sharedNumber) {
+          const score = jaccard(words[i], words[j]);
+          if (score >= SIMILARITY_THRESHOLD) {
+            pairs.push({ a: claims[i], b: claims[j], score });
+          }
+          continue;
+        }
       }
       const score = jaccard(tokens[i], tokens[j]);
       if (score >= SIMILARITY_THRESHOLD) {
@@ -73,14 +87,50 @@ export function candidateDuplicatePairs(
   return pairs.sort((x, y) => y.score - x.score).slice(0, MAX_PAIRS);
 }
 
+function markConflict(
+  rctx: RunCtx,
+  a: ResearchClaim,
+  b: ResearchClaim,
+): boolean {
+  if (a.duplicateOf || b.duplicateOf || a.id === b.id) return false;
+  let changed = false;
+  const link = (claim: ResearchClaim, other: ResearchClaim) => {
+    const conflicts = new Set(claim.conflictsWith ?? []);
+    if (conflicts.has(other.id)) return;
+    conflicts.add(other.id);
+    claim.conflictsWith = [...conflicts];
+    changed = true;
+    if (
+      claim.votes.length === 0 &&
+      (claim.status === "quoted" || claim.status === "unverified")
+    ) {
+      claim.status = "contested";
+      rctx.emit({
+        type: "claim.verified",
+        claimId: claim.id,
+        status: claim.status,
+        votes: voteSplit(claim),
+      });
+    }
+  };
+  link(a, b);
+  link(b, a);
+  return changed;
+}
+
+export interface DedupePassOutcome {
+  merged: number;
+  contradicted: number;
+}
+
 export async function semanticDedupePass(
   rctx: RunCtx,
   grant: BudgetGrant,
-): Promise<number> {
+): Promise<DedupePassOutcome> {
   const pairs = candidateDuplicatePairs(rctx.ledger.representatives());
-  if (pairs.length === 0) return 0;
+  const outcome: DedupePassOutcome = { merged: 0, contradicted: 0 };
+  if (pairs.length === 0) return outcome;
   const model = rctx.bindModel("extract", grant);
-  let merged = 0;
   for (let offset = 0; offset < pairs.length; offset += PAIR_BATCH_SIZE) {
     if (grant.floored() || rctx.signal?.aborted) break;
     const batch = pairs
@@ -99,28 +149,31 @@ export async function semanticDedupePass(
                 `[${index}]\nA (${pair.a.id}): "${pair.a.text}"\nB (${pair.b.id}): "${pair.b.text}"`,
             )
             .join("\n\n") +
-          "\n\nReturn one verdict per index: duplicate true or false.",
+          "\n\nReturn one verdict per index: duplicate, contradicts, or distinct.",
         schema: verdictSchema,
         maxOutputTokens: JUDGE_MAX_TOKENS,
         maxRetries: MODEL_CALL_MAX_RETRIES,
         abortSignal: rctx.signal,
       });
-      for (const verdict of result.object.verdicts) {
-        if (!verdict.duplicate) continue;
-        const pair = batch[verdict.index];
+      for (const item of result.object.verdicts) {
+        const pair = batch[item.index];
         if (!pair) continue;
-        if (rctx.ledger.merge(pair.b.id, pair.a.id)) merged++;
+        if (item.verdict === "duplicate") {
+          if (rctx.ledger.merge(pair.b.id, pair.a.id)) outcome.merged++;
+        } else if (item.verdict === "contradicts") {
+          if (markConflict(rctx, pair.a, pair.b)) outcome.contradicted++;
+        }
       }
     } catch (err) {
       if (rctx.signal?.aborted) throw err;
     }
   }
-  if (merged > 0) {
+  if (outcome.merged > 0 || outcome.contradicted > 0) {
     rctx.emit({
       type: "tool.event",
       tool: "dedupe",
-      data: { merged, pairsChecked: pairs.length },
+      data: { ...outcome, pairsChecked: pairs.length },
     });
   }
-  return merged;
+  return outcome;
 }

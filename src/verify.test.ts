@@ -135,6 +135,27 @@ describe("runVerifySpawn staged verification", () => {
     expect(outcome.verdicts[0].votes).toBe("2-0");
     expect(supporting.votes).toHaveLength(2);
   });
+
+  it("escalates conflicted claims to the panel instead of the screen", async () => {
+    const conflicted = claim();
+    conflicted.importance = "supporting";
+    conflicted.conflictsWith = ["claim_2"];
+    const rctx = screeningRctx([conflicted], screenModel({
+      quote_supports_claim: true,
+      source_is_evidence: true,
+      confidence: "high",
+      note: "would have settled from the screen",
+    }));
+    const outcome = await runVerifySpawn(rctx, {
+      claimIds: ["claim_1"],
+      grant: createBudgetMeter(1),
+      parentId: "agent_1",
+      depth: 1,
+    });
+    expect(outcome.verdicts).toHaveLength(1);
+    expect(outcome.verdicts[0].status).not.toBe("confirmed");
+    expect(conflicted.votes).toHaveLength(0);
+  });
 });
 
 describe("runVerifySpawn dedup", () => {
