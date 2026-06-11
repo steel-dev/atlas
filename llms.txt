@@ -39,7 +39,6 @@ result.citations;           // [{ sentenceSpan, claimId, sourceId, quote, verifi
 result.claims.confirmed;    // survived the full adversarial panel
 result.claims.screened;     // passed the cheap screening check only
 result.claims.contested;    // sources disagree — surfaced, not buried
-result.findings;            // statements + confidence + claim/source ids
 result.stats;               // costUSD, tokens per role, agentsSpawned, singleAgent, …
 ```
 

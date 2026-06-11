@@ -51,14 +51,6 @@ export type RunStatus =
   | "cancelled"
   | "paused";
 
-export interface Finding {
-  id: string;
-  statement: string;
-  confidence: "high" | "medium" | "low";
-  claimIds: string[];
-  sourceIds: string[];
-}
-
 export interface SourceRecord {
   id: string;
   url: string;
@@ -84,7 +76,6 @@ export interface ResearchResult {
   note: string;
   structured?: unknown;
   structuredBasis?: Record<string, FieldBasis>;
-  findings: Finding[];
   claims: ResearchClaims;
   openQuestions: string[];
   sources: SourceRecord[];
@@ -364,7 +355,6 @@ async function executeRun(args: ExecuteRunArgs): Promise<ResearchResult> {
     note: orchestrator.note,
     ...(structured !== undefined ? { structured } : {}),
     ...(structuredBasis ? { structuredBasis } : {}),
-    findings: buildFindings(partition),
     claims: {
       confirmed: partition.confirmed,
       screened: partition.screened,
@@ -642,44 +632,6 @@ async function composeOutputs(
     openQuestions:
       openSettled.status === "fulfilled" ? openSettled.value : [],
   };
-}
-
-function buildFindings(partition: ClaimPartition): Finding[] {
-  const findings: Finding[] = [];
-  let next = 1;
-  for (const claim of partition.confirmed) {
-    findings.push({
-      id: `finding_${next++}`,
-      statement: claim.text,
-      confidence:
-        (claim.corroboration ?? 1) > 1 ||
-        claim.votes.some((vote) => !vote.refuted && vote.confidence === "high")
-          ? "high"
-          : "medium",
-      claimIds: [claim.id],
-      sourceIds: [claim.sourceId],
-    });
-  }
-  for (const claim of partition.screened) {
-    findings.push({
-      id: `finding_${next++}`,
-      statement: claim.text,
-      confidence: "medium",
-      claimIds: [claim.id],
-      sourceIds: [claim.sourceId],
-    });
-  }
-  for (const claim of partition.candidates) {
-    if (claim.importance === "tangential") continue;
-    findings.push({
-      id: `finding_${next++}`,
-      statement: claim.text,
-      confidence: "low",
-      claimIds: [claim.id],
-      sourceIds: [claim.sourceId],
-    });
-  }
-  return findings;
 }
 
 const openQuestionsSchema = z.object({

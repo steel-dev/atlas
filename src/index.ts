@@ -12,7 +12,6 @@ export type {
 } from "./config.js";
 export { EFFORT_ENVELOPES } from "./config.js";
 export type {
-  Finding,
   ResearchClaims,
   ResearchResult,
   ResearchRun,
