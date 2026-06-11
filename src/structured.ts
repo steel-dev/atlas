@@ -116,7 +116,7 @@ export async function synthesizeStructured<T>(
     system: DATA_SYSTEM_PROMPT,
     prompt:
       `**Question:** ${rctx.question}\n\n` +
-      "## Confirmed claims (adversarially verified)\n" +
+      "## Supported claims (confirmed, screened, or contested — prefer earlier ones)\n" +
       renderNumberedClaims(opts.confirmed) +
       (opts.candidates.length > 0
         ? "\n## Unconfirmed candidate claims (quote-grounded, NOT verified — fallback only)\n" +

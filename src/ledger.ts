@@ -20,6 +20,7 @@ export type ClaimSourceQuality =
 export type ClaimStatus =
   | "quoted"
   | "confirmed"
+  | "screened"
   | "contested"
   | "refuted"
   | "unverified";

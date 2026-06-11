@@ -29,7 +29,7 @@ npm install @steel-dev/atlas ai @ai-sdk/anthropic
 
 1. **Plan** — the lead agent states its approach (answer inline / spawn k workers on these facets). Emitted as a `plan.updated` event.
 2. **Act** — it either researches directly (search, fetch, read stored sources, sandboxed code over source text) or spawns research subagents, each with a private context and a slice of the shared budget. Every fetched page has falsifiable claims extracted into the shared ledger, each carrying a verbatim quote that is string-checked against the stored text; agents can also mint claims directly with `add_claim` when they pin a value extraction missed — under the same verbatim-quote check.
-3. **Integrate & verify** — the lead reads returned notes, new claims, and the ledger digest, fills gaps with follow-up spawns, and spends budget on verify subagents. Verification is staged: central claims get the full adversarial panel (quote-fidelity, contradiction, and source-strength lenses vote; a refutation quorum kills a claim, a single refutation marks it contested) and are checked eagerly as they appear; other claims get a cheap screening check that escalates to the panel only when flagged. When the remaining grant cannot fund a panel, central claims fall back to the screening check instead of starving a panel mid-vote. Before the final sweep, semantically duplicate claims are merged into corroboration and claims that contradict each other are flagged contested — contradicted claims always escalate to the full panel, with the rival claim in the verifier's prompt.
+3. **Integrate & verify** — the lead reads returned notes, new claims, and the ledger digest, fills gaps with follow-up spawns, and spends budget on verify subagents. Verification is staged: central claims get the full adversarial panel (quote-fidelity, contradiction, and source-strength lenses vote; a refutation quorum kills a claim, a single refutation marks it contested) and are checked eagerly as they appear; other claims get a cheap screening check that escalates to the panel only when flagged. Only the panel confirms — a claim that passes screening is marked `screened`, a distinct status, and re-verifying it escalates to the panel. When the remaining grant cannot fund a panel, central claims fall back to the screening check instead of starving a panel mid-vote. Before the final sweep, semantically duplicate claims are merged into corroboration and claims that contradict each other are flagged contested — contradicted claims always escalate to the full panel, with the rival claim in the verifier's prompt.
 4. **Synthesize & bind** — the writer drafts the report with inline claim markers, consulting the stored sources (passage search, exact reads, sandboxed code) for precise wording and figures; the binding pass re-checks every cited sentence against its claim, quote, and surrounding source text, emits `citations[]` with character spans, flags uncited factual sentences, and runs a repair pass that rewrites or drops whatever failed.
 
 ```
@@ -78,7 +78,8 @@ Events are a versioned, JSON-serializable union: `run.started`, `plan.updated`, 
 ```ts
 result.report                 // cited markdown
 result.citations              // [{ sentenceSpan, claimId, sourceId, quote, verified }]
-result.claims.confirmed       // survived adversarial verification
+result.claims.confirmed       // survived the full adversarial panel
+result.claims.screened        // passed the cheap screening check only
 result.claims.contested       // sources disagree — surfaced, not buried
 result.findings               // statements with confidence + claim/source ids
 result.openQuestions

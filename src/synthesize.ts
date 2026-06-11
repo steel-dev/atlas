@@ -27,6 +27,7 @@ const MAX_REPORT_CANDIDATES = 15;
 
 export interface ClaimPartition {
   confirmed: ResearchClaim[];
+  screened: ResearchClaim[];
   contested: ResearchClaim[];
   refuted: ResearchClaim[];
   candidates: ResearchClaim[];
@@ -39,6 +40,9 @@ export function partitionClaims(
   const representatives = claims.filter((claim) => !claim.duplicateOf);
   const confirmed = representatives.filter(
     (claim) => claim.status === "confirmed",
+  );
+  const screened = representatives.filter(
+    (claim) => claim.status === "screened",
   );
   const contested = representatives.filter(
     (claim) => claim.status === "contested",
@@ -57,7 +61,7 @@ export function partitionClaims(
           CANDIDATE_QUALITY_RANK[b.sourceQuality],
     )
     .slice(0, maxCandidates);
-  return { confirmed, contested, refuted, candidates };
+  return { confirmed, screened, contested, refuted, candidates };
 }
 
 export function quoteContext(
@@ -117,6 +121,25 @@ export function renderConfirmedClaims(
     .join("\n");
 }
 
+function renderScreenedClaims(screened: ResearchClaim[]): string {
+  if (screened.length === 0) return "";
+  return (
+    "\n## Screened claims (passed a cheap quote-and-evidence screening, NOT the adversarial panel — usable, but prefer confirmed claims and qualify when a screened claim carries the answer alone)\n" +
+    screened
+      .map(
+        (claim) =>
+          `### [${claim.id}] ${claim.text}\n` +
+          `Source: ${claim.url} (${claim.sourceQuality}` +
+          `${claim.publishedTime ? `, published ${claim.publishedTime}` : ""})\n` +
+          `Quote: "${claim.quote}"\n` +
+          (claim.corroboration && claim.corroboration > 1
+            ? `Corroborated by ${claim.corroboration} independent sources\n`
+            : ""),
+      )
+      .join("\n")
+  );
+}
+
 function renderContestedClaims(contested: ResearchClaim[]): string {
   if (contested.length === 0) return "";
   return (
@@ -168,7 +191,7 @@ function renderRefutedClaims(refuted: ResearchClaim[]): string {
 
 const SYNTHESIS_SYSTEM_PROMPT =
   "You answer one research question from a set of source-cited claims, writing the final report directly as Markdown. " +
-  "Prefer adversarially verified (confirmed) claims; contested claims may be reported as disagreements between sources; you may fall back to an unconfirmed candidate when no confirmed claim answers, but flag such an answer as low confidence and say why. " +
+  "Prefer adversarially verified (confirmed) claims, then screened claims (they passed a cheap quote-and-evidence check, not the adversarial panel); contested claims may be reported as disagreements between sources; you may fall back to an unconfirmed candidate when nothing stronger answers, but flag such an answer as low confidence and say why. " +
   "Never use a refuted claim except to note it was ruled out; never invent claims or sources; carry each statement's source URL. " +
   "Lead with the direct answer in the very first sentence. " +
   "Match length to the question: a single fact deserves 1-3 sentences with no headings; a broad question earns proportionally more, but never pad or fill sections. " +
@@ -188,11 +211,13 @@ export function synthesisPrompt(opts: {
   closingNote?: string | undefined;
   context?: ((claim: ResearchClaim) => string | undefined) | undefined;
 }): string {
-  const { confirmed, contested, refuted, candidates } = opts.partition;
+  const { confirmed, screened, contested, refuted, candidates } =
+    opts.partition;
   return (
     "## Answer the question\n\n" +
     `**Question:** ${opts.question}\n\n` +
     `${confirmed.length} claim(s) survived adversarial verification` +
+    (screened.length > 0 ? `; ${screened.length} passed screening` : "") +
     (candidates.length > 0
       ? `; ${candidates.length} more were extracted but not verified`
       : "") +
@@ -201,6 +226,7 @@ export function synthesisPrompt(opts: {
     (confirmed.length > 0
       ? renderConfirmedClaims(confirmed, opts.context)
       : "(none)\n") +
+    renderScreenedClaims(screened) +
     renderContestedClaims(contested) +
     renderCandidateClaims(candidates) +
     renderRefutedClaims(refuted) +
@@ -209,7 +235,7 @@ export function synthesisPrompt(opts: {
     "Consult the stored sources first (search_sources, read_source, run_code) when exact wording, figures, or context matter; then write. " +
     "Merge claims that say the same thing and combine their sources. " +
     "Lead with the direct answer in the first sentence, then the supporting detail. " +
-    "Prefer confirmed claims; if they do not answer, you may answer from the single best-supported candidate and flag it low confidence, never from a refuted claim, never invented. " +
+    "Prefer confirmed claims, then screened; if nothing stronger answers, you may answer from the single best-supported candidate and flag it low confidence, never from a refuted claim, never invented. " +
     "Scale length to the question — a single fact is 1-3 sentences with no headings; a broad question gets more, never padded. " +
     "Cite facts inline as Markdown links using only the source URLs above, and append {{claim_id}} markers after every factual sentence. " +
     "Render the report as Markdown for the user."
@@ -326,7 +352,8 @@ export function fallbackReportFromClaims(opts: {
   partition: ClaimPartition;
   closingNote?: string | undefined;
 }): string {
-  const { confirmed, contested, refuted, candidates } = opts.partition;
+  const { confirmed, screened, contested, refuted, candidates } =
+    opts.partition;
   const finding = (claim: ResearchClaim): string =>
     `- ${claim.text} — [${claim.title || claim.url}](${claim.url}) (vote ${voteSplit(claim)}, "${claim.quote}") {{${claim.id}}}`;
   const lines: string[] = [
@@ -341,6 +368,13 @@ export function fallbackReportFromClaims(opts: {
       "",
       `## Verified findings (${confirmed.length})`,
       ...confirmed.map(finding),
+    );
+  }
+  if (screened.length > 0) {
+    lines.push(
+      "",
+      `## Screened findings (${screened.length}) — passed screening, not the adversarial panel`,
+      ...screened.map(finding),
     );
   }
   if (contested.length > 0) {

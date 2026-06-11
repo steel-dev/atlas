@@ -136,6 +136,7 @@ describe("synthesizeReport with tools", () => {
     const result = await synthesizeReport(rctx, createBudgetMeter(1), {
       partition: {
         confirmed: [fakeClaim("claim_1")],
+        screened: [],
         contested: [],
         refuted: [],
         candidates: [],

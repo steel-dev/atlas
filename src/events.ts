@@ -12,6 +12,7 @@ export interface RunStats {
   claimsUnsupported: number;
   claimsVerified: number;
   claimsConfirmed: number;
+  claimsScreened: number;
   claimsContested: number;
   claimsRefuted: number;
   citationsBound: number;

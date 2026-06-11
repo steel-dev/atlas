@@ -57,7 +57,7 @@ export interface VerifySpawnArgs {
   claimIds: string[];
   lenses?: string[] | undefined;
   grant: BudgetGrant;
-  parentId: string;
+  parentId?: string | undefined;
   depth: number;
 }
 

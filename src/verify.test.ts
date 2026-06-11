@@ -78,7 +78,7 @@ function screeningRctx(
 }
 
 describe("screenClaim", () => {
-  it("settles a clean screen as two non-refuting votes", async () => {
+  it("settles a clean screen as a single non-refuting screening vote", async () => {
     const c = claim();
     const rctx = screeningRctx([c], screenModel({
       quote_supports_claim: true,
@@ -87,8 +87,9 @@ describe("screenClaim", () => {
       note: "context plainly supports the claim",
     }));
     const votes = await screenClaim(rctx, createBudgetMeter(1), c);
-    expect(votes).toHaveLength(2);
-    expect(votes!.every((vote) => !vote.refuted)).toBe(true);
+    expect(votes).toHaveLength(1);
+    expect(votes![0].lens).toBe("screening");
+    expect(votes![0].refuted).toBe(false);
   });
 
   it("escalates when the screen flags the quote", async () => {
@@ -131,9 +132,9 @@ describe("runVerifySpawn staged verification", () => {
       depth: 1,
     });
     expect(outcome.verdicts).toHaveLength(1);
-    expect(outcome.verdicts[0].status).toBe("confirmed");
-    expect(outcome.verdicts[0].votes).toBe("2-0");
-    expect(supporting.votes).toHaveLength(2);
+    expect(outcome.verdicts[0].status).toBe("screened");
+    expect(outcome.verdicts[0].votes).toBe("1-0");
+    expect(supporting.votes).toHaveLength(1);
   });
 
   it("screens central claims when the grant cannot fund a panel", async () => {
@@ -151,9 +152,9 @@ describe("runVerifySpawn staged verification", () => {
       depth: 1,
     });
     expect(outcome.verdicts).toHaveLength(1);
-    expect(outcome.verdicts[0].status).toBe("confirmed");
-    expect(outcome.verdicts[0].votes).toBe("2-0");
-    expect(central.votes).toHaveLength(2);
+    expect(outcome.verdicts[0].status).toBe("screened");
+    expect(outcome.verdicts[0].votes).toBe("1-0");
+    expect(central.votes).toHaveLength(1);
   });
 
   it("leaves starved conflicted claims contested without spending", async () => {
@@ -179,6 +180,27 @@ describe("runVerifySpawn staged verification", () => {
       (rctx as unknown as { counters: { claimsVerified: number } }).counters
         .claimsVerified,
     ).toBe(0);
+  });
+
+  it("does not downgrade a screened claim when the panel cannot be funded", async () => {
+    const screened = claim();
+    settleClaim(screened, [
+      { lens: "screening", refuted: false, evidence: "e", confidence: "high" },
+    ]);
+    const rctx = screeningRctx([screened], screenModel({
+      quote_supports_claim: true,
+      source_is_evidence: true,
+      confidence: "high",
+      note: "unused",
+    }));
+    const outcome = await runVerifySpawn(rctx, {
+      claimIds: ["claim_1"],
+      grant: createBudgetMeter(0.03),
+      depth: 1,
+    });
+    expect(outcome.verdicts).toHaveLength(1);
+    expect(outcome.verdicts[0].status).toBe("screened");
+    expect(screened.votes).toHaveLength(1);
   });
 
   it("escalates conflicted claims to the panel instead of the screen", async () => {
@@ -306,5 +328,14 @@ describe("settleClaim", () => {
     c.conflictsWith = ["claim_9"];
     settleClaim(c, [vote(false)]);
     expect(c.status).toBe("contested");
+  });
+
+  it("marks a clean screening vote as screened, never confirmed", () => {
+    const c = claim();
+    settleClaim(c, [
+      { lens: "screening", refuted: false, evidence: "e", confidence: "high" },
+    ]);
+    expect(c.status).toBe("screened");
+    expect(voteSplit(c)).toBe("1-0");
   });
 });

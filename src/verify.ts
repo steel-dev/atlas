@@ -98,10 +98,16 @@ function voterPrompt(
   );
 }
 
+export const SCREENING_LENS = "screening";
+
 export function settleClaim(claim: ResearchClaim, votes: ClaimVote[]): void {
   claim.votes = votes;
   const refutedVotes = votes.filter((vote) => vote.refuted).length;
-  if (votes.length < MIN_VOTES_TO_SETTLE) {
+  const screeningOnly =
+    votes.length > 0 && votes.every((vote) => vote.lens === SCREENING_LENS);
+  if (screeningOnly && refutedVotes === 0) {
+    claim.status = "screened";
+  } else if (votes.length < MIN_VOTES_TO_SETTLE) {
     claim.status = claim.conflictsWith?.length ? "contested" : "unverified";
   } else if (refutedVotes >= REFUTATIONS_REQUIRED) {
     claim.status = "refuted";
@@ -246,13 +252,7 @@ export async function screenClaim(
     }
     return [
       {
-        lens: "quote-fidelity",
-        refuted: false,
-        evidence: screen.note,
-        confidence: screen.confidence,
-      },
-      {
-        lens: "source-strength",
+        lens: SCREENING_LENS,
         refuted: false,
         evidence: screen.note,
         confidence: screen.confidence,
@@ -318,22 +318,25 @@ export async function runVerifySpawn(
       return;
     }
     const job = (async () => {
+      const alreadyScreened = claim.status === "screened";
       let votes: ClaimVote[] | null = null;
       if (
         !lensesExplicit &&
         !conflicted &&
+        !alreadyScreened &&
         (claim.importance !== "central" || !panelAffordable)
       ) {
         votes = await screenClaim(rctx, args.grant, claim);
       }
       if (!votes) {
-        votes = panelAffordable
+        const panel = panelAffordable
           ? (
               await Promise.all(
                 lenses.map((lens) => castVote(rctx, args, claim, lens)),
               )
             ).filter((vote): vote is ClaimVote => vote !== null)
           : [];
+        votes = panel.length === 0 && alreadyScreened ? claim.votes : panel;
       }
       settleClaim(claim, votes);
       rctx.counters.claimsVerified++;

@@ -1,5 +1,6 @@
 import { generateObject } from "ai";
 import { z } from "zod";
+import { mapWithConcurrency } from "./async.js";
 import type { BudgetGrant } from "./budget.js";
 import { quoteAppearsInSource, type ResearchClaim } from "./ledger.js";
 import { MODEL_CALL_MAX_RETRIES } from "./model.js";
@@ -24,6 +25,7 @@ export interface BindOutcome {
 
 const MARKER_REGEX = /\{\{\s*([^{}]+?)\s*\}\}/g;
 const ENTAILMENT_BATCH_SIZE = 20;
+const ENTAILMENT_BATCH_CONCURRENCY = 4;
 const MAX_UNMARKED_CLASSIFIED = 60;
 const MIN_FACTUAL_SENTENCE_CHARS = 40;
 
@@ -100,12 +102,16 @@ async function runEntailmentChecks(
   const supported = new Map<number, boolean>();
   if (items.length === 0) return supported;
   const model = rctx.bindModel("verify", grant);
+  const batches: EntailmentItem[][] = [];
   for (
     let offset = 0;
     offset < items.length;
     offset += ENTAILMENT_BATCH_SIZE
   ) {
-    const batch = items.slice(offset, offset + ENTAILMENT_BATCH_SIZE);
+    batches.push(items.slice(offset, offset + ENTAILMENT_BATCH_SIZE));
+  }
+  await mapWithConcurrency(batches, ENTAILMENT_BATCH_CONCURRENCY, async (batch) => {
+    if (grant.floored()) return;
     const prompt =
       "For each numbered item, judge whether the report sentence is entailed by the claim, its verbatim source quote, and (when given) the quote's surrounding source context — i.e. every factual assertion in the sentence is supported by them. Judge entailment only; ignore style.\n\n" +
       batch
@@ -135,8 +141,7 @@ async function runEntailmentChecks(
     } catch (err) {
       if (rctx.signal?.aborted) throw err;
     }
-    if (grant.floored()) break;
-  }
+  });
   return supported;
 }
 

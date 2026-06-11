@@ -18,6 +18,7 @@ export interface EffortEnvelope {
   breadthCap: number;
   maxSources: number;
   maxTurns: number;
+  maxSubagentTurns: number;
   maxEntailmentChecks: number;
   maxReportTokens: number;
   maxReportCandidates: number;
@@ -32,6 +33,7 @@ export const EFFORT_ENVELOPES: Record<Effort, EffortEnvelope> = {
     breadthCap: 1,
     maxSources: 15,
     maxTurns: 30,
+    maxSubagentTurns: 15,
     maxEntailmentChecks: 0,
     maxReportTokens: 4_096,
     maxReportCandidates: 12,
@@ -44,6 +46,7 @@ export const EFFORT_ENVELOPES: Record<Effort, EffortEnvelope> = {
     breadthCap: 4,
     maxSources: 40,
     maxTurns: 60,
+    maxSubagentTurns: 30,
     maxEntailmentChecks: 60,
     maxReportTokens: 8_192,
     maxReportCandidates: 20,
@@ -56,6 +59,7 @@ export const EFFORT_ENVELOPES: Record<Effort, EffortEnvelope> = {
     breadthCap: 8,
     maxSources: 100,
     maxTurns: 100,
+    maxSubagentTurns: 50,
     maxEntailmentChecks: 150,
     maxReportTokens: 16_384,
     maxReportCandidates: 40,
@@ -68,6 +72,7 @@ export const EFFORT_ENVELOPES: Record<Effort, EffortEnvelope> = {
     breadthCap: 12,
     maxSources: 250,
     maxTurns: 150,
+    maxSubagentTurns: 75,
     maxEntailmentChecks: 400,
     maxReportTokens: 24_576,
     maxReportCandidates: 60,

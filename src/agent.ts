@@ -27,7 +27,6 @@ const RESEARCH_TOOLS: ToolName[] = [
 const DEFAULT_RESEARCH_FRACTION = 0.15;
 const DEFAULT_VERIFY_FRACTION = 0.08;
 const VERIFY_SPAWN_MIN_USD = 0.03;
-const RESEARCH_MAX_TURNS = 30;
 const TASK_PREVIEW_CHARS = 300;
 const NOTE_PREVIEW_CHARS = 600;
 const SPAWN_DIGEST_MAX_CLAIMS = 12;
@@ -219,7 +218,7 @@ async function executeSpawn(
       grant,
       depth: childDepth,
       parentId: parentActx.agentId,
-      maxTurns: RESEARCH_MAX_TURNS,
+      maxTurns: rctx.config.envelope.maxSubagentTurns,
     });
     childClaims.push(...child.claimsAdded);
     const newClaims = child.claimsAdded

@@ -168,7 +168,7 @@ function formatEvent(e: ResearchEvent): string | null {
           );
     case "claim.verified": {
       const mark =
-        e.status === "confirmed"
+        e.status === "confirmed" || e.status === "screened"
           ? paint(GREEN, "  ✓ ")
           : e.status === "refuted"
             ? paint(YELLOW, "  ✗ ")
@@ -205,7 +205,7 @@ function footer(result: ResearchResult): string {
   return (
     paint(GREEN, "✓") +
     ` done — $${s.costUSD.toFixed(4)} · ${result.sources.length} source${result.sources.length === 1 ? "" : "s"} · ` +
-    `${s.claimsConfirmed} confirmed / ${s.claimsContested} contested / ${s.claimsRefuted} refuted · ` +
+    `${s.claimsConfirmed} confirmed / ${s.claimsScreened} screened / ${s.claimsContested} contested / ${s.claimsRefuted} refuted · ` +
     `${s.agentsSpawned} agent${s.agentsSpawned === 1 ? "" : "s"} · ${(s.durationMs / 1000).toFixed(0)}s`
   );
 }

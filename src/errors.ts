@@ -11,7 +11,8 @@ export class AtlasError extends Error {
       | "budget"
       | "resume"
       | "cancelled"
-      | "paused",
+      | "paused"
+      | "output",
   ) {
     super(message);
     this.name = "AtlasError";

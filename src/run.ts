@@ -79,6 +79,7 @@ export interface SourceRecord {
 
 export interface ResearchClaims {
   confirmed: ResearchClaim[];
+  screened: ResearchClaim[];
   contested: ResearchClaim[];
   refuted: ResearchClaim[];
   unverified: ResearchClaim[];
@@ -155,7 +156,6 @@ async function sweepVerification(
       await rctx.verifySpawn({
         claimIds: [claim.id],
         grant,
-        parentId: "agent_1",
         depth: 1,
       });
     } catch (err) {
@@ -410,11 +410,39 @@ async function executeRun(args: ExecuteRunArgs): Promise<ResearchResult> {
     }
   };
 
+  const onUnknownModel = (modelId: string): void => {
+    if (warnedUnknownModels.has(modelId)) return;
+    warnedUnknownModels.add(modelId);
+    emit({
+      type: "pricing.missing",
+      modelId,
+      detail: `no pricing entry for model "${modelId}"; charging conservative default rates`,
+    });
+  };
+  const onRateLimit = ({ delayMs }: { delayMs: number }): void =>
+    emit({
+      type: "rate.limited",
+      retryAfterSeconds: Math.max(1, Math.round(delayMs / 1000)),
+    });
+  const bindModel = (role: ModelRole, grant: BudgetGrant) =>
+    engineModel(resolved.models[role], {
+      role,
+      grant,
+      pricing,
+      gate: modelGate,
+      usage,
+      journal: args.journal,
+      replay: args.replay,
+      onCost,
+      onUnknownModel,
+      onRateLimit,
+    });
+
   const searchProviders = Array.isArray(args.config.search)
     ? args.config.search
     : args.config.search
       ? [args.config.search]
-      : defaultSearchProviders(resolved.models.lead);
+      : defaultSearchProviders(bindModel("research", meter));
   const fetchChain = Array.isArray(args.config.fetch)
     ? args.config.fetch
     : args.config.fetch
@@ -422,15 +450,35 @@ async function executeRun(args: ExecuteRunArgs): Promise<ResearchResult> {
       : defaultFetchProviders();
   const customTools = await resolveCustomTools(args.config.tools);
 
+  const synthesisGrant =
+    meter.grant({ fraction: SYNTHESIS_FRACTION, minUSD: SYNTHESIS_MIN_USD }) ??
+    meter;
+  const verifyReserve =
+    meter.grant({
+      fraction: VERIFY_RESERVE_FRACTION,
+      minUSD: VERIFY_RESERVE_MIN_USD,
+    }) ?? meter;
+
+  const eagerVerifications = new Set<Promise<void>>();
+  let eagerVerifyStarted = 0;
+  const ledger = createLedger({
+    emit,
+    signal: args.hardSignal,
+    shouldExtract: () => !budgetExhausted(),
+    claimsPerSource: resolved.envelope.maxClaimsPerSource,
+    extractionChars: resolved.envelope.maxExtractionChars,
+    onClaim: (claim) => eagerVerify(claim),
+  });
+
   const rctx: RunCtx = {
     runId,
     question,
     config: resolved,
     meter,
-    verifyReserve: null as never,
+    verifyReserve,
     usage,
     pricing,
-    ledger: null as never,
+    ledger,
     sources: createSourceStore(),
     search: combineSearchProviders(searchProviders),
     fetchChain,
@@ -448,31 +496,7 @@ async function executeRun(args: ExecuteRunArgs): Promise<ResearchResult> {
     verifyInFlight: new Map(),
     counters,
     agentSequence: { next: 1 },
-    bindModel: (role: ModelRole, grant: BudgetGrant) =>
-      engineModel(resolved.models[role], {
-        role,
-        grant,
-        pricing,
-        gate: modelGate,
-        usage,
-        journal: args.journal,
-        replay: args.replay,
-        onCost,
-        onUnknownModel: (modelId) => {
-          if (warnedUnknownModels.has(modelId)) return;
-          warnedUnknownModels.add(modelId);
-          emit({
-            type: "pricing.missing",
-            modelId,
-            detail: `no pricing entry for model "${modelId}"; charging conservative default rates`,
-          });
-        },
-        onRateLimit: ({ delayMs }) =>
-          emit({
-            type: "rate.limited",
-            retryAfterSeconds: Math.max(1, Math.round(delayMs / 1000)),
-          }),
-      }),
+    bindModel,
     rawModel: (role: ModelRole) => resolved.models[role],
     verifySpawn: (spawnArgs) => runVerifySpawn(rctx, spawnArgs),
     stopReason: () => {
@@ -487,41 +511,31 @@ async function executeRun(args: ExecuteRunArgs): Promise<ResearchResult> {
       return null;
     },
   };
-  const eagerVerifications = new Set<Promise<void>>();
-  let eagerVerifyStarted = 0;
-  const ledger = createLedger({
-    emit,
-    signal: args.hardSignal,
-    shouldExtract: () => !budgetExhausted(),
-    claimsPerSource: resolved.envelope.maxClaimsPerSource,
-    extractionChars: resolved.envelope.maxExtractionChars,
-    onClaim: (claim) => {
-      if (claim.importance !== "central") return;
-      if (eagerVerifyStarted >= EAGER_VERIFY_MAX_CLAIMS) return;
-      if (rctx.stopReason()) return;
-      const grant = rctx.verifyReserve.grant({
-        fraction: VERIFY_SWEEP_FRACTION,
-        minUSD: VERIFY_SWEEP_MIN_USD,
-      });
-      if (!grant) return;
-      eagerVerifyStarted++;
-      const task = rctx
-        .verifySpawn({
-          claimIds: [claim.id],
-          grant,
-          parentId: "agent_1",
-          depth: 1,
-        })
-        .then(
-          () => undefined,
-          () => undefined,
-        )
-        .finally(() => grant.release());
-      eagerVerifications.add(task);
-      void task.finally(() => eagerVerifications.delete(task));
-    },
-  });
-  (rctx as { ledger: typeof ledger }).ledger = ledger;
+
+  function eagerVerify(claim: ResearchClaim): void {
+    if (claim.importance !== "central") return;
+    if (eagerVerifyStarted >= EAGER_VERIFY_MAX_CLAIMS) return;
+    if (rctx.stopReason()) return;
+    const grant = verifyReserve.grant({
+      fraction: VERIFY_SWEEP_FRACTION,
+      minUSD: VERIFY_SWEEP_MIN_USD,
+    });
+    if (!grant) return;
+    eagerVerifyStarted++;
+    const task = rctx
+      .verifySpawn({
+        claimIds: [claim.id],
+        grant,
+        depth: 1,
+      })
+      .then(
+        () => undefined,
+        () => undefined,
+      )
+      .finally(() => grant.release());
+    eagerVerifications.add(task);
+    void task.finally(() => eagerVerifications.delete(task));
+  }
 
   args.journal.meta({
     runId,
@@ -539,15 +553,6 @@ async function executeRun(args: ExecuteRunArgs): Promise<ResearchResult> {
     budgetUSD: resolved.budgetUSD,
   });
 
-  const synthesisGrant =
-    meter.grant({ fraction: SYNTHESIS_FRACTION, minUSD: SYNTHESIS_MIN_USD }) ??
-    meter;
-  const verifyReserve =
-    meter.grant({
-      fraction: VERIFY_RESERVE_FRACTION,
-      minUSD: VERIFY_RESERVE_MIN_USD,
-    }) ?? meter;
-  (rctx as { verifyReserve: BudgetGrant }).verifyReserve = verifyReserve;
   const researchGrant = meter.grant({ fraction: 1 }) ?? meter;
 
   let orchestrator: Awaited<ReturnType<typeof runOrchestrator>>;
@@ -610,6 +615,7 @@ async function executeRun(args: ExecuteRunArgs): Promise<ResearchResult> {
   let draft: string;
   if (
     partition.confirmed.length === 0 &&
+    partition.screened.length === 0 &&
     partition.candidates.length === 0 &&
     partition.contested.length === 0
   ) {
@@ -678,7 +684,11 @@ async function executeRun(args: ExecuteRunArgs): Promise<ResearchResult> {
         synthesisGrant,
         {
           schema: resolved.output.schema,
-          confirmed: [...partition.confirmed, ...partition.contested],
+          confirmed: [
+            ...partition.confirmed,
+            ...partition.screened,
+            ...partition.contested,
+          ],
           candidates: partition.candidates,
         },
       );
@@ -686,11 +696,10 @@ async function executeRun(args: ExecuteRunArgs): Promise<ResearchResult> {
       structuredBasis = structuredResult.basis;
     } catch (err) {
       if (args.hardSignal.aborted) throw err;
-      emit({
-        type: "run.error",
-        message: `structured output failed: ${errorMessage(err)}`,
-        recoverable: true,
-      });
+      throw new AtlasError(
+        `structured output failed: ${errorMessage(err)}`,
+        "output",
+      );
     }
   }
 
@@ -721,6 +730,7 @@ async function executeRun(args: ExecuteRunArgs): Promise<ResearchResult> {
     findings: buildFindings(partition),
     claims: {
       confirmed: partition.confirmed,
+      screened: partition.screened,
       contested: partition.contested,
       refuted: partition.refuted,
       unverified: ledger
@@ -768,6 +778,15 @@ function buildFindings(partition: ClaimPartition): Finding[] {
         claim.votes.some((vote) => !vote.refuted && vote.confidence === "high")
           ? "high"
           : "medium",
+      claimIds: [claim.id],
+      sourceIds: [claim.sourceId],
+    });
+  }
+  for (const claim of partition.screened) {
+    findings.push({
+      id: `finding_${next++}`,
+      statement: claim.text,
+      confidence: "medium",
       claimIds: [claim.id],
       sourceIds: [claim.sourceId],
     });
@@ -845,6 +864,7 @@ function buildStats(opts: {
     claimsUnsupported: rctx.ledger.unsupportedCount,
     claimsVerified: rctx.counters.claimsVerified,
     claimsConfirmed: partition.confirmed.length,
+    claimsScreened: partition.screened.length,
     claimsContested: partition.contested.length,
     claimsRefuted: partition.refuted.length,
     citationsBound: opts.bound.citationsBound,
