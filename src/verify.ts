@@ -2,8 +2,9 @@ import { generateObject, type ModelMessage } from "ai";
 import { z } from "zod";
 import { mapWithConcurrency } from "./async.js";
 import { runAgent } from "./agent.js";
+import type { BudgetGrant } from "./budget.js";
 import { MODEL_CALL_MAX_RETRIES } from "./model.js";
-import { QUARANTINE_NOTE } from "./safety.js";
+import { QUARANTINE_NOTE, quarantine } from "./safety.js";
 import type {
   RunCtx,
   VerifySpawnArgs,
@@ -154,6 +155,99 @@ async function castVote(
   }
 }
 
+const SCREEN_CONTEXT_WINDOW = 600;
+const SCREEN_MAX_TOKENS = 700;
+
+const SCREEN_SYSTEM =
+  "You are a fast screening verifier for one claim from a research run. Judge from the provided quote and its surrounding context only — no tools. " +
+  "Decide (1) whether the quote, in context, supports the claim as stated without overreach, and (2) whether the page looks like real evidence rather than spam, an error page, or ads. " +
+  "Be calibrated: report low confidence whenever the context is too thin to be sure.\n\n" +
+  QUARANTINE_NOTE;
+
+const screenSchema = z.object({
+  quote_supports_claim: z.boolean(),
+  source_is_evidence: z.boolean(),
+  confidence: z.enum(["high", "medium", "low"]),
+  note: z.string(),
+});
+
+function screenPrompt(
+  question: string,
+  claim: ResearchClaim,
+  context: string | undefined,
+): string {
+  return (
+    "## Claim under screening\n" +
+    `"${claim.text}"\n\n` +
+    `Source: ${claim.url} (${claim.sourceQuality}, published ${claim.publishedTime ?? "unknown"})\n` +
+    `Supporting quote (mechanically verified to appear verbatim in the stored source text):\n"${claim.quote}"\n\n` +
+    (context
+      ? "Source context around the quote:\n" +
+        quarantine(context, { sourceId: claim.sourceId, url: claim.url }) +
+        "\n\n"
+      : "") +
+    `Research question: "${question}"\n\n` +
+    "Judge support and evidence quality, then return the structured verdict."
+  );
+}
+
+export async function screenClaim(
+  rctx: RunCtx,
+  grant: BudgetGrant,
+  claim: ResearchClaim,
+): Promise<ClaimVote[] | null> {
+  if (grant.floored()) return null;
+  const document = rctx.sources.byId.get(claim.sourceId);
+  if (!document) return null;
+  const idx = document.markdown.indexOf(claim.quote);
+  const context =
+    idx >= 0
+      ? document.markdown.slice(
+          Math.max(0, idx - SCREEN_CONTEXT_WINDOW),
+          Math.min(
+            document.markdown.length,
+            idx + claim.quote.length + SCREEN_CONTEXT_WINDOW,
+          ),
+        )
+      : undefined;
+  try {
+    const result = await generateObject({
+      model: rctx.bindModel("verify", grant),
+      system: SCREEN_SYSTEM,
+      prompt: screenPrompt(rctx.question, claim, context),
+      schema: screenSchema,
+      maxOutputTokens: SCREEN_MAX_TOKENS,
+      maxRetries: MODEL_CALL_MAX_RETRIES,
+      abortSignal: rctx.signal,
+    });
+    const screen = result.object;
+    if (
+      !screen.quote_supports_claim ||
+      !screen.source_is_evidence ||
+      screen.confidence === "low"
+    ) {
+      return null;
+    }
+    return [
+      {
+        lens: "quote-fidelity",
+        refuted: false,
+        evidence: screen.note,
+        confidence: screen.confidence,
+      },
+      {
+        lens: "source-strength",
+        refuted: false,
+        evidence: screen.note,
+        confidence: screen.confidence,
+      },
+    ];
+  } catch (err) {
+    if (rctx.signal?.aborted) throw err;
+    return null;
+  }
+}
+
 function normalizeLenses(lenses: string[] | undefined): VerifierLens[] {
   if (!lenses || lenses.length === 0) return ALL_LENSES;
   const valid = lenses.filter((lens): lens is VerifierLens =>
@@ -166,6 +260,9 @@ export async function runVerifySpawn(
   rctx: RunCtx,
   args: VerifySpawnArgs,
 ): Promise<VerifySpawnOutcome> {
+  const lensesExplicit = (args.lenses ?? []).some((lens) =>
+    (ALL_LENSES as string[]).includes(lens),
+  );
   const lenses = normalizeLenses(args.lenses);
   const claims = args.claimIds
     .slice(0, MAX_CLAIMS_PER_SPAWN)
@@ -198,11 +295,17 @@ export async function runVerifySpawn(
       return;
     }
     const job = (async () => {
-      const votes = (
-        await Promise.all(
-          lenses.map((lens) => castVote(rctx, args, claim, lens)),
-        )
-      ).filter((vote): vote is ClaimVote => vote !== null);
+      let votes: ClaimVote[] | null = null;
+      if (!lensesExplicit && claim.importance !== "central") {
+        votes = await screenClaim(rctx, args.grant, claim);
+      }
+      if (!votes) {
+        votes = (
+          await Promise.all(
+            lenses.map((lens) => castVote(rctx, args, claim, lens)),
+          )
+        ).filter((vote): vote is ClaimVote => vote !== null);
+      }
       settleClaim(claim, votes);
       rctx.counters.claimsVerified++;
       rctx.emit({

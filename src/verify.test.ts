@@ -1,6 +1,9 @@
+import { MockLanguageModelV3 } from "ai/test";
 import { describe, expect, it } from "vitest";
-import { runVerifySpawn, settleClaim, voteSplit } from "./verify.js";
+import { runVerifySpawn, screenClaim, settleClaim, voteSplit } from "./verify.js";
+import { createBudgetMeter } from "./budget.js";
 import type { ClaimVote, ResearchClaim } from "./ledger.js";
+import { createSourceDocument } from "./source-documents.js";
 import type { RunCtx } from "./state.js";
 
 function claim(): ResearchClaim {
@@ -22,6 +25,117 @@ function claim(): ResearchClaim {
 function vote(refuted: boolean): ClaimVote {
   return { lens: "contradiction", refuted, evidence: "e", confidence: "medium" };
 }
+
+function screenModel(verdict: {
+  quote_supports_claim: boolean;
+  source_is_evidence: boolean;
+  confidence: string;
+  note: string;
+}): MockLanguageModelV3 {
+  return new MockLanguageModelV3({
+    doGenerate: async () => ({
+      content: [{ type: "text", text: JSON.stringify(verdict) }],
+      finishReason: { unified: "stop", raw: undefined },
+      usage: {
+        inputTokens: { total: 100, noCache: 100, cacheRead: 0, cacheWrite: 0 },
+        outputTokens: { total: 50, text: 50, reasoning: 0 },
+      },
+      warnings: [],
+    }),
+  });
+}
+
+function screeningRctx(
+  claims: ResearchClaim[],
+  model: MockLanguageModelV3,
+): RunCtx {
+  const markdown =
+    "According to the official register, the quote text appears here.".padEnd(
+      250,
+      " filler",
+    );
+  const document = createSourceDocument(
+    "https://example.com",
+    "Example",
+    markdown,
+    { markdownChars: markdown.length, extractionNotes: [] },
+    markdown.length,
+    "source_1",
+  );
+  return {
+    question: "test question",
+    ledger: {
+      byId: (id: string) => claims.find((claim) => claim.id === id),
+    },
+    sources: { byId: new Map([["source_1", document]]) },
+    verifyInFlight: new Map<string, Promise<void>>(),
+    counters: { claimsVerified: 0 },
+    emit: () => {},
+    stopReason: () => null,
+    bindModel: () => model,
+    signal: undefined,
+  } as unknown as RunCtx;
+}
+
+describe("screenClaim", () => {
+  it("settles a clean screen as two non-refuting votes", async () => {
+    const c = claim();
+    const rctx = screeningRctx([c], screenModel({
+      quote_supports_claim: true,
+      source_is_evidence: true,
+      confidence: "high",
+      note: "context plainly supports the claim",
+    }));
+    const votes = await screenClaim(rctx, createBudgetMeter(1), c);
+    expect(votes).toHaveLength(2);
+    expect(votes!.every((vote) => !vote.refuted)).toBe(true);
+  });
+
+  it("escalates when the screen flags the quote", async () => {
+    const c = claim();
+    const rctx = screeningRctx([c], screenModel({
+      quote_supports_claim: false,
+      source_is_evidence: true,
+      confidence: "high",
+      note: "overreach",
+    }));
+    expect(await screenClaim(rctx, createBudgetMeter(1), c)).toBeNull();
+  });
+
+  it("escalates on low confidence", async () => {
+    const c = claim();
+    const rctx = screeningRctx([c], screenModel({
+      quote_supports_claim: true,
+      source_is_evidence: true,
+      confidence: "low",
+      note: "thin context",
+    }));
+    expect(await screenClaim(rctx, createBudgetMeter(1), c)).toBeNull();
+  });
+});
+
+describe("runVerifySpawn staged verification", () => {
+  it("settles non-central claims from the screen without a panel", async () => {
+    const supporting = claim();
+    supporting.importance = "supporting";
+    const rctx = screeningRctx([supporting], screenModel({
+      quote_supports_claim: true,
+      source_is_evidence: true,
+      confidence: "medium",
+      note: "supported in context",
+    }));
+    const outcome = await runVerifySpawn(rctx, {
+      claimIds: ["claim_1"],
+      grant: createBudgetMeter(1),
+      parentId: "agent_1",
+      depth: 1,
+    });
+    expect(outcome.verdicts).toHaveLength(1);
+    expect(outcome.verdicts[0].status).toBe("confirmed");
+    expect(outcome.verdicts[0].votes).toBe("2-0");
+    expect(supporting.votes).toHaveLength(2);
+  });
+});
 
 describe("runVerifySpawn dedup", () => {
   function rctxFor(claims: ResearchClaim[]): RunCtx {

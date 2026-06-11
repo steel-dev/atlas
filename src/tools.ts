@@ -484,7 +484,7 @@ export function buildAgentTools(
           )
           .optional()
           .describe(
-            "For verify spawns: which lenses to apply (default: all three).",
+            "For verify spawns: which lenses to apply. Default is staged: non-central claims get a cheap screening check that escalates to the full panel only when flagged; central claims always get all three lenses. Pass lenses explicitly to force the panel.",
           ),
       }),
       execute: async (input) =>
