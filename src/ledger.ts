@@ -61,7 +61,7 @@ const DEFAULT_CLAIMS_PER_SOURCE = 5;
 const EXTRACTION_CONCURRENCY = 8;
 const MIN_EXTRACTABLE_CHARS = 200;
 const LEDGER_DIGEST_MAX_CLAIMS = 60;
-const NON_EVIDENCE_WARNINGS =
+export const NON_EVIDENCE_WARNINGS =
   /\b(?:blocked_or_challenge|thin_content|error_page|search_listing_page)\b/i;
 
 const IMPORTANCE_VALUES = ["central", "supporting", "tangential"] as const;

@@ -6,6 +6,8 @@ import type { RunCtx } from "./state.js";
 
 const ADJUDICATION_MAX_TOKENS = 800;
 const ADJUDICATION_DIGEST_CLAIMS = 80;
+const ADJUDICATION_TRAIL_SEARCHES = 30;
+const ADJUDICATION_TRAIL_DEAD_ENDS = 15;
 
 const coverageSchema = z.object({
   answered: z.boolean(),
@@ -28,6 +30,10 @@ export async function adjudicateCoverage(
   closingNote: string,
 ): Promise<CoverageVerdict | null> {
   if (grant.floored()) return null;
+  const trail = rctx.trail.render({
+    maxSearches: ADJUDICATION_TRAIL_SEARCHES,
+    maxDeadEnds: ADJUDICATION_TRAIL_DEAD_ENDS,
+  });
   try {
     const result = await generateObject({
       model: rctx.bindModel("verify", grant),
@@ -36,9 +42,11 @@ export async function adjudicateCoverage(
         `Research question: ${rctx.question}\n\n` +
         `Lead agent's closing note:\n${closingNote || "(none)"}\n\n` +
         `Ledger digest:\n${rctx.ledger.digest(ADJUDICATION_DIGEST_CLAIMS) || "(empty)"}\n\n` +
+        (trail ? `Trail — what was already tried:\n${trail}\n\n` : "") +
         "Does this ledger contain the evidence needed to answer the question as asked? " +
         "If yes, return answered=true with gaps: []. If no, return answered=false and list up to 5 concrete, researchable gaps — a missing facet or entity, an unresolved disagreement between claims, or a missing exact value — each phrased as a directive a research agent could act on. " +
-        "Do not list gaps that are tangential to the question, nor gaps the closing note already explains as unanswerable after a genuine attempt.",
+        "Do not list gaps that are tangential to the question, nor gaps the closing note already explains as unanswerable after a genuine attempt. " +
+        "Use the trail to avoid re-prescribing what already failed: when a gap was already searched or its sources dead-ended, either drop it or phrase the directive as a genuinely different angle, term, or source.",
       schema: coverageSchema,
       maxOutputTokens: ADJUDICATION_MAX_TOKENS,
       maxRetries: MODEL_CALL_MAX_RETRIES,

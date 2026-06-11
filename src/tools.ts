@@ -20,6 +20,7 @@ import {
   sourceCardData,
   storeMarkdown,
 } from "./source-documents.js";
+import { NON_EVIDENCE_WARNINGS } from "./ledger.js";
 import type { SourceDocument } from "./sources.js";
 import { fetchThroughChain, looksBlockedPage } from "./providers/fetch.js";
 import type { MergedSearchResult } from "./providers/search.js";
@@ -130,6 +131,7 @@ export async function execSearchTool(
       if (!cached) rctx.journal?.io(ioKey, { merged, warnings });
       allWarnings.push(...warnings);
       const kept = merged.filter((result) => domainAllowed(rctx, result.url));
+      rctx.trail.recordSearch(query, kept.length);
       rctx.emit({
         type: "search.completed",
         query,
@@ -244,6 +246,10 @@ function registerSourceDocument(
     agentId: actx.agentId,
     model: actx.extractModel,
   });
+  const nonEvidence = document.metadata.qualityWarnings?.find((warning) =>
+    NON_EVIDENCE_WARNINGS.test(warning),
+  );
+  if (nonEvidence) rctx.trail.recordDeadEnd(document.url, nonEvidence);
   rctx.counters.sourcesFetched++;
   rctx.emit({
     type: "source.fetched",
@@ -306,6 +312,7 @@ async function fetchSourceDocument(
         .map((attempt) => `${attempt.method}: ${attempt.note}`)
         .join(" | ") || "no content fetched";
     rctx.counters.sourcesFailed++;
+    rctx.trail.recordDeadEnd(url, reason);
     rctx.emit({ type: "source.failed", url, reason });
     return null;
   }
@@ -318,6 +325,7 @@ async function fetchSourceDocument(
   );
   if (quality.fatalError) {
     rctx.counters.sourcesFailed++;
+    rctx.trail.recordDeadEnd(url, quality.fatalError);
     rctx.emit({ type: "source.failed", url, reason: quality.fatalError });
     return null;
   }
@@ -441,6 +449,7 @@ export async function fetchOneUrl(
     if (rctx.signal?.aborted) throw err;
     const message = errorMessage(err);
     rctx.counters.sourcesFailed++;
+    rctx.trail.recordDeadEnd(url, message);
     rctx.emit({ type: "source.failed", url, reason: message });
     return { ok: false, error: `Fetch error: ${message}` };
   }
@@ -646,18 +655,20 @@ export function buildAgentTools(
   if (enabled.has("ledger")) {
     tools.ledger = tool({
       description:
-        "Render the shared claim ledger digest: every representative claim with its id, importance, source quality, verification status, and corroboration count. Waits for in-flight claim extraction to finish first, so the digest is current. Use it to judge coverage against the question, pick claim_ids for verify spawns, and spot gaps, duplicates, or disagreements.",
+        "Render the shared claim ledger digest: every representative claim with its id, importance, source quality, verification status, and corroboration count, plus the run's trail of searches already run and fetches that dead-ended. Waits for in-flight claim extraction to finish first, so the digest is current. Use it to judge coverage against the question, pick claim_ids for verify spawns, spot gaps, duplicates, or disagreements, and avoid repeating ground the trail shows was already covered.",
       inputSchema: z.object({
         max_claims: z.number().int().min(1).max(200).optional(),
       }),
       execute: async ({ max_claims }) => {
         await rctx.ledger.flush();
+        const trail = rctx.trail.render({ maxSearches: 30, maxDeadEnds: 15 });
+        const trailSuffix = trail ? `\n\n${trail}` : "";
         const representatives = rctx.ledger.representatives();
         if (representatives.length === 0) {
           return withBudgetLine(
             rctx,
             actx,
-            "Ledger is empty: no claims extracted yet.",
+            `Ledger is empty: no claims extracted yet.${trailSuffix}`,
           );
         }
         const counts = new Map<string, number>();
@@ -671,7 +682,8 @@ export function buildAgentTools(
           rctx,
           actx,
           `${representatives.length} claim(s): ${summary}\n` +
-            rctx.ledger.digest(max_claims),
+            rctx.ledger.digest(max_claims) +
+            trailSuffix,
         );
       },
     });

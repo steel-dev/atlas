@@ -25,6 +25,7 @@ import {
   type RunCtx,
   type SourceStore,
 } from "./state.js";
+import { createTrail } from "./trail.js";
 import { runVerifySpawn } from "./verify.js";
 
 const TIMEOUT_SYNTHESIS_RESERVE_MS = 120_000;
@@ -183,6 +184,7 @@ export async function assembleRun(args: AssembleRunArgs): Promise<RunAssembly> {
     usage,
     pricing,
     ledger,
+    trail: createTrail(),
     sources: createSourceStore(),
     search: combineSearchProviders(searchProviders),
     fetchChain,

@@ -52,6 +52,7 @@ export async function runOrchestrator(
           previousNote: opts.previousNote,
           gaps: opts.gaps,
           digest: rctx.ledger.digest(CONTINUATION_DIGEST_CLAIMS),
+          trail: rctx.trail.render(),
           remainingUSD: grant.remainingUSD(),
         })
       : orchestratorAnchor({
@@ -84,6 +85,7 @@ export async function runOrchestrator(
           reason: "context-recycled",
           previousNote: result.note,
           digest: rctx.ledger.digest(CONTINUATION_DIGEST_CLAIMS),
+          trail: rctx.trail.render(),
           remainingUSD: grant.remainingUSD(),
         }),
       ),

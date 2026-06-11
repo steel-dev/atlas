@@ -10,6 +10,7 @@ import type { ResolvedSearch } from "./providers/search.js";
 import type { JournalWriter, ReplayCache } from "./providers/store.js";
 import type { ResolvedCustomTool } from "./custom-tools.js";
 import type { FetchedSource, SourceDocument } from "./sources.js";
+import type { Trail } from "./trail.js";
 
 export interface SourceStore {
   fetchedSources: FetchedSource[];
@@ -82,6 +83,7 @@ export interface RunCtx {
   usage: RunUsage;
   pricing: PricingTable;
   ledger: Ledger;
+  trail: Trail;
   sources: SourceStore;
   search: ResolvedSearch;
   fetchChain: FetchProvider[];

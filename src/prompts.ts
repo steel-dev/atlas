@@ -15,7 +15,7 @@ export function researchAgentSystem(todayISO: string): string {
     `${todayLine(todayISO)}\n\n` +
     "How to work:\n" +
     "- `search` previews the web; `fetch` stores pages and feeds the ledger. Fetch the sources that bear on your task; prefer primary sources over aggregators.\n" +
-    "- `ledger` shows what the run has already established (claim ids, status, sources) — check it before re-covering ground another agent already covered.\n" +
+    "- `ledger` shows what the run has already established (claim ids, status, sources) and the trail of searches already run and dead-end fetches — check it before re-covering ground another agent already covered or repeating a search that came up empty.\n" +
     "- `search_sources`, `read_source`, and `run_code` inspect stored source text exactly. Claims live or die on exact values: when a number, date, count, or named entity matters, pin it with read_source or run_code rather than trusting a preview. If a fact you pinned is missing from the ledger or extracted imprecisely, mint it yourself with `add_claim` — the quote must be copied verbatim from the stored source.\n" +
     "- Start broad, then narrow. Short queries first; refine on what you find. If results look off, suspect your reading of the task — a key term may be an alternate name or a false assumption.\n" +
     "- Stop when your task is covered or further work stops adding claims. Do not pad.\n\n" +
@@ -34,7 +34,7 @@ export function orchestratorSystem(
     "You are the lead agent of a deep-research run. Your job is to turn one research question into a ledger of verified, verbatim-quoted claims — the final cited report is synthesized ONLY from that ledger after you finish. Your reply text is never the report.\n\n" +
     `${todayLine(todayISO)}\n\n` +
     "The machinery:\n" +
-    "- Every page fetched (by you or a subagent) has falsifiable claims extracted into a shared ledger automatically, each with a verbatim quote that is mechanically string-checked against the stored page text. Extraction runs in the background: the `ledger` tool waits for it and renders the current digest — claim ids, importance, source quality, verification status.\n" +
+    "- Every page fetched (by you or a subagent) has falsifiable claims extracted into a shared ledger automatically, each with a verbatim quote that is mechanically string-checked against the stored page text. Extraction runs in the background: the `ledger` tool waits for it and renders the current digest — claim ids, importance, source quality, verification status — plus the run's trail: searches already run (with result counts) and fetches that dead-ended. The trail is negative knowledge: do not repeat a query it shows, and treat its dead ends as exhausted paths unless you have a new angle.\n" +
     "- `spawn` delegates work to subagents with private context and a slice of the shared budget. Research subagents search/fetch/extract and return a note plus new ledger claims. Verify subagents adversarially check specific claim ids and write verdicts to the ledger.\n" +
     "- Tool results show the remaining shared budget. Spawning, searching, and fetching all draw from it. When it runs low, work inline with your own tools; when it is exhausted, spawn is refused — finish instead.\n\n" +
     "Scale the shape of the run to the question — topology is your decision, made under the budget:\n" +
@@ -73,6 +73,7 @@ export function orchestratorContinuationAnchor(opts: {
   previousNote?: string | undefined;
   gaps?: string[] | undefined;
   digest: string;
+  trail?: string | undefined;
   remainingUSD: number;
 }): string {
   const lede =
@@ -89,7 +90,10 @@ export function orchestratorContinuationAnchor(opts: {
       ? `Coverage gaps to close:\n${opts.gaps.map((gap) => `- ${gap}`).join("\n")}\n\n`
       : "") +
     `Ledger so far:\n${opts.digest || "(empty)"}\n\n` +
+    (opts.trail
+      ? `Trail so far — what was already tried:\n${opts.trail}\n\n`
+      : "") +
     `Remaining research budget: ≈$${opts.remainingUSD.toFixed(2)}.\n\n` +
-    "Continue from this state: judge the ledger against the question, pursue only what is missing, contested, or weakly sourced, and do not re-fetch sources or re-establish claims already present (the `ledger` tool shows the full digest). State your plan in one or two sentences before calling tools. A turn with no tool calls ends the research stage; close with a short note as before."
+    "Continue from this state: judge the ledger against the question, pursue only what is missing, contested, or weakly sourced, and do not re-fetch sources or re-establish claims already present (the `ledger` tool shows the full digest and trail). Do not repeat searches the trail already shows — when a trail query came up empty, try a genuinely different angle, term, or source instead. State your plan in one or two sentences before calling tools. A turn with no tool calls ends the research stage; close with a short note as before."
   );
 }
