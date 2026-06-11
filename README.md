@@ -69,6 +69,8 @@ for await (const event of run.events()) {
 const result = await run.result();
 ```
 
+The handle also exposes `run.stop()` — end research early but still synthesize, bind, and return a report from whatever the ledger holds — and `run.cancel()`, which aborts outright. Late subscribers to `run.events()` receive the full event history first, so a UI can attach at any point.
+
 Events are a versioned, JSON-serializable union: `run.started`, `plan.updated`, `agent.spawned`, `agent.returned`, `search.completed`, `source.fetched`, `claim.extracted`, `claim.verified`, `report.delta`, `citation.bound`, `budget.warning`, `safety.flag`, `run.completed`, `run.error`, and more — enough for a UI to render full progress from the stream alone.
 
 ## Results

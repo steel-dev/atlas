@@ -107,6 +107,7 @@ export interface ResearchRun {
   result(): Promise<ResearchResult>;
   cancel(): Promise<void>;
   pause(): Promise<void>;
+  stop(): Promise<void>;
   status(): RunStatus;
 }
 
@@ -350,6 +351,10 @@ export function startRun(start: StartRunOptions): ResearchRun {
       stopController.abort();
       await resultPromise.catch(() => {});
     },
+    stop: async () => {
+      stopController.abort();
+      await resultPromise.catch(() => {});
+    },
   };
 }
 
@@ -574,22 +579,26 @@ async function executeRun(args: ExecuteRunArgs): Promise<ResearchResult> {
     throw new AtlasError("run paused", "paused");
   }
 
-  const dedupeGrant = verifyReserve.grant({
-    fraction: DEDUPE_FRACTION,
-    minUSD: DEDUPE_MIN_USD,
-  });
-  if (dedupeGrant) {
-    try {
-      await semanticDedupePass(rctx, dedupeGrant);
-    } catch (err) {
-      if (args.hardSignal.aborted) throw err;
-    } finally {
-      dedupeGrant.release();
+  if (!args.stopSignal.aborted) {
+    const dedupeGrant = verifyReserve.grant({
+      fraction: DEDUPE_FRACTION,
+      minUSD: DEDUPE_MIN_USD,
+    });
+    if (dedupeGrant) {
+      try {
+        await semanticDedupePass(rctx, dedupeGrant);
+      } catch (err) {
+        if (args.hardSignal.aborted) throw err;
+      } finally {
+        dedupeGrant.release();
+      }
     }
   }
 
   try {
-    await sweepVerification(rctx, verifyReserve);
+    if (!args.stopSignal.aborted) {
+      await sweepVerification(rctx, verifyReserve);
+    }
   } finally {
     if (verifyReserve !== meter) verifyReserve.release();
   }

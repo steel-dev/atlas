@@ -193,6 +193,43 @@ describe("startRun end to end", () => {
     expect(replayed.stats.costUSD).toBe(0);
   });
 
+  it("stops a run gracefully and salvages a result", async () => {
+    const model = new MockLanguageModelV3({
+      provider: "mock-provider",
+      modelId: "claude-sonnet-4-6",
+      doGenerate: async (options: LanguageModelV3CallOptions) => {
+        if (options.responseFormat?.type === "json") {
+          return textResult(JSON.stringify({ openQuestions: [] }));
+        }
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        return {
+          content: [
+            {
+              type: "tool-call",
+              toolCallId: `call_${Math.random()}`,
+              toolName: "search",
+              input: JSON.stringify({ queries: ["test question"] }),
+            },
+          ],
+          finishReason: { unified: "tool-calls", raw: undefined },
+          usage: USAGE,
+          warnings: [],
+        } satisfies LanguageModelV3GenerateResult;
+      },
+    });
+    const atlas = new Atlas({
+      model: model as unknown as ResolvedModel,
+      search: stubSearch,
+      effort: "fast",
+    });
+    const run = atlas.start("test question");
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    await run.stop();
+    const result = await run.result();
+    expect(run.status()).toBe("completed");
+    expect(result.report.length).toBeGreaterThan(0);
+  });
+
   it("cancels a run via the handle", async () => {
     const model = new MockLanguageModelV3({
       provider: "mock-provider",
