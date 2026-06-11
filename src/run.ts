@@ -16,6 +16,7 @@ import {
   type ResolvedRunConfig,
 } from "./config.js";
 import { resolveCustomTools } from "./custom-tools.js";
+import { semanticDedupePass } from "./dedupe.js";
 import { AtlasError, errorMessage } from "./errors.js";
 import type { ResearchEvent, RunStats } from "./events.js";
 import { createLedger, type ResearchClaim } from "./ledger.js";
@@ -118,6 +119,8 @@ const VERIFY_SWEEP_MIN_USD = 0.03;
 const VERIFY_SWEEP_CONCURRENCY = 4;
 const VERIFY_SWEEP_MAX_CLAIMS = 64;
 const EAGER_VERIFY_MAX_CLAIMS = 16;
+const DEDUPE_FRACTION = 0.15;
+const DEDUPE_MIN_USD = 0.02;
 const IMPORTANCE_RANK: Record<string, number> = {
   central: 0,
   supporting: 1,
@@ -565,6 +568,20 @@ async function executeRun(args: ExecuteRunArgs): Promise<ResearchResult> {
   args.hardSignal.throwIfAborted();
   if (args.isPaused()) {
     throw new AtlasError("run paused", "paused");
+  }
+
+  const dedupeGrant = verifyReserve.grant({
+    fraction: DEDUPE_FRACTION,
+    minUSD: DEDUPE_MIN_USD,
+  });
+  if (dedupeGrant) {
+    try {
+      await semanticDedupePass(rctx, dedupeGrant);
+    } catch (err) {
+      if (args.hardSignal.aborted) throw err;
+    } finally {
+      dedupeGrant.release();
+    }
   }
 
   try {

@@ -161,6 +161,105 @@ describe("ledger extraction and merge", () => {
   });
 });
 
+describe("ledger merge", () => {
+  async function seeded(): Promise<Ledger> {
+    const ledger = makeLedger();
+    ledger.queue(
+      makeDocument(
+        "source_1",
+        "https://a.example.com/1",
+        "The tower is 330 meters tall today.",
+      ),
+      {
+        goal: "g",
+        agentId: "agent_1",
+        model: extractionModel([
+          {
+            claim: "The tower is 330 meters tall",
+            quote: "330 meters tall",
+            importance: "central",
+          },
+        ]),
+      },
+    );
+    await ledger.settle();
+    ledger.queue(
+      makeDocument(
+        "source_2",
+        "https://b.example.org/2",
+        "The tower stands 330 meters high above the city.",
+      ),
+      {
+        goal: "g",
+        agentId: "agent_2",
+        model: extractionModel([
+          {
+            claim: "The tower stands 330 meters high",
+            quote: "stands 330 meters high",
+            importance: "central",
+          },
+        ]),
+      },
+    );
+    await ledger.settle();
+    return ledger;
+  }
+
+  it("merges cross-host claims as corroboration and moves votes", async () => {
+    const ledger = await seeded();
+    const dup = ledger.claims[1];
+    dup.votes = [
+      { lens: "contradiction", refuted: false, evidence: "e", confidence: "high" },
+      { lens: "quote-fidelity", refuted: false, evidence: "e", confidence: "high" },
+    ];
+    dup.status = "confirmed";
+    expect(ledger.merge("claim_2", "claim_1")).toBe(true);
+    const representatives = ledger.representatives();
+    expect(representatives).toHaveLength(1);
+    expect(representatives[0].id).toBe("claim_1");
+    expect(representatives[0].corroboration).toBe(2);
+    expect(representatives[0].votes).toHaveLength(2);
+    expect(representatives[0].status).toBe("confirmed");
+    expect(ledger.byId("claim_2")?.duplicateOf).toBe("claim_1");
+  });
+
+  it("counts same-host merges as dropped duplicates", async () => {
+    const ledger = makeLedger();
+    const queueOne = (sourceId: string, path: string, text: string, claim: string, quote: string) =>
+      ledger.queue(makeDocument(sourceId, `https://a.example.com/${path}`, text), {
+        goal: "g",
+        agentId: "agent_1",
+        model: extractionModel([{ claim, quote, importance: "central" }]),
+      });
+    queueOne(
+      "source_1",
+      "1",
+      "The tower is 330 meters tall today.",
+      "The tower is 330 meters tall",
+      "330 meters tall",
+    );
+    await ledger.settle();
+    queueOne(
+      "source_2",
+      "2",
+      "The tower stands 330 meters high above the city.",
+      "The tower stands 330 meters high",
+      "stands 330 meters high",
+    );
+    await ledger.settle();
+    expect(ledger.merge("claim_2", "claim_1")).toBe(true);
+    expect(ledger.dupesDropped).toBe(1);
+    expect(ledger.representatives()[0].corroboration).toBeUndefined();
+  });
+
+  it("refuses merges into itself or onto merged claims", async () => {
+    const ledger = await seeded();
+    expect(ledger.merge("claim_1", "claim_1")).toBe(false);
+    expect(ledger.merge("claim_2", "claim_1")).toBe(true);
+    expect(ledger.merge("claim_2", "claim_1")).toBe(false);
+  });
+});
+
 describe("ledger flush", () => {
   function deferredExtractionModel(
     claims: Array<{ claim: string; quote: string; importance: string }>,

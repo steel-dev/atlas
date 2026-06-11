@@ -184,6 +184,7 @@ export interface Ledger {
   queue(document: SourceDocument, opts: LedgerQueueOptions): void;
   settle(): Promise<void>;
   flush(agentId?: string): Promise<void>;
+  merge(duplicateId: string, intoId: string): boolean;
   byId(claimId: string): ResearchClaim | undefined;
   representatives(): ResearchClaim[];
   digest(maxClaims?: number): string;
@@ -351,6 +352,50 @@ export function createLedger(ctx: LedgerContext): Ledger {
     if (tasks.length > 0) await Promise.all(tasks);
   }
 
+  function rootOf(claim: ResearchClaim): ResearchClaim {
+    let current = claim;
+    const seen = new Set<string>();
+    while (current.duplicateOf && !seen.has(current.id)) {
+      seen.add(current.id);
+      const next = claimsById.get(current.duplicateOf);
+      if (!next) break;
+      current = next;
+    }
+    return current;
+  }
+
+  function merge(duplicateId: string, intoId: string): boolean {
+    const dup = claimsById.get(duplicateId);
+    const target = claimsById.get(intoId);
+    if (!dup || !target) return false;
+    const rep = rootOf(target);
+    if (dup.duplicateOf || rep.duplicateOf || dup.id === rep.id) return false;
+    dup.duplicateOf = rep.id;
+    for (const claim of claims) {
+      if (claim !== dup && claim.duplicateOf === dup.id) {
+        claim.duplicateOf = rep.id;
+      }
+    }
+    const corroborating = new Set(rep.corroboratingSources ?? []);
+    for (const url of dup.corroboratingSources ?? []) corroborating.add(url);
+    const sameSource =
+      dup.sourceId === rep.sourceId ||
+      registrableHost(dup.url) === registrableHost(rep.url);
+    if (sameSource) dupesDropped++;
+    else corroborating.add(dup.url);
+    corroborating.delete(rep.url);
+    if (corroborating.size > 0) {
+      rep.corroboratingSources = [...corroborating];
+      rep.corroboration = corroborating.size + 1;
+    }
+    if (rep.votes.length === 0 && dup.votes.length > 0) {
+      rep.votes = dup.votes;
+      rep.status = dup.status;
+    }
+    representativeByText.set(normalizeForQuoteMatch(dup.text), rep.id);
+    return true;
+  }
+
   return {
     claims,
     get unsupportedCount() {
@@ -362,6 +407,7 @@ export function createLedger(ctx: LedgerContext): Ledger {
     queue,
     settle,
     flush,
+    merge,
     byId: (claimId) => claimsById.get(claimId),
     representatives: () => claims.filter((claim) => !claim.duplicateOf),
     digest: (maxClaims) => renderLedgerDigest(claims, maxClaims),
