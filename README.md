@@ -138,7 +138,7 @@ const atlas = new Atlas({
 
 ## Models per role
 
-Quality scales with the model; cost scales with where you spend it. Override roles independently — a cheap model for extraction and verification voters stretches the same budget much further:
+Quality scales with the model; cost scales with where you spend it. Extraction and verification are the highest-volume roles, so when `models.extract`/`models.verify` are not set and the lead model is an Anthropic or OpenAI model whose API key is in the environment, Atlas defaults those roles to a small sibling (`claude-haiku-4-5` / `gpt-5-mini`). Override roles independently to take full control:
 
 ```ts
 const atlas = new Atlas({

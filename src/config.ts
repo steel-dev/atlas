@@ -1,5 +1,6 @@
 import type { FlexibleSchema } from "ai";
 import { ConfigError } from "./errors.js";
+import { deriveSmallModel } from "./defaults.js";
 import { readEnv } from "./env.js";
 import type { ModelRole, ResolvedModel } from "./model.js";
 import type { PricingTable } from "./budget.js";
@@ -143,11 +144,15 @@ export function resolveRunConfig(
     throw new ConfigError(`budget.maxUSD must be > 0 (got ${budgetUSD})`);
   }
   const lead = config.model;
+  const derived =
+    config.models?.extract && config.models?.verify
+      ? undefined
+      : deriveSmallModel(lead);
   const models: Record<ModelRole, ResolvedModel> = {
     lead: config.models?.lead ?? lead,
     research: config.models?.research ?? config.models?.lead ?? lead,
-    verify: config.models?.verify ?? config.models?.extract ?? lead,
-    extract: config.models?.extract ?? lead,
+    verify: config.models?.verify ?? config.models?.extract ?? derived ?? lead,
+    extract: config.models?.extract ?? derived ?? lead,
     write: config.models?.write ?? config.models?.lead ?? lead,
   };
   return {
