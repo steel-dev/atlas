@@ -13,13 +13,14 @@ import type { SourceDocument } from "./sources.js";
 
 function extractionModel(
   claims: Array<{ claim: string; quote: string; importance: string }>,
+  sourceQuality = "secondary",
 ): LanguageModelV3 {
   return new MockLanguageModelV3({
     doGenerate: {
       content: [
         {
           type: "text",
-          text: JSON.stringify({ sourceQuality: "secondary", claims }),
+          text: JSON.stringify({ sourceQuality, claims }),
         },
       ],
       finishReason: { unified: "stop", raw: undefined },
@@ -257,6 +258,128 @@ describe("ledger merge", () => {
     expect(ledger.merge("claim_1", "claim_1")).toBe(false);
     expect(ledger.merge("claim_2", "claim_1")).toBe(true);
     expect(ledger.merge("claim_2", "claim_1")).toBe(false);
+  });
+});
+
+describe("ledger addClaim", () => {
+  it("admits a verbatim-quoted claim and fires events", () => {
+    const events: string[] = [];
+    const seen: string[] = [];
+    const ledger = createLedger({
+      emit: (event) => events.push(event.type),
+      signal: undefined,
+      shouldExtract: () => true,
+      onClaim: (claim) => seen.push(claim.id),
+    });
+    const document = makeDocument(
+      "source_1",
+      "https://a.example.com/page",
+      "The tower is 330 meters tall and was built in 1889.",
+    );
+    const result = ledger.addClaim(document, {
+      text: "The tower was built in 1889",
+      quote: "built in 1889",
+      importance: "central",
+      agentId: "agent_1",
+    });
+    expect(result.outcome).toBe("added");
+    if (result.outcome !== "added") throw new Error("unreachable");
+    expect(result.claim.id).toBe("claim_1");
+    expect(result.claim.status).toBe("quoted");
+    expect(result.claim.sourceQuality).toBe("secondary");
+    expect(result.claim.agentId).toBe("agent_1");
+    expect(events).toContain("claim.extracted");
+    expect(seen).toEqual(["claim_1"]);
+  });
+
+  it("rejects quotes that are not verbatim in the source", () => {
+    const ledger = makeLedger();
+    const document = makeDocument(
+      "source_1",
+      "https://a.example.com/page",
+      "The tower is 330 meters tall.",
+    );
+    const result = ledger.addClaim(document, {
+      text: "The tower is about 330m",
+      quote: "approximately 330m in height",
+      importance: "supporting",
+      agentId: "agent_1",
+    });
+    expect(result.outcome).toBe("unsupported");
+    expect(ledger.unsupportedCount).toBe(1);
+    expect(ledger.claims).toHaveLength(0);
+  });
+
+  it("records cross-host duplicates as corroboration", () => {
+    const ledger = makeLedger();
+    const text = "The tower is 330 meters tall today.";
+    const first = makeDocument("source_1", "https://a.example.com/1", text);
+    const second = makeDocument("source_2", "https://b.example.org/2", text);
+    const input = {
+      text: "The tower is 330 meters tall",
+      quote: "330 meters tall",
+      importance: "central" as const,
+      agentId: "agent_1",
+    };
+    const added = ledger.addClaim(first, input);
+    expect(added.outcome).toBe("added");
+    const result = ledger.addClaim(second, input);
+    expect(result.outcome).toBe("corroborated");
+    if (result.outcome !== "corroborated") throw new Error("unreachable");
+    expect(result.representativeId).toBe("claim_1");
+    expect(ledger.representatives()[0].corroboration).toBe(2);
+  });
+
+  it("drops same-host duplicates and names the representative", () => {
+    const ledger = makeLedger();
+    const text = "The tower is 330 meters tall today.";
+    const first = makeDocument("source_1", "https://a.example.com/1", text);
+    const second = makeDocument("source_2", "https://a.example.com/2", text);
+    const input = {
+      text: "The tower is 330 meters tall",
+      quote: "330 meters tall",
+      importance: "central" as const,
+      agentId: "agent_1",
+    };
+    ledger.addClaim(first, input);
+    const result = ledger.addClaim(second, input);
+    expect(result.outcome).toBe("duplicate");
+    if (result.outcome !== "duplicate") throw new Error("unreachable");
+    expect(result.representativeId).toBe("claim_1");
+    expect(ledger.dupesDropped).toBe(1);
+  });
+
+  it("inherits source quality from sibling extracted claims", async () => {
+    const ledger = makeLedger();
+    const document = makeDocument(
+      "source_1",
+      "https://a.example.com/page",
+      "The tower is 330 meters tall and was built in 1889.",
+    );
+    ledger.queue(document, {
+      goal: "tower facts",
+      agentId: "agent_1",
+      model: extractionModel(
+        [
+          {
+            claim: "The tower is 330 meters tall",
+            quote: "330 meters tall",
+            importance: "central",
+          },
+        ],
+        "primary",
+      ),
+    });
+    await ledger.settle();
+    const result = ledger.addClaim(document, {
+      text: "The tower was built in 1889",
+      quote: "built in 1889",
+      importance: "supporting",
+      agentId: "agent_1",
+    });
+    expect(result.outcome).toBe("added");
+    if (result.outcome !== "added") throw new Error("unreachable");
+    expect(result.claim.sourceQuality).toBe("primary");
   });
 });
 

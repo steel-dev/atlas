@@ -34,7 +34,8 @@ export type ToolName =
   | "read_source"
   | "search_sources"
   | "run_code"
-  | "ledger";
+  | "ledger"
+  | "add_claim";
 
 export interface SpawnInput {
   role: "research" | "verify";
@@ -600,6 +601,52 @@ export function buildAgentTools(
           `${representatives.length} claim(s): ${summary}\n` +
             rctx.ledger.digest(max_claims),
         );
+      },
+    });
+  }
+
+  if (enabled.has("add_claim")) {
+    tools.add_claim = tool({
+      description:
+        "Mint one claim directly into the shared ledger from a stored source — use it when you pinned an exact value, date, count, or named entity with read_source, search_sources, or run_code that automatic extraction missed or got wrong. `quote` must be copied VERBATIM from the stored source text: it is string-matched, not semantically matched, so never paraphrase, correct, reorder, or splice. The claim enters the same verification machinery as extracted claims.",
+      inputSchema: z.object({
+        source_id: z.string(),
+        claim: z
+          .string()
+          .describe(
+            "Concrete, falsifiable statement preserving exact values, dates, and named entities.",
+          ),
+        quote: z
+          .string()
+          .describe(
+            "Supporting quote copied verbatim from the stored source text.",
+          ),
+        importance: z.enum(["central", "supporting", "tangential"]),
+      }),
+      execute: async ({ source_id, claim, quote, importance }) => {
+        const document = rctx.sources.byId.get(source_id.trim());
+        if (!document) return `Error: unknown source_id: ${source_id}`;
+        const text = claim.trim();
+        const quoteText = quote.trim();
+        if (!text || !quoteText) {
+          return "Error: add_claim requires non-empty `claim` and `quote`.";
+        }
+        const result = rctx.ledger.addClaim(document, {
+          text,
+          quote: quoteText,
+          importance,
+          agentId: actx.agentId,
+        });
+        switch (result.outcome) {
+          case "added":
+            return `Added ${result.claim.id} [${result.claim.importance}·${result.claim.sourceQuality}] to the ledger.`;
+          case "corroborated":
+            return `Already in the ledger as ${result.representativeId}; this source was recorded as corroboration.`;
+          case "duplicate":
+            return `Already in the ledger as ${result.representativeId} from the same source; nothing added.`;
+          case "unsupported":
+            return `Rejected: the quote does not appear verbatim in ${source_id}. Read the exact text with read_source and copy it unchanged — the quote is string-matched against the stored source.`;
+        }
       },
     });
   }

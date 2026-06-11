@@ -185,11 +185,28 @@ export interface LedgerQueueOptions {
   model: LanguageModelV3;
 }
 
+export interface LedgerAddClaimInput {
+  text: string;
+  quote: string;
+  importance: ClaimImportance;
+  agentId: string;
+}
+
+export type LedgerAddClaimResult =
+  | { outcome: "added"; claim: ResearchClaim }
+  | { outcome: "corroborated"; representativeId: string }
+  | { outcome: "duplicate"; representativeId: string }
+  | { outcome: "unsupported" };
+
 export interface Ledger {
   readonly claims: ResearchClaim[];
   readonly unsupportedCount: number;
   readonly dupesDropped: number;
   queue(document: SourceDocument, opts: LedgerQueueOptions): void;
+  addClaim(
+    document: SourceDocument,
+    input: LedgerAddClaimInput,
+  ): LedgerAddClaimResult;
   settle(): Promise<void>;
   flush(agentId?: string): Promise<void>;
   merge(duplicateId: string, intoId: string): boolean;
@@ -326,6 +343,56 @@ export function createLedger(ctx: LedgerContext): Ledger {
     });
   }
 
+  function sourceQualityFor(sourceId: string): ClaimSourceQuality | undefined {
+    return claims.find((claim) => claim.sourceId === sourceId)?.sourceQuality;
+  }
+
+  function addClaim(
+    document: SourceDocument,
+    input: LedgerAddClaimInput,
+  ): LedgerAddClaimResult {
+    if (!quoteAppearsInSource(input.quote, document.markdown)) {
+      unsupportedCount++;
+      return { outcome: "unsupported" };
+    }
+    const claim: ResearchClaim = {
+      id: "",
+      text: input.text,
+      quote: input.quote,
+      importance: input.importance,
+      sourceQuality: sourceQualityFor(document.sourceId) ?? "secondary",
+      sourceId: document.sourceId,
+      url: document.url,
+      title: document.title,
+      ...(document.metadata.publishedTime
+        ? { publishedTime: document.metadata.publishedTime }
+        : {}),
+      status: "quoted",
+      votes: [],
+      agentId: input.agentId,
+    };
+    const admitted = admit(claim);
+    if (admitted) {
+      ctx.emit({
+        type: "claim.extracted",
+        claimId: admitted.id,
+        sourceId: document.sourceId,
+        text: admitted.text,
+        importance: admitted.importance,
+      });
+      ctx.onClaim?.(admitted);
+      return { outcome: "added", claim: admitted };
+    }
+    const representativeId =
+      claim.duplicateOf ??
+      representativeByText.get(normalizeForQuoteMatch(claim.text)) ??
+      "";
+    return {
+      outcome: claim.duplicateOf ? "corroborated" : "duplicate",
+      representativeId,
+    };
+  }
+
   function queue(document: SourceDocument, opts: LedgerQueueOptions): void {
     if (queuedSourceIds.has(document.sourceId)) return;
     queuedSourceIds.add(document.sourceId);
@@ -416,6 +483,7 @@ export function createLedger(ctx: LedgerContext): Ledger {
       return dupesDropped;
     },
     queue,
+    addClaim,
     settle,
     flush,
     merge,

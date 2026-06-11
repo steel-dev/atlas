@@ -21,6 +21,7 @@ const RESEARCH_TOOLS: ToolName[] = [
   "search_sources",
   "run_code",
   "ledger",
+  "add_claim",
 ];
 
 const DEFAULT_RESEARCH_FRACTION = 0.15;

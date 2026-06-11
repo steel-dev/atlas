@@ -12,6 +12,7 @@ const ORCHESTRATOR_TOOLS: ToolName[] = [
   "search_sources",
   "run_code",
   "ledger",
+  "add_claim",
 ];
 
 export async function runOrchestrator(
