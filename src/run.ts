@@ -173,11 +173,13 @@ interface EventSubscriber {
 
 class EventHub {
   private readonly subscribers = new Set<EventSubscriber>();
+  private readonly history: ResearchEvent[] = [];
   private closed = false;
   private failure: unknown = null;
 
   emit(event: ResearchEvent): void {
     if (this.closed) return;
+    this.history.push(event);
     for (const sub of this.subscribers) {
       if (sub.resolveNext) {
         const resolve = sub.resolveNext;
@@ -217,7 +219,7 @@ class EventHub {
     return {
       [Symbol.asyncIterator]: (): AsyncIterator<ResearchEvent> => {
         const sub: EventSubscriber = {
-          queue: [],
+          queue: [...hub.history],
           resolveNext: null,
           rejectNext: null,
         };
@@ -455,8 +457,8 @@ async function executeRun(args: ExecuteRunArgs): Promise<ResearchResult> {
           if (warnedUnknownModels.has(modelId)) return;
           warnedUnknownModels.add(modelId);
           emit({
-            type: "safety.flag",
-            kind: "injection",
+            type: "pricing.missing",
+            modelId,
             detail: `no pricing entry for model "${modelId}"; charging conservative default rates`,
           });
         },

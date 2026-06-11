@@ -5,7 +5,7 @@ import { mapWithConcurrency } from "./async.js";
 import type { BudgetGrant } from "./budget.js";
 import { errorMessage } from "./errors.js";
 import type { AgentRole } from "./events.js";
-import { guardUrl } from "./safety.js";
+import { guardUrl, quarantine } from "./safety.js";
 import {
   clampSandboxTimeout,
   runCodeSandboxed,
@@ -144,7 +144,7 @@ export async function execSearchTool(
   const ranked = [...byUrl.values()]
     .sort((a, b) => b.score - a.score)
     .slice(0, limit);
-  return JSON.stringify(
+  const body = JSON.stringify(
     {
       ...(cleaned.length === 1 ? { query: cleaned[0] } : { queries: cleaned }),
       results: ranked.map((result, index) => ({
@@ -159,6 +159,7 @@ export async function execSearchTool(
     null,
     2,
   );
+  return quarantine(body, { sourceId: "search-results" });
 }
 
 function assessSourceQuality(

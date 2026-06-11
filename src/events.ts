@@ -111,6 +111,7 @@ export type ResearchEvent =
       detail: string;
       url?: string;
     }
+  | { type: "pricing.missing"; modelId: string; detail: string }
   | { type: "rate.limited"; retryAfterSeconds: number }
   | { type: "tool.event"; tool: string; data: unknown }
   | { type: "run.completed"; stats: RunStats }

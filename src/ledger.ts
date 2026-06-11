@@ -113,7 +113,7 @@ function extractionPrompt(
     quarantine(text, { sourceId: document.sourceId, url: document.url }) +
     truncationNote +
     "\n\n## Task\n" +
-    '1. Assess source quality: primary research/official/institutional data → "primary"; reputable secondary reporting → "secondary"; personal blog or opinion → "blog"; forum or user-generated content → "forum"; spam, ads, paywalled stubs, or irrelevant pages → "unreliable".\n' +
+    '1. Assess source quality: primary research/official/institutional data → "primary"; reputable secondary reporting → "secondary"; personal blog or opinion → "blog"; forum or user-generated content → "forum"; spam, ads, or pages irrelevant to the goal → "unreliable". A paywalled stub or preview keeps the publisher\'s quality grade — just extract only what the visible text supports.\n' +
     `2. Extract 2-${maxClaims} falsifiable claims that bear on the research goal. Each claim must:\n` +
     "   - be a concrete, checkable statement that preserves exact values, dates, and named entities\n" +
     "   - include a supporting quote copied VERBATIM from the source text above — it is string-matched against the stored text, so never paraphrase, correct, reorder, or splice\n" +

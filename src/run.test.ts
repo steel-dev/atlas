@@ -106,6 +106,24 @@ describe("startRun end to end", () => {
     expect(types).toContain("run.completed");
   });
 
+  it("replays the full event history to late subscribers", async () => {
+    const atlas = new Atlas({
+      model: scriptedModel() as unknown as ResolvedModel,
+      search: stubSearch,
+      effort: "fast",
+    });
+    const run = atlas.start("test question", { runId: "run_late_sub" });
+    await run.result();
+
+    const events: ResearchEvent[] = [];
+    for await (const event of run.events()) events.push(event);
+
+    const types = events.map((event) => event.type);
+    expect(types[0]).toBe("run.started");
+    expect(types).toContain("search.completed");
+    expect(types[types.length - 1]).toBe("run.completed");
+  });
+
   it("survives an unrecoverable lead-agent model error with a fallback report", async () => {
     const model = new MockLanguageModelV3({
       provider: "mock-provider",

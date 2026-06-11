@@ -286,6 +286,8 @@ describe("emergent multi-agent run", () => {
     expect(types).toContain("claim.extracted");
     expect(types).toContain("claim.verified");
     expect(types).toContain("citation.bound");
+    expect(types).toContain("pricing.missing");
+    expect(types).not.toContain("safety.flag");
     expect(
       types.filter((type) => type === "report.delta").length,
     ).toBeGreaterThan(0);

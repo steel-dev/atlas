@@ -249,14 +249,11 @@ export async function bindCitations(
     rctx.config.envelope.maxEntailmentChecks,
   );
   const entailment = await runEntailmentChecks(rctx, grant, cappedItems);
-  let cursor = 0;
   for (const item of cappedItems) {
-    void cursor;
     const verdict = entailment.get(item.index);
     if (verdict === false) {
       citations[item.index] = { ...citations[item.index], verified: false };
     }
-    cursor++;
   }
 
   for (const citation of citations) {

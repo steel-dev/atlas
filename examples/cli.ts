@@ -184,6 +184,8 @@ function formatEvent(e: ResearchEvent): string | null {
       );
     case "safety.flag":
       return paint(YELLOW, `! safety ${e.kind}: ${truncate(e.detail, 100)}`);
+    case "pricing.missing":
+      return paint(YELLOW, `! ${truncate(e.detail, 100)}`);
     case "rate.limited":
       return paint(YELLOW, `! rate limited — waiting ${e.retryAfterSeconds}s`);
     case "tool.event":

@@ -957,6 +957,7 @@ function handleEvent(e: WireEvent, caseId: string): void {
     );
   else if (t === "safety.flag")
     live.trace.push("⚠ " + String(e.kind) + ": " + String(e.detail));
+  else if (t === "pricing.missing") live.trace.push("⚠ " + String(e.detail));
   else if (t === "run.completed") live.trace.push("research done");
   else if (t === "grade_progress") {
     live.phase = "grading";

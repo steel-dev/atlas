@@ -103,6 +103,8 @@
             return [`! budget ${Math.round(e.fraction * 100)}% — $${e.spentUSD.toFixed(2)} of $${e.limitUSD.toFixed(2)}`, "warn"];
           case "safety.flag":
             return [`! safety ${e.kind}: ${e.detail}`, "warn"];
+          case "pricing.missing":
+            return [`! ${e.detail}`, "warn"];
           case "rate.limited":
             return [`! rate limited — waiting ${e.retryAfterSeconds}s`, "warn"];
           case "run.error":

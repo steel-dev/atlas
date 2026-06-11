@@ -111,6 +111,7 @@ export type EvalTraceEventName =
   | "citation_bound"
   | "budget_warning"
   | "safety_flag"
+  | "pricing_missing"
   | "rate_limited"
   | "tool_event"
   | "completed"
@@ -258,6 +259,12 @@ export function traceEvent(
       return { ...base("completed"), stats: event.stats };
     case "run.error":
       return { ...base("run_error"), error: event.message };
+    case "pricing.missing":
+      return {
+        ...base("pricing_missing"),
+        id: event.modelId,
+        detail: event.detail,
+      };
     case "claim.extracted":
     case "report.delta":
       return null;
@@ -304,6 +311,8 @@ export function progressLine(
       return `${caseId}: budget ${Math.round(event.fraction * 100)}% used ($${event.spentUSD.toFixed(2)}/$${event.limitUSD.toFixed(2)})`;
     case "safety.flag":
       return `${caseId}: safety flag ${event.kind}: ${truncate(event.detail, 120)}`;
+    case "pricing.missing":
+      return `${caseId}: ${truncate(event.detail, 120)}`;
     case "rate.limited":
       return `${caseId}: rate limited, waiting ${event.retryAfterSeconds}s`;
     case "run.error":
