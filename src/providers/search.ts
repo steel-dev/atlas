@@ -257,11 +257,13 @@ export function nativeModelSearch(
         prompt:
           `Search the web for: ${query}\n\n` +
           `Run one web search and list the ${limit} most relevant distinct result pages. ` +
-          "Do not answer the question; just surface the sources.",
+          "Do not answer the question; just surface the sources. " +
+          "Write one line per result in the form `<plain url> :: <one-sentence summary of what the page contains>`, with no markdown links.",
         tools,
         maxOutputTokens: 1_500,
         abortSignal: signal,
       });
+      const snippets = snippetsByUrl(result.text);
       const seen = new Set<string>();
       const results: SearchResult[] = [];
       for (const source of result.sources) {
@@ -269,13 +271,29 @@ export function nativeModelSearch(
         const key = normalizeUrlForSource(source.url);
         if (seen.has(key)) continue;
         seen.add(key);
-        const parsed = toResult(results.length, source.url, source.title, "");
+        const parsed = toResult(
+          results.length,
+          source.url,
+          source.title,
+          snippets.get(key) ?? "",
+        );
         if (parsed) results.push(parsed);
         if (results.length >= limit) break;
       }
       return results;
     },
   };
+}
+
+function snippetsByUrl(text: string): Map<string, string> {
+  const map = new Map<string, string>();
+  for (const line of text.split("\n")) {
+    const match = /(https?:\/\/\S+?)[)\]>.,]*\s*::\s*(\S.*)/.exec(line);
+    if (!match) continue;
+    const key = normalizeUrlForSource(match[1]);
+    if (!map.has(key)) map.set(key, match[2].trim().slice(0, 500));
+  }
+  return map;
 }
 
 async function nativeSearchTools(

@@ -21,7 +21,7 @@ import {
   storeMarkdown,
 } from "./source-documents.js";
 import type { SourceDocument } from "./sources.js";
-import { fetchThroughChain, looksBlocked } from "./providers/fetch.js";
+import { fetchThroughChain, looksBlockedPage } from "./providers/fetch.js";
 import type { MergedSearchResult } from "./providers/search.js";
 import { ROLE_CAPABILITIES } from "./roles.js";
 import { budgetStatusLine, type RunCtx, type SourceStore } from "./state.js";
@@ -59,7 +59,7 @@ export interface AgentCtx {
   spawn(input: SpawnInput): Promise<string>;
 }
 
-const SEARCH_TIMEOUT_MS = 30_000;
+const SEARCH_TIMEOUT_MS = 60_000;
 const DEFAULT_CUSTOM_TOOL_TIMEOUT_MS = 60_000;
 const MAX_CUSTOM_TOOL_TIMEOUT_MS = 300_000;
 const DEFAULT_FETCH_PREVIEW_CHARS = 700;
@@ -185,7 +185,7 @@ function assessSourceQuality(
 ): { fatalError?: string; warnings: string[] } {
   const trimmed = markdown.trim();
   const warnings: string[] = [];
-  if (looksBlocked(`${title}\n${trimmed}`)) {
+  if (looksBlockedPage(`${title}\n${trimmed}`)) {
     warnings.push("blocked_or_challenge: fetched content looked blocked");
   }
   if (trimmed.length < MIN_SOURCE_MARKDOWN_CHARS) {

@@ -1,4 +1,4 @@
-import { createConcurrencyGate } from "./async.js";
+import { createConcurrencyGate, type ConcurrencyGate } from "./async.js";
 import {
   createBudgetMeter,
   DEFAULT_PRICING,
@@ -71,6 +71,7 @@ export async function assembleRun(args: AssembleRunArgs): Promise<RunAssembly> {
   const pricing: PricingTable = { ...DEFAULT_PRICING, ...resolved.pricing };
   const modelGate = createConcurrencyGate(resolved.maxConcurrentModelCalls);
   const ioGate = createConcurrencyGate(resolved.maxConcurrentIo);
+  const searchGate = createConcurrencyGate(resolved.maxConcurrentIo);
   const counters = createRunCounters();
   const warnedUnknownModels = new Set<string>();
   const warnedFractions = new Set<number>();
@@ -117,12 +118,16 @@ export async function assembleRun(args: AssembleRunArgs): Promise<RunAssembly> {
       type: "rate.limited",
       retryAfterSeconds: Math.max(1, Math.round(delayMs / 1000)),
     });
-  const bindModel = (role: ModelRole, grant: BudgetGrant) =>
+  const bindModelWithGate = (
+    role: ModelRole,
+    grant: BudgetGrant,
+    gate: ConcurrencyGate,
+  ) =>
     engineModel(resolved.models[role], {
       role,
       grant,
       pricing,
-      gate: modelGate,
+      gate,
       usage,
       journal: args.journal,
       replay: args.replay,
@@ -130,12 +135,14 @@ export async function assembleRun(args: AssembleRunArgs): Promise<RunAssembly> {
       onUnknownModel,
       onRateLimit,
     });
+  const bindModel = (role: ModelRole, grant: BudgetGrant) =>
+    bindModelWithGate(role, grant, modelGate);
 
   const searchProviders = Array.isArray(args.config.search)
     ? args.config.search
     : args.config.search
       ? [args.config.search]
-      : defaultSearchProviders(bindModel("research", meter));
+      : defaultSearchProviders(bindModelWithGate("research", meter, searchGate));
   const fetchChain = Array.isArray(args.config.fetch)
     ? args.config.fetch
     : args.config.fetch

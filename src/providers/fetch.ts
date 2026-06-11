@@ -44,6 +44,13 @@ export function looksBlocked(text: string | undefined | null): boolean {
   return ANTI_BOT_MARKERS.some((marker) => lower.includes(marker));
 }
 
+const BLOCK_MARKER_EXEMPT_CHARS = 2_000;
+
+export function looksBlockedPage(markdown: string, raw?: string): boolean {
+  if (markdown.length >= BLOCK_MARKER_EXEMPT_CHARS) return false;
+  return looksBlocked(markdown) || looksBlocked(raw);
+}
+
 export interface FetchedPage {
   finalUrl: string;
   title: string | null;
@@ -343,13 +350,13 @@ function extractHtml(
   finalUrl: string,
 ): FetchAttempt {
   const html = new TextDecoder("utf-8", { fatal: false }).decode(data);
-  if (looksBlocked(html)) {
+  const extracted = htmlToMarkdown(html, finalUrl);
+  if (looksBlockedPage(extracted.markdown, html)) {
     return failed(
       "html_direct",
       "blocked_or_challenge: direct HTML looked blocked",
     );
   }
-  const extracted = htmlToMarkdown(html, finalUrl);
   if (extracted.markdown.length < DIRECT_HTML_MIN_CHARS) {
     return failed(
       "html_direct",
@@ -442,14 +449,14 @@ function extractText(
   finalUrl: string,
 ): FetchAttempt {
   const decoded = new TextDecoder("utf-8", { fatal: false }).decode(data);
-  if (looksBlocked(decoded)) {
+  const parsed = normalizeDirectText(decoded, contentType);
+  const markdown = parsed.markdown.trim();
+  if (looksBlockedPage(markdown, decoded)) {
     return failed(
       "text_direct",
       "blocked_or_challenge: direct text looked blocked",
     );
   }
-  const parsed = normalizeDirectText(decoded, contentType);
-  const markdown = parsed.markdown.trim();
   if (markdown.length < DIRECT_HTML_MIN_CHARS) {
     return failed(
       parsed.method,
@@ -562,14 +569,14 @@ export function steel(opts: SteelOptions = {}): FetchProvider {
       const finalUrl = response.metadata?.canonical || url;
       const html = response.content?.html;
       if (html) {
-        if (looksBlocked(html)) {
+        const extracted = htmlToMarkdown(html, finalUrl);
+        if (looksBlockedPage(extracted.markdown, html)) {
           return failed(
             "steel_scrape",
             "blocked_or_challenge: steel scrape HTML looked blocked",
             false,
           );
         }
-        const extracted = htmlToMarkdown(html, finalUrl);
         if (extracted.markdown.length < DIRECT_HTML_MIN_CHARS) {
           return failed(
             "steel_scrape",
@@ -602,7 +609,7 @@ export function steel(opts: SteelOptions = {}): FetchProvider {
         };
       }
       const markdown = response.content?.markdown?.trim();
-      if (markdown && !looksBlocked(markdown)) {
+      if (markdown && !looksBlockedPage(markdown)) {
         const attempt: SourceExtractionAttempt = {
           method: "steel_scrape",
           ok: true,

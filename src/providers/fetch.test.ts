@@ -1,7 +1,7 @@
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { basicFetch } from "./fetch.js";
+import { basicFetch, looksBlockedPage } from "./fetch.js";
 
 const PAGE_BODY =
   "<html><head><title>Tower</title></head><body><p>" +
@@ -97,5 +97,26 @@ describe("basicFetch redirect handling", () => {
     if (!result.ok) {
       expect(result.attempt.note).toContain("too_many_redirects");
     }
+  });
+});
+
+describe("looksBlockedPage", () => {
+  it("flags a thin challenge page", () => {
+    const raw =
+      "<html><body><h1>Just a moment...</h1><p>Enable JavaScript and cookies to continue.</p></body></html>";
+    expect(looksBlockedPage("Just a moment... Enable JavaScript and cookies to continue.", raw)).toBe(true);
+  });
+
+  it("ignores marker words in the raw HTML of a substantive page", () => {
+    const raw =
+      '<html><head><script>{"wgConfirmEditCaptchaNeededForGenericEdit":"hcaptcha"}</script></head><body>article</body></html>';
+    const markdown = "Land reform in Zimbabwe began in earnest in 2000. ".repeat(60);
+    expect(looksBlockedPage(markdown, raw)).toBe(false);
+  });
+
+  it("ignores marker words in the body of a substantive page", () => {
+    const markdown =
+      "This article explains how captcha challenges and access denied responses work. ".repeat(40);
+    expect(looksBlockedPage(markdown)).toBe(false);
   });
 });
