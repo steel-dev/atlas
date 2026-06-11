@@ -27,6 +27,7 @@ export const ALL_LENSES: VerifierLens[] = [
 
 const REFUTATIONS_REQUIRED = 2;
 const MIN_VOTES_TO_SETTLE = 2;
+const PANEL_MIN_REMAINING_USD = 0.04;
 const MAX_CLAIMS_PER_SPAWN = 8;
 const CLAIM_CONCURRENCY = 4;
 const VOTER_MAX_TURNS = 6;
@@ -101,7 +102,7 @@ export function settleClaim(claim: ResearchClaim, votes: ClaimVote[]): void {
   claim.votes = votes;
   const refutedVotes = votes.filter((vote) => vote.refuted).length;
   if (votes.length < MIN_VOTES_TO_SETTLE) {
-    claim.status = "unverified";
+    claim.status = claim.conflictsWith?.length ? "contested" : "unverified";
   } else if (refutedVotes >= REFUTATIONS_REQUIRED) {
     claim.status = "refuted";
   } else if (refutedVotes > 0) {
@@ -309,18 +310,30 @@ export async function runVerifySpawn(
       verdicts.push(verdictOf(claim));
       return;
     }
+    const conflicted = (claim.conflictsWith?.length ?? 0) > 0;
+    const panelAffordable =
+      lensesExplicit || args.grant.remainingUSD() >= PANEL_MIN_REMAINING_USD;
+    if (conflicted && !panelAffordable) {
+      verdicts.push(verdictOf(claim));
+      return;
+    }
     const job = (async () => {
       let votes: ClaimVote[] | null = null;
-      const conflicted = (claim.conflictsWith?.length ?? 0) > 0;
-      if (!lensesExplicit && claim.importance !== "central" && !conflicted) {
+      if (
+        !lensesExplicit &&
+        !conflicted &&
+        (claim.importance !== "central" || !panelAffordable)
+      ) {
         votes = await screenClaim(rctx, args.grant, claim);
       }
       if (!votes) {
-        votes = (
-          await Promise.all(
-            lenses.map((lens) => castVote(rctx, args, claim, lens)),
-          )
-        ).filter((vote): vote is ClaimVote => vote !== null);
+        votes = panelAffordable
+          ? (
+              await Promise.all(
+                lenses.map((lens) => castVote(rctx, args, claim, lens)),
+              )
+            ).filter((vote): vote is ClaimVote => vote !== null)
+          : [];
       }
       settleClaim(claim, votes);
       rctx.counters.claimsVerified++;

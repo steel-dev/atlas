@@ -253,7 +253,9 @@ describe("emergent multi-agent run", () => {
       safety: { allowPrivateNetworks: true },
     });
 
-    const run = atlas.start("how tall is the tower?");
+    const run = atlas.start("how tall is the tower?", {
+      budget: { maxUSD: 5 },
+    });
     const events: ResearchEvent[] = [];
     const drain = (async () => {
       for await (const event of run.events()) events.push(event);
@@ -312,7 +314,9 @@ describe("emergent multi-agent run", () => {
       safety: { allowPrivateNetworks: true },
     });
 
-    const run = atlas.start("how tall is the tower?");
+    const run = atlas.start("how tall is the tower?", {
+      budget: { maxUSD: 5 },
+    });
     const events: ResearchEvent[] = [];
     const drain = (async () => {
       for await (const event of run.events()) events.push(event);
@@ -349,7 +353,9 @@ describe("emergent multi-agent run", () => {
       safety: { allowPrivateNetworks: true },
     });
 
-    const run = atlas.start("how tall is the tower?");
+    const run = atlas.start("how tall is the tower?", {
+      budget: { maxUSD: 5 },
+    });
     const events: ResearchEvent[] = [];
     const drain = (async () => {
       for await (const event of run.events()) events.push(event);

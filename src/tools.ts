@@ -485,7 +485,7 @@ export function buildAgentTools(
           )
           .optional()
           .describe(
-            "For verify spawns: which lenses to apply. Default is staged: non-central claims get a cheap screening check that escalates to the full panel only when flagged; central claims always get all three lenses. Pass lenses explicitly to force the panel.",
+            "For verify spawns: which lenses to apply. Default is staged: non-central claims get a cheap screening check that escalates to the full panel only when flagged; central claims get all three lenses while the grant can fund a panel, and fall back to the screening check when it cannot. Pass lenses explicitly to force the panel.",
           ),
       }),
       execute: async (input) =>

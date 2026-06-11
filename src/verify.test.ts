@@ -136,6 +136,51 @@ describe("runVerifySpawn staged verification", () => {
     expect(supporting.votes).toHaveLength(2);
   });
 
+  it("screens central claims when the grant cannot fund a panel", async () => {
+    const central = claim();
+    const rctx = screeningRctx([central], screenModel({
+      quote_supports_claim: true,
+      source_is_evidence: true,
+      confidence: "high",
+      note: "context plainly supports the claim",
+    }));
+    const outcome = await runVerifySpawn(rctx, {
+      claimIds: ["claim_1"],
+      grant: createBudgetMeter(0.03),
+      parentId: "agent_1",
+      depth: 1,
+    });
+    expect(outcome.verdicts).toHaveLength(1);
+    expect(outcome.verdicts[0].status).toBe("confirmed");
+    expect(outcome.verdicts[0].votes).toBe("2-0");
+    expect(central.votes).toHaveLength(2);
+  });
+
+  it("leaves starved conflicted claims contested without spending", async () => {
+    const conflicted = claim();
+    conflicted.conflictsWith = ["claim_2"];
+    conflicted.status = "contested";
+    const rctx = screeningRctx([conflicted], screenModel({
+      quote_supports_claim: true,
+      source_is_evidence: true,
+      confidence: "high",
+      note: "unused",
+    }));
+    const outcome = await runVerifySpawn(rctx, {
+      claimIds: ["claim_1"],
+      grant: createBudgetMeter(0.03),
+      parentId: "agent_1",
+      depth: 1,
+    });
+    expect(outcome.verdicts).toHaveLength(1);
+    expect(outcome.verdicts[0].status).toBe("contested");
+    expect(conflicted.votes).toHaveLength(0);
+    expect(
+      (rctx as unknown as { counters: { claimsVerified: number } }).counters
+        .claimsVerified,
+    ).toBe(0);
+  });
+
   it("escalates conflicted claims to the panel instead of the screen", async () => {
     const conflicted = claim();
     conflicted.importance = "supporting";
@@ -254,5 +299,12 @@ describe("settleClaim", () => {
     const c2 = claim();
     settleClaim(c2, []);
     expect(c2.status).toBe("unverified");
+  });
+
+  it("keeps conflicted claims contested when votes are insufficient", () => {
+    const c = claim();
+    c.conflictsWith = ["claim_9"];
+    settleClaim(c, [vote(false)]);
+    expect(c.status).toBe("contested");
   });
 });
