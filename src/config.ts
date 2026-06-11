@@ -22,6 +22,7 @@ export interface EffortEnvelope {
   maxReportTokens: number;
   maxReportCandidates: number;
   maxClaimsPerSource: number;
+  maxExtractionChars: number;
 }
 
 export const EFFORT_ENVELOPES: Record<Effort, EffortEnvelope> = {
@@ -35,6 +36,7 @@ export const EFFORT_ENVELOPES: Record<Effort, EffortEnvelope> = {
     maxReportTokens: 4_096,
     maxReportCandidates: 12,
     maxClaimsPerSource: 5,
+    maxExtractionChars: 40_000,
   },
   balanced: {
     budgetUSD: 2.5,
@@ -46,6 +48,7 @@ export const EFFORT_ENVELOPES: Record<Effort, EffortEnvelope> = {
     maxReportTokens: 8_192,
     maxReportCandidates: 20,
     maxClaimsPerSource: 6,
+    maxExtractionChars: 60_000,
   },
   deep: {
     budgetUSD: 10,
@@ -57,6 +60,7 @@ export const EFFORT_ENVELOPES: Record<Effort, EffortEnvelope> = {
     maxReportTokens: 16_384,
     maxReportCandidates: 40,
     maxClaimsPerSource: 8,
+    maxExtractionChars: 100_000,
   },
   max: {
     budgetUSD: 40,
@@ -68,6 +72,7 @@ export const EFFORT_ENVELOPES: Record<Effort, EffortEnvelope> = {
     maxReportTokens: 24_576,
     maxReportCandidates: 60,
     maxClaimsPerSource: 10,
+    maxExtractionChars: 150_000,
   },
 };
 

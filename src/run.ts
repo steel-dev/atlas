@@ -487,6 +487,7 @@ async function executeRun(args: ExecuteRunArgs): Promise<ResearchResult> {
     signal: args.hardSignal,
     shouldExtract: () => !budgetExhausted(),
     claimsPerSource: resolved.envelope.maxClaimsPerSource,
+    extractionChars: resolved.envelope.maxExtractionChars,
     onClaim: (claim) => {
       if (claim.importance !== "central") return;
       if (eagerVerifyStarted >= EAGER_VERIFY_MAX_CLAIMS) return;

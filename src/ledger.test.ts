@@ -261,6 +261,52 @@ describe("ledger merge", () => {
   });
 });
 
+describe("ledger extraction window", () => {
+  it("truncates extraction input at the configured window", async () => {
+    let prompt = "";
+    const model = new MockLanguageModelV3({
+      doGenerate: async (options) => {
+        prompt = JSON.stringify(options.prompt);
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({ sourceQuality: "secondary", claims: [] }),
+            },
+          ],
+          finishReason: { unified: "stop", raw: undefined },
+          usage: {
+            inputTokens: {
+              total: 100,
+              noCache: 100,
+              cacheRead: 0,
+              cacheWrite: 0,
+            },
+            outputTokens: { total: 50, text: 50, reasoning: 0 },
+          },
+          warnings: [],
+        };
+      },
+    }) as LanguageModelV3;
+    const ledger = createLedger({
+      emit: () => {},
+      signal: undefined,
+      shouldExtract: () => true,
+      extractionChars: 260,
+    });
+    ledger.queue(
+      makeDocument(
+        "source_1",
+        "https://a.example.com/1",
+        "The tower is 330 meters tall. ".repeat(20),
+      ),
+      { goal: "g", agentId: "agent_1", model },
+    );
+    await ledger.settle();
+    expect(prompt).toContain("truncated at 260");
+  });
+});
+
 describe("ledger addClaim", () => {
   it("admits a verbatim-quoted claim and fires events", () => {
     const events: string[] = [];

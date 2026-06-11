@@ -52,7 +52,7 @@ export interface ResearchClaim {
   conflictsWith?: string[];
 }
 
-export const EXTRACTION_INPUT_CHARS = 40_000;
+const DEFAULT_EXTRACTION_INPUT_CHARS = 40_000;
 const EXTRACTION_BASE_TOKENS = 500;
 const EXTRACTION_TOKENS_PER_CLAIM = 300;
 const DEFAULT_CLAIMS_PER_SOURCE = 5;
@@ -95,11 +95,12 @@ function extractionPrompt(
   goal: string,
   document: SourceDocument,
   maxClaims: number,
+  inputChars: number,
 ): string {
-  const text = document.markdown.slice(0, EXTRACTION_INPUT_CHARS);
+  const text = document.markdown.slice(0, inputChars);
   const truncationNote =
-    document.markdown.length > EXTRACTION_INPUT_CHARS
-      ? `\n(Source text truncated at ${EXTRACTION_INPUT_CHARS} of ${document.markdown.length} characters.)`
+    document.markdown.length > inputChars
+      ? `\n(Source text truncated at ${inputChars} of ${document.markdown.length} characters.)`
       : "";
   return (
     "## Source claim extractor\n\n" +
@@ -222,6 +223,7 @@ export interface LedgerContext {
   shouldExtract(): boolean;
   onClaim?(claim: ResearchClaim): void;
   claimsPerSource?: number;
+  extractionChars?: number;
 }
 
 interface RawExtractedClaim {
@@ -282,10 +284,11 @@ export function createLedger(ctx: LedgerContext): Ledger {
     opts: LedgerQueueOptions,
   ): Promise<void> {
     const maxClaims = ctx.claimsPerSource ?? DEFAULT_CLAIMS_PER_SOURCE;
+    const inputChars = ctx.extractionChars ?? DEFAULT_EXTRACTION_INPUT_CHARS;
     const result = await generateObject({
       model: opts.model,
       system: EXTRACTION_SYSTEM_PROMPT,
-      prompt: extractionPrompt(opts.goal, document, maxClaims),
+      prompt: extractionPrompt(opts.goal, document, maxClaims, inputChars),
       schema: extractionSchema(maxClaims),
       maxOutputTokens:
         EXTRACTION_BASE_TOKENS + EXTRACTION_TOKENS_PER_CLAIM * maxClaims,
