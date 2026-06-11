@@ -166,7 +166,7 @@ export function resolveRunConfig(
   const models: Record<ModelRole, ResolvedModel> = {
     lead: config.models?.lead ?? lead,
     research: config.models?.research ?? config.models?.lead ?? lead,
-    verify: config.models?.verify ?? config.models?.extract ?? derived ?? lead,
+    verify: config.models?.verify ?? derived ?? lead,
     extract: config.models?.extract ?? derived ?? lead,
     write: config.models?.write ?? config.models?.lead ?? lead,
   };

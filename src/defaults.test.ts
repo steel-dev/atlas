@@ -119,6 +119,19 @@ describe("resolveRunConfig model routing", () => {
       {},
     );
     expect(resolved.models.extract).toBe(extract);
-    expect(resolved.models.verify).toBe(extract);
+    expect(modelId(resolved.models.verify)).toBe(
+      DEFAULT_ANTHROPIC_SMALL_MODEL,
+    );
+  });
+
+  it("does not inherit an explicit extract override into verify", () => {
+    const lead = fakeModel("anthropic.messages", "claude-opus-4-8");
+    const extract = fakeModel("anthropic.messages", "claude-haiku-4-5");
+    const resolved = resolveRunConfig(
+      { model: lead, models: { extract } },
+      {},
+    );
+    expect(resolved.models.extract).toBe(extract);
+    expect(resolved.models.verify).toBe(lead);
   });
 });
