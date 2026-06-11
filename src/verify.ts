@@ -177,26 +177,48 @@ export async function runVerifySpawn(
         : claim,
     );
 
+  const unique = [...new Map(claims.map((claim) => [claim.id, claim])).values()];
+
+  const verdictOf = (claim: ResearchClaim): VerifySpawnVerdict => ({
+    claimId: claim.id,
+    status: claim.status,
+    votes: voteSplit(claim),
+  });
+
   const verdicts: VerifySpawnVerdict[] = [];
-  await mapWithConcurrency(claims, CLAIM_CONCURRENCY, async (claim) => {
-    const votes = (
-      await Promise.all(
-        lenses.map((lens) => castVote(rctx, args, claim, lens)),
-      )
-    ).filter((vote): vote is ClaimVote => vote !== null);
-    settleClaim(claim, votes);
-    rctx.counters.claimsVerified++;
-    rctx.emit({
-      type: "claim.verified",
-      claimId: claim.id,
-      status: claim.status,
-      votes: voteSplit(claim),
-    });
-    verdicts.push({
-      claimId: claim.id,
-      status: claim.status,
-      votes: voteSplit(claim),
-    });
+  await mapWithConcurrency(unique, CLAIM_CONCURRENCY, async (claim) => {
+    const inFlight = rctx.verifyInFlight.get(claim.id);
+    if (inFlight) {
+      await inFlight;
+      verdicts.push(verdictOf(claim));
+      return;
+    }
+    if (claim.votes.length >= MIN_VOTES_TO_SETTLE) {
+      verdicts.push(verdictOf(claim));
+      return;
+    }
+    const job = (async () => {
+      const votes = (
+        await Promise.all(
+          lenses.map((lens) => castVote(rctx, args, claim, lens)),
+        )
+      ).filter((vote): vote is ClaimVote => vote !== null);
+      settleClaim(claim, votes);
+      rctx.counters.claimsVerified++;
+      rctx.emit({
+        type: "claim.verified",
+        claimId: claim.id,
+        status: claim.status,
+        votes: voteSplit(claim),
+      });
+    })();
+    rctx.verifyInFlight.set(claim.id, job);
+    try {
+      await job;
+    } finally {
+      rctx.verifyInFlight.delete(claim.id);
+    }
+    verdicts.push(verdictOf(claim));
   });
 
   const confirmed = verdicts.filter((v) => v.status === "confirmed").length;

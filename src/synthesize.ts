@@ -1,4 +1,5 @@
-import { streamText } from "ai";
+import { generateText, streamText } from "ai";
+import type { BindOutcome } from "./bind.js";
 import type { BudgetGrant } from "./budget.js";
 import { MODEL_CALL_MAX_RETRIES } from "./model.js";
 import type { RunCtx } from "./state.js";
@@ -230,6 +231,67 @@ export async function synthesizeReport(
     if (delta) rctx.emit({ type: "report.delta", text: delta });
   }
   return (await result.text).trim();
+}
+
+const REPAIR_MAX_PROBLEMS = 24;
+
+const REPAIR_SYSTEM_PROMPT =
+  "You repair a research report draft so every factual sentence is supported by the claims it cites. " +
+  "You receive the draft with {{claim_id}} markers, a list of problem sentences, and the claim ledger digest. " +
+  "Fix ONLY the problem sentences: rewrite each to assert exactly what its cited claim supports (keeping a correct {{claim_id}} marker), " +
+  "attach the right marker when a listed claim does support the sentence, or delete the sentence when nothing supports it. " +
+  "Leave every other sentence unchanged. Never invent claims, sources, ids, or facts. " +
+  "Return the full corrected draft and nothing else.";
+
+export async function repairReport(
+  rctx: RunCtx,
+  grant: BudgetGrant,
+  opts: { draft: string; bound: BindOutcome },
+): Promise<string | undefined> {
+  if (grant.floored()) return undefined;
+  const problems: string[] = [];
+  const seen = new Set<string>();
+  for (const citation of opts.bound.citations) {
+    if (citation.verified) continue;
+    const sentence = opts.bound.report
+      .slice(citation.sentenceSpan[0], citation.sentenceSpan[1])
+      .trim();
+    const key = `${sentence}|${citation.claimId}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const claim = rctx.ledger.byId(citation.claimId);
+    problems.push(
+      `- Sentence: "${sentence}"\n` +
+        `  Cited claim ${citation.claimId}: "${claim?.text ?? "unknown claim"}"\n` +
+        `  Claim quote: "${claim?.quote ?? ""}"\n` +
+        "  Problem: the sentence asserts more than this claim supports.",
+    );
+  }
+  for (const sentence of opts.bound.unsupportedSentences) {
+    problems.push(
+      `- Sentence: "${sentence}"\n` +
+        "  Problem: factual sentence with no claim marker.",
+    );
+  }
+  if (problems.length === 0) return undefined;
+  const result = await generateText({
+    model: rctx.bindModel("write", grant),
+    system: REPAIR_SYSTEM_PROMPT,
+    prompt:
+      `Research question: ${rctx.question}\n\n` +
+      "## Draft (with claim markers)\n" +
+      opts.draft +
+      "\n\n## Problem sentences\n" +
+      problems.slice(0, REPAIR_MAX_PROBLEMS).join("\n") +
+      "\n\n## Claim ledger digest\n" +
+      (rctx.ledger.digest() || "(empty)") +
+      "\n\nReturn the corrected draft.",
+    maxOutputTokens: REPORT_MAX_TOKENS,
+    maxRetries: MODEL_CALL_MAX_RETRIES,
+    abortSignal: rctx.signal,
+  });
+  const repaired = result.text.trim();
+  return repaired || undefined;
 }
 
 export function fallbackReportFromClaims(opts: {

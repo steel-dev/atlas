@@ -95,6 +95,7 @@ export interface RunCtx {
   modelGate: ConcurrencyGate;
   ioGate: ConcurrencyGate;
   seenDomains: Set<string>;
+  verifyInFlight: Map<string, Promise<void>>;
   counters: RunCounters;
   agentSequence: { next: number };
   bindModel(role: ModelRole, grant: BudgetGrant): LanguageModelV3;

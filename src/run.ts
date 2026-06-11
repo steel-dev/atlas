@@ -42,6 +42,7 @@ import {
 import {
   fallbackReportFromClaims,
   partitionClaims,
+  repairReport,
   synthesizeReport,
   type ClaimPartition,
 } from "./synthesize.js";
@@ -116,6 +117,7 @@ const VERIFY_SWEEP_FRACTION = 0.08;
 const VERIFY_SWEEP_MIN_USD = 0.03;
 const VERIFY_SWEEP_CONCURRENCY = 4;
 const VERIFY_SWEEP_MAX_CLAIMS = 64;
+const EAGER_VERIFY_MAX_CLAIMS = 16;
 const IMPORTANCE_RANK: Record<string, number> = {
   central: 0,
   supporting: 1,
@@ -433,6 +435,7 @@ async function executeRun(args: ExecuteRunArgs): Promise<ResearchResult> {
     modelGate,
     ioGate,
     seenDomains: new Set(),
+    verifyInFlight: new Map(),
     counters,
     agentSequence: { next: 1 },
     bindModel: (role: ModelRole, grant: BudgetGrant) =>
@@ -474,10 +477,37 @@ async function executeRun(args: ExecuteRunArgs): Promise<ResearchResult> {
       return null;
     },
   };
+  const eagerVerifications = new Set<Promise<void>>();
+  let eagerVerifyStarted = 0;
   const ledger = createLedger({
     emit,
     signal: args.hardSignal,
     shouldExtract: () => !budgetExhausted(),
+    onClaim: (claim) => {
+      if (claim.importance !== "central") return;
+      if (eagerVerifyStarted >= EAGER_VERIFY_MAX_CLAIMS) return;
+      if (rctx.stopReason()) return;
+      const grant = rctx.verifyReserve.grant({
+        fraction: VERIFY_SWEEP_FRACTION,
+        minUSD: VERIFY_SWEEP_MIN_USD,
+      });
+      if (!grant) return;
+      eagerVerifyStarted++;
+      const task = rctx
+        .verifySpawn({
+          claimIds: [claim.id],
+          grant,
+          parentId: "agent_1",
+          depth: 1,
+        })
+        .then(
+          () => undefined,
+          () => undefined,
+        )
+        .finally(() => grant.release());
+      eagerVerifications.add(task);
+      void task.finally(() => eagerVerifications.delete(task));
+    },
   });
   (rctx as { ledger: typeof ledger }).ledger = ledger;
 
@@ -529,6 +559,9 @@ async function executeRun(args: ExecuteRunArgs): Promise<ResearchResult> {
     if (researchGrant !== meter) researchGrant.release();
   }
   await ledger.settle();
+  while (eagerVerifications.size > 0) {
+    await Promise.all([...eagerVerifications]);
+  }
   args.hardSignal.throwIfAborted();
   if (args.isPaused()) {
     throw new AtlasError("run paused", "paused");
@@ -580,7 +613,28 @@ async function executeRun(args: ExecuteRunArgs): Promise<ResearchResult> {
     }
   }
 
-  const bound = await bindCitations(rctx, synthesisGrant, draft);
+  let bound = await bindCitations(rctx, synthesisGrant, draft);
+  if (bound.citationsUnsupported > 0 && !synthesisGrant.floored()) {
+    try {
+      const repaired = await repairReport(rctx, synthesisGrant, {
+        draft,
+        bound,
+      });
+      if (repaired && repaired !== draft) {
+        const rebound = await bindCitations(rctx, synthesisGrant, repaired);
+        if (rebound.citationsUnsupported < bound.citationsUnsupported) {
+          bound = rebound;
+        }
+      }
+    } catch (err) {
+      if (args.hardSignal.aborted) throw err;
+      emit({
+        type: "run.error",
+        message: `report repair failed: ${errorMessage(err)}`,
+        recoverable: true,
+      });
+    }
+  }
 
   let structured: unknown;
   let structuredBasis: Record<string, FieldBasis> | undefined;

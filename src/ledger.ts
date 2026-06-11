@@ -193,6 +193,7 @@ export interface LedgerContext {
   emit(event: ResearchEvent): void;
   signal?: AbortSignal | undefined;
   shouldExtract(): boolean;
+  onClaim?(claim: ResearchClaim): void;
 }
 
 interface RawExtractedClaim {
@@ -300,6 +301,7 @@ export function createLedger(ctx: LedgerContext): Ledger {
           text: admitted.text,
           importance: admitted.importance,
         });
+        ctx.onClaim?.(admitted);
       }
     }
     unsupportedCount += unsupported;

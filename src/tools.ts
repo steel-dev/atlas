@@ -455,7 +455,7 @@ export function buildAgentTools(
       description:
         "Delegate a self-contained unit of work to a subagent with its own private context and budget slice. " +
         'role "research": the subagent searches, fetches, and extracts verbatim-quoted claims into the shared ledger, then returns a short note. ' +
-        'role "verify": independent verifiers adversarially check the given claim_ids and write verdicts to the ledger. ' +
+        'role "verify": independent verifiers adversarially check the given claim_ids and write verdicts to the ledger; claims already settled or currently being verified return their existing verdict instead of spending again. ' +
         "Write `task` as a complete, standalone brief: the objective, what evidence or claims to produce, scope boundaries, and the original research question verbatim. The subagent sees nothing else of your context. " +
         "Multiple spawn calls in one turn run in parallel.",
       inputSchema: z.object({
