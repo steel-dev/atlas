@@ -180,7 +180,7 @@ const atlas = new Atlas({
 
 ## Safety
 
-Atlas feeds untrusted web content to models in a tool loop, and the harness carries defenses accordingly: fetched content is quarantined in provenance-tagged delimiters and treated as data, never instructions; agents that consume fetched content hold read-only tools by construction; every outbound fetch passes an SSRF guard (scheme allowlist, private-IP block after DNS resolution, credential/length checks, an entropy heuristic against URL-based exfiltration on never-seen domains); and `run_code` executes in an isolated subprocess with no filesystem, network, or process access. Robots.txt handling and per-domain politeness are not yet implemented.
+Atlas feeds untrusted web content to models in a tool loop, and the harness carries defenses accordingly: fetched content is quarantined in provenance-tagged delimiters and treated as data, never instructions; agents that consume fetched content hold read-only tools by construction; every outbound fetch passes an SSRF guard (scheme allowlist, private-IP block after DNS resolution, credential/length checks, an entropy heuristic against URL-based exfiltration on never-seen domains); and `run_code` executes in an isolated subprocess with no filesystem, network, or process access. The direct fetcher honors robots.txt (fetched and cached per origin; disallowed URLs are never fetched directly, only handed to an explicitly configured escalation provider such as Steel, which applies its own compliance policy) and serializes its requests per domain.
 
 ## Examples and evals
 

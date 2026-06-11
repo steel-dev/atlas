@@ -3,6 +3,7 @@ import { errorMessage } from "../errors.js";
 import { readEnv } from "../env.js";
 import { htmlToMarkdown } from "../html-extract.js";
 import { extractPdfText } from "../pdf-extract.js";
+import { createRobotsCache, type RobotsCache } from "../robots.js";
 import {
   extractionMetadataFromHtml,
   extractionMetadataFromPdf,
@@ -22,6 +23,7 @@ const DIRECT_HTML_MIN_CHARS = 100;
 const PDF_MAGIC = "%PDF";
 const FETCH_USER_AGENT =
   "Mozilla/5.0 (compatible; AtlasResearchBot/0.2; +https://github.com/steel-experiments/atlas)";
+const ROBOTS_AGENT_TOKEN = "atlasresearchbot";
 const STEEL_RETRY_MAX_ATTEMPTS = 5;
 
 const ANTI_BOT_MARKERS = [
@@ -177,77 +179,117 @@ function normalizeDirectText(
 }
 
 export function basicFetch(): FetchProvider {
+  const robots = createRobotsCache({
+    agentToken: ROBOTS_AGENT_TOKEN,
+    userAgent: FETCH_USER_AGENT,
+  });
+  const domainTails = new Map<string, Promise<unknown>>();
+  const serialize = <T>(host: string, task: () => Promise<T>): Promise<T> => {
+    const prev = domainTails.get(host) ?? Promise.resolve();
+    const next = prev.then(task, task);
+    const tail = next.then(
+      () => {},
+      () => {},
+    );
+    domainTails.set(host, tail);
+    void tail.then(() => {
+      if (domainTails.get(host) === tail) domainTails.delete(host);
+    });
+    return next;
+  };
+
   return {
     id: "basic",
-    async fetch({ url, signal }) {
-      let response: Response;
+    fetch(req) {
+      let host: string;
       try {
-        const timeout = AbortSignal.timeout(DIRECT_FETCH_TIMEOUT_MS);
-        response = await fetch(url, {
-          signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
-          headers: {
-            accept: "application/pdf,*/*;q=0.8",
-            "user-agent": FETCH_USER_AGENT,
-          },
-        });
-      } catch (err) {
-        if (signal?.aborted) throw err;
-        return failed(
-          "direct_http",
-          `network_error: direct fetch failed: ${errorMessage(err)}`,
+        host = new URL(req.url).host.toLowerCase();
+      } catch {
+        return Promise.resolve(
+          failed("direct_http", `bad_url: not a valid URL: ${req.url}`, false),
         );
       }
-      if (!response.ok) {
-        return failed(
-          "direct_http",
-          `http_error: direct fetch returned HTTP ${response.status}`,
-        );
-      }
-
-      const contentType = response.headers.get("content-type") ?? undefined;
-      const contentLength = readContentLength(response.headers);
-      const maxBytes =
-        isLikelyPdfUrl(url) || isPdfContentType(contentType)
-          ? DIRECT_PDF_MAX_BYTES
-          : DIRECT_HTML_MAX_BYTES;
-      if (contentLength !== undefined && contentLength > maxBytes) {
-        return failed(
-          "direct_http",
-          `too_large: direct response is too large (${contentLength} bytes)`,
-          false,
-        );
-      }
-      const data = new Uint8Array(await response.arrayBuffer());
-      if (data.byteLength > maxBytes) {
-        return failed(
-          "direct_http",
-          `too_large: direct response is too large (${data.byteLength} bytes)`,
-          false,
-        );
-      }
-
-      const finalUrl = response.url || url;
-      if (isPdfBytes(data) || isPdfContentType(contentType)) {
-        return extractPdf(data, contentType, finalUrl);
-      }
-      if (!contentType && looksLikeDirectText(data)) {
-        return extractText(data, contentType, finalUrl);
-      }
-      if (isHtmlContentType(contentType)) {
-        return extractHtml(data, contentType, finalUrl);
-      }
-      if (isDirectTextContentType(contentType) || looksLikeDirectText(data)) {
-        return extractText(data, contentType, finalUrl);
-      }
-      return failed(
-        "direct_http",
-        contentType
-          ? `unsupported_content_type: direct response was ${contentType}`
-          : "unsupported_content_type: direct response was not HTML, PDF, JSON, XML, or text",
-        false,
-      );
+      return serialize(host, () => directFetch(req, robots));
     },
   };
+}
+
+async function directFetch(
+  { url, signal }: FetchRequest,
+  robots: RobotsCache,
+): Promise<FetchAttempt> {
+  if (!(await robots.allows(url, signal))) {
+    return failed(
+      "direct_http",
+      "robots_disallowed: robots.txt disallows direct fetching of this URL",
+    );
+  }
+  let response: Response;
+  try {
+    const timeout = AbortSignal.timeout(DIRECT_FETCH_TIMEOUT_MS);
+    response = await fetch(url, {
+      signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
+      headers: {
+        accept: "application/pdf,*/*;q=0.8",
+        "user-agent": FETCH_USER_AGENT,
+      },
+    });
+  } catch (err) {
+    if (signal?.aborted) throw err;
+    return failed(
+      "direct_http",
+      `network_error: direct fetch failed: ${errorMessage(err)}`,
+    );
+  }
+  if (!response.ok) {
+    return failed(
+      "direct_http",
+      `http_error: direct fetch returned HTTP ${response.status}`,
+    );
+  }
+
+  const contentType = response.headers.get("content-type") ?? undefined;
+  const contentLength = readContentLength(response.headers);
+  const maxBytes =
+    isLikelyPdfUrl(url) || isPdfContentType(contentType)
+      ? DIRECT_PDF_MAX_BYTES
+      : DIRECT_HTML_MAX_BYTES;
+  if (contentLength !== undefined && contentLength > maxBytes) {
+    return failed(
+      "direct_http",
+      `too_large: direct response is too large (${contentLength} bytes)`,
+      false,
+    );
+  }
+  const data = new Uint8Array(await response.arrayBuffer());
+  if (data.byteLength > maxBytes) {
+    return failed(
+      "direct_http",
+      `too_large: direct response is too large (${data.byteLength} bytes)`,
+      false,
+    );
+  }
+
+  const finalUrl = response.url || url;
+  if (isPdfBytes(data) || isPdfContentType(contentType)) {
+    return extractPdf(data, contentType, finalUrl);
+  }
+  if (!contentType && looksLikeDirectText(data)) {
+    return extractText(data, contentType, finalUrl);
+  }
+  if (isHtmlContentType(contentType)) {
+    return extractHtml(data, contentType, finalUrl);
+  }
+  if (isDirectTextContentType(contentType) || looksLikeDirectText(data)) {
+    return extractText(data, contentType, finalUrl);
+  }
+  return failed(
+    "direct_http",
+    contentType
+      ? `unsupported_content_type: direct response was ${contentType}`
+      : "unsupported_content_type: direct response was not HTML, PDF, JSON, XML, or text",
+    false,
+  );
 }
 
 function extractHtml(
