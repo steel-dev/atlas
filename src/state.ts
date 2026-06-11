@@ -75,6 +75,7 @@ export interface VerifySpawnOutcome {
 export interface RunCtx {
   runId: string;
   question: string;
+  todayISO: string;
   config: ResolvedRunConfig;
   meter: BudgetMeter;
   verifyReserve: BudgetGrant;

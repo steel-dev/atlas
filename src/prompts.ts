@@ -1,15 +1,18 @@
-import { QUARANTINE_NOTE } from "./safety.js";
+import { LEDGER_DATA_NOTE, QUARANTINE_NOTE } from "./safety.js";
 
-export function todayLine(): string {
-  const today = new Date().toISOString().slice(0, 10);
-  return `Today's date is ${today}. Interpret "current", "recent", and "latest" relative to this date, not your training data; for any time-bound question, seek the most recent figures available.`;
+export function isoDate(epochMs: number): string {
+  return new Date(epochMs).toISOString().slice(0, 10);
 }
 
-export function researchAgentSystem(): string {
+export function todayLine(todayISO: string): string {
+  return `Today's date is ${todayISO}. Interpret "current", "recent", and "latest" relative to this date, not your training data; for any time-bound question, seek the most recent figures available.`;
+}
+
+export function researchAgentSystem(todayISO: string): string {
   return (
     "You are a research subagent inside a deep-research run. You were spawned with one self-contained task; complete it and return a short note. " +
     "The run keeps a shared ledger of verbatim-quoted claims: every page you fetch has its claims extracted into the ledger automatically, judged against your task. The final report is synthesized ONLY from ledger claims — your note is coordination metadata, never the report.\n\n" +
-    `${todayLine()}\n\n` +
+    `${todayLine(todayISO)}\n\n` +
     "How to work:\n" +
     "- `search` previews the web; `fetch` stores pages and feeds the ledger. Fetch the sources that bear on your task; prefer primary sources over aggregators.\n" +
     "- `ledger` shows what the run has already established (claim ids, status, sources) — check it before re-covering ground another agent already covered.\n" +
@@ -17,14 +20,19 @@ export function researchAgentSystem(): string {
     "- Start broad, then narrow. Short queries first; refine on what you find. If results look off, suspect your reading of the task — a key term may be an alternate name or a false assumption.\n" +
     "- Stop when your task is covered or further work stops adding claims. Do not pad.\n\n" +
     "A turn with no tool calls ends your run. Reply then with a short note (2-5 sentences): what you established, what remains open or contradictory, and any dead ends — so the lead can decide what to do next.\n\n" +
-    QUARANTINE_NOTE
+    QUARANTINE_NOTE +
+    " " +
+    LEDGER_DATA_NOTE
   );
 }
 
-export function orchestratorSystem(instructions: string | undefined): string {
+export function orchestratorSystem(
+  instructions: string | undefined,
+  todayISO: string,
+): string {
   return (
     "You are the lead agent of a deep-research run. Your job is to turn one research question into a ledger of verified, verbatim-quoted claims — the final cited report is synthesized ONLY from that ledger after you finish. Your reply text is never the report.\n\n" +
-    `${todayLine()}\n\n` +
+    `${todayLine(todayISO)}\n\n` +
     "The machinery:\n" +
     "- Every page fetched (by you or a subagent) has falsifiable claims extracted into a shared ledger automatically, each with a verbatim quote that is mechanically string-checked against the stored page text. Extraction runs in the background: the `ledger` tool waits for it and renders the current digest — claim ids, importance, source quality, verification status.\n" +
     "- `spawn` delegates work to subagents with private context and a slice of the shared budget. Research subagents search/fetch/extract and return a note plus new ledger claims. Verify subagents adversarially check specific claim ids and write verdicts to the ledger.\n" +
@@ -39,6 +47,8 @@ export function orchestratorSystem(instructions: string | undefined): string {
     "In your FIRST turn, state your plan in one or two sentences (inline vs. how many subagents on what facets) before calling tools.\n" +
     "A turn with no tool calls ends the research stage. Reply then with a short closing note (2-6 sentences): what the ledger now covers, what remains uncertain, and why you stopped. No report, no headings, no citations — synthesis handles those.\n\n" +
     QUARANTINE_NOTE +
+    " " +
+    LEDGER_DATA_NOTE +
     (instructions ? `\n\n${instructions}` : "")
   );
 }
@@ -54,5 +64,32 @@ export function orchestratorAnchor(opts: {
     `Research question: ${opts.question}\n\n` +
     `Run envelope: effort ${opts.effort}, budget ≈$${opts.budgetUSD.toFixed(2)}, spawn depth cap ${opts.depthCap}, at most ${opts.breadthCap} spawns per turn.\n\n` +
     "State your plan, then execute it. Remember: a turn with no tool calls ends the research stage."
+  );
+}
+
+export function orchestratorContinuationAnchor(opts: {
+  question: string;
+  reason: "context-recycled" | "coverage-gaps";
+  previousNote?: string | undefined;
+  gaps?: string[] | undefined;
+  digest: string;
+  remainingUSD: number;
+}): string {
+  const lede =
+    opts.reason === "context-recycled"
+      ? "You are the lead agent resuming your own deep-research run in a fresh context: your previous context filled up. The shared ledger is your memory — everything established so far is in it, and nothing else carries over."
+      : "You are the lead agent resuming your own deep-research run: a coverage audit judged the ledger insufficient to answer the question and identified the gaps below.";
+  return (
+    `${lede}\n\n` +
+    `Research question: ${opts.question}\n\n` +
+    (opts.previousNote
+      ? `Your closing note from the previous session:\n${opts.previousNote}\n\n`
+      : "") +
+    (opts.gaps && opts.gaps.length > 0
+      ? `Coverage gaps to close:\n${opts.gaps.map((gap) => `- ${gap}`).join("\n")}\n\n`
+      : "") +
+    `Ledger so far:\n${opts.digest || "(empty)"}\n\n` +
+    `Remaining research budget: ≈$${opts.remainingUSD.toFixed(2)}.\n\n` +
+    "Continue from this state: judge the ledger against the question, pursue only what is missing, contested, or weakly sourced, and do not re-fetch sources or re-establish claims already present (the `ledger` tool shows the full digest). State your plan in one or two sentences before calling tools. A turn with no tool calls ends the research stage; close with a short note as before."
   );
 }

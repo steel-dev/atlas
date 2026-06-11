@@ -256,3 +256,62 @@ describe("stripReportPreamble", () => {
     expect(stripReportPreamble(report)).toBe(report);
   });
 });
+
+describe("capPartitionForReport", () => {
+  function statusClaim(
+    id: string,
+    status: ResearchClaim["status"],
+    importance: ResearchClaim["importance"],
+  ): ResearchClaim {
+    return { ...fakeClaim(id), status, importance, text: `claim ${id}` };
+  }
+
+  it("returns the partition unchanged when under the cap", async () => {
+    const { capPartitionForReport } = await import("./synthesize.js");
+    const partition = {
+      confirmed: [statusClaim("claim_1", "confirmed", "central")],
+      screened: [],
+      contested: [],
+      refuted: [],
+      candidates: [],
+    };
+    const capped = capPartitionForReport(partition, 50);
+    expect(capped.partition).toBe(partition);
+    expect(capped.omitted).toBe(0);
+  });
+
+  it("caps by importance with a contested floor and counts omissions", async () => {
+    const { capPartitionForReport } = await import("./synthesize.js");
+    const confirmed = [
+      ...Array.from({ length: 10 }, (_, i) =>
+        statusClaim(`claim_c${i}`, "confirmed", "central"),
+      ),
+      ...Array.from({ length: 90 }, (_, i) =>
+        statusClaim(`claim_s${i}`, "confirmed", "supporting"),
+      ),
+    ];
+    const screened = Array.from({ length: 30 }, (_, i) =>
+      statusClaim(`claim_sc${i}`, "screened", "supporting"),
+    );
+    const contested = Array.from({ length: 20 }, (_, i) =>
+      statusClaim(`claim_ct${i}`, "contested", "supporting"),
+    );
+    const capped = capPartitionForReport(
+      { confirmed, screened, contested, refuted: [], candidates: [] },
+      50,
+    );
+    const rendered =
+      capped.partition.confirmed.length +
+      capped.partition.screened.length +
+      capped.partition.contested.length;
+    expect(rendered).toBe(50);
+    expect(capped.partition.contested.length).toBe(12);
+    expect(capped.partition.confirmed.length).toBe(38);
+    expect(capped.omitted).toBe(100);
+    expect(
+      capped.partition.confirmed.filter(
+        (claim) => claim.importance === "central",
+      ),
+    ).toHaveLength(10);
+  });
+});

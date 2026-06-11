@@ -9,6 +9,12 @@ import { markContestedByConflict, voteSplit } from "./claim-status.js";
 
 const SIMILARITY_THRESHOLD = 0.3;
 const MAX_PAIRS = 150;
+const MAX_DEDUPE_CLAIMS = 400;
+const DEDUPE_IMPORTANCE_RANK: Record<string, number> = {
+  central: 0,
+  supporting: 1,
+  tangential: 2,
+};
 const PAIR_BATCH_SIZE = 40;
 const PAIR_BATCH_CONCURRENCY = 3;
 const JUDGE_MAX_TOKENS = 2_000;
@@ -54,8 +60,18 @@ export interface CandidatePair {
 }
 
 export function candidateDuplicatePairs(
-  claims: ResearchClaim[],
+  input: ResearchClaim[],
 ): CandidatePair[] {
+  const claims =
+    input.length > MAX_DEDUPE_CLAIMS
+      ? [...input]
+          .sort(
+            (a, b) =>
+              (DEDUPE_IMPORTANCE_RANK[a.importance] ?? 3) -
+              (DEDUPE_IMPORTANCE_RANK[b.importance] ?? 3),
+          )
+          .slice(0, MAX_DEDUPE_CLAIMS)
+      : input;
   const tokens = claims.map((claim) => tokensOf(claim.text));
   const numbers = tokens.map(numericTokens);
   const words = tokens.map(

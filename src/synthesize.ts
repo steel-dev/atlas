@@ -34,6 +34,50 @@ export interface ClaimPartition {
   candidates: ResearchClaim[];
 }
 
+const CONTESTED_RENDER_FLOOR = 12;
+
+function reportClaimRank(a: ResearchClaim, b: ResearchClaim): number {
+  return (
+    CANDIDATE_IMPORTANCE_RANK[a.importance] -
+      CANDIDATE_IMPORTANCE_RANK[b.importance] ||
+    (b.corroboration ?? 1) - (a.corroboration ?? 1) ||
+    CANDIDATE_QUALITY_RANK[a.sourceQuality] -
+      CANDIDATE_QUALITY_RANK[b.sourceQuality]
+  );
+}
+
+export function capPartitionForReport(
+  partition: ClaimPartition,
+  maxClaims: number,
+): { partition: ClaimPartition; omitted: number } {
+  const total =
+    partition.confirmed.length +
+    partition.screened.length +
+    partition.contested.length;
+  if (total <= maxClaims) return { partition, omitted: 0 };
+  const contestedFloor = Math.min(
+    partition.contested.length,
+    CONTESTED_RENDER_FLOOR,
+    maxClaims,
+  );
+  let remaining = maxClaims - contestedFloor;
+  const confirmed = [...partition.confirmed]
+    .sort(reportClaimRank)
+    .slice(0, Math.max(0, remaining));
+  remaining -= confirmed.length;
+  const screened = [...partition.screened]
+    .sort(reportClaimRank)
+    .slice(0, Math.max(0, remaining));
+  remaining -= screened.length;
+  const contested = [...partition.contested]
+    .sort(reportClaimRank)
+    .slice(0, contestedFloor + Math.max(0, remaining));
+  return {
+    partition: { ...partition, confirmed, screened, contested },
+    omitted: total - confirmed.length - screened.length - contested.length,
+  };
+}
+
 export function partitionClaims(
   claims: ResearchClaim[],
   maxCandidates: number = MAX_REPORT_CANDIDATES,
@@ -212,6 +256,7 @@ export function synthesisPrompt(opts: {
   partition: ClaimPartition;
   closingNote?: string | undefined;
   context?: ((claim: ResearchClaim) => string | undefined) | undefined;
+  omitted?: number | undefined;
 }): string {
   const { confirmed, screened, contested, refuted, candidates } =
     opts.partition;
@@ -223,7 +268,11 @@ export function synthesisPrompt(opts: {
     (candidates.length > 0
       ? `; ${candidates.length} more were extracted but not verified`
       : "") +
-    ". Merge duplicates and write the report.\n\n" +
+    ". Merge duplicates and write the report." +
+    (opts.omitted && opts.omitted > 0
+      ? ` (${opts.omitted} lower-ranked claims are not shown here; search_sources and read_source still reach their sources.)`
+      : "") +
+    "\n\n" +
     "## Confirmed claims\n" +
     (confirmed.length > 0
       ? renderConfirmedClaims(confirmed, opts.context)
@@ -283,6 +332,10 @@ export async function synthesizeReport(
   },
 ): Promise<string> {
   const model = rctx.bindModel("write", grant);
+  const capped = capPartitionForReport(
+    opts.partition,
+    rctx.config.envelope.maxReportClaims,
+  );
   rctx.emit({ type: "report.drafting" });
   const actx: AgentCtx = {
     agentId: "agent_write",
@@ -296,12 +349,13 @@ export async function synthesizeReport(
   const tools = buildAgentTools(rctx, actx, WRITER_TOOLS);
   const result = streamText({
     model,
-    system: `${SYNTHESIS_SYSTEM_PROMPT}\n\n${todayLine()}`,
+    system: `${SYNTHESIS_SYSTEM_PROMPT}\n\n${todayLine(rctx.todayISO)}`,
     prompt: synthesisPrompt({
       question: rctx.question,
-      partition: opts.partition,
+      partition: capped.partition,
       closingNote: opts.closingNote,
       context: (claim) => quoteContext(rctx, claim),
+      omitted: capped.omitted,
     }),
     tools,
     stopWhen: [stepCountIs(WRITE_MAX_TURNS), () => grant.floored()],

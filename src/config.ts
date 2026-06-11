@@ -23,8 +23,11 @@ export interface EffortEnvelope {
   maxEntailmentChecks: number;
   maxReportTokens: number;
   maxReportCandidates: number;
+  maxReportClaims: number;
   maxClaimsPerSource: number;
   maxExtractionChars: number;
+  maxAdjudicationRounds: number;
+  verifierFetch: boolean;
 }
 
 export const EFFORT_ENVELOPES: Record<Effort, EffortEnvelope> = {
@@ -38,8 +41,11 @@ export const EFFORT_ENVELOPES: Record<Effort, EffortEnvelope> = {
     maxEntailmentChecks: 0,
     maxReportTokens: 4_096,
     maxReportCandidates: 12,
+    maxReportClaims: 30,
     maxClaimsPerSource: 5,
     maxExtractionChars: 40_000,
+    maxAdjudicationRounds: 1,
+    verifierFetch: false,
   },
   balanced: {
     budgetUSD: 2.5,
@@ -51,8 +57,11 @@ export const EFFORT_ENVELOPES: Record<Effort, EffortEnvelope> = {
     maxEntailmentChecks: 60,
     maxReportTokens: 8_192,
     maxReportCandidates: 20,
+    maxReportClaims: 60,
     maxClaimsPerSource: 6,
     maxExtractionChars: 60_000,
+    maxAdjudicationRounds: 1,
+    verifierFetch: false,
   },
   deep: {
     budgetUSD: 10,
@@ -64,8 +73,11 @@ export const EFFORT_ENVELOPES: Record<Effort, EffortEnvelope> = {
     maxEntailmentChecks: 150,
     maxReportTokens: 16_384,
     maxReportCandidates: 40,
+    maxReportClaims: 120,
     maxClaimsPerSource: 8,
     maxExtractionChars: 100_000,
+    maxAdjudicationRounds: 2,
+    verifierFetch: false,
   },
   max: {
     budgetUSD: 40,
@@ -77,8 +89,11 @@ export const EFFORT_ENVELOPES: Record<Effort, EffortEnvelope> = {
     maxEntailmentChecks: 400,
     maxReportTokens: 24_576,
     maxReportCandidates: 60,
+    maxReportClaims: 160,
     maxClaimsPerSource: 10,
     maxExtractionChars: 150_000,
+    maxAdjudicationRounds: 3,
+    verifierFetch: true,
   },
 };
 

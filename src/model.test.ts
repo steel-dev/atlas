@@ -123,12 +123,13 @@ describe("engineModel", () => {
     const replay = await loadReplayCache(store, "run_1");
     const meter2 = createBudgetMeter(10);
     const second = mock();
+    const usage2 = createRunUsage();
     const secondModel = engineModel(second as unknown as ResolvedModel, {
       role: "lead",
       grant: meter2,
       pricing: {},
       gate: createConcurrencyGate(2),
-      usage: createRunUsage(),
+      usage: usage2,
       replay,
     });
     const replayed = await generateText({
@@ -137,7 +138,8 @@ describe("engineModel", () => {
     });
     expect(second.doGenerateCalls).toHaveLength(0);
     expect(replayed.text).toBe(liveResult.text);
-    expect(meter2.totalSpentUSD()).toBe(0);
+    expect(meter2.totalSpentUSD()).toBe(meter.totalSpentUSD());
+    expect(usage2.replayedUSD).toBe(meter2.totalSpentUSD());
   });
 
   it("injects an anthropic cache breakpoint on the last message", async () => {
@@ -295,12 +297,13 @@ describe("engineModel streaming", () => {
       provider: "mock-provider",
       modelId: "claude-sonnet-4-6",
     });
+    const replayUsage = createRunUsage();
     const replayModel = engineModel(fresh as unknown as ResolvedModel, {
       role: "write",
       grant: replayMeter,
       pricing: PRICING,
       gate: createConcurrencyGate(2),
-      usage: createRunUsage(),
+      usage: replayUsage,
       replay,
     });
     const replayed = streamText({
@@ -311,7 +314,8 @@ describe("engineModel streaming", () => {
     for await (const delta of replayed.textStream) replayedText += delta;
     expect(replayedText).toBe("hello world");
     expect(fresh.doStreamCalls).toHaveLength(0);
-    expect(replayMeter.totalSpentUSD()).toBe(0);
+    expect(replayMeter.totalSpentUSD()).toBeCloseTo(3);
+    expect(replayUsage.replayedUSD).toBeCloseTo(3);
   });
 
   it("charges the reserved estimate when a stream ends without a finish part", async () => {

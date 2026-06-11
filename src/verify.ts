@@ -5,7 +5,7 @@ import { runAgent } from "./agent.js";
 import type { BudgetGrant } from "./budget.js";
 import { ECONOMY } from "./economy.js";
 import { MODEL_CALL_MAX_RETRIES } from "./model.js";
-import { QUARANTINE_NOTE, quarantine } from "./safety.js";
+import { LEDGER_DATA_NOTE, QUARANTINE_NOTE, quarantine } from "./safety.js";
 import type {
   RunCtx,
   VerifySpawnArgs,
@@ -69,7 +69,9 @@ const VERIFIER_SYSTEM =
   "Refute only when you find a concrete, nameable problem — a misquote, a credible contradiction, or a source that is not real evidence. " +
   "Uncertainty alone, or a merely weak source, is not grounds to refute; reflect that through low confidence instead. " +
   "Evidence must be specific — quote or cite what you checked.\n\n" +
-  QUARANTINE_NOTE;
+  QUARANTINE_NOTE +
+  " " +
+  LEDGER_DATA_NOTE;
 
 const verdictSchema = z.object({
   refuted: z.boolean(),
@@ -119,12 +121,16 @@ async function castVote(
             .filter((rival): rival is ResearchClaim => rival !== undefined)
         : [];
     const task = voterPrompt(rctx.question, claim, lens, rivals);
+    const tools =
+      lens === "contradiction" && rctx.config.envelope.verifierFetch
+        ? [...LENS_TOOLS[lens], "fetch" as ToolName]
+        : LENS_TOOLS[lens];
     const voter = await runAgent(rctx, {
       role: "verify",
       modelRole: "verify",
       task,
       system: VERIFIER_SYSTEM,
-      tools: LENS_TOOLS[lens],
+      tools,
       grant: args.grant,
       depth: args.depth,
       parentId: args.parentId,
@@ -165,7 +171,9 @@ const SCREEN_SYSTEM =
   "You are a fast screening verifier for one claim from a research run. Judge from the provided quote and its surrounding context only — no tools. " +
   "Decide (1) whether the quote, in context, supports the claim as stated without overreach, and (2) whether the page looks like real evidence rather than spam, an error page, or ads. " +
   "Be calibrated: report low confidence whenever the context is too thin to be sure.\n\n" +
-  QUARANTINE_NOTE;
+  QUARANTINE_NOTE +
+  " " +
+  LEDGER_DATA_NOTE;
 
 const screenSchema = z.object({
   quote_supports_claim: z.boolean(),

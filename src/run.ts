@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { generateObject } from "ai";
 import { z } from "zod";
+import { adjudicateCoverage } from "./adjudicate.js";
 import { mapWithConcurrency } from "./async.js";
 import type { AgentResult } from "./agent.js";
 import { bindCitations, type Citation } from "./bind.js";
@@ -22,6 +23,7 @@ import type { ResearchEvent, RunStats } from "./events.js";
 import type { ResearchClaim } from "./ledger.js";
 import { MODEL_CALL_MAX_RETRIES } from "./model.js";
 import { runOrchestrator } from "./orchestrator.js";
+import { isoDate } from "./prompts.js";
 import {
   JournalWriter,
   loadReplayCache,
@@ -31,6 +33,7 @@ import {
   type RunStore,
 } from "./providers/store.js";
 import {
+  capPartitionForReport,
   fallbackReportFromClaims,
   partitionClaims,
   repairReport,
@@ -151,6 +154,7 @@ export interface StartRunOptions {
   question: string;
   options: ResearchOptions;
   replay?: ReplayCache | undefined;
+  anchorStartedAt?: number | undefined;
 }
 
 export function startRun(start: StartRunOptions): ResearchRun {
@@ -199,6 +203,7 @@ export function startRun(start: StartRunOptions): ResearchRun {
         stopSignal: stopController.signal,
         now: start.options.now ?? Date.now,
         isPaused: () => pauseRequested,
+        anchorStartedAt: start.anchorStartedAt,
       });
       statusValue = "completed";
       return result;
@@ -265,6 +270,7 @@ interface ExecuteRunArgs {
   stopSignal: AbortSignal;
   now: () => number;
   isPaused: () => boolean;
+  anchorStartedAt?: number | undefined;
 }
 
 async function executeRun(args: ExecuteRunArgs): Promise<ResearchResult> {
@@ -274,6 +280,7 @@ async function executeRun(args: ExecuteRunArgs): Promise<ResearchResult> {
     await assembleRun({
       runId,
       question,
+      todayISO: isoDate(args.anchorStartedAt ?? startedAt),
       resolved,
       config: args.config,
       journal: args.journal,
@@ -327,6 +334,7 @@ async function executeRun(args: ExecuteRunArgs): Promise<ResearchResult> {
   );
 
   await consolidateClaims(rctx, meter, verifyReserve, args);
+  await rctx.ledger.settle();
 
   const partition = partitionClaims(
     ledger.claims,
@@ -405,6 +413,8 @@ async function runResearchPhase(
   let orchestrator: AgentResult;
   try {
     orchestrator = await runOrchestrator(rctx, researchGrant);
+    await rctx.ledger.settle();
+    orchestrator = await adjudicatedFollowUps(rctx, researchGrant, orchestrator);
   } catch (err) {
     if (args.hardSignal.aborted || args.isPaused()) throw err;
     rctx.emit({
@@ -427,6 +437,48 @@ async function runResearchPhase(
   args.hardSignal.throwIfAborted();
   if (args.isPaused()) {
     throw new AtlasError("run paused", "paused");
+  }
+  return orchestrator;
+}
+
+async function adjudicatedFollowUps(
+  rctx: RunCtx,
+  grant: BudgetGrant,
+  first: AgentResult,
+): Promise<AgentResult> {
+  let orchestrator = first;
+  const threshold = Math.max(
+    ECONOMY.adjudication.minRemainingUSD,
+    ECONOMY.adjudication.remainingFraction * rctx.config.budgetUSD,
+  );
+  const maxRounds = rctx.config.envelope.maxAdjudicationRounds;
+  for (let round = 1; round <= maxRounds; round++) {
+    if (rctx.stopReason()) break;
+    if (grant.remainingUSD() < threshold) break;
+    const verdict = await adjudicateCoverage(rctx, grant, orchestrator.note);
+    if (!verdict) break;
+    rctx.emit({
+      type: "coverage.assessed",
+      round,
+      answered: verdict.answered,
+      gaps: verdict.gaps,
+    });
+    if (verdict.answered || verdict.gaps.length === 0) break;
+    try {
+      orchestrator = await runOrchestrator(rctx, grant, {
+        gaps: verdict.gaps,
+        previousNote: orchestrator.note,
+      });
+    } catch (err) {
+      if (rctx.signal?.aborted) throw err;
+      rctx.emit({
+        type: "run.error",
+        message: `coverage follow-up failed: ${errorMessage(err)}`,
+        recoverable: true,
+      });
+      break;
+    }
+    await rctx.ledger.settle();
   }
   return orchestrator;
 }
@@ -551,14 +603,18 @@ async function composeOutputs(
   const structuredTask = (async () => {
     if (rctx.config.output.kind !== "structured") return undefined;
     try {
+      const capped = capPartitionForReport(
+        partition,
+        rctx.config.envelope.maxReportClaims,
+      ).partition;
       return await synthesizeStructured(rctx, grant, {
         schema: rctx.config.output.schema,
         confirmed: [
-          ...partition.confirmed,
-          ...partition.screened,
-          ...partition.contested,
+          ...capped.confirmed,
+          ...capped.screened,
+          ...capped.contested,
         ],
-        candidates: partition.candidates,
+        candidates: capped.candidates,
       });
     } catch (err) {
       if (args.hardSignal.aborted) throw err;
@@ -696,7 +752,11 @@ function buildStats(opts: {
     maxDepth: rctx.counters.maxDepth,
     singleAgent: rctx.counters.agentsSpawned === 0,
     tokens,
-    costUSD: Math.round(rctx.meter.totalSpentUSD() * 10_000) / 10_000,
+    costUSD:
+      Math.round(
+        Math.max(0, rctx.meter.totalSpentUSD() - rctx.usage.replayedUSD) *
+          10_000,
+      ) / 10_000,
     durationMs: opts.durationMs,
     budgetExhausted: rctx.meter.totalSpentUSD() >= rctx.meter.totalUSD - 0.01,
   };
@@ -769,5 +829,7 @@ export async function resumeRun(
     question: meta.question,
     options,
     replay,
+    anchorStartedAt:
+      typeof meta.startedAt === "number" ? meta.startedAt : undefined,
   });
 }

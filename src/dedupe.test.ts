@@ -207,3 +207,24 @@ describe("semanticDedupePass", () => {
     expect(ledger.representatives()[1].status).toBe("contested");
   });
 });
+
+describe("candidateDuplicatePairs input cap", () => {
+  it("considers central claims first when the claim set exceeds the cap", () => {
+    const filler: ResearchClaim[] = Array.from({ length: 500 }, (_, i) => ({
+      ...fakeClaim(`claim_f${i}`, `token${i}a token${i}b token${i}c token${i}d token${i}e`, `https://f${i}.example.com`),
+      importance: "tangential" as const,
+    }));
+    const central = [
+      fakeClaim("claim_a", "The bridge spans 1991 meters across the strait", "https://a.example.com"),
+      fakeClaim("claim_b", "The bridge spans 1991 meters over the strait", "https://b.example.org"),
+    ];
+    const pairs = candidateDuplicatePairs([...filler, ...central]);
+    expect(
+      pairs.some(
+        (pair) =>
+          (pair.a.id === "claim_a" && pair.b.id === "claim_b") ||
+          (pair.a.id === "claim_b" && pair.b.id === "claim_a"),
+      ),
+    ).toBe(true);
+  });
+});

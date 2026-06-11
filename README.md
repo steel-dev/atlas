@@ -27,6 +27,8 @@ npm install @steel-dev/atlas ai @ai-sdk/anthropic
 
 A lead agent plans, researches (or spawns subagents), verifies claims, and writes the report. Topology isn't configured: simple questions stay single-agent; broad surveys fan out on their own.
 
+Long runs don't stall out: when the lead's context fills, it re-anchors in a fresh context from the claim ledger (`lead.recontexted`), and before synthesis a coverage audit sends it back after concrete gaps while budget remains (`coverage.assessed`).
+
 | Phase | What happens |
 | ----- | ------------ |
 | **Plan** | Inline answer or spawn workers on facets (`plan.updated`) |

@@ -29,10 +29,11 @@ export type ResolvedModel = Exclude<LanguageModel, string>;
 
 export interface RunUsage {
   byRole: Map<string, TokenUsage>;
+  replayedUSD: number;
 }
 
 export function createRunUsage(): RunUsage {
-  return { byRole: new Map() };
+  return { byRole: new Map(), replayedUSD: 0 };
 }
 
 function trackUsage(runUsage: RunUsage, role: string, usage: TokenUsage): void {
@@ -398,6 +399,16 @@ export function engineModel(
     hooks.onCost?.(cost);
   };
 
+  const settleReplay = (usage: LanguageModelV3Usage): void => {
+    const tokens = tokenUsageFromV3(usage);
+    const { pricing } = resolvePricing(inner.modelId, hooks.pricing);
+    const cost = usageCostUSD(tokens, pricing);
+    hooks.grant.charge(cost);
+    trackUsage(hooks.usage, hooks.role, tokens);
+    hooks.usage.replayedUSD += cost;
+    hooks.onCost?.(cost);
+  };
+
   interface CallReservation {
     hold: BudgetHold;
     estimateUSD: number;
@@ -451,6 +462,7 @@ export function engineModel(
       const key = callKey(inner, params, hooks.role);
       const cached = hooks.replay?.take(key) as JournaledCall | undefined;
       if (cached) {
+        settleReplay(cached.usage);
         return {
           content: cached.content,
           finishReason: cached.finishReason,
@@ -484,6 +496,7 @@ export function engineModel(
       const key = callKey(inner, params, hooks.role);
       const cached = hooks.replay?.take(key) as JournaledCall | undefined;
       if (cached) {
+        settleReplay(cached.usage);
         return { stream: streamFromJournaledCall(cached) };
       }
       const reservation = reserveFor(params);

@@ -30,6 +30,8 @@ const TASK_PREVIEW_CHARS = 300;
 const NOTE_PREVIEW_CHARS = 600;
 const SPAWN_DIGEST_MAX_CLAIMS = 12;
 
+export const CONTEXT_BUDGET_STOP = "context budget reached";
+
 export interface AgentSpec {
   role: AgentRole;
   modelRole: ModelRole;
@@ -41,6 +43,7 @@ export interface AgentSpec {
   parentId?: string | undefined;
   maxTurns?: number | undefined;
   maxOutputTokensPerStep?: number | undefined;
+  maxContextTokens?: number | undefined;
   captureMessages?: boolean | undefined;
 }
 
@@ -108,7 +111,7 @@ export async function runAgent(
       : {}),
     stopWhen: [
       stepCountIs(spec.maxTurns ?? rctx.config.envelope.maxTurns),
-      () => {
+      ({ steps }) => {
         if (spec.grant.floored()) {
           governorReason = "budget exhausted";
           return true;
@@ -117,6 +120,16 @@ export async function runAgent(
         if (runReason) {
           governorReason = runReason;
           return true;
+        }
+        if (spec.maxContextTokens !== undefined) {
+          const inputTokens = steps.at(-1)?.usage.inputTokens;
+          if (
+            typeof inputTokens === "number" &&
+            inputTokens >= spec.maxContextTokens
+          ) {
+            governorReason = CONTEXT_BUDGET_STOP;
+            return true;
+          }
         }
         return false;
       },
@@ -212,7 +225,7 @@ async function executeSpawn(
       role: "research",
       modelRole: "research",
       task,
-      system: researchAgentSystem(),
+      system: researchAgentSystem(rctx.todayISO),
       tools: RESEARCH_TOOLS,
       grant,
       depth: childDepth,

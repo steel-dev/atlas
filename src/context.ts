@@ -37,6 +37,7 @@ const UNJOURNALED_EVENTS = new Set<ResearchEvent["type"]>([
 export interface AssembleRunArgs {
   runId: string;
   question: string;
+  todayISO: string;
   resolved: ResolvedRunConfig;
   config: AtlasConfig;
   journal: JournalWriter;
@@ -175,6 +176,7 @@ export async function assembleRun(args: AssembleRunArgs): Promise<RunAssembly> {
   const rctx: RunCtx = {
     runId,
     question,
+    todayISO: args.todayISO,
     config: resolved,
     meter,
     verifyReserve,

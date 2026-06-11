@@ -36,6 +36,13 @@ export type ResearchEvent =
       budgetUSD: number;
     }
   | { type: "plan.updated"; rationale: string }
+  | { type: "lead.recontexted"; session: number }
+  | {
+      type: "coverage.assessed";
+      round: number;
+      answered: boolean;
+      gaps: string[];
+    }
   | {
       type: "agent.spawned";
       agentId: string;
@@ -127,4 +134,4 @@ export type ResearchEventMap = {
   [E in ResearchEvent as E["type"]]: E;
 };
 
-export const EVENT_SCHEMA_VERSION = "3.0";
+export const EVENT_SCHEMA_VERSION = "3.1";

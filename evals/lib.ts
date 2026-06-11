@@ -99,6 +99,8 @@ export async function writeJsonl(path: string, rows: unknown[]): Promise<void> {
 export type EvalTraceEventName =
   | "research_started"
   | "plan_updated"
+  | "lead_recontexted"
+  | "coverage_assessed"
   | "agent_spawned"
   | "agent_returned"
   | "search_results"
@@ -169,6 +171,13 @@ export function traceEvent(
       return base("research_started");
     case "plan.updated":
       return { ...base("plan_updated"), reason: event.rationale };
+    case "lead.recontexted":
+      return base("lead_recontexted");
+    case "coverage.assessed":
+      return {
+        ...base("coverage_assessed"),
+        data: { answered: event.answered, gaps: event.gaps },
+      };
     case "agent.spawned":
       return {
         ...base("agent_spawned"),
@@ -291,6 +300,12 @@ export function progressLine(
   switch (event.type) {
     case "plan.updated":
       return `${caseId}: plan updated — ${truncate(event.rationale, 140)}`;
+    case "lead.recontexted":
+      return `${caseId}: lead re-anchored in a fresh context (session ${event.session})`;
+    case "coverage.assessed":
+      return event.answered
+        ? `${caseId}: coverage audit round ${event.round}: answered`
+        : `${caseId}: coverage audit round ${event.round}: ${event.gaps.length} gap(s) — ${truncate(event.gaps.join("; "), 120)}`;
     case "agent.spawned":
       return `${caseId}: agent ${event.agentId} spawned (${event.role}, depth ${event.depth}, $${event.grantUSD.toFixed(2)}): ${truncate(event.task, 100)}`;
     case "agent.returned":
