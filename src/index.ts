@@ -3,6 +3,7 @@ export type { StructuredResearchResult } from "./atlas.js";
 export type {
   AtlasConfig,
   Budget,
+  ConcurrencyConfig,
   Effort,
   EffortEnvelope,
   OutputSpec,
@@ -15,6 +16,7 @@ export type {
   ResearchClaims,
   ResearchResult,
   ResearchRun,
+  ResumeOptions,
   RunStatus,
   SourceRecord,
 } from "./run.js";

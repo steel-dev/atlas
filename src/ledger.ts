@@ -2,6 +2,7 @@ import { generateObject } from "ai";
 import type { LanguageModelV3 } from "@ai-sdk/provider";
 import { z } from "zod";
 import { createConcurrencyGate } from "./async.js";
+import { adoptVerdictsOnMerge } from "./claim-status.js";
 import { errorMessage } from "./errors.js";
 import { MODEL_CALL_MAX_RETRIES } from "./model.js";
 import { QUARANTINE_NOTE, quarantine } from "./safety.js";
@@ -147,6 +148,27 @@ export function quoteAppearsInSource(
   sourceText: string,
 ): boolean {
   return quoteSupportedIn(normalizeForQuoteMatch(sourceText), quote);
+}
+
+// Normalizing a stored document is O(document length); binding checks every
+// citation against its full source, so the normalized text is cached per
+// document object for the lifetime of the run.
+const normalizedSourceCache = new WeakMap<SourceDocument, string>();
+
+function normalizedSourceText(document: SourceDocument): string {
+  let cached = normalizedSourceCache.get(document);
+  if (cached === undefined) {
+    cached = normalizeForQuoteMatch(document.markdown);
+    normalizedSourceCache.set(document, cached);
+  }
+  return cached;
+}
+
+export function quoteSupportedByDocument(
+  quote: string,
+  document: SourceDocument,
+): boolean {
+  return quoteSupportedIn(normalizedSourceText(document), quote);
 }
 
 function shortHost(url: string): string {
@@ -299,7 +321,7 @@ export function createLedger(ctx: LedgerContext): Ledger {
     const extraction = result.object;
     const publishedTime =
       document.metadata.publishedTime ?? extraction.publishDate ?? undefined;
-    const normalizedSource = normalizeForQuoteMatch(document.markdown);
+    const normalizedSource = normalizedSourceText(document);
 
     let added = 0;
     let unsupported = 0;
@@ -356,7 +378,7 @@ export function createLedger(ctx: LedgerContext): Ledger {
     document: SourceDocument,
     input: LedgerAddClaimInput,
   ): LedgerAddClaimResult {
-    if (!quoteAppearsInSource(input.quote, document.markdown)) {
+    if (!quoteSupportedByDocument(input.quote, document)) {
       unsupportedCount++;
       return { outcome: "unsupported" };
     }
@@ -471,10 +493,7 @@ export function createLedger(ctx: LedgerContext): Ledger {
       rep.corroboratingSources = [...corroborating];
       rep.corroboration = corroborating.size + 1;
     }
-    if (rep.votes.length === 0 && dup.votes.length > 0) {
-      rep.votes = dup.votes;
-      rep.status = dup.status;
-    }
+    adoptVerdictsOnMerge(rep, dup);
     representativeByText.set(normalizeForQuoteMatch(dup.text), rep.id);
     return true;
   }

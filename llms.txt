@@ -59,6 +59,8 @@ result.stats;               // costUSD, tokens per role, agentsSpawned, singleAg
 - `instructions?` — domain framing appended to the lead agent's system prompt.
 - `tools?` — `Record<string, ResearchTool>` of domain tools (see below).
 - `pricing?` — per-model USD pricing overrides; `safety?` — SSRF/quarantine knobs.
+- `concurrency?` — `{ models?, io? }` semaphore sizes (default 8 model calls,
+  10 IO operations); raise to match your rate limits.
 
 Calls:
 
@@ -69,9 +71,18 @@ Calls:
 - `atlas.start(question, opts?)` → run handle: `run.events()` (async iterable
   of typed events: `plan.updated`, `agent.spawned`, `claim.verified`,
   `report.delta`, `budget.warning`, …), `run.result()`, `run.cancel()`,
-  `run.pause()`, `run.status()`.
-- `Atlas.resume(runId, config)` — replay the journal from `config.store`;
-  completed model calls are served from the journal at zero cost.
+  `run.pause()`, `run.stop()`, `run.status()`.
+- Report streaming: `report.delta` is a live marker-stripped preview of the
+  draft as the writer streams it; `report.completed` carries the final bound
+  text (swap it in — repair may have rewritten failing sentences);
+  `report.reset` means discard the preview and start over.
+- `Atlas.resume(runId, config, options?)` — replay the journal from
+  `config.store`; completed model calls, searches, and fetches are all
+  journaled and served from the journal at zero cost, going live at the first
+  divergence. Effort, budget, and source filter are restored from the journal;
+  a structured run additionally needs its schema passed back in via
+  `options.output` (schemas are code and are never journaled — resume throws
+  a `ResumeError` without it).
 
 ## Custom tools — the extension point for domain researchers
 
@@ -102,6 +113,8 @@ const atlas = new Atlas({
 ```
 
 `ToolContext`: `addSource({ url, title?, content })`, `log(message)`, `signal?`.
+Every tool call runs under a timeout (default 60s, `timeoutMs` to override,
+300s cap); `ctx.signal` aborts on timeout or cancellation, so pass it through.
 Custom tools are reachable from the lead and research agents, never from
 verifiers (read-only verification is an invariant).
 

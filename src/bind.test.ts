@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { bindCitations, stripMarkers } from "./bind.js";
+import { bindCitations, createMarkerStripper, stripMarkers } from "./bind.js";
 import { EFFORT_ENVELOPES } from "./config.js";
 import type { ResearchClaim } from "./ledger.js";
 import { createSourceDocument } from "./source-documents.js";
@@ -76,6 +76,7 @@ describe("bindCitations", () => {
       remainingUSD: () => 1,
       floored: () => false,
       charge: () => {},
+      reserve: () => null,
       grant: () => null,
       release: () => {},
     };
@@ -103,6 +104,7 @@ describe("bindCitations", () => {
       remainingUSD: () => 1,
       floored: () => false,
       charge: () => {},
+      reserve: () => null,
       grant: () => null,
       release: () => {},
     };
@@ -113,5 +115,65 @@ describe("bindCitations", () => {
     );
     expect(outcome.citations[0].verified).toBe(false);
     expect(outcome.citationsUnsupported).toBeGreaterThanOrEqual(1);
+  });
+
+  it("does not break sentence spans on abbreviations, decimals, or acronyms", async () => {
+    const claim = makeClaim("claim_1", "Paris is the capital of France");
+    const rctx = fakeCtx(
+      [claim],
+      "As everyone knows, Paris is the capital of France since forever.",
+    );
+    const grant = {
+      limitUSD: 1,
+      spentUSD: () => 0,
+      remainingUSD: () => 1,
+      floored: () => false,
+      charge: () => {},
+      reserve: () => null,
+      grant: () => null,
+      release: () => {},
+    };
+    const outcome = await bindCitations(
+      rctx,
+      grant,
+      "First sentence ends here. Dr. Smith measured a 3.14 ratio in the U.S. survey. {{claim_1}}",
+    );
+    const [start, end] = outcome.citations[0].sentenceSpan;
+    expect(outcome.report.slice(start, end)).toBe(
+      "Dr. Smith measured a 3.14 ratio in the U.S. survey.",
+    );
+  });
+});
+
+describe("createMarkerStripper", () => {
+  it("strips a marker split across chunks", () => {
+    const stripper = createMarkerStripper();
+    const out =
+      stripper.push("The tower is 330 meters tall.") +
+      stripper.push(" {{cla") +
+      stripper.push("im_1}} It was built in 1889.") +
+      stripper.flush();
+    expect(out).toBe("The tower is 330 meters tall. It was built in 1889.");
+  });
+
+  it("holds back a lone brace and releases it when it is not a marker", () => {
+    const stripper = createMarkerStripper();
+    expect(stripper.push("f(x) {")).toBe("f(x)");
+    expect(stripper.push(" return 1; }")).toBe(" { return 1; }");
+    expect(stripper.flush()).toBe("");
+  });
+
+  it("emits an unterminated marker tail on flush", () => {
+    const stripper = createMarkerStripper();
+    expect(stripper.push("Done. {{claim_9")).toBe("Done.");
+    expect(stripper.flush()).toBe(" {{claim_9");
+  });
+
+  it("strips multi-id markers and keeps surrounding text intact", () => {
+    const stripper = createMarkerStripper();
+    const out =
+      stripper.push("A fact. {{claim_2,claim_3}} Another fact.") +
+      stripper.flush();
+    expect(out).toBe("A fact. Another fact.");
   });
 });

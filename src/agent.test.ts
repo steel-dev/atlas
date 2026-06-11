@@ -1,3 +1,4 @@
+import { simulateStreamingMiddleware, wrapLanguageModel } from "ai";
 import { MockLanguageModelV3 } from "ai/test";
 import type {
   LanguageModelV3CallOptions,
@@ -193,13 +194,16 @@ function verifyModel(): MockLanguageModelV3 {
   });
 }
 
-function writeModel(): MockLanguageModelV3 {
-  return new MockLanguageModelV3({
-    provider: "mock-provider",
-    modelId: "write-model",
-    doGenerate: async () =>
-      textResult("The tower is 330 meters tall. {{claim_1}}"),
-  });
+function writeModel(): ResolvedModel {
+  return wrapLanguageModel({
+    model: new MockLanguageModelV3({
+      provider: "mock-provider",
+      modelId: "write-model",
+      doGenerate: async () =>
+        textResult("The tower is 330 meters tall. {{claim_1}}"),
+    }),
+    middleware: simulateStreamingMiddleware(),
+  }) as unknown as ResolvedModel;
 }
 
 const stubSearch: SearchProvider = {
@@ -378,5 +382,207 @@ describe("emergent multi-agent run", () => {
       1,
     );
     expect(spawned.filter((event) => event.role === "verify")).toHaveLength(3);
+  });
+});
+
+describe("durable resume", () => {
+  const ZERO_USAGE = {
+    inputTokens: { total: 0, noCache: 0, cacheRead: 0, cacheWrite: 0 },
+    outputTokens: { total: 0, text: 0, reasoning: 0 },
+  };
+
+  function zeroText(text: string): LanguageModelV3GenerateResult {
+    return {
+      content: [{ type: "text", text }],
+      finishReason: { unified: "stop", raw: undefined },
+      usage: ZERO_USAGE,
+      warnings: [],
+    };
+  }
+
+  function zeroToolCall(
+    toolName: string,
+    input: unknown,
+    id: string,
+  ): LanguageModelV3GenerateResult {
+    return {
+      content: [
+        {
+          type: "tool-call",
+          toolCallId: id,
+          toolName,
+          input: JSON.stringify(input),
+        },
+      ],
+      finishReason: { unified: "tool-calls", raw: undefined },
+      usage: ZERO_USAGE,
+      warnings: [],
+    };
+  }
+
+  function resumeLead(): MockLanguageModelV3 {
+    let step = 0;
+    return new MockLanguageModelV3({
+      provider: "mock-provider",
+      modelId: "lead-model",
+      doGenerate: async () => {
+        step++;
+        if (step === 1) {
+          return zeroToolCall(
+            "search",
+            { queries: ["tower height"] },
+            "call_search_1",
+          );
+        }
+        if (step === 2) {
+          return zeroToolCall(
+            "fetch",
+            { url: "https://data.example.com/tower" },
+            "call_fetch_1",
+          );
+        }
+        return zeroText("The ledger covers the height; stopping.");
+      },
+    });
+  }
+
+  function resumeExtract(): MockLanguageModelV3 {
+    return new MockLanguageModelV3({
+      provider: "mock-provider",
+      modelId: "extract-model",
+      doGenerate: async () =>
+        zeroText(
+          JSON.stringify({
+            sourceQuality: "primary",
+            claims: [
+              {
+                claim: "The tower is 330 meters tall",
+                quote: "330 meters tall",
+                importance: "central",
+              },
+            ],
+          }),
+        ),
+    });
+  }
+
+  function resumeVerify(): MockLanguageModelV3 {
+    return new MockLanguageModelV3({
+      provider: "mock-provider",
+      modelId: "verify-model",
+      doGenerate: async (options: LanguageModelV3CallOptions) => {
+        if (options.responseFormat?.type === "json") {
+          if (promptText(options).includes("Return your verdict")) {
+            return zeroText(
+              JSON.stringify({
+                refuted: false,
+                evidence: "The page states the height plainly.",
+                confidence: "high",
+              }),
+            );
+          }
+          return zeroText(JSON.stringify({ openQuestions: [] }));
+        }
+        return zeroText("Checked the claim through my lens; it holds.");
+      },
+    });
+  }
+
+  function resumeWrite(): {
+    model: ResolvedModel;
+    inner: MockLanguageModelV3;
+  } {
+    const inner = new MockLanguageModelV3({
+      provider: "mock-provider",
+      modelId: "write-model",
+      doGenerate: async () =>
+        zeroText("The tower is 330 meters tall. {{claim_1}}"),
+    });
+    return {
+      model: wrapLanguageModel({
+        model: inner,
+        middleware: simulateStreamingMiddleware(),
+      }) as unknown as ResolvedModel,
+      inner,
+    };
+  }
+
+  it("replays models, searches, and fetches entirely from the journal", async () => {
+    const { memoryStore } = await import("./providers/store.js");
+    const store = memoryStore();
+    let liveFetches = 0;
+    const countingFetch: FetchProvider = {
+      id: "stub",
+      fetch: async (req) => {
+        liveFetches++;
+        return stubFetch.fetch(req);
+      },
+    };
+
+    const firstAtlas = new Atlas({
+      model: resumeLead() as unknown as ResolvedModel,
+      models: {
+        extract: resumeExtract() as unknown as ResolvedModel,
+        verify: resumeVerify() as unknown as ResolvedModel,
+        write: resumeWrite().model,
+      },
+      search: stubSearch,
+      fetch: countingFetch,
+      store,
+      effort: "fast",
+      safety: { allowPrivateNetworks: true },
+    });
+    const original = await firstAtlas
+      .start("how tall is the tower?", {
+        budget: { maxUSD: 5 },
+        runId: "run_durable_resume",
+      })
+      .result();
+    expect(liveFetches).toBe(1);
+    expect(original.claims.confirmed).toHaveLength(1);
+    expect(original.report).toBe("The tower is 330 meters tall.");
+
+    const lead2 = resumeLead();
+    const extract2 = resumeExtract();
+    const verify2 = resumeVerify();
+    const write2 = resumeWrite();
+    const throwingFetch: FetchProvider = {
+      id: "stub",
+      fetch: async () => {
+        throw new Error("live fetch during replay");
+      },
+    };
+    const throwingSearch: SearchProvider = {
+      id: "stub",
+      search: async () => {
+        throw new Error("live search during replay");
+      },
+    };
+    const resumed = await Atlas.resume("run_durable_resume", {
+      model: lead2 as unknown as ResolvedModel,
+      models: {
+        extract: extract2 as unknown as ResolvedModel,
+        verify: verify2 as unknown as ResolvedModel,
+        write: write2.model,
+      },
+      search: throwingSearch,
+      fetch: throwingFetch,
+      store,
+      effort: "fast",
+      safety: { allowPrivateNetworks: true },
+    });
+    const replayed = await resumed.result();
+
+    expect(replayed.report).toBe(original.report);
+    expect(replayed.citations).toHaveLength(1);
+    expect(replayed.citations[0].verified).toBe(true);
+    expect(replayed.stats.sourcesFetched).toBe(1);
+    expect(replayed.stats.claimsConfirmed).toBe(1);
+    expect(lead2.doGenerateCalls).toHaveLength(0);
+    expect(extract2.doGenerateCalls).toHaveLength(0);
+    expect(verify2.doGenerateCalls).toHaveLength(0);
+    expect(write2.inner.doGenerateCalls).toHaveLength(0);
+    expect(write2.inner.doStreamCalls).toHaveLength(0);
+    expect(replayed.stats.costUSD).toBe(0);
   });
 });

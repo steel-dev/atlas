@@ -83,3 +83,24 @@ describe("JournalWriter and ReplayCache", () => {
     expect(cache.take("nope")).toBeUndefined();
   });
 });
+
+describe("io journal entries", () => {
+  it("round-trips io entries through the replay cache", async () => {
+    const store = memoryStore();
+    const writer = new JournalWriter(store, "run_io");
+    writer.io("fetch:https://example.com/", {
+      sourceId: "source_3",
+      markdown: "hi",
+    });
+    writer.call("abc", { content: [] });
+    await writer.flush();
+
+    const cache = await loadReplayCache(store, "run_io");
+    expect(cache.values("fetch:")).toHaveLength(1);
+    expect(cache.take("fetch:https://example.com/")).toMatchObject({
+      sourceId: "source_3",
+    });
+    expect(cache.take("fetch:https://example.com/")).toBeUndefined();
+    expect(cache.take("abc")).toBeDefined();
+  });
+});

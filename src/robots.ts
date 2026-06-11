@@ -4,6 +4,20 @@ const ROBOTS_MAX_CHARS = 512_000;
 export interface RobotsRule {
   allow: boolean;
   pattern: string;
+  regex?: RegExp;
+}
+
+function compilePattern(pattern: string): RegExp {
+  const anchored = pattern.endsWith("$");
+  const body = anchored ? pattern.slice(0, -1) : pattern;
+  return new RegExp(
+    "^" +
+      body
+        .split("*")
+        .map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+        .join(".*") +
+      (anchored ? "$" : ""),
+  );
 }
 
 export function parseRobots(text: string, agentToken: string): RobotsRule[] {
@@ -29,7 +43,11 @@ export function parseRobots(text: string, agentToken: string): RobotsRule[] {
       if (!current) continue;
       agentsOpen = false;
       if (value) {
-        current.rules.push({ allow: field === "allow", pattern: value });
+        current.rules.push({
+          allow: field === "allow",
+          pattern: value,
+          regex: compilePattern(value),
+        });
       }
     } else {
       agentsOpen = false;
@@ -52,25 +70,12 @@ export function parseRobots(text: string, agentToken: string): RobotsRule[] {
   return best ?? wildcard ?? [];
 }
 
-function patternMatches(pattern: string, path: string): boolean {
-  const anchored = pattern.endsWith("$");
-  const body = anchored ? pattern.slice(0, -1) : pattern;
-  const regex = new RegExp(
-    "^" +
-      body
-        .split("*")
-        .map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
-        .join(".*") +
-      (anchored ? "$" : ""),
-  );
-  return regex.test(path);
-}
-
 export function robotsAllows(rules: RobotsRule[], path: string): boolean {
   let verdict = true;
   let matchedLength = -1;
   for (const rule of rules) {
-    if (!patternMatches(rule.pattern, path)) continue;
+    const regex = (rule.regex ??= compilePattern(rule.pattern));
+    if (!regex.test(path)) continue;
     if (
       rule.pattern.length > matchedLength ||
       (rule.pattern.length === matchedLength && rule.allow && !verdict)

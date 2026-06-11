@@ -1,8 +1,9 @@
-import { sleep } from "../async.js";
+import { sleep, withTimeout } from "../async.js";
 import { errorMessage } from "../errors.js";
 import { readEnv } from "../env.js";
 import { htmlToMarkdown } from "../html-extract.js";
 import { extractPdfText } from "../pdf-extract.js";
+import { guardRedirect as guardRedirectUrl } from "../safety.js";
 import { createRobotsCache, type RobotsCache } from "../robots.js";
 import {
   extractionMetadataFromHtml,
@@ -59,6 +60,9 @@ export interface FetchRequest {
   url: string;
   signal?: AbortSignal | undefined;
   onRateLimit?: ((retryAfterSeconds: number) => void) | undefined;
+  guardRedirect?:
+    | ((url: string) => Promise<{ ok: true } | { ok: false; reason: string }>)
+    | undefined;
 }
 
 export interface FetchProvider {
@@ -214,32 +218,73 @@ export function basicFetch(): FetchProvider {
   };
 }
 
+const MAX_REDIRECT_HOPS = 5;
+
 async function directFetch(
-  { url, signal }: FetchRequest,
+  { url, signal, guardRedirect }: FetchRequest,
   robots: RobotsCache,
 ): Promise<FetchAttempt> {
-  if (!(await robots.allows(url, signal))) {
-    return failed(
-      "direct_http",
-      "robots_disallowed: robots.txt disallows direct fetching of this URL",
-    );
-  }
+  let currentUrl = url;
   let response: Response;
-  try {
-    const timeout = AbortSignal.timeout(DIRECT_FETCH_TIMEOUT_MS);
-    response = await fetch(url, {
-      signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
-      headers: {
-        accept: "application/pdf,*/*;q=0.8",
-        "user-agent": FETCH_USER_AGENT,
-      },
-    });
-  } catch (err) {
-    if (signal?.aborted) throw err;
-    return failed(
-      "direct_http",
-      `network_error: direct fetch failed: ${errorMessage(err)}`,
-    );
+  for (let hop = 0; ; hop++) {
+    if (!(await robots.allows(currentUrl, signal))) {
+      return failed(
+        "direct_http",
+        "robots_disallowed: robots.txt disallows direct fetching of this URL",
+      );
+    }
+    try {
+      const timeout = AbortSignal.timeout(DIRECT_FETCH_TIMEOUT_MS);
+      response = await fetch(currentUrl, {
+        redirect: "manual",
+        signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
+        headers: {
+          accept: "application/pdf,*/*;q=0.8",
+          "user-agent": FETCH_USER_AGENT,
+        },
+      });
+    } catch (err) {
+      if (signal?.aborted) throw err;
+      return failed(
+        "direct_http",
+        `network_error: direct fetch failed: ${errorMessage(err)}`,
+      );
+    }
+    const location = response.headers.get("location");
+    if (response.status >= 300 && response.status < 400 && location) {
+      await response.body?.cancel().catch(() => {});
+      if (hop >= MAX_REDIRECT_HOPS) {
+        return failed(
+          "direct_http",
+          `too_many_redirects: gave up after ${MAX_REDIRECT_HOPS} redirects`,
+        );
+      }
+      let next: string;
+      try {
+        next = new URL(location, currentUrl).toString();
+      } catch {
+        return failed(
+          "direct_http",
+          `bad_redirect: invalid redirect location: ${location}`,
+          false,
+        );
+      }
+      // Default-secure: a basicFetch used standalone (no injected guard) still
+      // blocks redirects into private networks under the default SafetyPolicy.
+      const verdict = guardRedirect
+        ? await guardRedirect(next)
+        : await guardRedirectUrl(next, {});
+      if (!verdict.ok) {
+        return failed(
+          "direct_http",
+          `blocked_redirect: redirect to ${next} blocked: ${verdict.reason}`,
+          false,
+        );
+      }
+      currentUrl = next;
+      continue;
+    }
+    break;
   }
   if (!response.ok) {
     return failed(
@@ -251,7 +296,7 @@ async function directFetch(
   const contentType = response.headers.get("content-type") ?? undefined;
   const contentLength = readContentLength(response.headers);
   const maxBytes =
-    isLikelyPdfUrl(url) || isPdfContentType(contentType)
+    isLikelyPdfUrl(currentUrl) || isPdfContentType(contentType)
       ? DIRECT_PDF_MAX_BYTES
       : DIRECT_HTML_MAX_BYTES;
   if (contentLength !== undefined && contentLength > maxBytes) {
@@ -270,9 +315,9 @@ async function directFetch(
     );
   }
 
-  const finalUrl = response.url || url;
+  const finalUrl = response.url || currentUrl;
   if (isPdfBytes(data) || isPdfContentType(contentType)) {
-    return extractPdf(data, contentType, finalUrl);
+    return extractPdf(data, contentType, finalUrl, signal);
   }
   if (!contentType && looksLikeDirectText(data)) {
     return extractText(data, contentType, finalUrl);
@@ -336,13 +381,23 @@ function extractHtml(
   };
 }
 
+const PDF_PARSE_TIMEOUT_MS = 30_000;
+
 async function extractPdf(
   data: Uint8Array,
   contentType: string | undefined,
   finalUrl: string,
+  signal: AbortSignal | undefined,
 ): Promise<FetchAttempt> {
   try {
-    const extracted = await extractPdfText(data);
+    // pdf-parse cannot be cancelled mid-parse; the timeout abandons a
+    // pathological document so the fetch fails fast instead of stalling.
+    const extracted = await withTimeout(
+      PDF_PARSE_TIMEOUT_MS,
+      signal,
+      "pdf_parse",
+      () => extractPdfText(data),
+    );
     const markdown = extracted.text.trim();
     if (!markdown) {
       return failed(
@@ -634,13 +689,39 @@ export interface ChainFetchOutcome {
   attempts: SourceExtractionAttempt[];
 }
 
+const FETCH_PROVIDER_TIMEOUT_MS = 120_000;
+const FETCH_CHAIN_TIMEOUT_MS = 180_000;
+
 export async function fetchThroughChain(
   chain: FetchProvider[],
   req: FetchRequest,
 ): Promise<ChainFetchOutcome> {
   const attempts: SourceExtractionAttempt[] = [];
+  // One deadline for the whole chain: a slow first provider eats into the
+  // escalation provider's window instead of stacking another full timeout.
+  const deadlineAt = Date.now() + FETCH_CHAIN_TIMEOUT_MS;
   for (const provider of chain) {
-    const result = await provider.fetch(req);
+    const remainingMs = deadlineAt - Date.now();
+    if (remainingMs <= 0) {
+      attempts.push({
+        method: provider.id,
+        ok: false,
+        note: "timeout: fetch chain deadline exhausted before this provider ran",
+      });
+      break;
+    }
+    let result: FetchAttempt;
+    try {
+      result = await withTimeout(
+        Math.min(FETCH_PROVIDER_TIMEOUT_MS, remainingMs),
+        req.signal,
+        provider.id,
+        (signal) => provider.fetch({ ...req, signal }),
+      );
+    } catch (err) {
+      if (req.signal?.aborted) throw err;
+      result = failed(provider.id, `timeout: ${errorMessage(err)}`);
+    }
     attempts.push(result.attempt);
     if (result.ok) {
       const merged = [

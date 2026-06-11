@@ -2,7 +2,7 @@ import { generateObject } from "ai";
 import { z } from "zod";
 import { mapWithConcurrency } from "./async.js";
 import type { BudgetGrant } from "./budget.js";
-import { quoteAppearsInSource, type ResearchClaim } from "./ledger.js";
+import { quoteSupportedByDocument, type ResearchClaim } from "./ledger.js";
 import { MODEL_CALL_MAX_RETRIES } from "./model.js";
 import type { RunCtx } from "./state.js";
 import { quoteContext } from "./synthesize.js";
@@ -58,20 +58,110 @@ export function stripMarkers(draft: string): {
   return { report: stripped, markers };
 }
 
+const STREAM_MARKER_REGEX = /[ \t]*\{\{[^{}]*\}\}/g;
+const STREAM_HOLDBACK_REGEX = /[ \t]*(?:\{|\{\{[^{}]{0,80}\}?)?$/;
+
+export interface MarkerStripper {
+  push(chunk: string): string;
+  flush(): string;
+}
+
+export function createMarkerStripper(): MarkerStripper {
+  let pending = "";
+  return {
+    push(chunk) {
+      pending = (pending + chunk).replace(STREAM_MARKER_REGEX, "");
+      const hold = STREAM_HOLDBACK_REGEX.exec(pending)?.index ?? pending.length;
+      const out = pending.slice(0, hold);
+      pending = pending.slice(hold);
+      return out;
+    },
+    flush() {
+      const out = pending.replace(STREAM_MARKER_REGEX, "");
+      pending = "";
+      return out;
+    },
+  };
+}
+
+const ABBREVIATIONS = new Set([
+  "mr",
+  "mrs",
+  "ms",
+  "dr",
+  "prof",
+  "sr",
+  "jr",
+  "st",
+  "no",
+  "vs",
+  "etc",
+  "approx",
+  "dept",
+  "est",
+  "fig",
+  "vol",
+  "inc",
+  "ltd",
+  "co",
+  "corp",
+  "al",
+  "eg",
+  "ie",
+  "cf",
+  "ca",
+  "pp",
+]);
+
+function isSentenceBoundary(text: string, index: number): boolean {
+  const char = text[index];
+  if (char === "\n" || char === "!" || char === "?") return true;
+  if (char !== ".") return false;
+  const next = text[index + 1];
+  if (next !== undefined && !/[\s")”’]/.test(next)) return false;
+  if (text[index - 1] === "." || next === ".") return false;
+  const before = text.slice(Math.max(0, index - 24), index);
+  const token = /(\S+)$/.exec(before)?.[1] ?? "";
+  const word = token.replace(/^[("'“‘[]+/, "");
+  if (/^[A-Z]$/.test(word)) return false;
+  if (word.includes(".")) return false;
+  if (ABBREVIATIONS.has(word.toLowerCase())) return false;
+  return true;
+}
+
 function sentenceSpanEndingAt(
   text: string,
   end: number,
 ): [number, number] {
   let start = 0;
   for (let i = end - 2; i >= 0; i--) {
-    const char = text[i];
-    if (char === "\n" || char === "." || char === "!" || char === "?") {
+    if (isSentenceBoundary(text, i)) {
       start = i + 1;
       break;
     }
   }
   while (start < end && /\s/.test(text[start])) start++;
   return [start, end];
+}
+
+function splitSentences(segment: string): string[] {
+  const pieces: string[] = [];
+  let start = 0;
+  for (let i = 0; i < segment.length; i++) {
+    if (
+      /[.!?]/.test(segment[i]) &&
+      /\s/.test(segment[i + 1] ?? "") &&
+      isSentenceBoundary(segment, i)
+    ) {
+      pieces.push(segment.slice(start, i + 1));
+      i++;
+      while (i < segment.length && /\s/.test(segment[i])) i++;
+      start = i;
+      i--;
+    }
+  }
+  if (start < segment.length) pieces.push(segment.slice(start));
+  return pieces;
 }
 
 const entailmentSchema = z.object({
@@ -190,7 +280,7 @@ function unmarkedSentences(
     offset = segmentStart + segment.length;
     if (segment.trim().startsWith("#")) continue;
     let cursor = 0;
-    for (const piece of segment.split(/(?<=[.!?])\s+/)) {
+    for (const piece of splitSentences(segment)) {
       const pieceStart = segmentStart + segment.indexOf(piece, cursor);
       cursor = pieceStart - segmentStart + piece.length;
       const pieceEnd = pieceStart + piece.length;
@@ -228,7 +318,7 @@ export async function bindCitations(
         : rawClaim;
       const document = rctx.sources.byId.get(claim.sourceId);
       const quoteOk = document
-        ? quoteAppearsInSource(claim.quote, document.markdown)
+        ? quoteSupportedByDocument(claim.quote, document)
         : false;
       citations.push({
         sentenceSpan: span,

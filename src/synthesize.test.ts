@@ -1,3 +1,4 @@
+import { simulateStreamingMiddleware, wrapLanguageModel } from "ai";
 import { MockLanguageModelV3 } from "ai/test";
 import type {
   LanguageModelV3GenerateResult,
@@ -108,6 +109,10 @@ describe("synthesizeReport with tools", () => {
         };
       },
     });
+    const streamingWriter = wrapLanguageModel({
+      model: writer,
+      middleware: simulateStreamingMiddleware(),
+    });
     const markdown =
       "The official register lists the tower at 330 meters tall.".padEnd(
         250,
@@ -124,7 +129,7 @@ describe("synthesizeReport with tools", () => {
     const events: ResearchEvent[] = [];
     const rctx = {
       question: "how tall is the tower?",
-      bindModel: () => writer,
+      bindModel: () => streamingWriter,
       config: { envelope: { maxReportTokens: 8_192 } },
       sources: {
         byId: new Map([["source_1", document]]),
@@ -144,10 +149,18 @@ describe("synthesizeReport with tools", () => {
     });
     expect(result).toBe(report);
     expect(step).toBe(2);
-    expect(events.map((event) => event.type)).toEqual([
-      "report.drafting",
-      "report.delta",
-    ]);
+    const types = events.map((event) => event.type);
+    expect(types[0]).toBe("report.drafting");
+    expect(types.slice(1).every((type) => type === "report.delta")).toBe(true);
+    expect(types.filter((type) => type === "report.delta").length).toBeGreaterThan(0);
+    const streamed = events
+      .filter(
+        (event): event is Extract<ResearchEvent, { type: "report.delta" }> =>
+          event.type === "report.delta",
+      )
+      .map((event) => event.text)
+      .join("");
+    expect(streamed).toBe("The tower is 330 meters tall.");
   });
 });
 

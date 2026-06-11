@@ -1,3 +1,5 @@
+import { ECONOMY } from "./economy.js";
+
 export interface ModelPricing {
   inputPerMTok: number;
   outputPerMTok: number;
@@ -94,13 +96,18 @@ export function usageCostUSD(
   );
 }
 
-const GRANT_FLOOR_USD = 0.02;
-const DEFAULT_GRANT_FRACTION = 0.15;
+const GRANT_FLOOR_USD = ECONOMY.grantFloorUSD;
+const DEFAULT_GRANT_FRACTION = ECONOMY.defaultGrantFraction;
 
 export interface GrantOptions {
   fraction?: number;
   maxUSD?: number;
   minUSD?: number;
+}
+
+export interface BudgetHold {
+  settle(actualUSD: number): void;
+  release(): void;
 }
 
 export interface BudgetGrant {
@@ -109,6 +116,7 @@ export interface BudgetGrant {
   remainingUSD(): number;
   floored(): boolean;
   charge(usd: number): void;
+  reserve(usd: number): BudgetHold | null;
   grant(opts?: GrantOptions): BudgetGrant | null;
   release(): void;
 }
@@ -126,6 +134,7 @@ class GrantNode implements BudgetGrant {
   readonly limitUSD: number;
   protected used = 0;
   protected childReserved = 0;
+  private held = 0;
   private active = true;
 
   constructor(
@@ -141,7 +150,10 @@ class GrantNode implements BudgetGrant {
   }
 
   remainingUSD(): number {
-    return Math.max(0, this.limitUSD - this.used - this.childReserved);
+    return Math.max(
+      0,
+      this.limitUSD - this.used - this.childReserved - this.held,
+    );
   }
 
   floored(): boolean {
@@ -152,6 +164,28 @@ class GrantNode implements BudgetGrant {
     if (!Number.isFinite(usd) || usd <= 0) return;
     this.used += usd;
     this.shared.spent += usd;
+  }
+
+  reserve(usd: number): BudgetHold | null {
+    if (!Number.isFinite(usd) || usd <= 0) return null;
+    const amount = Math.min(usd, this.remainingUSD());
+    if (amount <= 0) return null;
+    this.held += amount;
+    let open = true;
+    const free = (): boolean => {
+      if (!open) return false;
+      open = false;
+      this.held = Math.max(0, this.held - amount);
+      return true;
+    };
+    return {
+      settle: (actualUSD: number) => {
+        if (free()) this.charge(actualUSD);
+      },
+      release: () => {
+        free();
+      },
+    };
   }
 
   grant(opts: GrantOptions = {}): BudgetGrant | null {

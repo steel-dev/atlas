@@ -52,6 +52,43 @@ describe("budget meter", () => {
     meter.charge(0.99);
     expect(meter.floored()).toBe(true);
   });
+
+  it("holds reserved amounts until settled", () => {
+    const meter = createBudgetMeter(1);
+    const hold = meter.reserve(0.4);
+    expect(hold).not.toBeNull();
+    expect(meter.remainingUSD()).toBeCloseTo(0.6);
+    expect(meter.totalSpentUSD()).toBe(0);
+    hold!.settle(0.25);
+    expect(meter.remainingUSD()).toBeCloseTo(0.75);
+    expect(meter.totalSpentUSD()).toBeCloseTo(0.25);
+  });
+
+  it("releases holds without charging and ignores late settles", () => {
+    const meter = createBudgetMeter(1);
+    const hold = meter.reserve(0.4)!;
+    hold.release();
+    expect(meter.remainingUSD()).toBeCloseTo(1);
+    hold.settle(0.4);
+    expect(meter.totalSpentUSD()).toBe(0);
+  });
+
+  it("clamps reservations to remaining and refuses when exhausted", () => {
+    const meter = createBudgetMeter(0.1);
+    const hold = meter.reserve(5)!;
+    expect(meter.remainingUSD()).toBe(0);
+    expect(meter.reserve(0.01)).toBeNull();
+    hold.settle(0.08);
+    expect(meter.remainingUSD()).toBeCloseTo(0.02);
+  });
+
+  it("trips floored() while a reservation is outstanding", () => {
+    const meter = createBudgetMeter(0.1);
+    const hold = meter.reserve(0.09)!;
+    expect(meter.floored()).toBe(true);
+    hold.release();
+    expect(meter.floored()).toBe(false);
+  });
 });
 
 describe("pricing resolution", () => {

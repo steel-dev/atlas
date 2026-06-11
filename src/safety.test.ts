@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { guardUrl, isPrivateAddress, quarantine } from "./safety.js";
+import {
+  guardRedirect,
+  guardUrl,
+  isPrivateAddress,
+  quarantine,
+} from "./safety.js";
 
 describe("isPrivateAddress", () => {
   it("flags private and loopback ranges", () => {
@@ -75,5 +80,30 @@ describe("quarantine", () => {
     expect(wrapped).toContain("<<<untrusted-source source_1 https://example.com>>>");
     expect(wrapped).toContain("page text");
     expect(wrapped).toContain("<<<end-untrusted-source>>>");
+  });
+});
+
+describe("guardRedirect", () => {
+  it("blocks redirects to private addresses", async () => {
+    const result = await guardRedirect("http://127.0.0.1/admin", {});
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.kind).toBe("ssrf");
+  });
+
+  it("blocks non-http schemes", async () => {
+    const result = await guardRedirect("file:///etc/passwd", {});
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.kind).toBe("scheme");
+  });
+
+  it("does not flag high-entropy queries the way guardUrl does", async () => {
+    const noise = Array.from({ length: 90 }, (_, i) =>
+      String.fromCharCode(33 + ((i * 17) % 90)),
+    ).join("");
+    const result = await guardRedirect(
+      `http://203.0.113.7/?x=${encodeURIComponent(noise)}`,
+      {},
+    );
+    expect(result.ok).toBe(true);
   });
 });

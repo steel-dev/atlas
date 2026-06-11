@@ -11,6 +11,10 @@ export const DEFAULT_OPENAI_SMALL_MODEL = "gpt-5-mini";
 
 const SMALL_MODEL_ID_PATTERN = /haiku|mini|nano|flash|lite/i;
 
+export function isSmallModelId(modelId: string): boolean {
+  return SMALL_MODEL_ID_PATTERN.test(modelId);
+}
+
 export function deriveSmallModel(
   lead: ResolvedModel,
 ): ResolvedModel | undefined {

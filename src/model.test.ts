@@ -1,8 +1,9 @@
-import { generateText } from "ai";
+import { generateText, simulateReadableStream, streamText } from "ai";
 import { MockLanguageModelV3 } from "ai/test";
 import type {
   LanguageModelV3,
   LanguageModelV3GenerateResult,
+  LanguageModelV3StreamPart,
 } from "@ai-sdk/provider";
 import { describe, expect, it } from "vitest";
 import { createConcurrencyGate } from "./async.js";
@@ -48,6 +49,40 @@ describe("engineModel", () => {
       prompt: "hi",
     });
     expect(result.text).toBe("hello");
+    expect(meter.totalSpentUSD()).toBeCloseTo(3);
+  });
+
+  it("reserves estimated cost while a call is in flight", async () => {
+    const meter = createBudgetMeter(10);
+    let releaseCall!: () => void;
+    const inFlight = new Promise<void>((resolve) => {
+      releaseCall = resolve;
+    });
+    const inner = new MockLanguageModelV3({
+      provider: "mock-provider",
+      modelId: "claude-sonnet-4-6",
+      doGenerate: async () => {
+        await inFlight;
+        return RESULT;
+      },
+    });
+    const model = engineModel(inner as unknown as ResolvedModel, {
+      role: "lead",
+      grant: meter,
+      pricing: { "claude-sonnet-4-6": { inputPerMTok: 3, outputPerMTok: 15 } },
+      gate: createConcurrencyGate(2),
+      usage: createRunUsage(),
+    });
+    const pending = generateText({
+      model: model as LanguageModelV3,
+      prompt: "hi",
+    });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(meter.remainingUSD()).toBeLessThan(10);
+    expect(meter.totalSpentUSD()).toBe(0);
+    releaseCall();
+    await pending;
+    expect(meter.remainingUSD()).toBeCloseTo(7);
     expect(meter.totalSpentUSD()).toBeCloseTo(3);
   });
 
@@ -205,5 +240,113 @@ describe("engineModel", () => {
     ).rejects.toThrow(/invalid request/);
     expect(calls).toBe(1);
     expect(notices).toEqual([]);
+  });
+});
+
+describe("engineModel streaming", () => {
+  const PRICING = { "claude-sonnet-4-6": { inputPerMTok: 3, outputPerMTok: 15 } };
+
+  function streamingMock(): MockLanguageModelV3 {
+    return new MockLanguageModelV3({
+      provider: "mock-provider",
+      modelId: "claude-sonnet-4-6",
+      doStream: async () => ({
+        stream: simulateReadableStream<LanguageModelV3StreamPart>({
+          chunks: [
+            { type: "stream-start", warnings: [] },
+            { type: "text-start", id: "t1" },
+            { type: "text-delta", id: "t1", delta: "hello " },
+            { type: "text-delta", id: "t1", delta: "world" },
+            { type: "text-end", id: "t1" },
+            {
+              type: "finish",
+              finishReason: { unified: "stop", raw: undefined },
+              usage: RESULT.usage,
+            },
+          ],
+        }),
+      }),
+    });
+  }
+
+  it("meters and journals a streamed call", async () => {
+    const store = memoryStore();
+    const journal = new JournalWriter(store, "run_stream");
+    const meter = createBudgetMeter(10);
+    const inner = streamingMock();
+    const model = engineModel(inner as unknown as ResolvedModel, {
+      role: "write",
+      grant: meter,
+      pricing: PRICING,
+      gate: createConcurrencyGate(2),
+      usage: createRunUsage(),
+      journal,
+    });
+    const result = streamText({ model: model as LanguageModelV3, prompt: "hi" });
+    let text = "";
+    for await (const delta of result.textStream) text += delta;
+    expect(text).toBe("hello world");
+    expect(meter.totalSpentUSD()).toBeCloseTo(3);
+    await journal.flush();
+
+    const replay = await loadReplayCache(store, "run_stream");
+    const replayMeter = createBudgetMeter(10);
+    const fresh = new MockLanguageModelV3({
+      provider: "mock-provider",
+      modelId: "claude-sonnet-4-6",
+    });
+    const replayModel = engineModel(fresh as unknown as ResolvedModel, {
+      role: "write",
+      grant: replayMeter,
+      pricing: PRICING,
+      gate: createConcurrencyGate(2),
+      usage: createRunUsage(),
+      replay,
+    });
+    const replayed = streamText({
+      model: replayModel as LanguageModelV3,
+      prompt: "hi",
+    });
+    let replayedText = "";
+    for await (const delta of replayed.textStream) replayedText += delta;
+    expect(replayedText).toBe("hello world");
+    expect(fresh.doStreamCalls).toHaveLength(0);
+    expect(replayMeter.totalSpentUSD()).toBe(0);
+  });
+
+  it("charges the reserved estimate when a stream ends without a finish part", async () => {
+    const meter = createBudgetMeter(10);
+    const inner = new MockLanguageModelV3({
+      provider: "mock-provider",
+      modelId: "claude-sonnet-4-6",
+      doStream: async () => ({
+        stream: simulateReadableStream<LanguageModelV3StreamPart>({
+          chunks: [
+            { type: "stream-start", warnings: [] },
+            { type: "text-start", id: "t1" },
+            { type: "text-delta", id: "t1", delta: "partial" },
+            // connection dropped: no text-end, no finish, no usage report
+          ],
+        }),
+      }),
+    });
+    const model = engineModel(inner as unknown as ResolvedModel, {
+      role: "write",
+      grant: meter,
+      pricing: PRICING,
+      gate: createConcurrencyGate(2),
+      usage: createRunUsage(),
+    });
+    const { stream } = await model.doStream({
+      prompt: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+    } as Parameters<LanguageModelV3["doStream"]>[0]);
+    const reader = stream.getReader();
+    while (!(await reader.read()).done) {
+      // drain
+    }
+    const spent = meter.totalSpentUSD();
+    expect(spent).toBeGreaterThan(0);
+    // the hold is settled, not leaked: remaining reflects only the charge
+    expect(meter.remainingUSD()).toBeCloseTo(10 - spent);
   });
 });

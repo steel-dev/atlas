@@ -1,11 +1,11 @@
 import { jsonSchema, tool, type ToolSet } from "ai";
 import { z } from "zod";
 import type { LanguageModelV3 } from "@ai-sdk/provider";
-import { mapWithConcurrency } from "./async.js";
+import { mapWithConcurrency, withTimeout } from "./async.js";
 import type { BudgetGrant } from "./budget.js";
 import { errorMessage } from "./errors.js";
 import type { AgentRole } from "./events.js";
-import { guardUrl, quarantine } from "./safety.js";
+import { guardRedirect, guardUrl, quarantine } from "./safety.js";
 import {
   clampSandboxTimeout,
   runCodeSandboxed,
@@ -23,19 +23,23 @@ import {
 import type { SourceDocument } from "./sources.js";
 import { fetchThroughChain, looksBlocked } from "./providers/fetch.js";
 import type { MergedSearchResult } from "./providers/search.js";
+import { ROLE_CAPABILITIES } from "./roles.js";
 import { budgetStatusLine, type RunCtx, type SourceStore } from "./state.js";
 import type { ToolContext } from "./custom-tools.js";
 import { normalizeUrlForSource } from "./url.js";
 
-export type ToolName =
-  | "spawn"
-  | "search"
-  | "fetch"
-  | "read_source"
-  | "search_sources"
-  | "run_code"
-  | "ledger"
-  | "add_claim";
+export const BUILTIN_TOOL_NAMES = [
+  "spawn",
+  "search",
+  "fetch",
+  "read_source",
+  "search_sources",
+  "run_code",
+  "ledger",
+  "add_claim",
+] as const;
+
+export type ToolName = (typeof BUILTIN_TOOL_NAMES)[number];
 
 export interface SpawnInput {
   role: "research" | "verify";
@@ -55,6 +59,9 @@ export interface AgentCtx {
   spawn(input: SpawnInput): Promise<string>;
 }
 
+const SEARCH_TIMEOUT_MS = 30_000;
+const DEFAULT_CUSTOM_TOOL_TIMEOUT_MS = 60_000;
+const MAX_CUSTOM_TOOL_TIMEOUT_MS = 300_000;
 const DEFAULT_FETCH_PREVIEW_CHARS = 700;
 const MAX_FETCH_PREVIEW_CHARS = 2_000;
 const FETCH_MANY_MAX_URLS = 12;
@@ -67,7 +74,7 @@ const SEARCH_LISTING_TITLE_PATTERN =
   /\b(?:search results?|advanced search|site search)\b/i;
 
 function withBudgetLine(rctx: RunCtx, actx: AgentCtx, content: string): string {
-  if (actx.role === "verify" || actx.role === "write") return content;
+  if (!ROLE_CAPABILITIES[actx.role].budgetLine) return content;
   return `${content}\n\n[${budgetStatusLine(rctx)}]`;
 }
 
@@ -104,14 +111,23 @@ export async function execSearchTool(
   const byUrl = new Map<string, MergedSearchResult>();
   await mapWithConcurrency(cleaned, 4, async (query) => {
     rctx.counters.searches++;
+    const ioKey = `search:${limit}:${query}`;
     try {
-      const { merged, warnings } = await rctx.ioGate.run(() =>
-        rctx.search.run({
-          query,
-          maxResults: limit,
-          ...(rctx.signal ? { signal: rctx.signal } : {}),
-        }),
-      );
+      const cached = rctx.replay?.take(ioKey) as
+        | { merged: MergedSearchResult[]; warnings: string[] }
+        | undefined;
+      const { merged, warnings } =
+        cached ??
+        (await rctx.ioGate.run(() =>
+          withTimeout(SEARCH_TIMEOUT_MS, rctx.signal, "search", (signal) =>
+            rctx.search.run({
+              query,
+              maxResults: limit,
+              signal,
+            }),
+          ),
+        ));
+      if (!cached) rctx.journal?.io(ioKey, { merged, warnings });
       allWarnings.push(...warnings);
       const kept = merged.filter((result) => domainAllowed(rctx, result.url));
       rctx.emit({
@@ -198,6 +214,50 @@ function totalSourceSlots(store: SourceStore): number {
   return store.fetchedSources.length + store.reservedSlots;
 }
 
+interface JournaledFetch {
+  url: string;
+  sourceId: string;
+  title: string;
+  markdown: string;
+  metadata: SourceDocument["metadata"];
+  originalChars: number;
+  renderedWith: string;
+}
+
+function registerSourceDocument(
+  rctx: RunCtx,
+  actx: AgentCtx,
+  document: SourceDocument,
+  goal: string,
+  renderedWith: string,
+): void {
+  rctx.sources.fetchedSources.push({
+    url: document.url,
+    title: document.title,
+    sourceId: document.sourceId,
+    canonicalUrl: document.canonicalUrl,
+  });
+  rctx.sources.byUrl.set(document.canonicalUrl, document);
+  rctx.sources.byId.set(document.sourceId, document);
+  rctx.ledger.queue(document, {
+    goal,
+    agentId: actx.agentId,
+    model: actx.extractModel,
+  });
+  rctx.counters.sourcesFetched++;
+  rctx.emit({
+    type: "source.fetched",
+    sourceId: document.sourceId,
+    url: document.url,
+    title: document.title,
+    via: renderedWith,
+    chars: document.metadata.markdownChars,
+    ...(document.metadata.qualityWarnings
+      ? { warnings: document.metadata.qualityWarnings }
+      : {}),
+  });
+}
+
 async function fetchSourceDocument(
   rctx: RunCtx,
   actx: AgentCtx,
@@ -205,12 +265,39 @@ async function fetchSourceDocument(
   sourceId: string,
   goal: string,
 ): Promise<SourceDocument | null> {
+  const normalized = normalizeUrlForSource(url);
+  const ioKey = `fetch:${normalized}`;
+  const replayed = rctx.replay?.take(ioKey) as JournaledFetch | undefined;
+  if (replayed) {
+    const document = createSourceDocument(
+      replayed.url,
+      replayed.title,
+      replayed.markdown,
+      replayed.metadata,
+      replayed.originalChars,
+      replayed.sourceId,
+      normalized,
+    );
+    registerSourceDocument(rctx, actx, document, goal, replayed.renderedWith);
+    return document;
+  }
   const outcome = await rctx.ioGate.run(() =>
     fetchThroughChain(rctx.fetchChain, {
       url,
       ...(rctx.signal ? { signal: rctx.signal } : {}),
       onRateLimit: (retryAfterSeconds) =>
         rctx.emit({ type: "rate.limited", retryAfterSeconds }),
+      guardRedirect: async (target) => {
+        const verdict = await guardRedirect(target, rctx.config.safety);
+        if (verdict.ok) return { ok: true };
+        rctx.emit({
+          type: "safety.flag",
+          kind: verdict.kind,
+          detail: `redirect blocked: ${verdict.reason}`,
+          url: target,
+        });
+        return { ok: false, reason: verdict.reason };
+      },
     }),
   );
   if (!outcome.page) {
@@ -245,7 +332,6 @@ async function fetchSourceDocument(
           ],
         };
   const stored = storeMarkdown(page.markdown);
-  const normalized = normalizeUrlForSource(url);
   const document = createSourceDocument(
     url,
     title,
@@ -255,31 +341,16 @@ async function fetchSourceDocument(
     sourceId,
     normalized,
   );
-  rctx.sources.fetchedSources.push({
+  rctx.journal?.io(ioKey, {
     url,
+    sourceId,
     title,
-    sourceId: document.sourceId,
-    canonicalUrl: document.canonicalUrl,
-  });
-  rctx.sources.byUrl.set(normalized, document);
-  rctx.sources.byId.set(document.sourceId, document);
-  rctx.ledger.queue(document, {
-    goal,
-    agentId: actx.agentId,
-    model: actx.extractModel,
-  });
-  rctx.counters.sourcesFetched++;
-  rctx.emit({
-    type: "source.fetched",
-    sourceId: document.sourceId,
-    url,
-    title,
-    via: page.renderedWith,
-    chars: document.metadata.markdownChars,
-    ...(document.metadata.qualityWarnings
-      ? { warnings: document.metadata.qualityWarnings }
-      : {}),
-  });
+    markdown: document.markdown,
+    metadata: document.metadata,
+    originalChars: document.originalChars,
+    renderedWith: page.renderedWith,
+  } satisfies JournaledFetch);
+  registerSourceDocument(rctx, actx, document, goal, page.renderedWith);
   return document;
 }
 
@@ -733,34 +804,45 @@ export function buildAgentTools(
     });
   }
 
-  if (actx.role !== "verify" && actx.role !== "write") {
+  if (ROLE_CAPABILITIES[actx.role].customTools) {
     for (const custom of rctx.customTools.values()) {
       tools[custom.name] = tool({
         description: custom.description,
         inputSchema: jsonSchema(custom.inputJsonSchema),
         execute: async (input) => {
           let sourcesAdded = 0;
-          const toolCtx: ToolContext = {
-            addSource: (source) => {
-              if (
-                addCustomToolSource(rctx, actx, {
-                  ...source,
-                  toolName: custom.name,
-                })
-              ) {
-                sourcesAdded++;
-              }
-            },
-            signal: rctx.signal,
-            log: (message) =>
-              rctx.emit({
-                type: "tool.event",
-                tool: custom.name,
-                data: String(message),
-              }),
-          };
+          const timeoutMs = Math.min(
+            MAX_CUSTOM_TOOL_TIMEOUT_MS,
+            Math.max(1, custom.timeoutMs ?? DEFAULT_CUSTOM_TOOL_TIMEOUT_MS),
+          );
           try {
-            const output = await custom.execute(input, toolCtx);
+            const output = await withTimeout(
+              timeoutMs,
+              rctx.signal,
+              custom.name,
+              (signal) => {
+                const toolCtx: ToolContext = {
+                  addSource: (source) => {
+                    if (
+                      addCustomToolSource(rctx, actx, {
+                        ...source,
+                        toolName: custom.name,
+                      })
+                    ) {
+                      sourcesAdded++;
+                    }
+                  },
+                  signal,
+                  log: (message) =>
+                    rctx.emit({
+                      type: "tool.event",
+                      tool: custom.name,
+                      data: String(message),
+                    }),
+                };
+                return Promise.resolve(custom.execute(input, toolCtx));
+              },
+            );
             rctx.emit({
               type: "tool.event",
               tool: custom.name,

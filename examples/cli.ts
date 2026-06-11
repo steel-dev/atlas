@@ -74,6 +74,10 @@ function paint(color: string, text: string): string {
   return colored ? `${color}${text}${RESET}` : text;
 }
 
+function collapse(text: string): string {
+  return text.replace(/\s+/g, " ").trim();
+}
+
 function truncate(text: string, max: number): string {
   const clean = text.replace(/\s+/g, " ").trim();
   return clean.length <= max ? clean : `${clean.slice(0, max - 1)}…`;
@@ -186,6 +190,8 @@ function formatEvent(e: ResearchEvent): string | null {
       return paint(YELLOW, `! safety ${e.kind}: ${truncate(e.detail, 100)}`);
     case "pricing.missing":
       return paint(YELLOW, `! ${truncate(e.detail, 100)}`);
+    case "model.fallback":
+      return paint(YELLOW, `! ${truncate(e.detail, 140)}`);
     case "rate.limited":
       return paint(YELLOW, `! rate limited — waiting ${e.retryAfterSeconds}s`);
     case "tool.event":
@@ -297,16 +303,25 @@ async function main(): Promise<void> {
   process.on("SIGINT", onSigint);
 
   const streamReport = !values.json && !values.out;
-  let streamedChars = 0;
+  let streamed = "";
   try {
     for await (const event of run.events()) {
       if (event.type === "report.delta") {
         if (streamReport) {
           process.stdout.write(event.text);
-          streamedChars += event.text.length;
+          streamed += event.text;
         }
         continue;
       }
+      if (event.type === "report.reset") {
+        if (streamReport && streamed) {
+          process.stdout.write("\n");
+          process.stderr.write("atlas: draft restarted\n");
+          streamed = "";
+        }
+        continue;
+      }
+      if (event.type === "report.completed") continue;
       if (values.quiet) continue;
       const line = formatEvent(event);
       if (line) process.stderr.write(line + "\n");
@@ -317,7 +332,13 @@ async function main(): Promise<void> {
     } else if (values.out) {
       writeFileSync(values.out, result.report);
       if (!values.quiet) process.stderr.write(`wrote ${values.out}\n`);
-    } else if (streamedChars === 0) {
+    } else if (collapse(streamed) !== collapse(result.report)) {
+      if (streamed) {
+        process.stdout.write("\n\n");
+        process.stderr.write(
+          "atlas: report revised during citation binding — final version follows\n",
+        );
+      }
       process.stdout.write(
         result.report.endsWith("\n") ? result.report : result.report + "\n",
       );

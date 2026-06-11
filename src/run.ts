@@ -1,37 +1,27 @@
 import { randomUUID } from "node:crypto";
 import { generateObject } from "ai";
 import { z } from "zod";
-import { createConcurrencyGate, mapWithConcurrency } from "./async.js";
+import { mapWithConcurrency } from "./async.js";
+import type { AgentResult } from "./agent.js";
 import { bindCitations, type Citation } from "./bind.js";
-import {
-  createBudgetMeter,
-  DEFAULT_PRICING,
-  type BudgetGrant,
-  type PricingTable,
-} from "./budget.js";
+import type { BudgetGrant, BudgetMeter } from "./budget.js";
 import {
   resolveRunConfig,
   type AtlasConfig,
+  type Budget,
   type ResearchOptions,
   type ResolvedRunConfig,
+  type SourceFilter,
 } from "./config.js";
-import { resolveCustomTools } from "./custom-tools.js";
+import { assembleRun } from "./context.js";
 import { semanticDedupePass } from "./dedupe.js";
-import { AtlasError, errorMessage } from "./errors.js";
+import { ECONOMY } from "./economy.js";
+import { AtlasError, errorMessage, ResumeError } from "./errors.js";
+import { EventHub } from "./event-hub.js";
 import type { ResearchEvent, RunStats } from "./events.js";
-import { createLedger, type ResearchClaim } from "./ledger.js";
-import {
-  createRunUsage,
-  engineModel,
-  MODEL_CALL_MAX_RETRIES,
-  type ModelRole,
-} from "./model.js";
+import type { ResearchClaim } from "./ledger.js";
+import { MODEL_CALL_MAX_RETRIES } from "./model.js";
 import { runOrchestrator } from "./orchestrator.js";
-import { defaultFetchProviders } from "./providers/fetch.js";
-import {
-  combineSearchProviders,
-  defaultSearchProviders,
-} from "./providers/search.js";
 import {
   JournalWriter,
   loadReplayCache,
@@ -48,8 +38,7 @@ import {
   type ClaimPartition,
 } from "./synthesize.js";
 import { synthesizeStructured, type FieldBasis } from "./structured.js";
-import { createRunCounters, createSourceStore, type RunCtx } from "./state.js";
-import { runVerifySpawn } from "./verify.js";
+import type { RunCtx } from "./state.js";
 import { EVENT_SCHEMA_VERSION } from "./events.js";
 
 export type RunStatus =
@@ -112,24 +101,11 @@ export interface ResearchRun {
   status(): RunStatus;
 }
 
-const SYNTHESIS_FRACTION = 0.15;
-const SYNTHESIS_MIN_USD = 0.05;
-const VERIFY_RESERVE_FRACTION = 0.2;
-const VERIFY_RESERVE_MIN_USD = 0.05;
-const VERIFY_SWEEP_FRACTION = 0.08;
-const VERIFY_SWEEP_MIN_USD = 0.03;
-const VERIFY_SWEEP_CONCURRENCY = 4;
-const VERIFY_SWEEP_MAX_CLAIMS = 64;
-const EAGER_VERIFY_MAX_CLAIMS = 16;
-const DEDUPE_FRACTION = 0.15;
-const DEDUPE_MIN_USD = 0.02;
 const IMPORTANCE_RANK: Record<string, number> = {
   central: 0,
   supporting: 1,
   tangential: 2,
 };
-const TIMEOUT_SYNTHESIS_RESERVE_MS = 120_000;
-const BUDGET_WARNING_FRACTIONS = [0.5, 0.8, 0.95];
 
 async function sweepVerification(
   rctx: RunCtx,
@@ -143,117 +119,31 @@ async function sweepVerification(
         (IMPORTANCE_RANK[a.importance] ?? 3) -
         (IMPORTANCE_RANK[b.importance] ?? 3),
     )
-    .slice(0, VERIFY_SWEEP_MAX_CLAIMS);
+    .slice(0, ECONOMY.verifySweep.maxClaims);
   if (pending.length === 0) return;
-  await mapWithConcurrency(pending, VERIFY_SWEEP_CONCURRENCY, async (claim) => {
-    if (reserve.floored() || rctx.signal?.aborted) return;
-    const grant = reserve.grant({
-      fraction: VERIFY_SWEEP_FRACTION,
-      minUSD: VERIFY_SWEEP_MIN_USD,
-    });
-    if (!grant) return;
-    try {
-      await rctx.verifySpawn({
-        claimIds: [claim.id],
-        grant,
-        depth: 1,
+  await mapWithConcurrency(
+    pending,
+    ECONOMY.verifySweep.concurrency,
+    async (claim) => {
+      if (reserve.floored() || rctx.signal?.aborted) return;
+      const grant = reserve.grant({
+        fraction: ECONOMY.verifySweep.fraction,
+        minUSD: ECONOMY.verifySweep.minUSD,
       });
-    } catch (err) {
-      if (rctx.signal?.aborted) throw err;
-    } finally {
-      grant.release();
-    }
-  });
-}
-
-interface EventSubscriber {
-  queue: ResearchEvent[];
-  resolveNext: ((result: IteratorResult<ResearchEvent>) => void) | null;
-  rejectNext: ((error: unknown) => void) | null;
-}
-
-class EventHub {
-  private readonly subscribers = new Set<EventSubscriber>();
-  private readonly history: ResearchEvent[] = [];
-  private closed = false;
-  private failure: unknown = null;
-
-  emit(event: ResearchEvent): void {
-    if (this.closed) return;
-    this.history.push(event);
-    for (const sub of this.subscribers) {
-      if (sub.resolveNext) {
-        const resolve = sub.resolveNext;
-        sub.resolveNext = null;
-        sub.rejectNext = null;
-        resolve({ value: event, done: false });
-      } else {
-        sub.queue.push(event);
+      if (!grant) return;
+      try {
+        await rctx.verifySpawn({
+          claimIds: [claim.id],
+          grant,
+          depth: 1,
+        });
+      } catch (err) {
+        if (rctx.signal?.aborted) throw err;
+      } finally {
+        grant.release();
       }
-    }
-  }
-
-  close(): void {
-    if (this.closed) return;
-    this.closed = true;
-    for (const sub of this.subscribers) {
-      sub.resolveNext?.({ value: undefined, done: true });
-      sub.resolveNext = null;
-      sub.rejectNext = null;
-    }
-  }
-
-  fail(error: unknown): void {
-    if (this.closed) return;
-    this.failure = error;
-    this.closed = true;
-    for (const sub of this.subscribers) {
-      sub.rejectNext?.(error);
-      sub.resolveNext = null;
-      sub.rejectNext = null;
-    }
-  }
-
-  iterable(): AsyncIterable<ResearchEvent> {
-    const subscribers = this.subscribers;
-    const hub = this;
-    return {
-      [Symbol.asyncIterator]: (): AsyncIterator<ResearchEvent> => {
-        const sub: EventSubscriber = {
-          queue: [...hub.history],
-          resolveNext: null,
-          rejectNext: null,
-        };
-        subscribers.add(sub);
-        return {
-          next(): Promise<IteratorResult<ResearchEvent>> {
-            if (sub.queue.length > 0) {
-              return Promise.resolve({
-                value: sub.queue.shift() as ResearchEvent,
-                done: false,
-              });
-            }
-            if (hub.failure) {
-              subscribers.delete(sub);
-              return Promise.reject(hub.failure);
-            }
-            if (hub.closed) {
-              subscribers.delete(sub);
-              return Promise.resolve({ value: undefined, done: true });
-            }
-            return new Promise((resolve, reject) => {
-              sub.resolveNext = resolve;
-              sub.rejectNext = reject;
-            });
-          },
-          return(): Promise<IteratorResult<ResearchEvent>> {
-            subscribers.delete(sub);
-            return Promise.resolve({ value: undefined, done: true });
-          },
-        };
-      },
-    };
-  }
+    },
+  );
 }
 
 export interface StartRunOptions {
@@ -276,6 +166,11 @@ export function startRun(start: StartRunOptions): ResearchRun {
   const hardController = new AbortController();
   const stopController = new AbortController();
   let statusValue: RunStatus = "running";
+  // pause() and stop() share stopController: both wind research down gracefully
+  // (spawns refused, agents end their turn). stop() then lets synthesis salvage
+  // a report, while pause() sets this flag so runResearchPhase throws once the
+  // orchestrator settles — the catch below turns that into the "paused" status
+  // instead of letting the run complete. cancel() aborts hardController outright.
   let pauseRequested = false;
 
   const externalSignal = start.options.signal;
@@ -375,173 +270,33 @@ interface ExecuteRunArgs {
 async function executeRun(args: ExecuteRunArgs): Promise<ResearchResult> {
   const { resolved, question, runId } = args;
   const startedAt = args.now();
-  const meter = createBudgetMeter(resolved.budgetUSD);
-  const usage = createRunUsage();
-  const pricing: PricingTable = { ...DEFAULT_PRICING, ...resolved.pricing };
-  const modelGate = createConcurrencyGate(resolved.maxConcurrentModelCalls);
-  const ioGate = createConcurrencyGate(resolved.maxConcurrentIo);
-  const counters = createRunCounters();
-  const warnedUnknownModels = new Set<string>();
-  const warnedFractions = new Set<number>();
-  const deadlineAt = resolved.maxDurationMs
-    ? startedAt + resolved.maxDurationMs
-    : undefined;
-
-  const budgetExhausted = (): boolean =>
-    meter.totalSpentUSD() >= meter.totalUSD - 0.01;
-
-  const emit = (event: ResearchEvent): void => {
-    args.hub.emit(event);
-    args.journal.event(event.type, event);
-  };
-
-  const onCost = (): void => {
-    const fraction = meter.totalSpentUSD() / meter.totalUSD;
-    for (const threshold of BUDGET_WARNING_FRACTIONS) {
-      if (fraction >= threshold && !warnedFractions.has(threshold)) {
-        warnedFractions.add(threshold);
-        emit({
-          type: "budget.warning",
-          spentUSD: meter.totalSpentUSD(),
-          limitUSD: meter.totalUSD,
-          fraction: threshold,
-        });
-      }
-    }
-  };
-
-  const onUnknownModel = (modelId: string): void => {
-    if (warnedUnknownModels.has(modelId)) return;
-    warnedUnknownModels.add(modelId);
-    emit({
-      type: "pricing.missing",
-      modelId,
-      detail: `no pricing entry for model "${modelId}"; charging conservative default rates`,
-    });
-  };
-  const onRateLimit = ({ delayMs }: { delayMs: number }): void =>
-    emit({
-      type: "rate.limited",
-      retryAfterSeconds: Math.max(1, Math.round(delayMs / 1000)),
-    });
-  const bindModel = (role: ModelRole, grant: BudgetGrant) =>
-    engineModel(resolved.models[role], {
-      role,
-      grant,
-      pricing,
-      gate: modelGate,
-      usage,
+  const { rctx, meter, synthesisGrant, verifyReserve, drainEagerVerifications } =
+    await assembleRun({
+      runId,
+      question,
+      resolved,
+      config: args.config,
       journal: args.journal,
       replay: args.replay,
-      onCost,
-      onUnknownModel,
-      onRateLimit,
+      hub: args.hub,
+      hardSignal: args.hardSignal,
+      stopSignal: args.stopSignal,
+      now: args.now,
+      startedAt,
     });
-
-  const searchProviders = Array.isArray(args.config.search)
-    ? args.config.search
-    : args.config.search
-      ? [args.config.search]
-      : defaultSearchProviders(bindModel("research", meter));
-  const fetchChain = Array.isArray(args.config.fetch)
-    ? args.config.fetch
-    : args.config.fetch
-      ? [args.config.fetch]
-      : defaultFetchProviders();
-  const customTools = await resolveCustomTools(args.config.tools);
-
-  const synthesisGrant =
-    meter.grant({ fraction: SYNTHESIS_FRACTION, minUSD: SYNTHESIS_MIN_USD }) ??
-    meter;
-  const verifyReserve =
-    meter.grant({
-      fraction: VERIFY_RESERVE_FRACTION,
-      minUSD: VERIFY_RESERVE_MIN_USD,
-    }) ?? meter;
-
-  const eagerVerifications = new Set<Promise<void>>();
-  let eagerVerifyStarted = 0;
-  const ledger = createLedger({
-    emit,
-    signal: args.hardSignal,
-    shouldExtract: () => !budgetExhausted(),
-    claimsPerSource: resolved.envelope.maxClaimsPerSource,
-    extractionChars: resolved.envelope.maxExtractionChars,
-    onClaim: (claim) => eagerVerify(claim),
-  });
-
-  const rctx: RunCtx = {
-    runId,
-    question,
-    config: resolved,
-    meter,
-    verifyReserve,
-    usage,
-    pricing,
-    ledger,
-    sources: createSourceStore(),
-    search: combineSearchProviders(searchProviders),
-    fetchChain,
-    customTools,
-    emit,
-    journal: args.journal,
-    replay: args.replay,
-    signal: args.hardSignal,
-    stopSignal: args.stopSignal,
-    deadlineAt,
-    now: args.now,
-    modelGate,
-    ioGate,
-    seenDomains: new Set(),
-    verifyInFlight: new Map(),
-    counters,
-    agentSequence: { next: 1 },
-    bindModel,
-    rawModel: (role: ModelRole) => resolved.models[role],
-    verifySpawn: (spawnArgs) => runVerifySpawn(rctx, spawnArgs),
-    stopReason: () => {
-      if (args.stopSignal.aborted) return "stop requested";
-      if (
-        deadlineAt !== undefined &&
-        args.now() > deadlineAt - TIMEOUT_SYNTHESIS_RESERVE_MS
-      ) {
-        return "timeout approaching";
-      }
-      if (budgetExhausted()) return "budget exhausted";
-      return null;
-    },
-  };
-
-  function eagerVerify(claim: ResearchClaim): void {
-    if (claim.importance !== "central") return;
-    if (eagerVerifyStarted >= EAGER_VERIFY_MAX_CLAIMS) return;
-    if (rctx.stopReason()) return;
-    const grant = verifyReserve.grant({
-      fraction: VERIFY_SWEEP_FRACTION,
-      minUSD: VERIFY_SWEEP_MIN_USD,
-    });
-    if (!grant) return;
-    eagerVerifyStarted++;
-    const task = rctx
-      .verifySpawn({
-        claimIds: [claim.id],
-        grant,
-        depth: 1,
-      })
-      .then(
-        () => undefined,
-        () => undefined,
-      )
-      .finally(() => grant.release());
-    eagerVerifications.add(task);
-    void task.finally(() => eagerVerifications.delete(task));
-  }
+  const { ledger, emit } = rctx;
 
   args.journal.meta({
     runId,
     question,
     effort: resolved.effort,
     budgetUSD: resolved.budgetUSD,
+    ...(resolved.maxDurationMs !== undefined
+      ? { maxDurationMs: resolved.maxDurationMs }
+      : {}),
+    maxSources: resolved.maxSources,
+    outputKind: resolved.output.kind,
+    ...(resolved.sourceFilter ? { sourceFilter: resolved.sourceFilter } : {}),
     eventVersion: EVENT_SCHEMA_VERSION,
     startedAt,
   });
@@ -552,163 +307,37 @@ async function executeRun(args: ExecuteRunArgs): Promise<ResearchResult> {
     effort: resolved.effort,
     budgetUSD: resolved.budgetUSD,
   });
-
-  const researchGrant = meter.grant({ fraction: 1 }) ?? meter;
-
-  let orchestrator: Awaited<ReturnType<typeof runOrchestrator>>;
-  try {
-    orchestrator = await runOrchestrator(rctx, researchGrant);
-  } catch (err) {
-    if (args.hardSignal.aborted || args.isPaused()) throw err;
+  if (resolved.modelFallbackRoles.length > 0) {
     emit({
-      type: "run.error",
-      message: `lead agent failed: ${errorMessage(err)}`,
-      recoverable: true,
+      type: "model.fallback",
+      roles: resolved.modelFallbackRoles,
+      modelId: resolved.leadModelId,
+      detail:
+        `no small model could be derived for ${resolved.modelFallbackRoles.join(" and ")}, ` +
+        `so they run on the lead model "${resolved.leadModelId}"; ` +
+        "set models.extract and models.verify to a cheaper model to control cost",
     });
-    orchestrator = {
-      agentId: "agent_1",
-      note: `The lead agent terminated early (${errorMessage(err)}). This report is synthesized from the evidence gathered before that point.`,
-      claimsAdded: [],
-      spentUSD: researchGrant.spentUSD(),
-      stopReason: "error",
-    };
-  } finally {
-    if (researchGrant !== meter) researchGrant.release();
-  }
-  await ledger.settle();
-  while (eagerVerifications.size > 0) {
-    await Promise.all([...eagerVerifications]);
-  }
-  args.hardSignal.throwIfAborted();
-  if (args.isPaused()) {
-    throw new AtlasError("run paused", "paused");
   }
 
-  if (!args.stopSignal.aborted) {
-    const dedupeGrant = verifyReserve.grant({
-      fraction: DEDUPE_FRACTION,
-      minUSD: DEDUPE_MIN_USD,
-    });
-    if (dedupeGrant) {
-      try {
-        await semanticDedupePass(rctx, dedupeGrant);
-      } catch (err) {
-        if (args.hardSignal.aborted) throw err;
-      } finally {
-        dedupeGrant.release();
-      }
-    }
-  }
+  const orchestrator = await runResearchPhase(
+    rctx,
+    meter,
+    args,
+    drainEagerVerifications,
+  );
 
-  try {
-    if (!args.stopSignal.aborted) {
-      await sweepVerification(rctx, verifyReserve);
-    }
-  } finally {
-    if (verifyReserve !== meter) verifyReserve.release();
-  }
+  await consolidateClaims(rctx, meter, verifyReserve, args);
 
   const partition = partitionClaims(
     ledger.claims,
     resolved.envelope.maxReportCandidates,
   );
-  let draft: string;
-  if (
-    partition.confirmed.length === 0 &&
-    partition.screened.length === 0 &&
-    partition.candidates.length === 0 &&
-    partition.contested.length === 0
-  ) {
-    draft = fallbackReportFromClaims({
-      question,
-      partition,
-      closingNote: orchestrator.note,
-    });
-  } else {
-    try {
-      draft = await synthesizeReport(rctx, synthesisGrant, {
-        partition,
-        closingNote: orchestrator.note,
-      });
-      if (!draft) {
-        draft = fallbackReportFromClaims({
-          question,
-          partition,
-          closingNote: orchestrator.note,
-        });
-      }
-    } catch (err) {
-      if (args.hardSignal.aborted) throw err;
-      emit({
-        type: "run.error",
-        message: `synthesis failed: ${errorMessage(err)}`,
-        recoverable: true,
-      });
-      draft = fallbackReportFromClaims({
-        question,
-        partition,
-        closingNote: orchestrator.note,
-      });
-    }
-  }
-
-  let bound = await bindCitations(rctx, synthesisGrant, draft);
-  if (bound.citationsUnsupported > 0 && !synthesisGrant.floored()) {
-    try {
-      const repaired = await repairReport(rctx, synthesisGrant, {
-        draft,
-        bound,
-      });
-      if (repaired && repaired !== draft) {
-        const rebound = await bindCitations(rctx, synthesisGrant, repaired);
-        if (rebound.citationsUnsupported < bound.citationsUnsupported) {
-          bound = rebound;
-        }
-      }
-    } catch (err) {
-      if (args.hardSignal.aborted) throw err;
-      emit({
-        type: "run.error",
-        message: `report repair failed: ${errorMessage(err)}`,
-        recoverable: true,
-      });
-    }
-  }
-
-  let structured: unknown;
-  let structuredBasis: Record<string, FieldBasis> | undefined;
-  if (resolved.output.kind === "structured") {
-    try {
-      const structuredResult = await synthesizeStructured(
-        rctx,
-        synthesisGrant,
-        {
-          schema: resolved.output.schema,
-          confirmed: [
-            ...partition.confirmed,
-            ...partition.screened,
-            ...partition.contested,
-          ],
-          candidates: partition.candidates,
-        },
-      );
-      structured = structuredResult.data;
-      structuredBasis = structuredResult.basis;
-    } catch (err) {
-      if (args.hardSignal.aborted) throw err;
-      throw new AtlasError(
-        `structured output failed: ${errorMessage(err)}`,
-        "output",
-      );
-    }
-  }
-
-  const openQuestions = await deriveOpenQuestions(
-    rctx,
-    synthesisGrant,
-    orchestrator.note,
+  const outputs = await composeOutputs(rctx, synthesisGrant, args, {
     partition,
-  );
+    closingNote: orchestrator.note,
+  });
+  const { bound, structured, structuredBasis, openQuestions } = outputs;
+  emit({ type: "report.completed", report: bound.report });
 
   const durationMs = args.now() - startedAt;
   const stats = buildStats({
@@ -764,6 +393,199 @@ async function executeRun(args: ExecuteRunArgs): Promise<ResearchResult> {
 
   emit({ type: "run.completed", stats });
   return result;
+}
+
+async function runResearchPhase(
+  rctx: RunCtx,
+  meter: BudgetMeter,
+  args: ExecuteRunArgs,
+  drain: () => Promise<void>,
+): Promise<AgentResult> {
+  const researchGrant = meter.grant({ fraction: 1 }) ?? meter;
+  let orchestrator: AgentResult;
+  try {
+    orchestrator = await runOrchestrator(rctx, researchGrant);
+  } catch (err) {
+    if (args.hardSignal.aborted || args.isPaused()) throw err;
+    rctx.emit({
+      type: "run.error",
+      message: `lead agent failed: ${errorMessage(err)}`,
+      recoverable: true,
+    });
+    orchestrator = {
+      agentId: "agent_1",
+      note: `The lead agent terminated early (${errorMessage(err)}). This report is synthesized from the evidence gathered before that point.`,
+      claimsAdded: [],
+      spentUSD: researchGrant.spentUSD(),
+      stopReason: "error",
+    };
+  } finally {
+    if (researchGrant !== meter) researchGrant.release();
+  }
+  await rctx.ledger.settle();
+  await drain();
+  args.hardSignal.throwIfAborted();
+  if (args.isPaused()) {
+    throw new AtlasError("run paused", "paused");
+  }
+  return orchestrator;
+}
+
+async function consolidateClaims(
+  rctx: RunCtx,
+  meter: BudgetMeter,
+  verifyReserve: BudgetGrant,
+  args: ExecuteRunArgs,
+): Promise<void> {
+  if (!args.stopSignal.aborted) {
+    const dedupeGrant = verifyReserve.grant({
+      fraction: ECONOMY.dedupe.fraction,
+      minUSD: ECONOMY.dedupe.minUSD,
+    });
+    if (dedupeGrant) {
+      try {
+        await semanticDedupePass(rctx, dedupeGrant);
+      } catch (err) {
+        if (args.hardSignal.aborted) throw err;
+      } finally {
+        dedupeGrant.release();
+      }
+    }
+  }
+  try {
+    if (!args.stopSignal.aborted) {
+      await sweepVerification(rctx, verifyReserve);
+    }
+  } finally {
+    if (verifyReserve !== meter) verifyReserve.release();
+  }
+}
+
+interface ComposeInputs {
+  partition: ClaimPartition;
+  closingNote: string;
+}
+
+interface ComposedOutputs {
+  bound: Awaited<ReturnType<typeof bindCitations>>;
+  structured: unknown;
+  structuredBasis: Record<string, FieldBasis> | undefined;
+  openQuestions: string[];
+}
+
+async function draftReport(
+  rctx: RunCtx,
+  grant: BudgetGrant,
+  args: ExecuteRunArgs,
+  inputs: ComposeInputs,
+): Promise<string> {
+  const { partition, closingNote } = inputs;
+  const fallback = (): string =>
+    fallbackReportFromClaims({
+      question: rctx.question,
+      partition,
+      closingNote,
+    });
+  const empty =
+    partition.confirmed.length === 0 &&
+    partition.screened.length === 0 &&
+    partition.candidates.length === 0 &&
+    partition.contested.length === 0;
+  if (empty) return fallback();
+  try {
+    const draft = await synthesizeReport(rctx, grant, {
+      partition,
+      closingNote,
+    });
+    if (draft) return draft;
+  } catch (err) {
+    if (args.hardSignal.aborted) throw err;
+    rctx.emit({ type: "report.reset" });
+    rctx.emit({
+      type: "run.error",
+      message: `synthesis failed: ${errorMessage(err)}`,
+      recoverable: true,
+    });
+  }
+  return fallback();
+}
+
+async function bindAndRepair(
+  rctx: RunCtx,
+  grant: BudgetGrant,
+  args: ExecuteRunArgs,
+  draft: string,
+): Promise<Awaited<ReturnType<typeof bindCitations>>> {
+  let bound = await bindCitations(rctx, grant, draft);
+  if (bound.citationsUnsupported > 0 && !grant.floored()) {
+    try {
+      const repaired = await repairReport(rctx, grant, { draft, bound });
+      if (repaired && repaired !== draft) {
+        const rebound = await bindCitations(rctx, grant, repaired);
+        if (rebound.citationsUnsupported < bound.citationsUnsupported) {
+          bound = rebound;
+        }
+      }
+    } catch (err) {
+      if (args.hardSignal.aborted) throw err;
+      rctx.emit({
+        type: "run.error",
+        message: `report repair failed: ${errorMessage(err)}`,
+        recoverable: true,
+      });
+    }
+  }
+  return bound;
+}
+
+async function composeOutputs(
+  rctx: RunCtx,
+  grant: BudgetGrant,
+  args: ExecuteRunArgs,
+  inputs: ComposeInputs,
+): Promise<ComposedOutputs> {
+  const { partition, closingNote } = inputs;
+  const draft = await draftReport(rctx, grant, args, inputs);
+
+  const bindTask = bindAndRepair(rctx, grant, args, draft);
+  const structuredTask = (async () => {
+    if (rctx.config.output.kind !== "structured") return undefined;
+    try {
+      return await synthesizeStructured(rctx, grant, {
+        schema: rctx.config.output.schema,
+        confirmed: [
+          ...partition.confirmed,
+          ...partition.screened,
+          ...partition.contested,
+        ],
+        candidates: partition.candidates,
+      });
+    } catch (err) {
+      if (args.hardSignal.aborted) throw err;
+      throw new AtlasError(
+        `structured output failed: ${errorMessage(err)}`,
+        "output",
+      );
+    }
+  })();
+  const openQuestionsTask = deriveOpenQuestions(
+    rctx,
+    grant,
+    closingNote,
+    partition,
+  );
+
+  const [bindSettled, structuredSettled, openSettled] =
+    await Promise.allSettled([bindTask, structuredTask, openQuestionsTask]);
+  if (bindSettled.status === "rejected") throw bindSettled.reason;
+  if (structuredSettled.status === "rejected") throw structuredSettled.reason;
+  return {
+    bound: bindSettled.value,
+    structured: structuredSettled.value?.data,
+    structuredBasis: structuredSettled.value?.basis,
+    openQuestions:
+      openSettled.status === "fulfilled" ? openSettled.value : [],
+  };
 }
 
 function buildFindings(partition: ClaimPartition): Finding[] {
@@ -880,30 +702,67 @@ function buildStats(opts: {
   };
 }
 
+/**
+ * Run-scoped options a journal cannot reconstruct on its own. A structured
+ * output schema is code, not data — it is never journaled, so resuming a
+ * structured run requires passing the original schema back in.
+ */
+export type ResumeOptions = Pick<ResearchOptions, "output" | "signal" | "now">;
+
+function sourceFilterFromMeta(value: unknown): SourceFilter | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const filter = value as Record<string, unknown>;
+  const domains = (key: "includeDomains" | "excludeDomains") =>
+    Array.isArray(filter[key]) &&
+    (filter[key] as unknown[]).every((domain) => typeof domain === "string")
+      ? { [key]: filter[key] as string[] }
+      : {};
+  const restored = { ...domains("includeDomains"), ...domains("excludeDomains") };
+  return Object.keys(restored).length > 0 ? restored : undefined;
+}
+
 export async function resumeRun(
   runId: string,
   config: AtlasConfig,
+  resume: ResumeOptions = {},
 ): Promise<ResearchRun> {
   const store = config.store;
   if (!store) {
-    throw new AtlasError(
+    throw new ResumeError(
       "Atlas.resume requires config.store (the store the original run journaled to)",
-      "resume",
     );
   }
   const meta = await loadRunMeta(store, runId);
   if (!meta || typeof meta.question !== "string") {
-    throw new AtlasError(`no journaled run found for "${runId}"`, "resume");
+    throw new ResumeError(`no journaled run found for "${runId}"`);
+  }
+  if (meta.outputKind === "structured" && resume.output?.kind !== "structured") {
+    throw new ResumeError(
+      `run "${runId}" was started with structured output; schemas are not journaled — ` +
+        "pass the original schema to resume: Atlas.resume(runId, config, { output: { kind: \"structured\", schema } })",
+    );
   }
   const replay = await loadReplayCache(store, runId);
+  const budget: Budget = {
+    ...(typeof meta.budgetUSD === "number" ? { maxUSD: meta.budgetUSD } : {}),
+    ...(typeof meta.maxDurationMs === "number"
+      ? { maxDurationMs: meta.maxDurationMs }
+      : {}),
+    ...(typeof meta.maxSources === "number"
+      ? { maxSources: meta.maxSources }
+      : {}),
+  };
+  const sources = sourceFilterFromMeta(meta.sourceFilter);
   const options: ResearchOptions = {
     runId,
     ...(typeof meta.effort === "string"
       ? { effort: meta.effort as ResearchOptions["effort"] }
       : {}),
-    ...(typeof meta.budgetUSD === "number"
-      ? { budget: { maxUSD: meta.budgetUSD } }
-      : {}),
+    ...(Object.keys(budget).length > 0 ? { budget } : {}),
+    ...(sources ? { sources } : {}),
+    ...(resume.output ? { output: resume.output } : {}),
+    ...(resume.signal ? { signal: resume.signal } : {}),
+    ...(resume.now ? { now: resume.now } : {}),
   };
   return startRun({
     config,

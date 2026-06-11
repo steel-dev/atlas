@@ -1,10 +1,12 @@
 import { generateText, stepCountIs, type ModelMessage } from "ai";
 import type { BudgetGrant } from "./budget.js";
+import { ECONOMY } from "./economy.js";
 import { errorMessage } from "./errors.js";
 import type { AgentRole } from "./events.js";
 import { renderLedgerDigest } from "./ledger.js";
 import { MODEL_CALL_MAX_RETRIES, type ModelRole } from "./model.js";
 import { RESEARCH_AGENT_SYSTEM } from "./prompts.js";
+import { ROLE_CAPABILITIES } from "./roles.js";
 import { budgetStatusLine, type RunCtx } from "./state.js";
 import {
   buildAgentTools,
@@ -24,9 +26,6 @@ const RESEARCH_TOOLS: ToolName[] = [
   "add_claim",
 ];
 
-const DEFAULT_RESEARCH_FRACTION = 0.15;
-const DEFAULT_VERIFY_FRACTION = 0.08;
-const VERIFY_SPAWN_MIN_USD = 0.03;
 const TASK_PREVIEW_CHARS = 300;
 const NOTE_PREVIEW_CHARS = 600;
 const SPAWN_DIGEST_MAX_CLAIMS = 12;
@@ -86,7 +85,7 @@ export async function runAgent(
   const allowSpawn =
     spec.tools.includes("spawn") &&
     spec.depth < rctx.config.envelope.depthCap &&
-    spec.role !== "verify";
+    ROLE_CAPABILITIES[spec.role].spawn;
   const toolNames = allowSpawn
     ? spec.tools
     : spec.tools.filter((name) => name !== "spawn");
@@ -135,7 +134,7 @@ export async function runAgent(
     },
   });
 
-  if (spec.role !== "verify") {
+  if (ROLE_CAPABILITIES[spec.role].ledgerFlushOnReturn) {
     await rctx.ledger.flush(agentId);
   }
 
@@ -203,7 +202,7 @@ async function executeSpawn(
   }
 
   const grant = parentActx.grant.grant({
-    fraction: input.budget_fraction ?? DEFAULT_RESEARCH_FRACTION,
+    fraction: input.budget_fraction ?? ECONOMY.researchSpawnFraction,
   });
   if (!grant) {
     return "Spawn refused: insufficient budget remaining — do the work inline or finish.";
@@ -270,8 +269,8 @@ async function executeVerifySpawn(
     return `Spawn refused: unknown claim ids: ${unknown.join(", ")}.`;
   }
   const grant = rctx.verifyReserve.grant({
-    fraction: input.budget_fraction ?? DEFAULT_VERIFY_FRACTION,
-    minUSD: VERIFY_SPAWN_MIN_USD,
+    fraction: input.budget_fraction ?? ECONOMY.verifySpawn.fraction,
+    minUSD: ECONOMY.verifySpawn.minUSD,
   });
   if (!grant) {
     return "Spawn refused: verification budget reserve is exhausted — finish and report.";

@@ -17,6 +17,33 @@ export async function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   });
 }
 
+export async function withTimeout<T>(
+  ms: number,
+  parentSignal: AbortSignal | undefined,
+  label: string,
+  fn: (signal: AbortSignal) => Promise<T>,
+): Promise<T> {
+  const timeout = AbortSignal.timeout(ms);
+  const combined = parentSignal
+    ? AbortSignal.any([parentSignal, timeout])
+    : timeout;
+  return await Promise.race([
+    fn(combined),
+    new Promise<never>((_, reject) => {
+      const onAbort = (): void =>
+        reject(
+          timeout.aborted && !parentSignal?.aborted
+            ? new Error(
+                `${label} timed out after ${Math.round(ms / 1000)}s`,
+              )
+            : (combined.reason ?? new Error("Aborted")),
+        );
+      if (combined.aborted) onAbort();
+      else combined.addEventListener("abort", onAbort, { once: true });
+    }),
+  ]);
+}
+
 export interface ConcurrencyGate {
   run<T>(fn: () => Promise<T>): Promise<T>;
 }

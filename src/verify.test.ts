@@ -244,6 +244,7 @@ describe("runVerifySpawn dedup", () => {
     remainingUSD: () => 1,
     floored: () => true,
     charge: () => {},
+    reserve: () => null,
     grant: () => null,
     release: () => {},
   };

@@ -3,6 +3,7 @@ import { z } from "zod";
 import { mapWithConcurrency } from "./async.js";
 import { runAgent } from "./agent.js";
 import type { BudgetGrant } from "./budget.js";
+import { ECONOMY } from "./economy.js";
 import { MODEL_CALL_MAX_RETRIES } from "./model.js";
 import { QUARANTINE_NOTE, quarantine } from "./safety.js";
 import type {
@@ -13,6 +14,14 @@ import type {
 } from "./state.js";
 import type { ToolName } from "./tools.js";
 import type { ClaimVote, ResearchClaim } from "./ledger.js";
+import {
+  MIN_VOTES_TO_SETTLE,
+  SCREENING_LENS,
+  settleClaim,
+  voteSplit,
+} from "./claim-status.js";
+
+export { SCREENING_LENS, settleClaim, voteSplit } from "./claim-status.js";
 
 export type VerifierLens =
   | "quote-fidelity"
@@ -25,9 +34,6 @@ export const ALL_LENSES: VerifierLens[] = [
   "source-strength",
 ];
 
-const REFUTATIONS_REQUIRED = 2;
-const MIN_VOTES_TO_SETTLE = 2;
-const PANEL_MIN_REMAINING_USD = 0.04;
 const MAX_CLAIMS_PER_SPAWN = 8;
 const CLAIM_CONCURRENCY = 4;
 const VOTER_MAX_TURNS = 6;
@@ -96,31 +102,6 @@ function voterPrompt(
     "\n\n" +
     "Use your tools to investigate as far as the claim warrants — a turn or two is usual, more when it is genuinely contested. Stop as soon as you can judge it; do not run searches you do not need. When you stop calling tools, briefly state your finding."
   );
-}
-
-export const SCREENING_LENS = "screening";
-
-export function settleClaim(claim: ResearchClaim, votes: ClaimVote[]): void {
-  claim.votes = votes;
-  const refutedVotes = votes.filter((vote) => vote.refuted).length;
-  const screeningOnly =
-    votes.length > 0 && votes.every((vote) => vote.lens === SCREENING_LENS);
-  if (screeningOnly && refutedVotes === 0) {
-    claim.status = "screened";
-  } else if (votes.length < MIN_VOTES_TO_SETTLE) {
-    claim.status = claim.conflictsWith?.length ? "contested" : "unverified";
-  } else if (refutedVotes >= REFUTATIONS_REQUIRED) {
-    claim.status = "refuted";
-  } else if (refutedVotes > 0) {
-    claim.status = "contested";
-  } else {
-    claim.status = "confirmed";
-  }
-}
-
-export function voteSplit(claim: ResearchClaim): string {
-  const refuted = claim.votes.filter((vote) => vote.refuted).length;
-  return `${claim.votes.length - refuted}-${refuted}`;
 }
 
 async function castVote(
@@ -312,7 +293,8 @@ export async function runVerifySpawn(
     }
     const conflicted = (claim.conflictsWith?.length ?? 0) > 0;
     const panelAffordable =
-      lensesExplicit || args.grant.remainingUSD() >= PANEL_MIN_REMAINING_USD;
+      lensesExplicit ||
+      args.grant.remainingUSD() >= ECONOMY.panelMinRemainingUSD;
     if (conflicted && !panelAffordable) {
       verdicts.push(verdictOf(claim));
       return;

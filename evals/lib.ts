@@ -265,8 +265,16 @@ export function traceEvent(
         id: event.modelId,
         detail: event.detail,
       };
+    case "model.fallback":
+      return {
+        ...base("pricing_missing"),
+        id: event.modelId,
+        detail: event.detail,
+      };
     case "claim.extracted":
     case "report.delta":
+    case "report.reset":
+    case "report.completed":
       return null;
   }
 }
@@ -312,6 +320,7 @@ export function progressLine(
     case "safety.flag":
       return `${caseId}: safety flag ${event.kind}: ${truncate(event.detail, 120)}`;
     case "pricing.missing":
+    case "model.fallback":
       return `${caseId}: ${truncate(event.detail, 120)}`;
     case "rate.limited":
       return `${caseId}: rate limited, waiting ${event.retryAfterSeconds}s`;
@@ -321,6 +330,8 @@ export function progressLine(
     case "run.completed":
     case "claim.extracted":
     case "report.delta":
+    case "report.reset":
+    case "report.completed":
     case "tool.event":
       return null;
   }

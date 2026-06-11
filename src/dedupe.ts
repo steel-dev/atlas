@@ -1,14 +1,16 @@
 import { generateObject } from "ai";
 import { z } from "zod";
+import { mapWithConcurrency } from "./async.js";
 import type { BudgetGrant } from "./budget.js";
 import { MODEL_CALL_MAX_RETRIES } from "./model.js";
 import { normalizeForQuoteMatch, type ResearchClaim } from "./ledger.js";
 import type { RunCtx } from "./state.js";
-import { voteSplit } from "./verify.js";
+import { markContestedByConflict, voteSplit } from "./claim-status.js";
 
 const SIMILARITY_THRESHOLD = 0.3;
 const MAX_PAIRS = 150;
 const PAIR_BATCH_SIZE = 40;
+const PAIR_BATCH_CONCURRENCY = 3;
 const JUDGE_MAX_TOKENS = 2_000;
 
 const JUDGE_SYSTEM =
@@ -100,11 +102,7 @@ function markConflict(
     conflicts.add(other.id);
     claim.conflictsWith = [...conflicts];
     changed = true;
-    if (
-      claim.votes.length === 0 &&
-      (claim.status === "quoted" || claim.status === "unverified")
-    ) {
-      claim.status = "contested";
+    if (markContestedByConflict(claim)) {
       rctx.emit({
         type: "claim.verified",
         claimId: claim.id,
@@ -131,12 +129,16 @@ export async function semanticDedupePass(
   const outcome: DedupePassOutcome = { merged: 0, contradicted: 0 };
   if (pairs.length === 0) return outcome;
   const model = rctx.bindModel("extract", grant);
+  const batches: CandidatePair[][] = [];
   for (let offset = 0; offset < pairs.length; offset += PAIR_BATCH_SIZE) {
-    if (grant.floored() || rctx.signal?.aborted) break;
-    const batch = pairs
-      .slice(offset, offset + PAIR_BATCH_SIZE)
-      .filter((pair) => !pair.a.duplicateOf && !pair.b.duplicateOf);
-    if (batch.length === 0) continue;
+    batches.push(pairs.slice(offset, offset + PAIR_BATCH_SIZE));
+  }
+  await mapWithConcurrency(batches, PAIR_BATCH_CONCURRENCY, async (slice) => {
+    if (grant.floored() || rctx.signal?.aborted) return;
+    const batch = slice.filter(
+      (pair) => !pair.a.duplicateOf && !pair.b.duplicateOf,
+    );
+    if (batch.length === 0) return;
     try {
       const result = await generateObject({
         model,
@@ -167,7 +169,7 @@ export async function semanticDedupePass(
     } catch (err) {
       if (rctx.signal?.aborted) throw err;
     }
-  }
+  });
   if (outcome.merged > 0 || outcome.contradicted > 0) {
     rctx.emit({
       type: "tool.event",

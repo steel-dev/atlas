@@ -74,13 +74,9 @@ export function isPrivateAddress(ip: string): boolean {
   return false;
 }
 
-export async function guardUrl(
+export async function guardRedirect(
   rawUrl: string,
-  opts: {
-    policy: SafetyPolicy;
-    seenDomains: Set<string>;
-    emit?: (event: ResearchEvent) => void;
-  },
+  policy: SafetyPolicy,
 ): Promise<UrlGuardResult> {
   let url: URL;
   try {
@@ -110,7 +106,7 @@ export async function guardUrl(
     };
   }
 
-  if (!opts.policy.allowPrivateNetworks) {
+  if (!policy.allowPrivateNetworks) {
     const hostname = url.hostname.replace(/^\[|\]$/g, "");
     if (isIP(hostname)) {
       if (isPrivateAddress(hostname)) {
@@ -141,6 +137,20 @@ export async function guardUrl(
       }
     }
   }
+  return { ok: true };
+}
+
+export async function guardUrl(
+  rawUrl: string,
+  opts: {
+    policy: SafetyPolicy;
+    seenDomains: Set<string>;
+    emit?: (event: ResearchEvent) => void;
+  },
+): Promise<UrlGuardResult> {
+  const target = await guardRedirect(rawUrl, opts.policy);
+  if (!target.ok) return target;
+  const url = new URL(rawUrl);
 
   const domain = url.hostname.toLowerCase();
   const newDomain = !opts.seenDomains.has(domain);

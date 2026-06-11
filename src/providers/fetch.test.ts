@@ -1,0 +1,101 @@
+import { createServer, type Server } from "node:http";
+import type { AddressInfo } from "node:net";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { basicFetch } from "./fetch.js";
+
+const PAGE_BODY =
+  "<html><head><title>Tower</title></head><body><p>" +
+  "The tower stands at 330 meters tall according to the official register. ".repeat(
+    4,
+  ) +
+  "</p></body></html>";
+
+describe("basicFetch redirect handling", () => {
+  let server: Server;
+  let base: string;
+
+  beforeAll(async () => {
+    server = createServer((req, res) => {
+      if (req.url === "/robots.txt") {
+        res.writeHead(404);
+        res.end();
+        return;
+      }
+      if (req.url === "/start") {
+        res.writeHead(302, { location: "/target" });
+        res.end();
+        return;
+      }
+      if (req.url === "/hop") {
+        res.writeHead(302, { location: "http://127.0.0.1:9/private" });
+        res.end();
+        return;
+      }
+      if (req.url === "/loop") {
+        res.writeHead(302, { location: "/loop" });
+        res.end();
+        return;
+      }
+      if (req.url === "/target") {
+        res.writeHead(200, { "content-type": "text/html" });
+        res.end(PAGE_BODY);
+        return;
+      }
+      res.writeHead(404);
+      res.end();
+    });
+    await new Promise<void>((resolve) =>
+      server.listen(0, "127.0.0.1", resolve),
+    );
+    base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  });
+
+  afterAll(
+    () => new Promise<void>((resolve) => server.close(() => resolve())),
+  );
+
+  it("follows redirects hop by hop through the guard", async () => {
+    const provider = basicFetch();
+    const guarded: string[] = [];
+    const result = await provider.fetch({
+      url: `${base}/start`,
+      guardRedirect: async (url) => {
+        guarded.push(url);
+        return { ok: true };
+      },
+    });
+    expect(result.ok).toBe(true);
+    expect(guarded).toEqual([`${base}/target`]);
+    if (result.ok) {
+      expect(result.page.markdown).toContain("330 meters tall");
+    }
+  });
+
+  it("blocks a redirect the guard rejects", async () => {
+    const provider = basicFetch();
+    const result = await provider.fetch({
+      url: `${base}/hop`,
+      guardRedirect: async () => ({
+        ok: false,
+        reason: "address is private or reserved",
+      }),
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.attempt.note).toContain("blocked_redirect");
+      expect(result.attempt.note).toContain("private or reserved");
+    }
+  });
+
+  it("gives up on redirect loops", async () => {
+    const provider = basicFetch();
+    const result = await provider.fetch({
+      url: `${base}/loop`,
+      guardRedirect: async () => ({ ok: true }),
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.attempt.note).toContain("too_many_redirects");
+    }
+  });
+});

@@ -3,7 +3,7 @@ import { join } from "node:path";
 
 export interface JournalEntry {
   seq: number;
-  kind: "meta" | "event" | "call";
+  kind: "meta" | "event" | "call" | "io";
   type?: string;
   callKey?: string;
   data: unknown;
@@ -125,6 +125,10 @@ export class JournalWriter {
     this.push({ seq: this.seq++, kind: "call", callKey, data });
   }
 
+  io(callKey: string, data: unknown): void {
+    this.push({ seq: this.seq++, kind: "io", callKey, data });
+  }
+
   private push(entry: JournalEntry): void {
     this.pending.push(entry);
     this.scheduleFlush();
@@ -174,6 +178,14 @@ export class ReplayCache {
     return queue.shift();
   }
 
+  values(prefix: string): unknown[] {
+    const found: unknown[] = [];
+    for (const [key, queue] of this.byKey) {
+      if (key.startsWith(prefix)) found.push(...queue);
+    }
+    return found;
+  }
+
   get replayedCalls(): number {
     return this.hits;
   }
@@ -191,7 +203,7 @@ export async function loadReplayCache(
 ): Promise<ReplayCache> {
   const cache = new ReplayCache();
   for await (const entry of store.read(runId)) {
-    if (entry.kind === "call" && entry.callKey) {
+    if ((entry.kind === "call" || entry.kind === "io") && entry.callKey) {
       cache.add(entry.callKey, entry.data);
     }
   }

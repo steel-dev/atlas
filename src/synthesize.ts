@@ -1,5 +1,5 @@
-import { generateText, stepCountIs } from "ai";
-import type { BindOutcome } from "./bind.js";
+import { generateText, stepCountIs, streamText } from "ai";
+import { createMarkerStripper, type BindOutcome } from "./bind.js";
 import type { BudgetGrant } from "./budget.js";
 import { MODEL_CALL_MAX_RETRIES } from "./model.js";
 import type { RunCtx } from "./state.js";
@@ -262,8 +262,7 @@ export async function synthesizeReport(
     spawn: async () => "Spawning is unavailable during synthesis.",
   };
   const tools = buildAgentTools(rctx, actx, WRITER_TOOLS);
-  let lastText = "";
-  const result = await generateText({
+  const result = streamText({
     model,
     system: SYNTHESIS_SYSTEM_PROMPT,
     prompt: synthesisPrompt({
@@ -277,13 +276,38 @@ export async function synthesizeReport(
     maxOutputTokens: rctx.config.envelope.maxReportTokens,
     maxRetries: MODEL_CALL_MAX_RETRIES,
     abortSignal: rctx.signal,
-    onStepFinish: (step) => {
-      if (step.text?.trim()) lastText = step.text.trim();
-    },
   });
-  const report = (result.text.trim() || lastText).trim();
-  if (report) rctx.emit({ type: "report.delta", text: report });
-  return report;
+
+  let lastText = "";
+  let stepText = "";
+  let streamedChars = 0;
+  let stripper = createMarkerStripper();
+  const emitDelta = (text: string): void => {
+    if (!text) return;
+    streamedChars += text.length;
+    rctx.emit({ type: "report.delta", text });
+  };
+  for await (const part of result.fullStream) {
+    if (part.type === "text-delta") {
+      stepText += part.text;
+      emitDelta(stripper.push(part.text));
+    } else if (part.type === "finish-step") {
+      if (stepText.trim()) lastText = stepText.trim();
+      if (part.finishReason === "tool-calls") {
+        stripper.flush();
+        if (streamedChars > 0) rctx.emit({ type: "report.reset" });
+      } else {
+        emitDelta(stripper.flush());
+      }
+      stepText = "";
+      streamedChars = 0;
+      stripper = createMarkerStripper();
+    } else if (part.type === "error") {
+      throw part.error;
+    }
+  }
+  rctx.signal?.throwIfAborted();
+  return lastText.trim();
 }
 
 const REPAIR_MAX_PROBLEMS = 24;

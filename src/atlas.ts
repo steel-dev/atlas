@@ -5,6 +5,7 @@ import {
   startRun,
   type ResearchResult,
   type ResearchRun,
+  type ResumeOptions,
 } from "./run.js";
 
 export type { AtlasConfig, ResearchOptions } from "./config.js";
@@ -22,7 +23,10 @@ export class Atlas {
     this.#config = config;
   }
 
-  research(question: string, options?: ResearchOptions): Promise<ResearchResult>;
+  research(
+    question: string,
+    options?: ResearchOptions,
+  ): Promise<ResearchResult>;
   research<SCHEMA extends FlexibleSchema>(
     question: string,
     options: ResearchOptions & {
@@ -43,8 +47,12 @@ export class Atlas {
     return run;
   }
 
-  static resume(runId: string, config: AtlasConfig): Promise<ResearchRun> {
-    return resumeRun(runId, config);
+  static resume(
+    runId: string,
+    config: AtlasConfig,
+    options?: ResumeOptions,
+  ): Promise<ResearchRun> {
+    return resumeRun(runId, config, options);
   }
 
   async close(): Promise<void> {

@@ -1,6 +1,7 @@
 import type { FlexibleSchema } from "ai";
+import type { LanguageModelV3 } from "@ai-sdk/provider";
 import { ConfigError } from "./errors.js";
-import { deriveSmallModel } from "./defaults.js";
+import { deriveSmallModel, isSmallModelId } from "./defaults.js";
 import { readEnv } from "./env.js";
 import type { ModelRole, ResolvedModel } from "./model.js";
 import type { PricingTable } from "./budget.js";
@@ -96,6 +97,11 @@ export type OutputSpec =
   | { kind: "report" }
   | { kind: "structured"; schema: FlexibleSchema };
 
+export interface ConcurrencyConfig {
+  models?: number;
+  io?: number;
+}
+
 export interface AtlasConfig {
   model: ResolvedModel;
   models?: Partial<Record<ModelRole, ResolvedModel>>;
@@ -108,6 +114,7 @@ export interface AtlasConfig {
   safety?: SafetyPolicy;
   instructions?: string;
   tools?: Record<string, ResearchTool>;
+  concurrency?: ConcurrencyConfig;
 }
 
 export interface ResearchOptions {
@@ -127,6 +134,8 @@ export interface ResolvedRunConfig {
   maxDurationMs?: number | undefined;
   maxSources: number;
   models: Record<ModelRole, ResolvedModel>;
+  modelFallbackRoles: ModelRole[];
+  leadModelId: string;
   pricing: PricingTable;
   safety: SafetyPolicy;
   sourceFilter?: SourceFilter | undefined;
@@ -139,7 +148,14 @@ export interface ResolvedRunConfig {
 const DEFAULT_MODEL_CONCURRENCY = 8;
 const DEFAULT_IO_CONCURRENCY = 10;
 
-function concurrencyFromEnv(fallback: number, ...keys: string[]): number {
+function resolveConcurrency(
+  configured: number | undefined,
+  fallback: number,
+  ...keys: string[]
+): number {
+  if (configured !== undefined && Number.isFinite(configured) && configured >= 1) {
+    return Math.floor(configured);
+  }
   const raw = readEnv(...keys);
   if (raw === undefined) return fallback;
   const parsed = Number(raw);
@@ -180,6 +196,12 @@ export function resolveRunConfig(
     extract: config.models?.extract ?? derived ?? lead,
     write: config.models?.write ?? config.models?.lead ?? lead,
   };
+  const leadModelId = (lead as LanguageModelV3).modelId ?? "";
+  const modelFallbackRoles: ModelRole[] = [];
+  if (!derived && !isSmallModelId(leadModelId)) {
+    if (!config.models?.extract) modelFallbackRoles.push("extract");
+    if (!config.models?.verify) modelFallbackRoles.push("verify");
+  }
   return {
     effort,
     envelope,
@@ -187,16 +209,20 @@ export function resolveRunConfig(
     maxDurationMs: budget.maxDurationMs,
     maxSources: budget.maxSources ?? envelope.maxSources,
     models,
+    modelFallbackRoles,
+    leadModelId,
     pricing: config.pricing ?? {},
     safety: config.safety ?? {},
     sourceFilter: options.sources,
     instructions: config.instructions,
     output: options.output ?? { kind: "report" },
-    maxConcurrentModelCalls: concurrencyFromEnv(
+    maxConcurrentModelCalls: resolveConcurrency(
+      config.concurrency?.models,
       DEFAULT_MODEL_CONCURRENCY,
       "ATLAS_MODEL_CONCURRENCY",
     ),
-    maxConcurrentIo: concurrencyFromEnv(
+    maxConcurrentIo: resolveConcurrency(
+      config.concurrency?.io,
       DEFAULT_IO_CONCURRENCY,
       "ATLAS_IO_CONCURRENCY",
     ),

@@ -94,6 +94,8 @@ export type ResearchEvent =
     }
   | { type: "report.drafting" }
   | { type: "report.delta"; text: string }
+  | { type: "report.reset" }
+  | { type: "report.completed"; report: string }
   | {
       type: "citation.bound";
       claimId: string;
@@ -113,6 +115,7 @@ export type ResearchEvent =
       url?: string;
     }
   | { type: "pricing.missing"; modelId: string; detail: string }
+  | { type: "model.fallback"; roles: string[]; modelId: string; detail: string }
   | { type: "rate.limited"; retryAfterSeconds: number }
   | { type: "tool.event"; tool: string; data: unknown }
   | { type: "run.completed"; stats: RunStats }
@@ -124,4 +127,4 @@ export type ResearchEventMap = {
   [E in ResearchEvent as E["type"]]: E;
 };
 
-export const EVENT_SCHEMA_VERSION = "2.0";
+export const EVENT_SCHEMA_VERSION = "3.0";

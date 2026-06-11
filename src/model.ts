@@ -16,9 +16,11 @@ import {
   resolvePricing,
   usageCostUSD,
   type BudgetGrant,
+  type BudgetHold,
   type PricingTable,
   type TokenUsage,
 } from "./budget.js";
+import { ECONOMY } from "./economy.js";
 import type { JournalWriter, ReplayCache } from "./providers/store.js";
 
 export type ModelRole = "lead" | "research" | "verify" | "extract" | "write";
@@ -124,6 +126,110 @@ function serializeResult(
   }
 }
 
+function streamFromJournaledCall(
+  record: JournaledCall,
+): ReadableStream<LanguageModelV3StreamPart> {
+  const parts: LanguageModelV3StreamPart[] = [
+    { type: "stream-start", warnings: [] },
+  ];
+  let nextId = 0;
+  for (const item of record.content) {
+    if (item.type === "text") {
+      const id = `replay_${nextId++}`;
+      parts.push(
+        { type: "text-start", id },
+        { type: "text-delta", id, delta: item.text },
+        { type: "text-end", id },
+      );
+    } else if (item.type === "reasoning") {
+      const id = `replay_${nextId++}`;
+      parts.push(
+        { type: "reasoning-start", id },
+        { type: "reasoning-delta", id, delta: item.text },
+        { type: "reasoning-end", id },
+      );
+    } else {
+      parts.push(item as LanguageModelV3StreamPart);
+    }
+  }
+  parts.push({
+    type: "finish",
+    usage: record.usage,
+    finishReason: record.finishReason,
+    ...(record.providerMetadata
+      ? { providerMetadata: record.providerMetadata }
+      : {}),
+  });
+  return new ReadableStream<LanguageModelV3StreamPart>({
+    start(controller) {
+      for (const part of parts) controller.enqueue(part);
+      controller.close();
+    },
+  });
+}
+
+type JournaledContent = JournaledCall["content"];
+
+interface StreamJournalState {
+  content: JournaledContent;
+  openText: Map<string, number>;
+  openReasoning: Map<string, number>;
+  finish?: {
+    usage: LanguageModelV3Usage;
+    finishReason: JournaledCall["finishReason"];
+    providerMetadata?: JournaledCall["providerMetadata"];
+  };
+}
+
+function collectStreamPart(
+  state: StreamJournalState,
+  part: LanguageModelV3StreamPart,
+): void {
+  switch (part.type) {
+    case "text-start":
+      state.openText.set(
+        part.id,
+        state.content.push({ type: "text", text: "" }) - 1,
+      );
+      break;
+    case "text-delta": {
+      const index = state.openText.get(part.id);
+      const entry = index === undefined ? undefined : state.content[index];
+      if (entry && entry.type === "text") entry.text += part.delta;
+      break;
+    }
+    case "reasoning-start":
+      state.openReasoning.set(
+        part.id,
+        state.content.push({ type: "reasoning", text: "" }) - 1,
+      );
+      break;
+    case "reasoning-delta": {
+      const index = state.openReasoning.get(part.id);
+      const entry = index === undefined ? undefined : state.content[index];
+      if (entry && entry.type === "reasoning") entry.text += part.delta;
+      break;
+    }
+    case "tool-call":
+    case "tool-result":
+    case "file":
+    case "source":
+      state.content.push(part as JournaledContent[number]);
+      break;
+    case "finish":
+      state.finish = {
+        usage: part.usage,
+        finishReason: part.finishReason,
+        ...(part.providerMetadata
+          ? { providerMetadata: part.providerMetadata }
+          : {}),
+      };
+      break;
+    default:
+      break;
+  }
+}
+
 function isAnthropicModel(model: LanguageModelV3): boolean {
   return model.provider.toLowerCase().includes("anthropic");
 }
@@ -175,29 +281,62 @@ function parseRetryAfterMs(
   return undefined;
 }
 
+interface ErrorShape {
+  statusCode?: number;
+  isRetryable?: boolean;
+  responseHeaders?: Record<string, string>;
+  message?: string;
+  cause?: unknown;
+  lastError?: unknown;
+  errors?: unknown[];
+}
+
+function unwrapErrors(err: unknown): ErrorShape[] {
+  const seen = new Set<unknown>();
+  const queue: unknown[] = [err];
+  const out: ErrorShape[] = [];
+  while (queue.length > 0 && out.length < 8) {
+    const current = queue.shift();
+    if (!current || typeof current !== "object" || seen.has(current)) continue;
+    seen.add(current);
+    const shape = current as ErrorShape;
+    out.push(shape);
+    if (shape.cause) queue.push(shape.cause);
+    if (shape.lastError) queue.push(shape.lastError);
+    if (Array.isArray(shape.errors)) queue.push(...shape.errors.slice(0, 4));
+  }
+  return out;
+}
+
 function classifyRetry(err: unknown): RetryClassification {
   if (isAbortError(err)) return { retryable: false };
-  const e = err as {
-    statusCode?: number;
-    isRetryable?: boolean;
-    responseHeaders?: Record<string, string>;
-    message?: string;
-  };
-  const retryAfterMs = parseRetryAfterMs(e.responseHeaders);
+  const shapes = unwrapErrors(err);
+  const retryAfterMs = shapes
+    .map((shape) => parseRetryAfterMs(shape.responseHeaders))
+    .find((ms) => ms !== undefined);
   const withDelay = (): RetryClassification =>
     retryAfterMs !== undefined
       ? { retryable: true, retryAfterMs }
       : { retryable: true };
-  if (typeof e.isRetryable === "boolean") {
-    return e.isRetryable ? withDelay() : { retryable: false };
+  for (const shape of shapes) {
+    if (typeof shape.isRetryable === "boolean") {
+      return shape.isRetryable ? withDelay() : { retryable: false };
+    }
   }
-  const status = typeof e.statusCode === "number" ? e.statusCode : undefined;
-  const retryableStatus =
-    status === 408 ||
-    status === 409 ||
-    status === 429 ||
-    (status !== undefined && status >= 500);
-  const message = (e.message ?? "").toLowerCase();
+  const retryableStatus = shapes.some((shape) => {
+    const status =
+      typeof shape.statusCode === "number" ? shape.statusCode : undefined;
+    return (
+      status === 408 ||
+      status === 409 ||
+      status === 429 ||
+      (status !== undefined && status >= 500)
+    );
+  });
+  const message = shapes
+    .map((shape) => shape.message ?? "")
+    .join("\n")
+    .toLowerCase();
   const retryableMessage =
     /rate limit|too many requests|overloaded|concurrent connections|timeout|timed out|econnreset|etimedout|eai_again|socket hang up|fetch failed|network error/.test(
       message,
@@ -245,14 +384,63 @@ export function engineModel(
   hooks: EngineModelHooks,
 ): LanguageModelV3 {
   const inner = model as LanguageModelV3;
-  const settle = (usage: LanguageModelV3Usage): void => {
+  const settle = (
+    usage: LanguageModelV3Usage,
+    hold: BudgetHold | null,
+  ): void => {
     const tokens = tokenUsageFromV3(usage);
     const { pricing, known } = resolvePricing(inner.modelId, hooks.pricing);
     if (!known) hooks.onUnknownModel?.(inner.modelId);
     const cost = usageCostUSD(tokens, pricing);
-    hooks.grant.charge(cost);
+    if (hold) hold.settle(cost);
+    else hooks.grant.charge(cost);
     trackUsage(hooks.usage, hooks.role, tokens);
     hooks.onCost?.(cost);
+  };
+
+  interface CallReservation {
+    hold: BudgetHold;
+    estimateUSD: number;
+  }
+
+  const reserveFor = (
+    params: LanguageModelV3CallOptions,
+  ): CallReservation | null => {
+    const { pricing } = resolvePricing(inner.modelId, hooks.pricing);
+    let promptChars = 0;
+    try {
+      promptChars = JSON.stringify(params.prompt).length;
+    } catch {
+      promptChars = 0;
+    }
+    const estimateUSD = usageCostUSD(
+      {
+        input: promptChars / ECONOMY.callReserve.promptCharsPerToken,
+        output:
+          params.maxOutputTokens ?? ECONOMY.callReserve.assumedOutputTokens,
+        cacheRead: 0,
+        cacheWrite: 0,
+      },
+      pricing,
+    );
+    const hold = hooks.grant.reserve(estimateUSD);
+    return hold ? { hold, estimateUSD } : null;
+  };
+
+  // A call that aborts may already have been metered by the provider but never
+  // reports usage. Charging the reserved estimate keeps the budget ceiling
+  // conservative under cancellation; a terminal failure releases the hold.
+  const settleFailure = (
+    reservation: CallReservation | null,
+    err: unknown,
+    abortSignal: AbortSignal | undefined,
+  ): void => {
+    if (!reservation) return;
+    if (isAbortError(err) || abortSignal?.aborted) {
+      reservation.hold.settle(reservation.estimateUSD);
+    } else {
+      reservation.hold.release();
+    }
   };
 
   const middleware: LanguageModelV3Middleware = {
@@ -273,12 +461,19 @@ export function engineModel(
           warnings: [],
         };
       }
-      const result = await callWithRetry(
-        () => hooks.gate.run(() => Promise.resolve(doGenerate())),
-        params.abortSignal,
-        hooks.onRateLimit,
-      );
-      settle(result.usage);
+      const reservation = reserveFor(params);
+      let result: LanguageModelV3GenerateResult;
+      try {
+        result = await callWithRetry(
+          () => hooks.gate.run(() => Promise.resolve(doGenerate())),
+          params.abortSignal,
+          hooks.onRateLimit,
+        );
+      } catch (err) {
+        settleFailure(reservation, err, params.abortSignal);
+        throw err;
+      }
+      settle(result.usage, reservation?.hold ?? null);
       if (hooks.journal) {
         const record = serializeResult(result);
         if (record) hooks.journal.call(key, record);
@@ -286,19 +481,67 @@ export function engineModel(
       return result;
     },
     wrapStream: async ({ doStream, params }) => {
-      const result = await callWithRetry(
-        () => hooks.gate.run(() => Promise.resolve(doStream())),
-        params.abortSignal,
-        hooks.onRateLimit,
-      );
+      const key = callKey(inner, params, hooks.role);
+      const cached = hooks.replay?.take(key) as JournaledCall | undefined;
+      if (cached) {
+        return { stream: streamFromJournaledCall(cached) };
+      }
+      const reservation = reserveFor(params);
+      let result: Awaited<ReturnType<typeof doStream>>;
+      try {
+        result = await callWithRetry(
+          () => hooks.gate.run(() => Promise.resolve(doStream())),
+          params.abortSignal,
+          hooks.onRateLimit,
+        );
+      } catch (err) {
+        settleFailure(reservation, err, params.abortSignal);
+        throw err;
+      }
+      const state: StreamJournalState = {
+        content: [],
+        openText: new Map(),
+        openReasoning: new Map(),
+      };
       const metered = result.stream.pipeThrough(
         new TransformStream<
           LanguageModelV3StreamPart,
           LanguageModelV3StreamPart
         >({
           transform(part, controller) {
-            if (part.type === "finish") settle(part.usage);
+            collectStreamPart(state, part);
+            if (part.type === "finish") {
+              settle(part.usage, reservation?.hold ?? null);
+            }
             controller.enqueue(part);
+          },
+          // flush is skipped when the consumer cancels the readable; the hold
+          // settle/release is idempotent, so both hooks can charge safely.
+          cancel() {
+            if (reservation && !state.finish) {
+              reservation.hold.settle(reservation.estimateUSD);
+            }
+            reservation?.hold.release();
+          },
+          flush() {
+            // A stream that ends without a finish part (abort, provider drop)
+            // generated tokens that were never reported: charge the estimate.
+            if (reservation && !state.finish) {
+              reservation.hold.settle(reservation.estimateUSD);
+            }
+            reservation?.hold.release();
+            if (state.finish && hooks.journal) {
+              const record = serializeResult({
+                content: state.content,
+                finishReason: state.finish.finishReason,
+                usage: state.finish.usage,
+                ...(state.finish.providerMetadata
+                  ? { providerMetadata: state.finish.providerMetadata }
+                  : {}),
+                warnings: [],
+              });
+              if (record) hooks.journal.call(key, record);
+            }
           },
         }),
       );

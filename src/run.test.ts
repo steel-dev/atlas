@@ -193,6 +193,51 @@ describe("startRun end to end", () => {
     expect(replayed.stats.costUSD).toBe(0);
   });
 
+  it("refuses to resume a structured run without the schema", async () => {
+    const store = memoryStore();
+    await store.append("run_structured", [
+      {
+        seq: 0,
+        kind: "meta",
+        data: {
+          runId: "run_structured",
+          question: "q",
+          effort: "fast",
+          budgetUSD: 0.5,
+          outputKind: "structured",
+          eventVersion: "3.0",
+          startedAt: 0,
+        },
+      },
+    ]);
+    await expect(
+      Atlas.resume("run_structured", {
+        model: scriptedModel() as unknown as ResolvedModel,
+        search: stubSearch,
+        store,
+      }),
+    ).rejects.toThrow(/structured output/);
+  });
+
+  it("journals the output kind so resume can enforce it", async () => {
+    const store = memoryStore();
+    const atlas = new Atlas({
+      model: scriptedModel() as unknown as ResolvedModel,
+      search: stubSearch,
+      store,
+      effort: "fast",
+    });
+    await atlas.start("test question", { runId: "run_meta" }).result();
+    let outputKind: unknown;
+    for await (const entry of store.read("run_meta")) {
+      if (entry.kind === "meta") {
+        outputKind = (entry.data as { outputKind?: unknown }).outputKind;
+        break;
+      }
+    }
+    expect(outputKind).toBe("report");
+  });
+
   it("stops a run gracefully and salvages a result", async () => {
     const model = new MockLanguageModelV3({
       provider: "mock-provider",
