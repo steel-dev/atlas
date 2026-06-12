@@ -5,12 +5,10 @@ export type {
   Budget,
   ConcurrencyConfig,
   Effort,
-  EffortEnvelope,
   OutputSpec,
   ResearchOptions,
   SourceFilter,
 } from "./config.js";
-export { EFFORT_ENVELOPES } from "./config.js";
 export type {
   ResearchClaims,
   ResearchResult,

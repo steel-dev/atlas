@@ -329,7 +329,6 @@ describe("engineModel streaming", () => {
             { type: "stream-start", warnings: [] },
             { type: "text-start", id: "t1" },
             { type: "text-delta", id: "t1", delta: "partial" },
-            // connection dropped: no text-end, no finish, no usage report
           ],
         }),
       }),
@@ -346,11 +345,9 @@ describe("engineModel streaming", () => {
     } as Parameters<LanguageModelV3["doStream"]>[0]);
     const reader = stream.getReader();
     while (!(await reader.read()).done) {
-      // drain
     }
     const spent = meter.totalSpentUSD();
     expect(spent).toBeGreaterThan(0);
-    // the hold is settled, not leaked: remaining reflects only the charge
     expect(meter.remainingUSD()).toBeCloseTo(10 - spent);
   });
 });

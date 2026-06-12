@@ -3,12 +3,6 @@ import { gzipSync, gunzipSync } from "node:zlib";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 
-// Append-only run history. Every benchmark run is its own row in `runs`
-// (keyed by run_id, never overwritten), so repeated runs of the same
-// (commit, case) all survive for variance and regression analysis. Heavy
-// per-run artifacts — the byte-exact transcript, full claims, source bodies —
-// live gzip-compressed in `run_blobs`, keyed by (run_id, kind), so the scalar
-// table stays small and fast to scan while full visibility is one fetch away.
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS runs (
   run_id TEXT PRIMARY KEY,
@@ -127,7 +121,6 @@ export interface PersistableResult {
     inputTokens?: number;
     outputTokens?: number;
   } | null;
-  /** Per-model token usage breakdown for cost: { research, judge }. */
   usage?: unknown;
   diagnostics?: unknown;
   judgeErrors?: number;
@@ -135,15 +128,10 @@ export interface PersistableResult {
   error?: string;
   markdown?: string;
   latencyMs?: number;
-  /** Lightweight projected event timeline (EvalTraceEvent[]). */
   trace?: unknown;
-  /** Full claim ledger: { confirmed, refuted, unverified } with quotes/votes. */
   claims?: unknown;
-  /** Fetched source documents, including full extracted markdown. */
   sources?: unknown;
-  /** { citedSources, citationsNotConfirmed, citationsNotFetched }. */
   citations?: unknown;
-  /** Byte-exact model-step transcript (RecordedStep[]). */
   transcript?: unknown;
 }
 
@@ -209,7 +197,6 @@ export interface CatalogCase {
   criteriaCount: number;
 }
 
-/** A single append-only run, newest-first, for repeat/regression analysis. */
 export interface RunListRow {
   runId: string;
   commitSha: string;
@@ -245,9 +232,6 @@ function gunz(data: Uint8Array): string {
   return gunzipSync(data).toString("utf8");
 }
 
-// Pairs each present artifact with its kind and an uncompressed text form
-// (markdown stays raw; everything else is JSON). Absent fields are skipped, so
-// a run only carries the blobs it actually produced.
 function blobPayloads(r: PersistableResult): Array<{
   kind: BlobKind;
   text: string;
@@ -319,9 +303,6 @@ export class Store {
     this.migrateLegacyResults();
   }
 
-  // One-time copy of any pre-append-only `results` rows into `runs` + blobs, so
-  // historical commits stay visible after the schema change. Legacy rows lack a
-  // transcript/claims/sources; we carry over what they had.
   private migrateLegacyResults(): void {
     if (this.getMeta("migrated_results_v1")) return;
     const hasResults = this.db
@@ -379,7 +360,6 @@ export class Store {
     this.setMeta("migrated_results_v1", "1");
   }
 
-  /** Appends a run (scalars + gzip artifact blobs) as a new immutable row. */
   insertRun(r: PersistableResult, meta: RunMeta): void {
     this.db.exec("BEGIN");
     try {
@@ -525,9 +505,6 @@ export class Store {
     }));
   }
 
-  // The latest run for (commit, case), shaped to mirror the old single-row
-  // result: scalar columns plus the *_json/markdown artifacts (decompressed
-  // from run_blobs) under their legacy names, so the web UI reads it unchanged.
   detail(commit: string, caseId: string): Record<string, unknown> | undefined {
     const run = this.db
       .prepare(
@@ -569,9 +546,6 @@ export class Store {
     return rows.map((row) => row.case_id);
   }
 
-  // --- analysis reads (append-only history + heavy artifacts) ---
-
-  /** Every run for a commit (optionally one case), newest first. */
   listRuns(commit: string, caseId?: string): RunListRow[] {
     const rows = (
       caseId
@@ -605,7 +579,6 @@ export class Store {
     }));
   }
 
-  /** The full scalar row for one run, joined with its case metadata. */
   runScalars(runId: string): Record<string, unknown> | undefined {
     return this.db
       .prepare(
@@ -617,7 +590,6 @@ export class Store {
       .get(runId) as Record<string, unknown> | undefined;
   }
 
-  /** Which artifacts a run stored, with their uncompressed byte sizes. */
   blobInfo(runId: string): BlobInfo[] {
     const rows = this.db
       .prepare(
@@ -627,7 +599,6 @@ export class Store {
     return rows.map((row) => ({ kind: row.kind, bytes: row.bytes }));
   }
 
-  /** One decompressed artifact (markdown raw, everything else a JSON string). */
   getBlob(runId: string, kind: string): string | undefined {
     const row = this.db
       .prepare("SELECT data FROM run_blobs WHERE run_id = ? AND kind = ?")

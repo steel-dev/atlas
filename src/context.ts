@@ -53,19 +53,11 @@ export interface AssembleRunArgs {
 export interface RunAssembly {
   rctx: RunCtx;
   meter: BudgetMeter;
-  /** Carved out of the meter up front so research cannot starve the writer. */
   synthesisGrant: BudgetGrant;
-  /** Carved out of the meter up front; funds eager, spawned, and sweep verification. */
   verifyReserve: BudgetGrant;
-  /** Waits for in-flight eager verifications of central claims to finish. */
   drainEagerVerifications(): Promise<void>;
 }
 
-/**
- * Builds the run machinery — budget meter and reserved grants, metered model
- * binding, providers, the shared ledger with eager verification, and the
- * RunCtx that ties them together. Pure assembly: no phase logic lives here.
- */
 export async function assembleRun(args: AssembleRunArgs): Promise<RunAssembly> {
   const { runId, question, resolved } = args;
   const meter = createBudgetMeter(resolved.budgetUSD);

@@ -36,9 +36,6 @@ export interface ClaimPartition {
 }
 
 const CONTESTED_RENDER_FLOOR = 12;
-
-// Claims this far apart in recency are ordered fresh-first ahead of the usual
-// importance/corroboration tie-breakers, but only for time-sensitive questions.
 const RECENCY_RANK_MARGIN = 0.2;
 
 export interface RecencyContext {

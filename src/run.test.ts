@@ -181,12 +181,12 @@ describe("startRun end to end", () => {
     expect(liveCalls).toBeGreaterThan(0);
 
     const replayModel = scriptedModel();
-    const resumed = await Atlas.resume("run_replay", {
+    const resumed = await new Atlas({
       model: replayModel as unknown as ResolvedModel,
       search: stubSearch,
       store,
       effort: "fast",
-    });
+    }).resume("run_replay");
     const replayed = await resumed.result();
     expect(replayModel.doGenerateCalls.length).toBe(0);
     expect(replayed.report).toBe(original.report);
@@ -211,11 +211,11 @@ describe("startRun end to end", () => {
       },
     ]);
     await expect(
-      Atlas.resume("run_structured", {
+      new Atlas({
         model: scriptedModel() as unknown as ResolvedModel,
         search: stubSearch,
         store,
-      }),
+      }).resume("run_structured"),
     ).rejects.toThrow(/structured output/);
   });
 

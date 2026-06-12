@@ -28,17 +28,17 @@ describe("selectExtractionWindow", () => {
   });
 
   it("pulls a late relevant chunk instead of head-truncating", () => {
-    const head = "a".repeat(12_000); // chunk 0
-    const middle = "b".repeat(12_000); // chunk 1 (irrelevant)
-    const tail = "GAMMAUNIQUE the measured answer is 42 units. " + "c".repeat(6_000); // chunk 2
+    const head = "a".repeat(12_000);
+    const middle = "b".repeat(12_000);
+    const tail = "GAMMAUNIQUE the measured answer is 42 units. " + "c".repeat(6_000);
     const doc = makeDoc(head + middle + tail);
 
     const window = selectExtractionWindow(doc, "GAMMAUNIQUE answer", 26_000);
 
     expect(window.truncated).toBe(true);
     expect(window.text).toContain("GAMMAUNIQUE the measured answer is 42");
-    expect(window.text).toContain("[…]"); // chunk 1 was skipped
-    expect(window.text).not.toContain("b".repeat(100)); // chunk 1 omitted
+    expect(window.text).toContain("[…]");
+    expect(window.text).not.toContain("b".repeat(100));
     expect(window.text.length).toBeLessThanOrEqual(26_000);
   });
 

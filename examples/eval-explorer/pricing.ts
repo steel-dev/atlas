@@ -1,7 +1,5 @@
 export interface ModelPrice {
-  /** USD per 1M input tokens (uncached). */
   input: number;
-  /** USD per 1M output tokens. */
   output: number;
 }
 

@@ -147,6 +147,7 @@ export interface StartRunOptions {
   options: ResearchOptions;
   replay?: ReplayCache | undefined;
   anchorStartedAt?: number | undefined;
+  now?: (() => number) | undefined;
 }
 
 export function startRun(start: StartRunOptions): ResearchRun {
@@ -162,11 +163,6 @@ export function startRun(start: StartRunOptions): ResearchRun {
   const hardController = new AbortController();
   const stopController = new AbortController();
   let statusValue: RunStatus = "running";
-  // pause() and stop() share stopController: both wind research down gracefully
-  // (spawns refused, agents end their turn). stop() then lets synthesis salvage
-  // a report, while pause() sets this flag so runResearchPhase throws once the
-  // orchestrator settles — the catch below turns that into the "paused" status
-  // instead of letting the run complete. cancel() aborts hardController outright.
   let pauseRequested = false;
 
   const externalSignal = start.options.signal;
@@ -193,7 +189,7 @@ export function startRun(start: StartRunOptions): ResearchRun {
         hub,
         hardSignal: hardController.signal,
         stopSignal: stopController.signal,
-        now: start.options.now ?? Date.now,
+        now: start.now ?? Date.now,
         isPaused: () => pauseRequested,
         anchorStartedAt: start.anchorStartedAt,
       });
@@ -204,7 +200,7 @@ export function startRun(start: StartRunOptions): ResearchRun {
         statusValue = "paused";
         journal.event("run.paused", { runId });
         throw new AtlasError(
-          "run paused; resume with Atlas.resume()",
+          "run paused; resume with atlas.resume()",
           "paused",
         );
       }
@@ -717,12 +713,7 @@ function buildStats(opts: {
   };
 }
 
-/**
- * Run-scoped options a journal cannot reconstruct on its own. A structured
- * output schema is code, not data — it is never journaled, so resuming a
- * structured run requires passing the original schema back in.
- */
-export type ResumeOptions = Pick<ResearchOptions, "output" | "signal" | "now">;
+export type ResumeOptions = Pick<ResearchOptions, "output" | "signal">;
 
 function sourceFilterFromMeta(value: unknown): SourceFilter | undefined {
   if (!value || typeof value !== "object") return undefined;
@@ -739,12 +730,12 @@ function sourceFilterFromMeta(value: unknown): SourceFilter | undefined {
 export async function resumeRun(
   runId: string,
   config: AtlasConfig,
-  resume: ResumeOptions = {},
+  resume: ResumeOptions & { now?: () => number } = {},
 ): Promise<ResearchRun> {
   const store = config.store;
   if (!store) {
     throw new ResumeError(
-      "Atlas.resume requires config.store (the store the original run journaled to)",
+      "resume requires config.store (the store the original run journaled to)",
     );
   }
   const meta = await loadRunMeta(store, runId);
@@ -754,7 +745,7 @@ export async function resumeRun(
   if (meta.outputKind === "structured" && resume.output?.kind !== "structured") {
     throw new ResumeError(
       `run "${runId}" was started with structured output; schemas are not journaled — ` +
-        "pass the original schema to resume: Atlas.resume(runId, config, { output: { kind: \"structured\", schema } })",
+        "pass the original schema to resume: atlas.resume(runId, { output: { kind: \"structured\", schema } })",
     );
   }
   const replay = await loadReplayCache(store, runId);
@@ -777,7 +768,6 @@ export async function resumeRun(
     ...(sources ? { sources } : {}),
     ...(resume.output ? { output: resume.output } : {}),
     ...(resume.signal ? { signal: resume.signal } : {}),
-    ...(resume.now ? { now: resume.now } : {}),
   };
   return startRun({
     config,
@@ -786,5 +776,6 @@ export async function resumeRun(
     replay,
     anchorStartedAt:
       typeof meta.startedAt === "number" ? meta.startedAt : undefined,
+    now: resume.now,
   });
 }

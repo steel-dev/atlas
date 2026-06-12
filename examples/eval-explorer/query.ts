@@ -5,12 +5,6 @@ import { Store } from "./store.js";
 import { captureCommit } from "./git.js";
 import { runCost, type RunUsage } from "./pricing.js";
 
-// Read-only, keyless drill-down over the DRACO explorer DB. No model/Steel
-// wiring — it just opens the SQLite store and answers questions about runs
-// that already happened, from a cheap commit overview down to the byte-exact
-// model transcript. Built for an agent to descend only as far as a diagnosis
-// needs, so every level is token-bounded and the heavy transcript is sliced.
-
 const USAGE = `draco query — read-only drill-down over benchmark runs
 
 Usage:
@@ -100,14 +94,10 @@ function resolveCommit(sha: string | undefined): string {
   return sha ?? captureCommit().sha;
 }
 
-// commits — every commit with a run, newest first.
 function cmdCommits(store: Store): void {
   out(store.commits());
 }
 
-// commit — per-case grid for one commit, with Δ against a baseline so
-// "what regressed" is answerable at a glance. failedCriteria is derived from
-// the pass rate (no blob reads), keeping the overview cheap.
 function cmdCommit(store: Store, positionals: string[], flags: Flags): void {
   const sha = resolveCommit(positionals[1]);
   const baseline =
@@ -187,9 +177,6 @@ function cmdCommit(store: Store, positionals: string[], flags: Flags): void {
   });
 }
 
-// case — the L1 diagnostic view for one case: rubric criteria fused with the
-// judge's per-criterion MET/UNMET + reason, score breakdown, claim stats, and
-// the list of repeat runs. The single richest thing that survives a run.
 function cmdCase(store: Store, positionals: string[]): void {
   const sha = need(positionals, 1, "sha");
   const caseId = need(positionals, 2, "caseId");
@@ -414,9 +401,6 @@ function renderStep(step: TranscriptStep, includeMessages: boolean): string {
   return lines.join("\n");
 }
 
-// transcript — the heavy one. With no selector it summarizes (so an agent
-// never accidentally pulls megabytes); a selector dumps matching steps'
-// reasoning + tool calls, and --messages adds the byte-exact input thread.
 function cmdTranscript(store: Store, positionals: string[], flags: Flags): void {
   const runId = need(positionals, 1, "runId");
   const steps = (parseJson(blobOrFail(store, runId, "transcript")) ??

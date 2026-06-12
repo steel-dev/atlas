@@ -30,6 +30,10 @@ export const DEFAULT_PRICING: PricingTable = {
   "gemini-2.5-pro": { inputPerMTok: 1.25, outputPerMTok: 10 },
   "gemini-2.5-flash": { inputPerMTok: 0.3, outputPerMTok: 2.5 },
 };
+for (const pricing of Object.values(DEFAULT_PRICING)) {
+  Object.freeze(pricing);
+}
+Object.freeze(DEFAULT_PRICING);
 
 const UNKNOWN_MODEL_PRICING: ModelPricing = {
   inputPerMTok: 10,

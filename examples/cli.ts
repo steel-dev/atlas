@@ -274,11 +274,12 @@ async function main(): Promise<void> {
     ...(values.store ? { store: fileStore(values.store) } : {}),
   };
 
+  const atlas = new Atlas(config);
   let run: ResearchRun;
   try {
     run = resumeId
-      ? await Atlas.resume(resumeId, config)
-      : new Atlas(config).start(question, {
+      ? await atlas.resume(resumeId)
+      : atlas.start(question, {
           ...(effort ? { effort } : {}),
           ...(Object.keys(budget).length > 0 ? { budget } : {}),
         });

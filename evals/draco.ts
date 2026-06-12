@@ -158,9 +158,6 @@ const DEFAULT_EFFORT: Effort = "deep";
 export const DEFAULT_LEAF_MODEL = "claude-haiku-4-5";
 const DEFAULT_JUDGE_TIMEOUT_MS = 120_000;
 const DEFAULT_JUDGE_CONCURRENCY = 8;
-// Rate-limited accounts can return "concurrent connections exceeded" mid-grade;
-// a few extra retries (with the SDK's exponential backoff) keep transient hits
-// from silently dropping criteria to judgeError.
 const JUDGE_MAX_RETRIES = 5;
 const PER_CRITERION_JUDGE_MAX_TOKENS = 8_192;
 const ONE_SHOT_JUDGE_MAX_TOKENS = 32_768;

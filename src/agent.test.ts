@@ -558,7 +558,7 @@ describe("durable resume", () => {
         throw new Error("live search during replay");
       },
     };
-    const resumed = await Atlas.resume("run_durable_resume", {
+    const resumed = await new Atlas({
       model: lead2 as unknown as ResolvedModel,
       models: {
         extract: extract2 as unknown as ResolvedModel,
@@ -570,7 +570,7 @@ describe("durable resume", () => {
       store,
       effort: "fast",
       safety: { allowPrivateNetworks: true },
-    });
+    }).resume("run_durable_resume");
     const replayed = await resumed.result();
 
     expect(replayed.report).toBe(original.report);

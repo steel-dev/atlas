@@ -286,8 +286,6 @@ async function directFetch(
           false,
         );
       }
-      // Default-secure: a basicFetch used standalone (no injected guard) still
-      // blocks redirects into private networks under the default SafetyPolicy.
       const verdict = guardRedirect
         ? await guardRedirect(next)
         : await guardRedirectUrl(next, {});
@@ -407,8 +405,6 @@ async function extractPdf(
   signal: AbortSignal | undefined,
 ): Promise<FetchAttempt> {
   try {
-    // pdf-parse cannot be cancelled mid-parse; the timeout abandons a
-    // pathological document so the fetch fails fast instead of stalling.
     const extracted = await withTimeout(
       PDF_PARSE_TIMEOUT_MS,
       signal,
@@ -714,8 +710,6 @@ export async function fetchThroughChain(
   req: FetchRequest,
 ): Promise<ChainFetchOutcome> {
   const attempts: SourceExtractionAttempt[] = [];
-  // One deadline for the whole chain: a slow first provider eats into the
-  // escalation provider's window instead of stacking another full timeout.
   const deadlineAt = Date.now() + FETCH_CHAIN_TIMEOUT_MS;
   for (const provider of chain) {
     const remainingMs = deadlineAt - Date.now();

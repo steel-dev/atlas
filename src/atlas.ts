@@ -47,12 +47,11 @@ export class Atlas {
     return run;
   }
 
-  static resume(
-    runId: string,
-    config: AtlasConfig,
-    options?: ResumeOptions,
-  ): Promise<ResearchRun> {
-    return resumeRun(runId, config, options);
+  async resume(runId: string, options?: ResumeOptions): Promise<ResearchRun> {
+    if (this.#closed) throw new Error("Atlas is closed");
+    const run = await resumeRun(runId, this.#config, options);
+    this.#track(run);
+    return run;
   }
 
   async close(): Promise<void> {

@@ -75,7 +75,7 @@ Calls:
   draft as the writer streams it; `report.completed` carries the final bound
   text (swap it in — repair may have rewritten failing sentences);
   `report.reset` means discard the preview and start over.
-- `Atlas.resume(runId, config, options?)` — replay the journal from
+- `atlas.resume(runId, options?)` — replay the journal from
   `config.store`; completed model calls, searches, and fetches are all
   journaled and served from the journal at zero cost, going live at the first
   divergence. Effort, budget, and source filter are restored from the journal;

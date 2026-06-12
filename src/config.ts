@@ -146,6 +146,10 @@ export const EFFORT_ENVELOPES: Record<Effort, EffortEnvelope> = {
     maxConflictPairs: 600,
   },
 };
+for (const envelope of Object.values(EFFORT_ENVELOPES)) {
+  Object.freeze(envelope);
+}
+Object.freeze(EFFORT_ENVELOPES);
 
 export interface Budget {
   maxUSD?: number;
@@ -189,7 +193,6 @@ export interface ResearchOptions {
   sources?: SourceFilter;
   signal?: AbortSignal;
   runId?: string;
-  now?: () => number;
 }
 
 export interface ResolvedRunConfig {

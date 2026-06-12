@@ -18,11 +18,6 @@ export const QUALITY_RANK: Record<ClaimSourceQuality, number> = {
 };
 
 const CORROBORATION_STRENGTH_CAP = 2;
-
-// Recency shifts evidence strength by at most ±this much, so the swing between
-// a fresh and a stale claim stays below DECISIVE_STRENGTH_GAP (2): recency can
-// tip a sub-decisive quality tie toward the newer source without ever
-// overturning a decisive quality/corroboration gap on its own.
 const RECENCY_STRENGTH_SWING = 0.75;
 
 export function evidenceStrength(

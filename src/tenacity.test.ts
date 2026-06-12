@@ -5,6 +5,7 @@ import type {
 } from "@ai-sdk/provider";
 import { describe, expect, it } from "vitest";
 import { Atlas } from "./atlas.js";
+import { resumeRun, startRun } from "./run.js";
 import type { ResolvedModel } from "./model.js";
 import { memoryStore } from "./providers/store.js";
 import type { SearchProvider } from "./providers/search.js";
@@ -146,13 +147,13 @@ describe("resume replay fidelity", () => {
     expect(original.stats.costUSD).toBeGreaterThan(0.1);
 
     const replayModel = heavySpendModel();
-    const resumed = await Atlas.resume("run_heavy", {
+    const resumed = await new Atlas({
       model: replayModel as unknown as ResolvedModel,
       search: stubSearch,
       store,
       effort: "fast",
       budget: { maxUSD: 5 },
-    });
+    }).resume("run_heavy");
     const replayed = await resumed.result();
     expect(replayModel.doGenerateCalls.length).toBe(0);
     expect(replayed.report).toBe(original.report);
@@ -163,23 +164,22 @@ describe("resume replay fidelity", () => {
     const startedAt = Date.UTC(2026, 0, 15, 12, 0, 0);
     const store = memoryStore();
     const firstModel = heavySpendModel();
-    const atlas = new Atlas({
-      model: firstModel as unknown as ResolvedModel,
-      search: stubSearch,
-      store,
-      effort: "fast",
-      budget: { maxUSD: 5 },
-    });
-    await atlas
-      .start("dated question", {
-        runId: "run_dated",
-        now: () => startedAt,
-      })
-      .result();
+    await startRun({
+      config: {
+        model: firstModel as unknown as ResolvedModel,
+        search: stubSearch,
+        store,
+        effort: "fast",
+        budget: { maxUSD: 5 },
+      },
+      question: "dated question",
+      options: { runId: "run_dated" },
+      now: () => startedAt,
+    }).result();
     expect(systemText(firstModel.doGenerateCalls[0])).toContain("2026-01-15");
 
     const replayModel = heavySpendModel();
-    const resumed = await Atlas.resume(
+    const resumed = await resumeRun(
       "run_dated",
       {
         model: replayModel as unknown as ResolvedModel,

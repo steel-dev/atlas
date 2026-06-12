@@ -1,6 +1,6 @@
-# Atlas
+![Atlas — Research Agent for the Open Web](assets/cover.png)
 
-[![CI](https://github.com/steel-experiments/atlas/actions/workflows/ci.yml/badge.svg)](https://github.com/steel-experiments/atlas/actions/workflows/ci.yml)
+# Atlas
 
 **Research Agent for the Open Web**
 
@@ -89,7 +89,7 @@ const store = fileStore("./runs");
 const atlas = new Atlas({ model, store });
 atlas.start(question, { runId: "run_42" });
 // …restart…
-await Atlas.resume("run_42", { model, store });
+await new Atlas({ model, store }).resume("run_42");
 ```
 
 ## Results

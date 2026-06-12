@@ -438,9 +438,6 @@ export function engineModel(
     return hold ? { hold, estimateUSD } : null;
   };
 
-  // A call that aborts may already have been metered by the provider but never
-  // reports usage. Charging the reserved estimate keeps the budget ceiling
-  // conservative under cancellation; a terminal failure releases the hold.
   const settleFailure = (
     reservation: CallReservation | null,
     err: unknown,
@@ -528,8 +525,6 @@ export function engineModel(
             }
             controller.enqueue(part);
           },
-          // flush is skipped when the consumer cancels the readable; the hold
-          // settle/release is idempotent, so both hooks can charge safely.
           cancel() {
             if (reservation && !state.finish) {
               reservation.hold.settle(reservation.estimateUSD);
@@ -537,8 +532,6 @@ export function engineModel(
             reservation?.hold.release();
           },
           flush() {
-            // A stream that ends without a finish part (abort, provider drop)
-            // generated tokens that were never reported: charge the estimate.
             if (reservation && !state.finish) {
               reservation.hold.settle(reservation.estimateUSD);
             }

@@ -151,9 +151,6 @@ export function quoteAppearsInSource(
   return quoteSupportedIn(normalizeForQuoteMatch(sourceText), quote);
 }
 
-// Normalizing a stored document is O(document length); binding checks every
-// citation against its full source, so the normalized text is cached per
-// document object for the lifetime of the run.
 const normalizedSourceCache = new WeakMap<SourceDocument, string>();
 
 function normalizedSourceText(document: SourceDocument): string {
