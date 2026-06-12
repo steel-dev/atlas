@@ -8,7 +8,7 @@ export const ECONOMY = {
   eagerVerifyMaxClaims: 16,
   panelMinRemainingUSD: 0.04,
   synthesis: { fraction: 0.15, minUSD: 0.05 },
-  dedupe: { fraction: 0.15, minUSD: 0.02 },
+  conflicts: { fraction: 0.15, minUSD: 0.02 },
   adjudication: { remainingFraction: 0.1, minRemainingUSD: 0.15 },
   callReserve: { promptCharsPerToken: 4, assumedOutputTokens: 2_000 },
 } as const;

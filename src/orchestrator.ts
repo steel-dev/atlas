@@ -19,10 +19,6 @@ const ORCHESTRATOR_TOOLS: ToolName[] = [
   "add_claim",
 ];
 
-const LEAD_CONTEXT_TOKEN_BUDGET = 80_000;
-const MAX_LEAD_SESSIONS = 8;
-const CONTINUATION_DIGEST_CLAIMS = 60;
-
 export interface OrchestratorOpts {
   gaps?: string[] | undefined;
   previousNote?: string | undefined;
@@ -33,6 +29,7 @@ export async function runOrchestrator(
   grant: BudgetGrant,
   opts: OrchestratorOpts = {},
 ): Promise<AgentResult> {
+  const envelope = rctx.config.envelope;
   const leadSpec = (task: string) => ({
     role: "orchestrator" as const,
     modelRole: "lead" as const,
@@ -41,8 +38,8 @@ export async function runOrchestrator(
     tools: ORCHESTRATOR_TOOLS,
     grant,
     depth: 0,
-    maxTurns: rctx.config.envelope.maxTurns,
-    maxContextTokens: LEAD_CONTEXT_TOKEN_BUDGET,
+    maxTurns: envelope.maxTurns,
+    maxContextTokens: envelope.leadContextTokens,
   });
   const anchor =
     opts.gaps && opts.gaps.length > 0
@@ -51,7 +48,7 @@ export async function runOrchestrator(
           reason: "coverage-gaps",
           previousNote: opts.previousNote,
           gaps: opts.gaps,
-          digest: rctx.ledger.digest(CONTINUATION_DIGEST_CLAIMS),
+          digest: rctx.ledger.digest(envelope.digestClaims),
           trail: rctx.trail.render(),
           remainingUSD: grant.remainingUSD(),
         })
@@ -70,7 +67,7 @@ export async function runOrchestrator(
   let session = 1;
   while (
     result.stopReason === CONTEXT_BUDGET_STOP &&
-    session < MAX_LEAD_SESSIONS &&
+    session < envelope.maxLeadSessions &&
     !rctx.stopReason() &&
     !grant.floored()
   ) {
@@ -84,7 +81,7 @@ export async function runOrchestrator(
           question: rctx.question,
           reason: "context-recycled",
           previousNote: result.note,
-          digest: rctx.ledger.digest(CONTINUATION_DIGEST_CLAIMS),
+          digest: rctx.ledger.digest(envelope.digestClaims),
           trail: rctx.trail.render(),
           remainingUSD: grant.remainingUSD(),
         }),

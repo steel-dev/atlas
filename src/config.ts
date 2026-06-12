@@ -28,6 +28,11 @@ export interface EffortEnvelope {
   maxExtractionChars: number;
   maxAdjudicationRounds: number;
   verifierFetch: boolean;
+  leadContextTokens: number;
+  maxLeadSessions: number;
+  digestClaims: number;
+  maxConflictClaims: number;
+  maxConflictPairs: number;
 }
 
 export const EFFORT_ENVELOPES: Record<Effort, EffortEnvelope> = {
@@ -46,6 +51,11 @@ export const EFFORT_ENVELOPES: Record<Effort, EffortEnvelope> = {
     maxExtractionChars: 40_000,
     maxAdjudicationRounds: 1,
     verifierFetch: false,
+    leadContextTokens: 80_000,
+    maxLeadSessions: 4,
+    digestClaims: 30,
+    maxConflictClaims: 150,
+    maxConflictPairs: 60,
   },
   balanced: {
     budgetUSD: 2.5,
@@ -62,6 +72,11 @@ export const EFFORT_ENVELOPES: Record<Effort, EffortEnvelope> = {
     maxExtractionChars: 60_000,
     maxAdjudicationRounds: 1,
     verifierFetch: false,
+    leadContextTokens: 80_000,
+    maxLeadSessions: 6,
+    digestClaims: 60,
+    maxConflictClaims: 400,
+    maxConflictPairs: 150,
   },
   deep: {
     budgetUSD: 10,
@@ -78,6 +93,11 @@ export const EFFORT_ENVELOPES: Record<Effort, EffortEnvelope> = {
     maxExtractionChars: 100_000,
     maxAdjudicationRounds: 2,
     verifierFetch: false,
+    leadContextTokens: 120_000,
+    maxLeadSessions: 8,
+    digestClaims: 90,
+    maxConflictClaims: 800,
+    maxConflictPairs: 300,
   },
   max: {
     budgetUSD: 40,
@@ -94,6 +114,11 @@ export const EFFORT_ENVELOPES: Record<Effort, EffortEnvelope> = {
     maxExtractionChars: 150_000,
     maxAdjudicationRounds: 3,
     verifierFetch: true,
+    leadContextTokens: 160_000,
+    maxLeadSessions: 12,
+    digestClaims: 120,
+    maxConflictClaims: 1_500,
+    maxConflictPairs: 600,
   },
 };
 

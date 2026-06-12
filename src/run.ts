@@ -15,7 +15,7 @@ import {
   type SourceFilter,
 } from "./config.js";
 import { assembleRun } from "./context.js";
-import { semanticDedupePass } from "./dedupe.js";
+import { conflictPass } from "./conflicts.js";
 import { ECONOMY } from "./economy.js";
 import { AtlasError, errorMessage, ResumeError } from "./errors.js";
 import { EventHub } from "./event-hub.js";
@@ -480,17 +480,17 @@ async function consolidateClaims(
   args: ExecuteRunArgs,
 ): Promise<void> {
   if (!args.stopSignal.aborted) {
-    const dedupeGrant = verifyReserve.grant({
-      fraction: ECONOMY.dedupe.fraction,
-      minUSD: ECONOMY.dedupe.minUSD,
+    const conflictGrant = verifyReserve.grant({
+      fraction: ECONOMY.conflicts.fraction,
+      minUSD: ECONOMY.conflicts.minUSD,
     });
-    if (dedupeGrant) {
+    if (conflictGrant) {
       try {
-        await semanticDedupePass(rctx, dedupeGrant);
+        await conflictPass(rctx, conflictGrant);
       } catch (err) {
         if (args.hardSignal.aborted) throw err;
       } finally {
-        dedupeGrant.release();
+        conflictGrant.release();
       }
     }
   }

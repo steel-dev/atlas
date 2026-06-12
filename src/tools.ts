@@ -241,11 +241,13 @@ function registerSourceDocument(
   });
   rctx.sources.byUrl.set(document.canonicalUrl, document);
   rctx.sources.byId.set(document.sourceId, document);
-  rctx.ledger.queue(document, {
-    goal,
-    agentId: actx.agentId,
-    model: actx.extractModel,
-  });
+  if (ROLE_CAPABILITIES[actx.role].ledgerExtract) {
+    rctx.ledger.queue(document, {
+      goal,
+      agentId: actx.agentId,
+      model: actx.extractModel,
+    });
+  }
   const nonEvidence = document.metadata.qualityWarnings?.find((warning) =>
     NON_EVIDENCE_WARNINGS.test(warning),
   );
@@ -594,7 +596,11 @@ export function buildAgentTools(
   if (enabled.has("fetch")) {
     tools.fetch = tool({
       description:
-        "Fetch one or more URLs, store each page's full extracted text as a source document (claims are extracted into the shared ledger automatically), and return a compact source card per page. Full page text is not returned inline: use search_sources to find passages and read_source to read or quote them.",
+        "Fetch one or more URLs, store each page's full extracted text as a source document" +
+        (ROLE_CAPABILITIES[actx.role].ledgerExtract
+          ? " (claims are extracted into the shared ledger automatically)"
+          : " (for evidence reading only — no claims are extracted from it)") +
+        ", and return a compact source card per page. Full page text is not returned inline: use search_sources to find passages and read_source to read or quote them.",
       inputSchema: z.object({
         url: z.string().optional(),
         urls: z.array(z.string()).min(1).max(FETCH_MANY_MAX_URLS).optional(),

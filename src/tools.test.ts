@@ -2,7 +2,11 @@ import { describe, expect, it } from "vitest";
 import { createLedger } from "./ledger.js";
 import { createSourceDocument } from "./source-documents.js";
 import type { RunCtx } from "./state.js";
-import { buildAgentTools, type AgentCtx } from "./tools.js";
+import {
+  buildAgentTools,
+  fetchOneUrl,
+  type AgentCtx,
+} from "./tools.js";
 
 function fakeRctx() {
   const markdown =
@@ -83,5 +87,84 @@ describe("add_claim tool", () => {
       importance: "tangential",
     });
     expect(reply).toBe("Error: unknown source_id: source_404");
+  });
+});
+
+describe("fetch extraction by role", () => {
+  function replayRctx(queued: { count: number }) {
+    const markdown =
+      "The tower is 330 meters tall and was built in 1889.".padEnd(
+        250,
+        " filler",
+      );
+    return {
+      config: {
+        safety: { allowPrivateNetworks: true },
+        maxSources: 5,
+      },
+      seenDomains: new Set<string>(),
+      sources: {
+        fetchedSources: [],
+        byUrl: new Map(),
+        byId: new Map(),
+        inFlight: new Map(),
+        reservedUrls: new Set<string>(),
+        reservedSlots: 0,
+        nextSourceNumber: 1,
+      },
+      replay: {
+        take: () => ({
+          url: "https://a.example.com/page",
+          sourceId: "source_1",
+          title: "Tower",
+          markdown,
+          metadata: { markdownChars: markdown.length, extractionNotes: [] },
+          originalChars: markdown.length,
+          renderedWith: "basic",
+        }),
+      },
+      ledger: {
+        queue: () => {
+          queued.count++;
+        },
+      },
+      trail: { recordDeadEnd: () => {} },
+      counters: { sourcesFetched: 0, sourcesFailed: 0 },
+      emit: () => {},
+      signal: undefined,
+    } as unknown as RunCtx;
+  }
+
+  it("queues claim extraction for research-role fetches", async () => {
+    const queued = { count: 0 };
+    const rctx = replayRctx(queued);
+    const actx = { agentId: "agent_1", role: "research" } as AgentCtx;
+    const outcome = await fetchOneUrl(
+      rctx,
+      actx,
+      "https://a.example.com/page",
+      200,
+      "goal",
+    );
+    expect(outcome.ok).toBe(true);
+    expect(queued.count).toBe(1);
+    expect(rctx.sources.byId.has("source_1")).toBe(true);
+  });
+
+  it("stores verifier-fetched pages without queuing extraction", async () => {
+    const queued = { count: 0 };
+    const rctx = replayRctx(queued);
+    const actx = { agentId: "agent_2", role: "verify" } as AgentCtx;
+    const outcome = await fetchOneUrl(
+      rctx,
+      actx,
+      "https://a.example.com/page",
+      200,
+      "goal",
+    );
+    expect(outcome.ok).toBe(true);
+    expect(queued.count).toBe(0);
+    expect(rctx.sources.byId.has("source_1")).toBe(true);
+    expect(rctx.counters.sourcesFetched).toBe(1);
   });
 });

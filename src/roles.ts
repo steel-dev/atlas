@@ -12,6 +12,8 @@ export interface RoleCapabilities {
   budgetLine: boolean;
   /** User-supplied research tools are exposed to this role. */
   customTools: boolean;
+  /** Fetched sources are queued for claim extraction into the shared ledger. */
+  ledgerExtract: boolean;
   /** Agent return waits for its queued claim extractions to land. */
   ledgerFlushOnReturn: boolean;
 }
@@ -21,24 +23,28 @@ export const ROLE_CAPABILITIES: Record<AgentRole, RoleCapabilities> = {
     spawn: true,
     budgetLine: true,
     customTools: true,
+    ledgerExtract: true,
     ledgerFlushOnReturn: true,
   },
   research: {
     spawn: true,
     budgetLine: true,
     customTools: true,
+    ledgerExtract: true,
     ledgerFlushOnReturn: true,
   },
   verify: {
     spawn: false,
     budgetLine: false,
     customTools: false,
+    ledgerExtract: false,
     ledgerFlushOnReturn: false,
   },
   write: {
     spawn: false,
     budgetLine: false,
     customTools: false,
+    ledgerExtract: false,
     ledgerFlushOnReturn: false,
   },
 };

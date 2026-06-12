@@ -8,9 +8,7 @@ import type { RunCtx } from "./state.js";
 import { markContestedByConflict, voteSplit } from "./claim-status.js";
 
 const SIMILARITY_THRESHOLD = 0.3;
-const MAX_PAIRS = 150;
-const MAX_DEDUPE_CLAIMS = 400;
-const DEDUPE_IMPORTANCE_RANK: Record<string, number> = {
+const IMPORTANCE_RANK: Record<string, number> = {
   central: 0,
   supporting: 1,
   tangential: 2,
@@ -59,18 +57,24 @@ export interface CandidatePair {
   score: number;
 }
 
-export function candidateDuplicatePairs(
+export interface ConflictPairCaps {
+  maxClaims: number;
+  maxPairs: number;
+}
+
+export function candidateConflictPairs(
   input: ResearchClaim[],
+  caps: ConflictPairCaps,
 ): CandidatePair[] {
   const claims =
-    input.length > MAX_DEDUPE_CLAIMS
+    input.length > caps.maxClaims
       ? [...input]
           .sort(
             (a, b) =>
-              (DEDUPE_IMPORTANCE_RANK[a.importance] ?? 3) -
-              (DEDUPE_IMPORTANCE_RANK[b.importance] ?? 3),
+              (IMPORTANCE_RANK[a.importance] ?? 3) -
+              (IMPORTANCE_RANK[b.importance] ?? 3),
           )
-          .slice(0, MAX_DEDUPE_CLAIMS)
+          .slice(0, caps.maxClaims)
       : input;
   const tokens = claims.map((claim) => tokensOf(claim.text));
   const numbers = tokens.map(numericTokens);
@@ -102,7 +106,7 @@ export function candidateDuplicatePairs(
       }
     }
   }
-  return pairs.sort((x, y) => y.score - x.score).slice(0, MAX_PAIRS);
+  return pairs.sort((x, y) => y.score - x.score).slice(0, caps.maxPairs);
 }
 
 function markConflict(
@@ -132,17 +136,21 @@ function markConflict(
   return changed;
 }
 
-export interface DedupePassOutcome {
+export interface ConflictPassOutcome {
   merged: number;
   contradicted: number;
 }
 
-export async function semanticDedupePass(
+export async function conflictPass(
   rctx: RunCtx,
   grant: BudgetGrant,
-): Promise<DedupePassOutcome> {
-  const pairs = candidateDuplicatePairs(rctx.ledger.representatives());
-  const outcome: DedupePassOutcome = { merged: 0, contradicted: 0 };
+): Promise<ConflictPassOutcome> {
+  const envelope = rctx.config.envelope;
+  const pairs = candidateConflictPairs(rctx.ledger.representatives(), {
+    maxClaims: envelope.maxConflictClaims,
+    maxPairs: envelope.maxConflictPairs,
+  });
+  const outcome: ConflictPassOutcome = { merged: 0, contradicted: 0 };
   if (pairs.length === 0) return outcome;
   const model = rctx.bindModel("extract", grant);
   const batches: CandidatePair[][] = [];
@@ -189,7 +197,7 @@ export async function semanticDedupePass(
   if (outcome.merged > 0 || outcome.contradicted > 0) {
     rctx.emit({
       type: "tool.event",
-      tool: "dedupe",
+      tool: "conflicts",
       data: { ...outcome, pairsChecked: pairs.length },
     });
   }

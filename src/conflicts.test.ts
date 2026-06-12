@@ -1,10 +1,16 @@
 import { MockLanguageModelV3 } from "ai/test";
 import { describe, expect, it } from "vitest";
-import { candidateDuplicatePairs, semanticDedupePass } from "./dedupe.js";
+import { candidateConflictPairs, conflictPass } from "./conflicts.js";
 import { createBudgetMeter } from "./budget.js";
+import { EFFORT_ENVELOPES } from "./config.js";
 import { createLedger, type Ledger, type ResearchClaim } from "./ledger.js";
 import { createSourceDocument } from "./source-documents.js";
 import type { RunCtx } from "./state.js";
+
+const CAPS = {
+  maxClaims: EFFORT_ENVELOPES.balanced.maxConflictClaims,
+  maxPairs: EFFORT_ENVELOPES.balanced.maxConflictPairs,
+};
 
 function fakeClaim(id: string, text: string, url: string): ResearchClaim {
   return {
@@ -22,35 +28,44 @@ function fakeClaim(id: string, text: string, url: string): ResearchClaim {
   };
 }
 
-describe("candidateDuplicatePairs", () => {
+describe("candidateConflictPairs", () => {
   it("pairs lexically similar claims", () => {
-    const pairs = candidateDuplicatePairs([
-      fakeClaim("claim_1", "The Eiffel Tower is 330 meters tall", "https://a.example.com"),
-      fakeClaim("claim_2", "The Eiffel Tower stands 330 meters high", "https://b.example.org"),
-    ]);
+    const pairs = candidateConflictPairs(
+      [
+        fakeClaim("claim_1", "The Eiffel Tower is 330 meters tall", "https://a.example.com"),
+        fakeClaim("claim_2", "The Eiffel Tower stands 330 meters high", "https://b.example.org"),
+      ],
+      CAPS,
+    );
     expect(pairs).toHaveLength(1);
     expect(pairs[0].a.id).toBe("claim_1");
     expect(pairs[0].b.id).toBe("claim_2");
   });
 
   it("pairs number-mismatched claims about the same entity as contradiction candidates", () => {
-    const pairs = candidateDuplicatePairs([
-      fakeClaim("claim_1", "The tower is 330 meters tall", "https://a.example.com"),
-      fakeClaim("claim_2", "The tower is 320 meters tall", "https://b.example.org"),
-    ]);
+    const pairs = candidateConflictPairs(
+      [
+        fakeClaim("claim_1", "The tower is 330 meters tall", "https://a.example.com"),
+        fakeClaim("claim_2", "The tower is 320 meters tall", "https://b.example.org"),
+      ],
+      CAPS,
+    );
     expect(pairs).toHaveLength(1);
   });
 
   it("skips dissimilar claims", () => {
-    const pairs = candidateDuplicatePairs([
-      fakeClaim("claim_1", "The Eiffel Tower is 330 meters tall", "https://a.example.com"),
-      fakeClaim("claim_2", "Paris hosted the 2024 Summer Olympics", "https://b.example.org"),
-    ]);
+    const pairs = candidateConflictPairs(
+      [
+        fakeClaim("claim_1", "The Eiffel Tower is 330 meters tall", "https://a.example.com"),
+        fakeClaim("claim_2", "Paris hosted the 2024 Summer Olympics", "https://b.example.org"),
+      ],
+      CAPS,
+    );
     expect(pairs).toHaveLength(0);
   });
 });
 
-describe("semanticDedupePass", () => {
+describe("conflictPass", () => {
   function extractionModel(
     claims: Array<{ claim: string; quote: string; importance: string }>,
   ) {
@@ -130,15 +145,24 @@ describe("semanticDedupePass", () => {
     return ledger;
   }
 
+  function fakeRunCtx(
+    ledger: Ledger,
+    verdicts: Array<{ index: number; verdict: string }>,
+    emit: (event: { type: string }) => void = () => {},
+  ): RunCtx {
+    return {
+      ledger,
+      config: { envelope: EFFORT_ENVELOPES.balanced },
+      bindModel: () => judgeModel(verdicts),
+      signal: undefined,
+      emit,
+    } as unknown as RunCtx;
+  }
+
   it("merges judged duplicates and records corroboration", async () => {
     const ledger = await seededLedger();
-    const rctx = {
-      ledger,
-      bindModel: () => judgeModel([{ index: 0, verdict: "duplicate" }]),
-      signal: undefined,
-      emit: () => {},
-    } as unknown as RunCtx;
-    const outcome = await semanticDedupePass(rctx, createBudgetMeter(1));
+    const rctx = fakeRunCtx(ledger, [{ index: 0, verdict: "duplicate" }]);
+    const outcome = await conflictPass(rctx, createBudgetMeter(1));
     expect(outcome.merged).toBe(1);
     const representatives = ledger.representatives();
     expect(representatives).toHaveLength(1);
@@ -150,13 +174,8 @@ describe("semanticDedupePass", () => {
 
   it("leaves distinct pairs untouched", async () => {
     const ledger = await seededLedger();
-    const rctx = {
-      ledger,
-      bindModel: () => judgeModel([{ index: 0, verdict: "distinct" }]),
-      signal: undefined,
-      emit: () => {},
-    } as unknown as RunCtx;
-    const outcome = await semanticDedupePass(rctx, createBudgetMeter(1));
+    const rctx = fakeRunCtx(ledger, [{ index: 0, verdict: "distinct" }]);
+    const outcome = await conflictPass(rctx, createBudgetMeter(1));
     expect(outcome.merged).toBe(0);
     expect(outcome.contradicted).toBe(0);
     expect(ledger.representatives()).toHaveLength(2);
@@ -165,13 +184,12 @@ describe("semanticDedupePass", () => {
   it("marks judged contradictions contested and links both claims", async () => {
     const ledger = await seededLedger();
     const events: Array<{ type: string }> = [];
-    const rctx = {
+    const rctx = fakeRunCtx(
       ledger,
-      bindModel: () => judgeModel([{ index: 0, verdict: "contradicts" }]),
-      signal: undefined,
-      emit: (event: { type: string }) => events.push(event),
-    } as unknown as RunCtx;
-    const outcome = await semanticDedupePass(rctx, createBudgetMeter(1));
+      [{ index: 0, verdict: "contradicts" }],
+      (event) => events.push(event),
+    );
+    const outcome = await conflictPass(rctx, createBudgetMeter(1));
     expect(outcome.contradicted).toBe(1);
     expect(outcome.merged).toBe(0);
     const representatives = ledger.representatives();
@@ -194,13 +212,8 @@ describe("semanticDedupePass", () => {
       { lens: "source-strength", refuted: false, evidence: "e", confidence: "high" },
     ];
     confirmed.status = "confirmed";
-    const rctx = {
-      ledger,
-      bindModel: () => judgeModel([{ index: 0, verdict: "contradicts" }]),
-      signal: undefined,
-      emit: () => {},
-    } as unknown as RunCtx;
-    const outcome = await semanticDedupePass(rctx, createBudgetMeter(1));
+    const rctx = fakeRunCtx(ledger, [{ index: 0, verdict: "contradicts" }]);
+    const outcome = await conflictPass(rctx, createBudgetMeter(1));
     expect(outcome.contradicted).toBe(1);
     expect(confirmed.status).toBe("confirmed");
     expect(confirmed.conflictsWith).toHaveLength(1);
@@ -208,7 +221,7 @@ describe("semanticDedupePass", () => {
   });
 });
 
-describe("candidateDuplicatePairs input cap", () => {
+describe("candidateConflictPairs input cap", () => {
   it("considers central claims first when the claim set exceeds the cap", () => {
     const filler: ResearchClaim[] = Array.from({ length: 500 }, (_, i) => ({
       ...fakeClaim(`claim_f${i}`, `token${i}a token${i}b token${i}c token${i}d token${i}e`, `https://f${i}.example.com`),
@@ -218,7 +231,7 @@ describe("candidateDuplicatePairs input cap", () => {
       fakeClaim("claim_a", "The bridge spans 1991 meters across the strait", "https://a.example.com"),
       fakeClaim("claim_b", "The bridge spans 1991 meters over the strait", "https://b.example.org"),
     ];
-    const pairs = candidateDuplicatePairs([...filler, ...central]);
+    const pairs = candidateConflictPairs([...filler, ...central], CAPS);
     expect(
       pairs.some(
         (pair) =>
