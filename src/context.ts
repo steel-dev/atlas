@@ -159,7 +159,7 @@ export async function assembleRun(args: AssembleRunArgs): Promise<RunAssembly> {
     }) ?? meter;
   const verifyReserve =
     meter.grant({
-      fraction: ECONOMY.verifyReserve.fraction,
+      fraction: resolved.envelope.verifyReserveFraction,
       minUSD: ECONOMY.verifyReserve.minUSD,
     }) ?? meter;
 

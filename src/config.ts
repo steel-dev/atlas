@@ -27,6 +27,7 @@ export interface EffortEnvelope {
   maxClaimsPerSource: number;
   maxExtractionChars: number;
   maxAdjudicationRounds: number;
+  verifyReserveFraction: number;
   verifierFetch: boolean;
   leadContextTokens: number;
   maxLeadSessions: number;
@@ -50,6 +51,7 @@ export const EFFORT_ENVELOPES: Record<Effort, EffortEnvelope> = {
     maxClaimsPerSource: 5,
     maxExtractionChars: 40_000,
     maxAdjudicationRounds: 1,
+    verifyReserveFraction: 0.2,
     verifierFetch: false,
     leadContextTokens: 80_000,
     maxLeadSessions: 4,
@@ -71,6 +73,7 @@ export const EFFORT_ENVELOPES: Record<Effort, EffortEnvelope> = {
     maxClaimsPerSource: 6,
     maxExtractionChars: 60_000,
     maxAdjudicationRounds: 1,
+    verifyReserveFraction: 0.2,
     verifierFetch: false,
     leadContextTokens: 80_000,
     maxLeadSessions: 6,
@@ -92,6 +95,7 @@ export const EFFORT_ENVELOPES: Record<Effort, EffortEnvelope> = {
     maxClaimsPerSource: 8,
     maxExtractionChars: 100_000,
     maxAdjudicationRounds: 2,
+    verifyReserveFraction: 0.25,
     verifierFetch: false,
     leadContextTokens: 120_000,
     maxLeadSessions: 8,
@@ -113,6 +117,7 @@ export const EFFORT_ENVELOPES: Record<Effort, EffortEnvelope> = {
     maxClaimsPerSource: 10,
     maxExtractionChars: 150_000,
     maxAdjudicationRounds: 3,
+    verifyReserveFraction: 0.3,
     verifierFetch: true,
     leadContextTokens: 160_000,
     maxLeadSessions: 12,
