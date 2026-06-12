@@ -423,11 +423,17 @@ export async function repairReport(
     if (seen.has(key)) continue;
     seen.add(key);
     const claim = rctx.ledger.byId(citation.claimId);
+    const problem =
+      claim === undefined
+        ? "the marker cites a claim id that does not exist in the ledger; attach a real claim that supports the sentence or delete it."
+        : citation.status === "refuted"
+          ? "the cited claim was refuted during verification; either state that it was ruled out or delete the sentence."
+          : "the sentence asserts more than this claim supports.";
     problems.push(
       `- Sentence: "${sentence}"\n` +
         `  Cited claim ${citation.claimId}: "${claim?.text ?? "unknown claim"}"\n` +
         `  Claim quote: "${claim?.quote ?? ""}"\n` +
-        "  Problem: the sentence asserts more than this claim supports.",
+        `  Problem: ${problem}`,
     );
   }
   for (const sentence of opts.bound.unsupportedSentences) {

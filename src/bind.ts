@@ -2,7 +2,11 @@ import { generateObject } from "ai";
 import { z } from "zod";
 import { mapWithConcurrency } from "./async.js";
 import type { BudgetGrant } from "./budget.js";
-import { quoteSupportedByDocument, type ResearchClaim } from "./ledger.js";
+import {
+  quoteSupportedByDocument,
+  type ClaimStatus,
+  type ResearchClaim,
+} from "./ledger.js";
 import { MODEL_CALL_MAX_RETRIES } from "./model.js";
 import type { RunCtx } from "./state.js";
 import { quoteContext } from "./synthesize.js";
@@ -12,6 +16,7 @@ export interface Citation {
   claimId: string;
   sourceId: string;
   quote: string;
+  status?: ClaimStatus;
   verified: boolean;
 }
 
@@ -305,14 +310,22 @@ export async function bindCitations(
   const entailmentItems: EntailmentItem[] = [];
   const markerSpans: Array<[number, number]> = [];
 
-  let itemIndex = 0;
   for (const marker of markers) {
     const span = sentenceSpanEndingAt(report, marker.pos);
     markerSpans.push(span);
     const sentence = report.slice(span[0], span[1]).trim();
     for (const claimId of marker.claimIds) {
       const rawClaim = rctx.ledger.byId(claimId);
-      if (!rawClaim) continue;
+      if (!rawClaim) {
+        citations.push({
+          sentenceSpan: span,
+          claimId,
+          sourceId: "",
+          quote: "",
+          verified: false,
+        });
+        continue;
+      }
       const claim = rawClaim.duplicateOf
         ? (rctx.ledger.byId(rawClaim.duplicateOf) ?? rawClaim)
         : rawClaim;
@@ -320,22 +333,23 @@ export async function bindCitations(
       const quoteOk = document
         ? quoteSupportedByDocument(claim.quote, document)
         : false;
+      const verified = quoteOk && claim.status !== "refuted";
       citations.push({
         sentenceSpan: span,
         claimId: claim.id,
         sourceId: claim.sourceId,
         quote: claim.quote,
-        verified: quoteOk,
+        status: claim.status,
+        verified,
       });
-      if (quoteOk && rctx.config.envelope.maxEntailmentChecks > 0) {
+      if (verified && rctx.config.envelope.maxEntailmentChecks > 0) {
         entailmentItems.push({
-          index: itemIndex,
+          index: citations.length - 1,
           sentence,
           claim,
           context: quoteContext(rctx, claim),
         });
       }
-      itemIndex++;
     }
   }
 

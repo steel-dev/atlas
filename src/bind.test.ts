@@ -117,6 +117,57 @@ describe("bindCitations", () => {
     expect(outcome.citationsUnsupported).toBeGreaterThanOrEqual(1);
   });
 
+  it("marks citations of refuted claims unsupported even when the quote matches", async () => {
+    const claim = makeClaim("claim_1", "Paris is the capital of France");
+    claim.status = "refuted";
+    const rctx = fakeCtx(
+      [claim],
+      "As everyone knows, Paris is the capital of France since forever.",
+    );
+    const grant = {
+      limitUSD: 1,
+      spentUSD: () => 0,
+      remainingUSD: () => 1,
+      floored: () => false,
+      charge: () => {},
+      reserve: () => null,
+      grant: () => null,
+      release: () => {},
+    };
+    const outcome = await bindCitations(
+      rctx,
+      grant,
+      "Paris is the capital of France. {{claim_1}}",
+    );
+    expect(outcome.citations[0].verified).toBe(false);
+    expect(outcome.citations[0].status).toBe("refuted");
+    expect(outcome.citationsUnsupported).toBeGreaterThanOrEqual(1);
+  });
+
+  it("marks markers citing unknown claim ids unsupported instead of skipping them", async () => {
+    const rctx = fakeCtx([], "Some page content.");
+    const grant = {
+      limitUSD: 1,
+      spentUSD: () => 0,
+      remainingUSD: () => 1,
+      floored: () => false,
+      charge: () => {},
+      reserve: () => null,
+      grant: () => null,
+      release: () => {},
+    };
+    const outcome = await bindCitations(
+      rctx,
+      grant,
+      "Paris is the capital of France. {{claim_404}}",
+    );
+    expect(outcome.citations).toHaveLength(1);
+    expect(outcome.citations[0].claimId).toBe("claim_404");
+    expect(outcome.citations[0].verified).toBe(false);
+    expect(outcome.citations[0].status).toBeUndefined();
+    expect(outcome.citationsUnsupported).toBeGreaterThanOrEqual(1);
+  });
+
   it("does not break sentence spans on abbreviations, decimals, or acronyms", async () => {
     const claim = makeClaim("claim_1", "Paris is the capital of France");
     const rctx = fakeCtx(

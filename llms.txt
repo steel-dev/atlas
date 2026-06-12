@@ -35,7 +35,7 @@ import { anthropic } from "@ai-sdk/anthropic";
 const atlas = new Atlas({ model: anthropic("claude-fable-5") });
 const result = await atlas.research("What's changing in browser automation?");
 result.report;              // cited Markdown report
-result.citations;           // [{ sentenceSpan, claimId, sourceId, quote, verified }]
+result.citations;           // [{ sentenceSpan, claimId, sourceId, quote, status?, verified }]
 result.claims.confirmed;    // survived the full adversarial panel
 result.claims.screened;     // passed the cheap screening check only
 result.claims.contested;    // sources disagree — surfaced, not buried
