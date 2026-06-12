@@ -231,6 +231,16 @@ async function directFetch(
   { url, signal, guardRedirect }: FetchRequest,
   robots: RobotsCache,
 ): Promise<FetchAttempt> {
+  if (!guardRedirect) {
+    const initial = await guardRedirectUrl(url, {});
+    if (!initial.ok) {
+      return failed(
+        "direct_http",
+        `blocked_url: fetch of ${url} blocked: ${initial.reason}`,
+        false,
+      );
+    }
+  }
   let currentUrl = url;
   let response: Response;
   for (let hop = 0; ; hop++) {

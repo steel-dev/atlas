@@ -116,6 +116,7 @@ describe("basicFetch politeness", () => {
     const provider = basicFetch();
     const result = await provider.fetch({
       url: "https://example.com/private/page",
+      guardRedirect: async () => ({ ok: true }),
     });
     expect(result.ok).toBe(false);
     if (!result.ok) {
@@ -144,10 +145,11 @@ describe("basicFetch politeness", () => {
     }) as typeof fetch);
 
     const provider = basicFetch();
+    const allow = async (): Promise<{ ok: true }> => ({ ok: true });
     await Promise.all([
-      provider.fetch({ url: "https://a.example.com/1" }),
-      provider.fetch({ url: "https://a.example.com/2" }),
-      provider.fetch({ url: "https://b.example.org/1" }),
+      provider.fetch({ url: "https://a.example.com/1", guardRedirect: allow }),
+      provider.fetch({ url: "https://a.example.com/2", guardRedirect: allow }),
+      provider.fetch({ url: "https://b.example.org/1", guardRedirect: allow }),
     ]);
     expect(maxSameHost).toBe(1);
     expect(maxTotal).toBeGreaterThan(1);

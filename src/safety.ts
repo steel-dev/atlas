@@ -43,10 +43,7 @@ function shannonEntropy(text: string): number {
   return entropy;
 }
 
-function isPrivateIPv4(ip: string): boolean {
-  const parts = ip.split(".").map(Number);
-  if (parts.length !== 4) return false;
-  const [a, b] = parts;
+function isPrivateIPv4Octets(a: number, b: number): boolean {
   return (
     a === 0 ||
     a === 10 ||
@@ -58,15 +55,62 @@ function isPrivateIPv4(ip: string): boolean {
   );
 }
 
-function isPrivateIPv6(ip: string): boolean {
-  const lower = ip.toLowerCase();
-  if (lower === "::" || lower === "::1") return true;
-  if (lower.startsWith("fc") || lower.startsWith("fd")) return true;
-  if (lower.startsWith("fe8") || lower.startsWith("fe9")) return true;
-  if (lower.startsWith("fea") || lower.startsWith("feb")) return true;
-  if (lower.startsWith("::ffff:")) {
-    return isPrivateIPv4(lower.slice("::ffff:".length));
+function isPrivateIPv4(ip: string): boolean {
+  const parts = ip.split(".").map(Number);
+  if (parts.length !== 4) return false;
+  return isPrivateIPv4Octets(parts[0], parts[1]);
+}
+
+function parseIPv6Groups(ip: string): number[] | undefined {
+  let text = ip;
+  const zone = text.indexOf("%");
+  if (zone !== -1) text = text.slice(0, zone);
+  const v4Tail = /^(.*:)(\d+)\.(\d+)\.(\d+)\.(\d+)$/.exec(text);
+  if (v4Tail) {
+    const octets = v4Tail.slice(2, 6).map(Number);
+    if (octets.some((octet) => octet > 255)) return undefined;
+    const hi = ((octets[0] << 8) | octets[1]).toString(16);
+    const lo = ((octets[2] << 8) | octets[3]).toString(16);
+    text = `${v4Tail[1]}${hi}:${lo}`;
   }
+  const halves = text.split("::");
+  if (halves.length > 2) return undefined;
+  const parseHalf = (half: string): number[] =>
+    half === "" ? [] : half.split(":").map((group) => Number.parseInt(group, 16));
+  const head = parseHalf(halves[0]);
+  const tail = halves.length === 2 ? parseHalf(halves[1]) : [];
+  const missing = 8 - head.length - tail.length;
+  if (halves.length === 1 && head.length !== 8) return undefined;
+  if (halves.length === 2 && missing < 0) return undefined;
+  const groups = [
+    ...head,
+    ...Array.from({ length: halves.length === 2 ? missing : 0 }, () => 0),
+    ...tail,
+  ];
+  if (groups.length !== 8) return undefined;
+  if (groups.some((group) => Number.isNaN(group) || group < 0 || group > 0xffff)) {
+    return undefined;
+  }
+  return groups;
+}
+
+function isPrivateIPv6(ip: string): boolean {
+  const groups = parseIPv6Groups(ip);
+  if (!groups) return true;
+  const [g0, g1, g2, g3, g4, g5, g6, g7] = groups;
+  const embeddedV4 = (hi: number): boolean =>
+    isPrivateIPv4Octets(hi >> 8, hi & 0xff);
+  const leadingZeros = g0 === 0 && g1 === 0 && g2 === 0 && g3 === 0 && g4 === 0;
+  if (leadingZeros && g5 === 0 && g6 === 0 && (g7 === 0 || g7 === 1)) {
+    return true;
+  }
+  if ((g0 & 0xfe00) === 0xfc00) return true;
+  if ((g0 & 0xffc0) === 0xfe80) return true;
+  if (leadingZeros && g5 === 0xffff) return embeddedV4(g6);
+  if (g0 === 0x64 && g1 === 0xff9b && g2 === 0 && g3 === 0 && g4 === 0 && g5 === 0) {
+    return embeddedV4(g6);
+  }
+  if (g0 === 0x2002) return embeddedV4(g1);
   return false;
 }
 

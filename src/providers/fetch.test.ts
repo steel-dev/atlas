@@ -87,6 +87,15 @@ describe("basicFetch redirect handling", () => {
     }
   });
 
+  it("blocks a private initial URL when used standalone without a guard", async () => {
+    const provider = basicFetch();
+    const result = await provider.fetch({ url: `${base}/target` });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.attempt.note).toContain("blocked_url");
+    }
+  });
+
   it("gives up on redirect loops", async () => {
     const provider = basicFetch();
     const result = await provider.fetch({

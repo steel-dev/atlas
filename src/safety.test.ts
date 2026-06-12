@@ -21,6 +21,21 @@ describe("isPrivateAddress", () => {
     expect(isPrivateAddress("8.8.8.8")).toBe(false);
     expect(isPrivateAddress("2606:4700::1111")).toBe(false);
   });
+
+  it("flags IPv4-mapped IPv6 in both hex and dotted forms", () => {
+    expect(isPrivateAddress("::ffff:7f00:1")).toBe(true);
+    expect(isPrivateAddress("::ffff:127.0.0.1")).toBe(true);
+    expect(isPrivateAddress("::ffff:a9fe:a9fe")).toBe(true);
+    expect(isPrivateAddress("::ffff:8.8.8.8")).toBe(false);
+    expect(isPrivateAddress("::ffff:808:808")).toBe(false);
+  });
+
+  it("flags NAT64 and 6to4 addresses wrapping private IPv4", () => {
+    expect(isPrivateAddress("64:ff9b::7f00:1")).toBe(true);
+    expect(isPrivateAddress("64:ff9b::808:808")).toBe(false);
+    expect(isPrivateAddress("2002:7f00:1::")).toBe(true);
+    expect(isPrivateAddress("2002:808:808::")).toBe(false);
+  });
 });
 
 describe("guardUrl", () => {
@@ -88,6 +103,20 @@ describe("guardRedirect", () => {
     const result = await guardRedirect("http://127.0.0.1/admin", {});
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.kind).toBe("ssrf");
+  });
+
+  it("blocks alternate encodings of private addresses", async () => {
+    for (const url of [
+      "http://[::ffff:7f00:1]/admin",
+      "http://0x7f000001/admin",
+      "http://2130706433/admin",
+      "http://127.1/admin",
+      "http://0177.0.0.1/admin",
+    ]) {
+      const result = await guardRedirect(url, {});
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.kind).toBe("ssrf");
+    }
   });
 
   it("blocks non-http schemes", async () => {
