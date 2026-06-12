@@ -204,6 +204,21 @@ describe("conflictPass", () => {
     ).toHaveLength(2);
   });
 
+  it("contests only the decisively weaker side of a contradiction", async () => {
+    const ledger = await seededLedger();
+    const [strong, weak] = ledger.representatives();
+    strong.sourceQuality = "primary";
+    strong.corroboration = 3;
+    weak.sourceQuality = "forum";
+    const rctx = fakeRunCtx(ledger, [{ index: 0, verdict: "contradicts" }]);
+    const outcome = await conflictPass(rctx, createBudgetMeter(1));
+    expect(outcome.contradicted).toBe(1);
+    expect(strong.status).toBe("quoted");
+    expect(weak.status).toBe("contested");
+    expect(strong.conflictsWith).toEqual([weak.id]);
+    expect(weak.conflictsWith).toEqual([strong.id]);
+  });
+
   it("does not downgrade already-voted claims when marking conflicts", async () => {
     const ledger = await seededLedger();
     const confirmed = ledger.representatives()[0];

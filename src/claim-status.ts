@@ -1,8 +1,33 @@
-import type { ClaimVote, ResearchClaim } from "./ledger.js";
+import type {
+  ClaimSourceQuality,
+  ClaimVote,
+  ResearchClaim,
+} from "./ledger.js";
 
 export const SCREENING_LENS = "screening";
 export const REFUTATIONS_REQUIRED = 2;
 export const MIN_VOTES_TO_SETTLE = 2;
+
+export const QUALITY_RANK: Record<ClaimSourceQuality, number> = {
+  primary: 0,
+  secondary: 1,
+  blog: 2,
+  forum: 3,
+  unreliable: 4,
+};
+
+const CORROBORATION_STRENGTH_CAP = 2;
+
+export function evidenceStrength(claim: ResearchClaim): number {
+  return (
+    4 -
+    QUALITY_RANK[claim.sourceQuality] +
+    Math.min(
+      Math.max((claim.corroboration ?? 1) - 1, 0),
+      CORROBORATION_STRENGTH_CAP,
+    )
+  );
+}
 
 export function settleClaim(claim: ResearchClaim, votes: ClaimVote[]): void {
   claim.votes = votes;

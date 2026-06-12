@@ -2,7 +2,7 @@ import { generateObject } from "ai";
 import type { LanguageModelV3 } from "@ai-sdk/provider";
 import { z } from "zod";
 import { createConcurrencyGate } from "./async.js";
-import { adoptVerdictsOnMerge } from "./claim-status.js";
+import { adoptVerdictsOnMerge, QUALITY_RANK } from "./claim-status.js";
 import { errorMessage } from "./errors.js";
 import { MODEL_CALL_MAX_RETRIES } from "./model.js";
 import { QUARANTINE_NOTE, quarantine } from "./safety.js";
@@ -171,6 +171,36 @@ export function quoteSupportedByDocument(
   return quoteSupportedIn(normalizedSourceText(document), quote);
 }
 
+const MIRROR_MIN_SEGMENTS = 8;
+const MIRROR_MIN_SEGMENT_CHARS = 60;
+const MIRROR_OVERLAP_THRESHOLD = 0.8;
+
+function hashSegment(segment: string): number {
+  let hash = 5381;
+  for (let i = 0; i < segment.length; i++) {
+    hash = ((hash << 5) + hash + segment.charCodeAt(i)) | 0;
+  }
+  return hash;
+}
+
+export function contentSignature(markdown: string): Set<number> {
+  const hashes = new Set<number>();
+  for (const raw of markdown.split(/[.!?\n]+/)) {
+    const segment = normalizeForQuoteMatch(raw);
+    if (segment.length < MIRROR_MIN_SEGMENT_CHARS) continue;
+    hashes.add(hashSegment(segment));
+  }
+  return hashes;
+}
+
+function signatureOverlap(a: Set<number>, b: Set<number>): number {
+  const [small, large] = a.size <= b.size ? [a, b] : [b, a];
+  if (small.size === 0) return 0;
+  let shared = 0;
+  for (const hash of small) if (large.has(hash)) shared++;
+  return shared / small.size;
+}
+
 function shortHost(url: string): string {
   try {
     return new URL(url).hostname.replace(/^www\./, "");
@@ -268,9 +298,50 @@ export function createLedger(ctx: LedgerContext): Ledger {
   const queuedSourceIds = new Set<string>();
   const pending = new Set<{ task: Promise<void>; agentId: string }>();
   const gate = createConcurrencyGate(EXTRACTION_CONCURRENCY);
+  const sourceSignatures = new Map<string, Set<number>>();
+  const mirrorCanonical = new Map<string, string>();
   let nextClaimNumber = 1;
   let unsupportedCount = 0;
   let dupesDropped = 0;
+
+  function registerSource(document: SourceDocument): void {
+    if (sourceSignatures.has(document.sourceId)) return;
+    const signature = contentSignature(document.markdown);
+    if (signature.size >= MIRROR_MIN_SEGMENTS) {
+      for (const [sourceId, other] of sourceSignatures) {
+        if (other.size < MIRROR_MIN_SEGMENTS) continue;
+        if (signatureOverlap(signature, other) >= MIRROR_OVERLAP_THRESHOLD) {
+          mirrorCanonical.set(
+            document.sourceId,
+            mirrorCanonical.get(sourceId) ?? sourceId,
+          );
+          break;
+        }
+      }
+    }
+    sourceSignatures.set(document.sourceId, signature);
+  }
+
+  function sameOrigin(a: ResearchClaim, b: ResearchClaim): boolean {
+    return (
+      a.sourceId === b.sourceId ||
+      registrableHost(a.url) === registrableHost(b.url) ||
+      (mirrorCanonical.get(a.sourceId) ?? a.sourceId) ===
+        (mirrorCanonical.get(b.sourceId) ?? b.sourceId)
+    );
+  }
+
+  function adoptBetterQuality(
+    representative: ResearchClaim,
+    claim: ResearchClaim,
+  ): void {
+    if (
+      QUALITY_RANK[claim.sourceQuality] <
+      QUALITY_RANK[representative.sourceQuality]
+    ) {
+      representative.sourceQuality = claim.sourceQuality;
+    }
+  }
 
   function admit(claim: ResearchClaim): ResearchClaim | null {
     const textKey = normalizeForQuoteMatch(claim.text);
@@ -284,10 +355,7 @@ export function createLedger(ctx: LedgerContext): Ledger {
     }
     const representative = claimsById.get(existingId);
     if (!representative) return null;
-    const sameSource =
-      representative.sourceId === claim.sourceId ||
-      registrableHost(representative.url) === registrableHost(claim.url);
-    if (sameSource) {
+    if (sameOrigin(representative, claim)) {
       dupesDropped++;
       return null;
     }
@@ -295,6 +363,7 @@ export function createLedger(ctx: LedgerContext): Ledger {
     corroborating.add(claim.url);
     representative.corroboratingSources = [...corroborating];
     representative.corroboration = corroborating.size + 1;
+    adoptBetterQuality(representative, claim);
     claim.id = `claim_${nextClaimNumber++}`;
     claim.duplicateOf = representative.id;
     claims.push(claim);
@@ -382,6 +451,7 @@ export function createLedger(ctx: LedgerContext): Ledger {
       unsupportedCount++;
       return { outcome: "unsupported" };
     }
+    registerSource(document);
     const claim: ResearchClaim = {
       id: "",
       text: input.text,
@@ -425,6 +495,7 @@ export function createLedger(ctx: LedgerContext): Ledger {
     queuedSourceIds.add(document.sourceId);
     if (!isEvidenceSource(document)) return;
     if (!ctx.shouldExtract()) return;
+    registerSource(document);
 
     const task = gate
       .run(() => extract(document, opts))
@@ -483,11 +554,11 @@ export function createLedger(ctx: LedgerContext): Ledger {
     }
     const corroborating = new Set(rep.corroboratingSources ?? []);
     for (const url of dup.corroboratingSources ?? []) corroborating.add(url);
-    const sameSource =
-      dup.sourceId === rep.sourceId ||
-      registrableHost(dup.url) === registrableHost(rep.url);
-    if (sameSource) dupesDropped++;
-    else corroborating.add(dup.url);
+    if (sameOrigin(dup, rep)) dupesDropped++;
+    else {
+      corroborating.add(dup.url);
+      adoptBetterQuality(rep, dup);
+    }
     corroborating.delete(rep.url);
     if (corroborating.size > 0) {
       rep.corroboratingSources = [...corroborating];

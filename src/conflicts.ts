@@ -5,9 +5,14 @@ import type { BudgetGrant } from "./budget.js";
 import { MODEL_CALL_MAX_RETRIES } from "./model.js";
 import { normalizeForQuoteMatch, type ResearchClaim } from "./ledger.js";
 import type { RunCtx } from "./state.js";
-import { markContestedByConflict, voteSplit } from "./claim-status.js";
+import {
+  evidenceStrength,
+  markContestedByConflict,
+  voteSplit,
+} from "./claim-status.js";
 
 const SIMILARITY_THRESHOLD = 0.3;
+const DECISIVE_STRENGTH_GAP = 2;
 const IMPORTANCE_RANK: Record<string, number> = {
   central: 0,
   supporting: 1,
@@ -116,13 +121,18 @@ function markConflict(
 ): boolean {
   if (a.duplicateOf || b.duplicateOf || a.id === b.id) return false;
   let changed = false;
-  const link = (claim: ResearchClaim, other: ResearchClaim) => {
+  const gap = evidenceStrength(a) - evidenceStrength(b);
+  const link = (
+    claim: ResearchClaim,
+    other: ResearchClaim,
+    decisivelyStronger: boolean,
+  ) => {
     const conflicts = new Set(claim.conflictsWith ?? []);
     if (conflicts.has(other.id)) return;
     conflicts.add(other.id);
     claim.conflictsWith = [...conflicts];
     changed = true;
-    if (markContestedByConflict(claim)) {
+    if (!decisivelyStronger && markContestedByConflict(claim)) {
       rctx.emit({
         type: "claim.verified",
         claimId: claim.id,
@@ -131,8 +141,8 @@ function markConflict(
       });
     }
   };
-  link(a, b);
-  link(b, a);
+  link(a, b, gap >= DECISIVE_STRENGTH_GAP);
+  link(b, a, -gap >= DECISIVE_STRENGTH_GAP);
   return changed;
 }
 

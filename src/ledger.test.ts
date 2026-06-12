@@ -128,6 +128,86 @@ describe("ledger extraction and merge", () => {
     expect(ledger.dupesDropped).toBe(1);
   });
 
+  it("adopts the better source quality from corroborating sources", async () => {
+    const ledger = makeLedger();
+    const text = "The tower is 330 meters tall today.";
+    const claims = [
+      {
+        claim: "The tower is 330 meters tall",
+        quote: "330 meters tall",
+        importance: "central",
+      },
+    ];
+    ledger.queue(makeDocument("source_1", "https://a.example.com/1", text), {
+      goal: "g",
+      agentId: "agent_1",
+      model: extractionModel(claims, "blog"),
+    });
+    await ledger.settle();
+    ledger.queue(makeDocument("source_2", "https://b.example.org/2", text), {
+      goal: "g",
+      agentId: "agent_2",
+      model: extractionModel(claims, "primary"),
+    });
+    await ledger.settle();
+    const [representative] = ledger.representatives();
+    expect(representative.corroboration).toBe(2);
+    expect(representative.sourceQuality).toBe("primary");
+  });
+
+  it("treats syndicated mirrors as the same source", () => {
+    const ledger = makeLedger();
+    const article =
+      Array.from(
+        { length: 10 },
+        (_, i) =>
+          `Paragraph ${i} of the syndicated wire story describes the tower measurement in considerable detail for curious readers`,
+      ).join(". ") + ". The tower is 330 meters tall today.";
+    const first = makeDocument("source_1", "https://a.example.com/1", article);
+    const second = makeDocument("source_2", "https://b.example.org/2", article);
+    const input = {
+      text: "The tower is 330 meters tall",
+      quote: "330 meters tall",
+      importance: "central" as const,
+      agentId: "agent_1",
+    };
+    expect(ledger.addClaim(first, input).outcome).toBe("added");
+    const result = ledger.addClaim(second, input);
+    expect(result.outcome).toBe("duplicate");
+    if (result.outcome !== "duplicate") throw new Error("unreachable");
+    expect(result.representativeId).toBe("claim_1");
+    expect(ledger.dupesDropped).toBe(1);
+    expect(ledger.representatives()[0].corroboration).toBeUndefined();
+  });
+
+  it("keeps corroboration for distinct articles on different hosts", () => {
+    const ledger = makeLedger();
+    const sentence = "The tower is 330 meters tall today";
+    const articleA =
+      Array.from(
+        { length: 10 },
+        (_, i) =>
+          `Original reporting paragraph ${i} covers the construction history of the tower with extensive archival quotations`,
+      ).join(". ") + `. ${sentence}.`;
+    const articleB =
+      Array.from(
+        { length: 10 },
+        (_, i) =>
+          `Independent analysis paragraph ${i} examines the measurement methodology behind the tower height figure in depth`,
+      ).join(". ") + `. ${sentence}.`;
+    const first = makeDocument("source_1", "https://a.example.com/1", articleA);
+    const second = makeDocument("source_2", "https://b.example.org/2", articleB);
+    const input = {
+      text: "The tower is 330 meters tall",
+      quote: "330 meters tall",
+      importance: "central" as const,
+      agentId: "agent_1",
+    };
+    expect(ledger.addClaim(first, input).outcome).toBe("added");
+    expect(ledger.addClaim(second, input).outcome).toBe("corroborated");
+    expect(ledger.representatives()[0].corroboration).toBe(2);
+  });
+
   it("merges cross-domain duplicates as corroboration", async () => {
     const ledger = makeLedger();
     const text = "The tower is 330 meters tall today.";
