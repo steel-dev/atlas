@@ -1,10 +1,26 @@
 const RENDER_MAX_SEARCHES = 50;
 const RENDER_MAX_DEAD_ENDS = 25;
 const REASON_MAX_CHARS = 120;
+const CAP_FLOOR_SEARCHES = 30;
+const CAP_FLOOR_DEAD_ENDS = 15;
 
 export interface TrailRenderOptions {
   maxSearches?: number;
   maxDeadEnds?: number;
+}
+
+export function trailCapsFor(
+  maxSources: number,
+  fraction = 1,
+): Required<TrailRenderOptions> {
+  const maxSearches = Math.max(
+    CAP_FLOOR_SEARCHES,
+    Math.ceil(maxSources * fraction),
+  );
+  return {
+    maxSearches,
+    maxDeadEnds: Math.max(CAP_FLOOR_DEAD_ENDS, Math.ceil(maxSearches / 2)),
+  };
 }
 
 export interface Trail {

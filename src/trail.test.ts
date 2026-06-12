@@ -1,5 +1,23 @@
 import { describe, expect, it } from "vitest";
-import { createTrail } from "./trail.js";
+import { createTrail, trailCapsFor } from "./trail.js";
+
+describe("trailCapsFor", () => {
+  it("scales caps with the source budget", () => {
+    expect(trailCapsFor(250)).toEqual({ maxSearches: 250, maxDeadEnds: 125 });
+    expect(trailCapsFor(250, 0.5)).toEqual({
+      maxSearches: 125,
+      maxDeadEnds: 63,
+    });
+  });
+
+  it("floors caps for small source budgets", () => {
+    expect(trailCapsFor(15)).toEqual({ maxSearches: 30, maxDeadEnds: 15 });
+    expect(trailCapsFor(40, 0.25)).toEqual({
+      maxSearches: 30,
+      maxDeadEnds: 15,
+    });
+  });
+});
 
 describe("createTrail", () => {
   it("renders nothing when empty", () => {

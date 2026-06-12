@@ -6,6 +6,7 @@ import {
   orchestratorSystem,
 } from "./prompts.js";
 import type { RunCtx } from "./state.js";
+import { trailCapsFor } from "./trail.js";
 import type { ToolName } from "./tools.js";
 
 const ORCHESTRATOR_TOOLS: ToolName[] = [
@@ -49,7 +50,7 @@ export async function runOrchestrator(
           previousNote: opts.previousNote,
           gaps: opts.gaps,
           digest: rctx.ledger.digest(envelope.digestClaims),
-          trail: rctx.trail.render(),
+          trail: rctx.trail.render(trailCapsFor(rctx.config.maxSources)),
           remainingUSD: grant.remainingUSD(),
         })
       : orchestratorAnchor({
@@ -82,7 +83,7 @@ export async function runOrchestrator(
           reason: "context-recycled",
           previousNote: result.note,
           digest: rctx.ledger.digest(envelope.digestClaims),
-          trail: rctx.trail.render(),
+          trail: rctx.trail.render(trailCapsFor(rctx.config.maxSources)),
           remainingUSD: grant.remainingUSD(),
         }),
       ),

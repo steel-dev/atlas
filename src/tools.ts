@@ -27,6 +27,7 @@ import type { MergedSearchResult } from "./providers/search.js";
 import { ROLE_CAPABILITIES } from "./roles.js";
 import { budgetStatusLine, type RunCtx, type SourceStore } from "./state.js";
 import type { ToolContext } from "./custom-tools.js";
+import { trailCapsFor } from "./trail.js";
 import { normalizeUrlForSource } from "./url.js";
 
 export const BUILTIN_TOOL_NAMES = [
@@ -67,6 +68,7 @@ const DEFAULT_FETCH_PREVIEW_CHARS = 700;
 const MAX_FETCH_PREVIEW_CHARS = 2_000;
 const FETCH_MANY_MAX_URLS = 12;
 const FETCH_CONCURRENCY = 6;
+const LEDGER_TOOL_TRAIL_FRACTION = 0.5;
 const MIN_SOURCE_MARKDOWN_CHARS = 20;
 const THIN_SOURCE_MARKDOWN_CHARS = 300;
 const ERROR_TITLE_PATTERN =
@@ -667,7 +669,9 @@ export function buildAgentTools(
       }),
       execute: async ({ max_claims }) => {
         await rctx.ledger.flush();
-        const trail = rctx.trail.render({ maxSearches: 30, maxDeadEnds: 15 });
+        const trail = rctx.trail.render(
+          trailCapsFor(rctx.config.maxSources, LEDGER_TOOL_TRAIL_FRACTION),
+        );
         const trailSuffix = trail ? `\n\n${trail}` : "";
         const representatives = rctx.ledger.representatives();
         if (representatives.length === 0) {

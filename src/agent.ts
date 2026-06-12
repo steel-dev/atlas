@@ -8,6 +8,7 @@ import { MODEL_CALL_MAX_RETRIES, type ModelRole } from "./model.js";
 import { researchAgentSystem } from "./prompts.js";
 import { ROLE_CAPABILITIES } from "./roles.js";
 import { budgetStatusLine, type RunCtx } from "./state.js";
+import { trailCapsFor } from "./trail.js";
 import {
   buildAgentTools,
   type AgentCtx,
@@ -29,6 +30,7 @@ const RESEARCH_TOOLS: ToolName[] = [
 const TASK_PREVIEW_CHARS = 300;
 const NOTE_PREVIEW_CHARS = 600;
 const SPAWN_DIGEST_MAX_CLAIMS = 12;
+const SPAWN_TRAIL_FRACTION = 0.25;
 
 export const CONTEXT_BUDGET_STOP = "context budget reached";
 
@@ -220,11 +222,17 @@ async function executeSpawn(
   if (!grant) {
     return "Spawn refused: insufficient budget remaining — do the work inline or finish.";
   }
+  const trail = rctx.trail.render(
+    trailCapsFor(rctx.config.maxSources, SPAWN_TRAIL_FRACTION),
+  );
+  const childTask = trail
+    ? `${task}\n\nTrail so far — searches already run and fetches that dead-ended across the whole run. Do not repeat them; vary the terms or angle instead:\n${trail}`
+    : task;
   try {
     const child = await runAgent(rctx, {
       role: "research",
       modelRole: "research",
-      task,
+      task: childTask,
       system: researchAgentSystem(rctx.todayISO),
       tools: RESEARCH_TOOLS,
       grant,

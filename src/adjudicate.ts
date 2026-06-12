@@ -3,11 +3,11 @@ import { z } from "zod";
 import type { BudgetGrant } from "./budget.js";
 import { MODEL_CALL_MAX_RETRIES } from "./model.js";
 import type { RunCtx } from "./state.js";
+import { trailCapsFor } from "./trail.js";
 
 const ADJUDICATION_MAX_TOKENS = 800;
 const ADJUDICATION_DIGEST_CLAIMS = 80;
-const ADJUDICATION_TRAIL_SEARCHES = 30;
-const ADJUDICATION_TRAIL_DEAD_ENDS = 15;
+const ADJUDICATION_TRAIL_FRACTION = 0.25;
 
 const coverageSchema = z.object({
   answered: z.boolean(),
@@ -30,10 +30,9 @@ export async function adjudicateCoverage(
   closingNote: string,
 ): Promise<CoverageVerdict | null> {
   if (grant.floored()) return null;
-  const trail = rctx.trail.render({
-    maxSearches: ADJUDICATION_TRAIL_SEARCHES,
-    maxDeadEnds: ADJUDICATION_TRAIL_DEAD_ENDS,
-  });
+  const trail = rctx.trail.render(
+    trailCapsFor(rctx.config.maxSources, ADJUDICATION_TRAIL_FRACTION),
+  );
   try {
     const result = await generateObject({
       model: rctx.bindModel("verify", grant),
