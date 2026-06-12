@@ -59,6 +59,7 @@ export async function runOrchestrator(
           budgetUSD: rctx.config.budgetUSD,
           depthCap: rctx.config.envelope.depthCap,
           breadthCap: rctx.config.envelope.breadthCap,
+          minFacets: rctx.config.envelope.minFacets,
         });
 
   const claimsAdded: string[] = [];

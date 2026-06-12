@@ -3,6 +3,7 @@ import type {
   ClaimVote,
   ResearchClaim,
 } from "./ledger.js";
+import { NEUTRAL_RECENCY, recencyScore } from "./recency.js";
 
 export const SCREENING_LENS = "screening";
 export const REFUTATIONS_REQUIRED = 2;
@@ -18,14 +19,28 @@ export const QUALITY_RANK: Record<ClaimSourceQuality, number> = {
 
 const CORROBORATION_STRENGTH_CAP = 2;
 
-export function evidenceStrength(claim: ResearchClaim): number {
-  return (
+// Recency shifts evidence strength by at most ±this much, so the swing between
+// a fresh and a stale claim stays below DECISIVE_STRENGTH_GAP (2): recency can
+// tip a sub-decisive quality tie toward the newer source without ever
+// overturning a decisive quality/corroboration gap on its own.
+const RECENCY_STRENGTH_SWING = 0.75;
+
+export function evidenceStrength(
+  claim: ResearchClaim,
+  todayISO?: string,
+): number {
+  const base =
     4 -
     QUALITY_RANK[claim.sourceQuality] +
     Math.min(
       Math.max((claim.corroboration ?? 1) - 1, 0),
       CORROBORATION_STRENGTH_CAP,
-    )
+    );
+  if (!todayISO) return base;
+  return (
+    base +
+    (recencyScore(claim.publishedTime, todayISO) - NEUTRAL_RECENCY) *
+      (RECENCY_STRENGTH_SWING / NEUTRAL_RECENCY)
   );
 }
 

@@ -375,6 +375,81 @@ export function searchSourceDocuments(
   );
 }
 
+const EXTRACTION_GAP_MARKER = "\n\n[…]\n\n";
+
+// Build the text window handed to claim extraction. Instead of head-truncating
+// a long document (and silently dropping mid/late-document answers), score each
+// chunk against the research goal, always keep the lead chunk, and fill the
+// char budget with the highest-scoring chunks — reassembled in document order
+// with a gap marker between non-adjacent chunks. Every selected chunk is a
+// verbatim substring of document.markdown, so quotes drawn from the window
+// still string-match the full stored source.
+export function selectExtractionWindow(
+  document: SourceDocument,
+  query: string,
+  maxChars: number,
+): { text: string; truncated: boolean } {
+  if (document.markdown.length <= maxChars) {
+    return { text: document.markdown, truncated: false };
+  }
+  const terms = searchTerms(query);
+  const scored = document.chunks.map((chunk) => {
+    const chunkLower = document.markdown
+      .slice(chunk.start, chunk.end)
+      .toLowerCase();
+    let score = 0;
+    for (const term of terms) {
+      score += countOccurrences(chunkLower, term) * Math.max(1, term.length);
+    }
+    return { chunk, score };
+  });
+
+  const selected = new Set<number>();
+  let used = 0;
+  const take = (index: number): void => {
+    if (selected.has(index)) return;
+    const chunk = document.chunks[index];
+    if (!chunk) return;
+    const length = chunk.end - chunk.start;
+    if (selected.size > 0 && used + length > maxChars) return;
+    selected.add(index);
+    used += length;
+  };
+
+  // The lead chunk usually carries the abstract/headline/byline, so anchor on
+  // it even when later passages score higher.
+  take(0);
+  for (const { chunk, score } of [...scored].sort((a, b) => b.score - a.score)) {
+    if (used >= maxChars) break;
+    if (score === 0) break;
+    take(chunk.index);
+  }
+  // No term matched anywhere — fall back to filling the budget head-first so a
+  // query-less or off-vocabulary extraction still sees contiguous text.
+  if (selected.size <= 1 && terms.length > 0) {
+    for (const chunk of document.chunks) {
+      if (used >= maxChars) break;
+      take(chunk.index);
+    }
+  }
+
+  const ordered = [...selected].sort((a, b) => a - b);
+  let text = "";
+  let previous = -1;
+  for (const index of ordered) {
+    const chunk = document.chunks[index];
+    if (!chunk) continue;
+    if (previous !== -1 && index !== previous + 1) text += EXTRACTION_GAP_MARKER;
+    text += document.markdown.slice(chunk.start, chunk.end);
+    previous = index;
+  }
+  // Backstop the char budget: the lead chunk is taken whole even when it alone
+  // overruns, and chunk granularity can overshoot by part of a chunk. The tail
+  // slice stays a verbatim substring, so quotes still string-match.
+  if (text.length > maxChars) text = text.slice(0, maxChars);
+  return { text, truncated: true };
+}
+
 function searchTerms(query: string): string[] {
   const quoted = Array.from(query.matchAll(/"([^"]+)"/g))
     .map((match) => match[1]?.trim().toLowerCase())

@@ -19,6 +19,7 @@ import {
   settleClaim,
   voteSplit,
 } from "./claim-status.js";
+import { isTimeSensitive } from "./recency.js";
 
 export { SCREENING_LENS, settleClaim, voteSplit } from "./claim-status.js";
 
@@ -169,6 +170,8 @@ const SCREEN_MAX_TOKENS = 700;
 const SCREEN_SYSTEM =
   "You are a fast screening verifier for one claim from a research run. Judge from the provided quote and its surrounding context only — no tools. " +
   "Decide (1) whether the quote, in context, supports the claim as stated without overreach, and (2) whether the page looks like real evidence rather than spam, an error page, or ads. " +
+  "Treat marketing copy, press releases, vendor self-description, cherry-picked benchmarks, and forum speculation as weak evidence: source_is_evidence stays true only if the page is genuinely informative, but drop to low confidence for such material. " +
+  "When the question is time-sensitive and the source is visibly stale, lower confidence — a screening pass cannot confirm an outdated figure is still current. " +
   "Be calibrated: report low confidence whenever the context is too thin to be sure.\n\n" +
   QUARANTINE_NOTE +
   " " +
@@ -185,6 +188,8 @@ function screenPrompt(
   question: string,
   claim: ResearchClaim,
   context: string | undefined,
+  timeSensitive: boolean,
+  todayISO: string,
 ): string {
   return (
     "## Claim under screening\n" +
@@ -197,6 +202,9 @@ function screenPrompt(
         "\n\n"
       : "") +
     `Research question: "${question}"\n\n` +
+    (timeSensitive
+      ? `Today is ${todayISO} and this question is time-sensitive: weigh whether the source is recent enough for the claim to still hold.\n\n`
+      : "") +
     "Judge support and evidence quality, then return the structured verdict."
   );
 }
@@ -224,7 +232,13 @@ export async function screenClaim(
     const result = await generateObject({
       model: rctx.bindModel("verify", grant),
       system: SCREEN_SYSTEM,
-      prompt: screenPrompt(rctx.question, claim, context),
+      prompt: screenPrompt(
+        rctx.question,
+        claim,
+        context,
+        isTimeSensitive(rctx.question),
+        rctx.todayISO,
+      ),
       schema: screenSchema,
       maxOutputTokens: SCREEN_MAX_TOKENS,
       maxRetries: MODEL_CALL_MAX_RETRIES,

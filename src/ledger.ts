@@ -6,6 +6,7 @@ import { adoptVerdictsOnMerge, QUALITY_RANK } from "./claim-status.js";
 import { errorMessage } from "./errors.js";
 import { MODEL_CALL_MAX_RETRIES } from "./model.js";
 import { QUARANTINE_NOTE, quarantine } from "./safety.js";
+import { selectExtractionWindow } from "./source-documents.js";
 import type { ResearchEvent } from "./events.js";
 import type { SourceDocument } from "./sources.js";
 
@@ -99,11 +100,11 @@ function extractionPrompt(
   maxClaims: number,
   inputChars: number,
 ): string {
-  const text = document.markdown.slice(0, inputChars);
-  const truncationNote =
-    document.markdown.length > inputChars
-      ? `\n(Source text truncated at ${inputChars} of ${document.markdown.length} characters.)`
-      : "";
+  const window = selectExtractionWindow(document, goal, inputChars);
+  const text = window.text;
+  const truncationNote = window.truncated
+    ? `\n(Source is ${document.markdown.length} characters; showing the ${text.length} most relevant to the research goal. "[…]" marks omitted spans — quote only from the text shown above.)`
+    : "";
   return (
     "## Source claim extractor\n\n" +
     `Research goal: "${goal}"\n\n` +

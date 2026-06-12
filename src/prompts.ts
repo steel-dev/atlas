@@ -59,10 +59,16 @@ export function orchestratorAnchor(opts: {
   budgetUSD: number;
   depthCap: number;
   breadthCap: number;
+  minFacets: number;
 }): string {
+  const floor =
+    opts.minFacets >= 2
+      ? `Coverage floor (a hard requirement, not a suggestion): unless this is a single-lookup question you can settle inline, you must cover at least ${opts.minFacets} complementary facets of the question before you stop — and at least one of them must be adversarial, actively seeking disagreement, more recent figures, or counter-evidence rather than only sources that confirm. Do not end the research stage while the ledger covers fewer than ${opts.minFacets} distinct facets. This is a floor on breadth and skepticism, not a quota: a genuinely simple question still answers inline, and once the floor is met a well-covered ledger need not be padded.\n\n`
+      : "";
   return (
     `Research question: ${opts.question}\n\n` +
     `Run envelope: effort ${opts.effort}, budget ≈$${opts.budgetUSD.toFixed(2)}, spawn depth cap ${opts.depthCap}, at most ${opts.breadthCap} spawns per turn.\n\n` +
+    floor +
     "State your plan, then execute it. Remember: a turn with no tool calls ends the research stage."
   );
 }

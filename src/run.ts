@@ -36,6 +36,7 @@ import {
   capPartitionForReport,
   fallbackReportFromClaims,
   partitionClaims,
+  recencyContext,
   repairReport,
   synthesizeReport,
   type ClaimPartition,
@@ -330,6 +331,7 @@ async function executeRun(args: ExecuteRunArgs): Promise<ResearchResult> {
   const partition = partitionClaims(
     ledger.claims,
     resolved.envelope.maxReportCandidates,
+    recencyContext(rctx),
   );
   const outputs = await composeOutputs(rctx, synthesisGrant, args, {
     partition,
@@ -596,6 +598,7 @@ async function composeOutputs(
       const capped = capPartitionForReport(
         partition,
         rctx.config.envelope.maxReportClaims,
+        recencyContext(rctx),
       ).partition;
       return await synthesizeStructured(rctx, grant, {
         schema: rctx.config.output.schema,

@@ -6,6 +6,7 @@ import { todayLine } from "./prompts.js";
 import type { RunCtx } from "./state.js";
 import { buildAgentTools, type AgentCtx, type ToolName } from "./tools.js";
 import { voteSplit } from "./verify.js";
+import { isTimeSensitive, recencyScore } from "./recency.js";
 import type { ResearchClaim } from "./ledger.js";
 
 const WRITE_MAX_TURNS = 8;
@@ -36,20 +37,52 @@ export interface ClaimPartition {
 
 const CONTESTED_RENDER_FLOOR = 12;
 
-function reportClaimRank(a: ResearchClaim, b: ResearchClaim): number {
-  return (
-    CANDIDATE_IMPORTANCE_RANK[a.importance] -
-      CANDIDATE_IMPORTANCE_RANK[b.importance] ||
-    (b.corroboration ?? 1) - (a.corroboration ?? 1) ||
-    CANDIDATE_QUALITY_RANK[a.sourceQuality] -
-      CANDIDATE_QUALITY_RANK[b.sourceQuality]
-  );
+// Claims this far apart in recency are ordered fresh-first ahead of the usual
+// importance/corroboration tie-breakers, but only for time-sensitive questions.
+const RECENCY_RANK_MARGIN = 0.2;
+
+export interface RecencyContext {
+  todayISO: string;
+  timeSensitive: boolean;
+}
+
+function recencyOf(claim: ResearchClaim, recency: RecencyContext): number {
+  return recencyScore(claim.publishedTime, recency.todayISO);
+}
+
+export function recencyContext(rctx: RunCtx): RecencyContext {
+  return {
+    todayISO: rctx.todayISO,
+    timeSensitive: isTimeSensitive(rctx.question),
+  };
+}
+
+function makeReportClaimRank(
+  recency?: RecencyContext,
+): (a: ResearchClaim, b: ResearchClaim) => number {
+  return (a, b) => {
+    if (recency?.timeSensitive) {
+      const delta = recencyOf(b, recency) - recencyOf(a, recency);
+      if (Math.abs(delta) >= RECENCY_RANK_MARGIN) return delta;
+    }
+    const base =
+      CANDIDATE_IMPORTANCE_RANK[a.importance] -
+        CANDIDATE_IMPORTANCE_RANK[b.importance] ||
+      (b.corroboration ?? 1) - (a.corroboration ?? 1) ||
+      CANDIDATE_QUALITY_RANK[a.sourceQuality] -
+        CANDIDATE_QUALITY_RANK[b.sourceQuality];
+    if (base !== 0) return base;
+    if (recency) return recencyOf(b, recency) - recencyOf(a, recency);
+    return 0;
+  };
 }
 
 export function capPartitionForReport(
   partition: ClaimPartition,
   maxClaims: number,
+  recency?: RecencyContext,
 ): { partition: ClaimPartition; omitted: number } {
+  const reportClaimRank = makeReportClaimRank(recency);
   const total =
     partition.confirmed.length +
     partition.screened.length +
@@ -81,6 +114,7 @@ export function capPartitionForReport(
 export function partitionClaims(
   claims: ResearchClaim[],
   maxCandidates: number = MAX_REPORT_CANDIDATES,
+  recency?: RecencyContext,
 ): ClaimPartition {
   const representatives = claims.filter((claim) => !claim.duplicateOf);
   const confirmed = representatives.filter(
@@ -98,13 +132,20 @@ export function partitionClaims(
   );
   const candidates = unverified
     .slice()
-    .sort(
-      (a, b) =>
+    .sort((a, b) => {
+      if (recency?.timeSensitive) {
+        const delta = recencyOf(b, recency) - recencyOf(a, recency);
+        if (Math.abs(delta) >= RECENCY_RANK_MARGIN) return delta;
+      }
+      const base =
         CANDIDATE_IMPORTANCE_RANK[a.importance] -
           CANDIDATE_IMPORTANCE_RANK[b.importance] ||
         CANDIDATE_QUALITY_RANK[a.sourceQuality] -
-          CANDIDATE_QUALITY_RANK[b.sourceQuality],
-    )
+          CANDIDATE_QUALITY_RANK[b.sourceQuality];
+      if (base !== 0) return base;
+      if (recency) return recencyOf(b, recency) - recencyOf(a, recency);
+      return 0;
+    })
     .slice(0, maxCandidates);
   return { confirmed, screened, contested, refuted, candidates };
 }
@@ -335,6 +376,7 @@ export async function synthesizeReport(
   const capped = capPartitionForReport(
     opts.partition,
     rctx.config.envelope.maxReportClaims,
+    recencyContext(rctx),
   );
   rctx.emit({ type: "report.drafting" });
   const actx: AgentCtx = {

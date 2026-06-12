@@ -121,7 +121,8 @@ function markConflict(
 ): boolean {
   if (a.duplicateOf || b.duplicateOf || a.id === b.id) return false;
   let changed = false;
-  const gap = evidenceStrength(a) - evidenceStrength(b);
+  const gap =
+    evidenceStrength(a, rctx.todayISO) - evidenceStrength(b, rctx.todayISO);
   const link = (
     claim: ResearchClaim,
     other: ResearchClaim,

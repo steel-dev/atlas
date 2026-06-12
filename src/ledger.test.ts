@@ -383,7 +383,7 @@ describe("ledger extraction window", () => {
       { goal: "g", agentId: "agent_1", model },
     );
     await ledger.settle();
-    expect(prompt).toContain("truncated at 260");
+    expect(prompt).toContain("Source is 600 characters; showing the 260");
   });
 });
 

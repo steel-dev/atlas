@@ -18,6 +18,7 @@ export interface EffortEnvelope {
   depthCap: number;
   breadthCap: number;
   maxSources: number;
+  minFacets: number;
   maxTurns: number;
   maxSubagentTurns: number;
   maxEntailmentChecks: number;
@@ -45,6 +46,7 @@ export const EFFORT_ENVELOPES: Record<Effort, EffortEnvelope> = {
     depthCap: 1,
     breadthCap: 1,
     maxSources: 15,
+    minFacets: 1,
     maxTurns: 30,
     maxSubagentTurns: 15,
     maxEntailmentChecks: 0,
@@ -70,6 +72,7 @@ export const EFFORT_ENVELOPES: Record<Effort, EffortEnvelope> = {
     depthCap: 2,
     breadthCap: 4,
     maxSources: 40,
+    minFacets: 3,
     maxTurns: 60,
     maxSubagentTurns: 30,
     maxEntailmentChecks: 60,
@@ -95,6 +98,7 @@ export const EFFORT_ENVELOPES: Record<Effort, EffortEnvelope> = {
     depthCap: 3,
     breadthCap: 8,
     maxSources: 100,
+    minFacets: 4,
     maxTurns: 100,
     maxSubagentTurns: 50,
     maxEntailmentChecks: 150,
@@ -120,6 +124,7 @@ export const EFFORT_ENVELOPES: Record<Effort, EffortEnvelope> = {
     depthCap: 4,
     breadthCap: 12,
     maxSources: 250,
+    minFacets: 5,
     maxTurns: 150,
     maxSubagentTurns: 75,
     maxEntailmentChecks: 400,
