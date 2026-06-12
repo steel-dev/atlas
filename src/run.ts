@@ -122,7 +122,7 @@ async function sweepVerification(
       if (reserve.floored() || rctx.signal?.aborted) return;
       const grant = reserve.grant({
         fraction: ECONOMY.verifySweep.fraction,
-        minUSD: ECONOMY.verifySweep.minUSD,
+        minUSD: rctx.config.envelope.panelGrantUSD,
       });
       if (!grant) return;
       try {

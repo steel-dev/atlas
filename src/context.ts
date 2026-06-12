@@ -224,7 +224,7 @@ export async function assembleRun(args: AssembleRunArgs): Promise<RunAssembly> {
     if (rctx.stopReason()) return;
     const grant = verifyReserve.grant({
       fraction: ECONOMY.verifySweep.fraction,
-      minUSD: ECONOMY.verifySweep.minUSD,
+      minUSD: resolved.envelope.panelGrantUSD,
     });
     if (!grant) return;
     eagerVerifyStarted++;

@@ -2,6 +2,7 @@ import { MockLanguageModelV3 } from "ai/test";
 import { describe, expect, it } from "vitest";
 import { runVerifySpawn, screenClaim, settleClaim, voteSplit } from "./verify.js";
 import { createBudgetMeter } from "./budget.js";
+import { EFFORT_ENVELOPES } from "./config.js";
 import type { ClaimVote, ResearchClaim } from "./ledger.js";
 import { createSourceDocument } from "./source-documents.js";
 import type { RunCtx } from "./state.js";
@@ -48,6 +49,7 @@ function screenModel(verdict: {
 function screeningRctx(
   claims: ResearchClaim[],
   model: MockLanguageModelV3,
+  envelope = EFFORT_ENVELOPES.balanced,
 ): RunCtx {
   const markdown =
     "According to the official register, the quote text appears here.".padEnd(
@@ -64,6 +66,7 @@ function screeningRctx(
   );
   return {
     question: "test question",
+    config: { envelope },
     ledger: {
       byId: (id: string) => claims.find((claim) => claim.id === id),
     },
@@ -203,6 +206,85 @@ describe("runVerifySpawn staged verification", () => {
     expect(screened.votes).toHaveLength(1);
   });
 
+  it("screens central claims when the grant is below the effort's panel grant", async () => {
+    const central = claim();
+    const rctx = screeningRctx(
+      [central],
+      screenModel({
+        quote_supports_claim: true,
+        source_is_evidence: true,
+        confidence: "high",
+        note: "context plainly supports the claim",
+      }),
+      EFFORT_ENVELOPES.max,
+    );
+    const outcome = await runVerifySpawn(rctx, {
+      claimIds: ["claim_1"],
+      grant: createBudgetMeter(0.5),
+      parentId: "agent_1",
+      depth: 1,
+    });
+    expect(outcome.verdicts).toHaveLength(1);
+    expect(outcome.verdicts[0].status).toBe("screened");
+    expect(central.votes).toHaveLength(1);
+    expect(central.votes[0].lens).toBe("screening");
+  });
+
+  it("runs the panel on the envelope's panel model role", async () => {
+    const central = claim();
+    const boundRoles: string[] = [];
+    const model = screenModel({
+      quote_supports_claim: true,
+      source_is_evidence: true,
+      confidence: "high",
+      note: "unused",
+    });
+    const verdictModel = new MockLanguageModelV3({
+      doGenerate: async () => ({
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({
+              refuted: false,
+              evidence: "checked",
+              confidence: "high",
+            }),
+          },
+        ],
+        finishReason: { unified: "stop", raw: undefined },
+        usage: {
+          inputTokens: { total: 100, noCache: 100, cacheRead: 0, cacheWrite: 0 },
+          outputTokens: { total: 50, text: 50, reasoning: 0 },
+        },
+        warnings: [],
+      }),
+    });
+    const rctx = screeningRctx([central], model, EFFORT_ENVELOPES.max);
+    Object.assign(rctx as unknown as Record<string, unknown>, {
+      ledger: {
+        byId: (id: string) => (id === "claim_1" ? central : undefined),
+        claims: [],
+      },
+      counters: { claimsVerified: 0, agentsSpawned: 0, maxDepth: 0 },
+      agentSequence: { next: 1 },
+      bindModel: (role: string) => {
+        boundRoles.push(role);
+        return verdictModel;
+      },
+    });
+    const outcome = await runVerifySpawn(rctx, {
+      claimIds: ["claim_1"],
+      grant: createBudgetMeter(2),
+      parentId: "agent_1",
+      depth: 1,
+    });
+    expect(outcome.verdicts).toHaveLength(1);
+    expect(outcome.verdicts[0].status).toBe("confirmed");
+    expect(central.votes).toHaveLength(3);
+    expect(boundRoles).toContain("lead");
+    expect(boundRoles).not.toContain("verify");
+  });
+
   it("escalates conflicted claims to the panel instead of the screen", async () => {
     const conflicted = claim();
     conflicted.importance = "supporting";
@@ -228,6 +310,7 @@ describe("runVerifySpawn staged verification", () => {
 describe("runVerifySpawn dedup", () => {
   function rctxFor(claims: ResearchClaim[]): RunCtx {
     return {
+      config: { envelope: EFFORT_ENVELOPES.balanced },
       ledger: {
         byId: (id: string) => claims.find((claim) => claim.id === id),
       },

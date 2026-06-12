@@ -3,7 +3,6 @@ import { z } from "zod";
 import { mapWithConcurrency } from "./async.js";
 import { runAgent } from "./agent.js";
 import type { BudgetGrant } from "./budget.js";
-import { ECONOMY } from "./economy.js";
 import { MODEL_CALL_MAX_RETRIES } from "./model.js";
 import { LEDGER_DATA_NOTE, QUARANTINE_NOTE, quarantine } from "./safety.js";
 import type {
@@ -36,7 +35,6 @@ export const ALL_LENSES: VerifierLens[] = [
 
 const MAX_CLAIMS_PER_SPAWN = 8;
 const CLAIM_CONCURRENCY = 4;
-const VOTER_MAX_TURNS = 6;
 const VOTER_STEP_MAX_TOKENS = 1_200;
 const VERDICT_MAX_TOKENS = 600;
 
@@ -121,20 +119,21 @@ async function castVote(
             .filter((rival): rival is ResearchClaim => rival !== undefined)
         : [];
     const task = voterPrompt(rctx.question, claim, lens, rivals);
+    const envelope = rctx.config.envelope;
     const tools =
-      lens === "contradiction" && rctx.config.envelope.verifierFetch
+      lens === "contradiction" && envelope.verifierFetch
         ? [...LENS_TOOLS[lens], "fetch" as ToolName]
         : LENS_TOOLS[lens];
     const voter = await runAgent(rctx, {
       role: "verify",
-      modelRole: "verify",
+      modelRole: envelope.panelModelRole,
       task,
       system: VERIFIER_SYSTEM,
       tools,
       grant: args.grant,
       depth: args.depth,
       parentId: args.parentId,
-      maxTurns: VOTER_MAX_TURNS,
+      maxTurns: envelope.verifierMaxTurns,
       maxOutputTokensPerStep: VOTER_STEP_MAX_TOKENS,
       captureMessages: true,
     });
@@ -149,7 +148,7 @@ async function castVote(
       },
     ];
     const verdict = await generateObject({
-      model: rctx.bindModel("verify", args.grant),
+      model: rctx.bindModel(envelope.panelModelRole, args.grant),
       system: VERIFIER_SYSTEM,
       messages: transcript,
       schema: verdictSchema,
@@ -302,7 +301,7 @@ export async function runVerifySpawn(
     const conflicted = (claim.conflictsWith?.length ?? 0) > 0;
     const panelAffordable =
       lensesExplicit ||
-      args.grant.remainingUSD() >= ECONOMY.panelMinRemainingUSD;
+      args.grant.remainingUSD() >= rctx.config.envelope.panelGrantUSD;
     if (conflicted && !panelAffordable) {
       verdicts.push(verdictOf(claim));
       return;

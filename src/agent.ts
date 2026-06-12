@@ -291,7 +291,7 @@ async function executeVerifySpawn(
   }
   const grant = rctx.verifyReserve.grant({
     fraction: input.budget_fraction ?? ECONOMY.verifySpawn.fraction,
-    minUSD: ECONOMY.verifySpawn.minUSD,
+    minUSD: rctx.config.envelope.panelGrantUSD,
   });
   if (!grant) {
     return "Spawn refused: verification budget reserve is exhausted — finish and report.";

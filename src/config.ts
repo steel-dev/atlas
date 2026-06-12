@@ -29,6 +29,9 @@ export interface EffortEnvelope {
   maxAdjudicationRounds: number;
   verifyReserveFraction: number;
   verifierFetch: boolean;
+  verifierMaxTurns: number;
+  panelModelRole: ModelRole;
+  panelGrantUSD: number;
   leadContextTokens: number;
   maxLeadSessions: number;
   digestClaims: number;
@@ -53,6 +56,9 @@ export const EFFORT_ENVELOPES: Record<Effort, EffortEnvelope> = {
     maxAdjudicationRounds: 1,
     verifyReserveFraction: 0.2,
     verifierFetch: false,
+    verifierMaxTurns: 6,
+    panelModelRole: "verify",
+    panelGrantUSD: 0.04,
     leadContextTokens: 80_000,
     maxLeadSessions: 4,
     digestClaims: 30,
@@ -75,6 +81,9 @@ export const EFFORT_ENVELOPES: Record<Effort, EffortEnvelope> = {
     maxAdjudicationRounds: 1,
     verifyReserveFraction: 0.2,
     verifierFetch: false,
+    verifierMaxTurns: 6,
+    panelModelRole: "verify",
+    panelGrantUSD: 0.04,
     leadContextTokens: 80_000,
     maxLeadSessions: 6,
     digestClaims: 60,
@@ -97,6 +106,9 @@ export const EFFORT_ENVELOPES: Record<Effort, EffortEnvelope> = {
     maxAdjudicationRounds: 2,
     verifyReserveFraction: 0.25,
     verifierFetch: false,
+    verifierMaxTurns: 8,
+    panelModelRole: "lead",
+    panelGrantUSD: 0.35,
     leadContextTokens: 120_000,
     maxLeadSessions: 8,
     digestClaims: 90,
@@ -119,6 +131,9 @@ export const EFFORT_ENVELOPES: Record<Effort, EffortEnvelope> = {
     maxAdjudicationRounds: 3,
     verifyReserveFraction: 0.3,
     verifierFetch: true,
+    verifierMaxTurns: 12,
+    panelModelRole: "lead",
+    panelGrantUSD: 0.8,
     leadContextTokens: 160_000,
     maxLeadSessions: 12,
     digestClaims: 120,

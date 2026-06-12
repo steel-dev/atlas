@@ -33,7 +33,7 @@ Long runs don't stall out: when the lead's context fills, it re-anchors in a fre
 | ----- | ------------ |
 | **Plan** | Inline answer or spawn workers on facets (`plan.updated`) |
 | **Act** | Search, fetch, extract verbatim-quoted claims into a shared ledger |
-| **Verify** | Screen cheaply; central claims get a 3-lens adversarial panel |
+| **Verify** | Screen cheaply; central claims get a 3-lens adversarial panel — run on the lead model at `deep`/`max` |
 | **Bind** | Draft → sentence-level citation check → repair or drop failures |
 
 ```
@@ -136,7 +136,7 @@ const atlas = new Atlas({
 });
 ```
 
-**Models per role:** override `models.extract` / `models.verify` (defaults to a small sibling for Anthropic/OpenAI when keys are present).
+**Models per role:** override `models.extract` / `models.verify` (defaults to a small sibling for Anthropic/OpenAI when keys are present). Screening and entailment checks always run on `models.verify`; at `deep`/`max` the adversarial panel escalates to the lead model with more turns per verifier.
 
 **Concurrency:** `concurrency: { models: 8, io: 10 }` or `ATLAS_MODEL_CONCURRENCY` / `ATLAS_IO_CONCURRENCY`.
 
