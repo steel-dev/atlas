@@ -121,6 +121,8 @@ One meter for everything. Set effort or cap with `budget.maxUSD`.
 await atlas.research(question, { effort: "deep", budget: { maxUSD: 5 } });
 ```
 
+`maxUSD` is a best-effort target, not a hard ceiling. Cost is metered per model call and the budget is checked between agent turns: a run stops *starting* new work once the meter is spent, but can still overshoot. In-flight calls (up to `concurrency.models` at a time) are billed at their actual cost only after they return, so the figures above are typical totals, not guarantees — leave headroom, or set a provider-side spend limit, when the cap is hard.
+
 ## Safety
 
 Untrusted web content is quarantined (data, not instructions). Fetches pass SSRF guards hop-by-hop; `run_code` runs in an isolated subprocess. Direct fetch honors robots.txt.
