@@ -323,7 +323,10 @@ function spawnResult(n: number): LanguageModelV3GenerateResult {
   };
 }
 
-function leadThatSpawns(attempts: number): MockLanguageModelV3 {
+function leadThatSpawns(
+  attempts: number,
+  captured?: string[],
+): MockLanguageModelV3 {
   let leadTurns = 0;
   return new MockLanguageModelV3({
     provider: "mock-provider",
@@ -333,6 +336,7 @@ function leadThatSpawns(attempts: number): MockLanguageModelV3 {
         return textResult(JSON.stringify({ openQuestions: [] }));
       }
       if (systemText(options).includes("lead agent")) {
+        captured?.push(JSON.stringify(options.prompt));
         leadTurns++;
         return leadTurns <= attempts
           ? spawnResult(leadTurns)
@@ -343,10 +347,42 @@ function leadThatSpawns(attempts: number): MockLanguageModelV3 {
   });
 }
 
+function leadThatKeepsSearching(): MockLanguageModelV3 {
+  let searches = 0;
+  return new MockLanguageModelV3({
+    provider: "mock-provider",
+    modelId: "claude-sonnet-4-6",
+    doGenerate: async (options: LanguageModelV3CallOptions) => {
+      if (options.responseFormat?.type === "json") {
+        return textResult(JSON.stringify({ openQuestions: [] }));
+      }
+      if (systemText(options).includes("lead agent")) {
+        searches++;
+        return {
+          content: [
+            { type: "text", text: `Searching round ${searches}.` },
+            {
+              type: "tool-call",
+              toolCallId: `call_${searches}`,
+              toolName: "search",
+              input: JSON.stringify({ queries: [`angle ${searches}`] }),
+            },
+          ],
+          finishReason: { unified: "tool-calls", raw: undefined },
+          usage: USAGE,
+          warnings: [],
+        };
+      }
+      return textResult("Synthesis: nothing further. Findings: none.");
+    },
+  });
+}
+
 describe("hard caps", () => {
   it("refuses research spawns once the run-wide agent cap is reached", async () => {
+    const prompts: string[] = [];
     const atlas = new Atlas({
-      model: leadThatSpawns(6) as unknown as ResolvedModel,
+      model: leadThatSpawns(6, prompts) as unknown as ResolvedModel,
       search: stubSearch,
       effort: "balanced",
       budget: { maxAgents: 3, maxUSD: 100 },
@@ -358,21 +394,28 @@ describe("hard caps", () => {
     expect(result.stats.agentsSpawned).toBe(3);
     expect(result.stats.agentCapReached).toBe(true);
     expect(result.stats.maxDepth).toBe(1);
+    expect(
+      prompts.some((prompt) =>
+        prompt.includes("research-agent cap (3) reached"),
+      ),
+    ).toBe(true);
   });
 
-  it("stops the run once the token cap is reached", async () => {
+  it("stops a runaway research loop once the token cap is reached", async () => {
     const atlas = new Atlas({
-      model: scriptedModel() as unknown as ResolvedModel,
+      model: leadThatKeepsSearching() as unknown as ResolvedModel,
       search: stubSearch,
       effort: "fast",
-      budget: { maxTokens: 500, maxUSD: 100 },
+      budget: { maxTokens: 3_000, maxUSD: 100 },
     });
     const run = atlas.start("test question", { runId: "run_token_cap" });
     const result = await run.result();
 
     expect(run.status()).toBe("completed");
     expect(result.stats.tokensExhausted).toBe(true);
-    expect(result.stats.searches).toBeLessThanOrEqual(1);
+    expect(result.stats.budgetExhausted).toBe(false);
+    expect(result.stats.searches).toBeGreaterThanOrEqual(1);
+    expect(result.stats.searches).toBeLessThan(10);
   });
 
   it("leaves both flags clear on a run that stays within its caps", async () => {
