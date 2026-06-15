@@ -125,7 +125,7 @@ await atlas.research(question, { effort: "deep", budget: { maxUSD: 5 } });
 
 ## Safety
 
-Untrusted web content is quarantined (data, not instructions). Fetches pass SSRF guards hop-by-hop; `run_code` runs in an isolated subprocess. Direct fetch honors robots.txt.
+Untrusted web content is quarantined (data, not instructions). Fetches pass SSRF guards hop-by-hop; `run_code` runs in a memory-capped V8 isolate with no network, filesystem, or host access. Direct fetch honors robots.txt.
 
 The SSRF guard validates each hostname's DNS resolution at check time but cannot pin the subsequent connection to the validated address, so an attacker controlling DNS can defeat it via rebinding. Treat it as defense-in-depth: when researching potentially hostile targets, run Atlas behind network-level egress controls that block private ranges.
 

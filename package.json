@@ -70,5 +70,8 @@
   "repository": {
     "type": "git",
     "url": "git+https://github.com/steel-experiments/atlas.git"
+  },
+  "optionalDependencies": {
+    "isolated-vm": "^6.1.2"
   }
 }

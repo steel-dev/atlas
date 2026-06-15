@@ -11,7 +11,7 @@ const sources = [
 ];
 
 describe("runCodeSandboxed", () => {
-  it("evaluates code over sources out of process", async () => {
+  it("evaluates code over sources in an isolate", async () => {
     const output = await runCodeSandboxed({
       code: "sources.length",
       sources,
@@ -66,5 +66,14 @@ describe("runCodeSandboxed", () => {
       timeoutMs: 5000,
     });
     expect(output.result).toBe("undefined:undefined:undefined");
+  });
+
+  it("blocks the Function-constructor escape to host globals", async () => {
+    const output = await runCodeSandboxed({
+      code: 'Function("return typeof fetch + \\",\\" + typeof process")()',
+      sources,
+      timeoutMs: 5000,
+    });
+    expect(output.result).toBe("undefined,undefined");
   });
 });
