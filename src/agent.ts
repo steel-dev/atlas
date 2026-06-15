@@ -65,6 +65,7 @@ export async function runAgent(
   const agentId = `agent_${rctx.agentSequence.next++}`;
   if (spec.depth > 0) {
     rctx.counters.agentsSpawned++;
+    if (spec.role === "research") rctx.counters.researchSpawned++;
     rctx.counters.maxDepth = Math.max(rctx.counters.maxDepth, spec.depth);
     rctx.emit({
       type: "agent.spawned",
@@ -200,6 +201,9 @@ async function executeSpawn(
   const breadthCap = rctx.config.envelope.breadthCap;
   if (parentActx.spawnsThisStep.count >= breadthCap) {
     return `Spawn refused: per-turn spawn cap (${breadthCap}) reached. Integrate the results you have before spawning more.`;
+  }
+  if (rctx.counters.researchSpawned >= rctx.config.maxAgents) {
+    return `Spawn refused: run-wide research-agent cap (${rctx.config.maxAgents}) reached. Do the remaining work inline and finish.`;
   }
   parentActx.spawnsThisStep.count++;
 

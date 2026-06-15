@@ -25,6 +25,8 @@ export interface RunStats {
   costUSD: number;
   durationMs: number;
   budgetExhausted: boolean;
+  tokensExhausted: boolean;
+  agentCapReached: boolean;
 }
 
 export type ResearchEvent =
@@ -135,4 +137,4 @@ export type ResearchEventMap = {
   [E in ResearchEvent as E["type"]]: E;
 };
 
-export const EVENT_SCHEMA_VERSION = "3.2";
+export const EVENT_SCHEMA_VERSION = "3.3";

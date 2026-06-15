@@ -18,6 +18,8 @@ export interface EffortEnvelope {
   depthCap: number;
   breadthCap: number;
   maxSources: number;
+  maxTokens: number;
+  maxAgents: number;
   minFacets: number;
   maxTurns: number;
   maxSubagentTurns: number;
@@ -46,6 +48,8 @@ export const EFFORT_ENVELOPES: Record<Effort, EffortEnvelope> = {
     depthCap: 1,
     breadthCap: 1,
     maxSources: 15,
+    maxTokens: 5_000_000,
+    maxAgents: 20,
     minFacets: 1,
     maxTurns: 30,
     maxSubagentTurns: 15,
@@ -72,6 +76,8 @@ export const EFFORT_ENVELOPES: Record<Effort, EffortEnvelope> = {
     depthCap: 2,
     breadthCap: 4,
     maxSources: 40,
+    maxTokens: 20_000_000,
+    maxAgents: 80,
     minFacets: 3,
     maxTurns: 60,
     maxSubagentTurns: 30,
@@ -98,6 +104,8 @@ export const EFFORT_ENVELOPES: Record<Effort, EffortEnvelope> = {
     depthCap: 3,
     breadthCap: 8,
     maxSources: 100,
+    maxTokens: 80_000_000,
+    maxAgents: 250,
     minFacets: 4,
     maxTurns: 100,
     maxSubagentTurns: 50,
@@ -124,6 +132,8 @@ export const EFFORT_ENVELOPES: Record<Effort, EffortEnvelope> = {
     depthCap: 4,
     breadthCap: 12,
     maxSources: 250,
+    maxTokens: 250_000_000,
+    maxAgents: 800,
     minFacets: 5,
     maxTurns: 150,
     maxSubagentTurns: 75,
@@ -153,6 +163,8 @@ Object.freeze(EFFORT_ENVELOPES);
 
 export interface Budget {
   maxUSD?: number;
+  maxTokens?: number;
+  maxAgents?: number;
   maxDurationMs?: number;
   maxSources?: number;
 }
@@ -199,6 +211,8 @@ export interface ResolvedRunConfig {
   effort: Effort;
   envelope: EffortEnvelope;
   budgetUSD: number;
+  maxTokens: number;
+  maxAgents: number;
   maxDurationMs?: number | undefined;
   maxSources: number;
   models: Record<ModelRole, ResolvedModel>;
@@ -252,6 +266,14 @@ export function resolveRunConfig(
   if (!Number.isFinite(budgetUSD) || budgetUSD <= 0) {
     throw new ConfigError(`budget.maxUSD must be > 0 (got ${budgetUSD})`);
   }
+  const maxTokens = budget.maxTokens ?? envelope.maxTokens;
+  if (!Number.isFinite(maxTokens) || maxTokens <= 0) {
+    throw new ConfigError(`budget.maxTokens must be > 0 (got ${maxTokens})`);
+  }
+  const maxAgents = budget.maxAgents ?? envelope.maxAgents;
+  if (!Number.isFinite(maxAgents) || maxAgents < 1) {
+    throw new ConfigError(`budget.maxAgents must be >= 1 (got ${maxAgents})`);
+  }
   const lead = config.model;
   const derived =
     config.models?.extract && config.models?.verify
@@ -274,6 +296,8 @@ export function resolveRunConfig(
     effort,
     envelope,
     budgetUSD,
+    maxTokens,
+    maxAgents,
     maxDurationMs: budget.maxDurationMs,
     maxSources: budget.maxSources ?? envelope.maxSources,
     models,

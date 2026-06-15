@@ -8,7 +8,13 @@ import type {
 import { describe, expect, it } from "vitest";
 import { createConcurrencyGate } from "./async.js";
 import { createBudgetMeter } from "./budget.js";
-import { createRunUsage, engineModel, type ResolvedModel } from "./model.js";
+import {
+  createRunUsage,
+  engineModel,
+  normalizeForCacheKey,
+  totalFreshTokens,
+  type ResolvedModel,
+} from "./model.js";
 import {
   JournalWriter,
   loadReplayCache,
@@ -140,6 +146,80 @@ describe("engineModel", () => {
     expect(replayed.text).toBe(liveResult.text);
     expect(meter2.totalSpentUSD()).toBe(meter.totalSpentUSD());
     expect(usage2.replayedUSD).toBe(meter2.totalSpentUSD());
+  });
+
+  it("replays a call when only the volatile budget readout changed", async () => {
+    const store = memoryStore();
+    const journal = new JournalWriter(store, "run_budget");
+    const first = mock();
+    const firstModel = engineModel(first as unknown as ResolvedModel, {
+      role: "lead",
+      grant: createBudgetMeter(10),
+      pricing: {},
+      gate: createConcurrencyGate(2),
+      usage: createRunUsage(),
+      journal,
+    });
+    await generateText({
+      model: firstModel as LanguageModelV3,
+      prompt: "find X\n\n[budget: ≈$9.80 of $10.00 remaining]",
+    });
+    await journal.flush();
+    expect(first.doGenerateCalls).toHaveLength(1);
+
+    const replay = await loadReplayCache(store, "run_budget");
+    const second = mock();
+    const secondModel = engineModel(second as unknown as ResolvedModel, {
+      role: "lead",
+      grant: createBudgetMeter(10),
+      pricing: {},
+      gate: createConcurrencyGate(2),
+      usage: createRunUsage(),
+      replay,
+    });
+    const replayed = await generateText({
+      model: secondModel as LanguageModelV3,
+      // Same logical step on resume, but the live budget figure differs.
+      prompt: "find X\n\n[budget: ≈$2.13 of $10.00 remaining]",
+    });
+    expect(second.doGenerateCalls).toHaveLength(0);
+    expect(replayed.text).toBe("hello");
+  });
+
+  it("does not replay across a real content change with the same shape", async () => {
+    const store = memoryStore();
+    const journal = new JournalWriter(store, "run_price");
+    const first = mock();
+    const firstModel = engineModel(first as unknown as ResolvedModel, {
+      role: "lead",
+      grant: createBudgetMeter(10),
+      pricing: {},
+      gate: createConcurrencyGate(2),
+      usage: createRunUsage(),
+      journal,
+    });
+    await generateText({
+      model: firstModel as LanguageModelV3,
+      prompt: "the listed price was $5.00",
+    });
+    await journal.flush();
+
+    const replay = await loadReplayCache(store, "run_price");
+    const second = mock();
+    const secondModel = engineModel(second as unknown as ResolvedModel, {
+      role: "lead",
+      grant: createBudgetMeter(10),
+      pricing: {},
+      gate: createConcurrencyGate(2),
+      usage: createRunUsage(),
+      replay,
+    });
+    await generateText({
+      model: secondModel as LanguageModelV3,
+      // Exact "$" figures are not normalized: this is a different prompt.
+      prompt: "the listed price was $7.00",
+    });
+    expect(second.doGenerateCalls).toHaveLength(1);
   });
 
   it("injects an anthropic cache breakpoint on the last message", async () => {
@@ -349,5 +429,54 @@ describe("engineModel streaming", () => {
     const spent = meter.totalSpentUSD();
     expect(spent).toBeGreaterThan(0);
     expect(meter.remainingUSD()).toBeCloseTo(10 - spent);
+  });
+});
+
+describe("totalFreshTokens", () => {
+  it("sums input, output, and cache writes but ignores cache reads", () => {
+    const usage = createRunUsage();
+    usage.byRole.set("lead", {
+      input: 1_000,
+      output: 200,
+      cacheRead: 50_000,
+      cacheWrite: 300,
+    });
+    usage.byRole.set("verify", {
+      input: 400,
+      output: 100,
+      cacheRead: 0,
+      cacheWrite: 0,
+    });
+    expect(totalFreshTokens(usage)).toBe(1_000 + 200 + 300 + 400 + 100);
+  });
+
+  it("is zero for a fresh usage tally", () => {
+    expect(totalFreshTokens(createRunUsage())).toBe(0);
+  });
+});
+
+describe("normalizeForCacheKey", () => {
+  it("collapses volatile ≈$ budget figures to a stable token", () => {
+    expect(
+      normalizeForCacheKey("plan\n[budget: ≈$9.80 of $10.00 remaining]"),
+    ).toBe(normalizeForCacheKey("plan\n[budget: ≈$2.13 of $10.00 remaining]"));
+  });
+
+  it("preserves exact $ figures so real content still distinguishes prompts", () => {
+    expect(normalizeForCacheKey("price $5.00")).not.toBe(
+      normalizeForCacheKey("price $7.00"),
+    );
+  });
+
+  it("collapses thousands-separated amounts too", () => {
+    expect(normalizeForCacheKey("≈$1,234.56")).toBe(
+      normalizeForCacheKey("≈$0.01"),
+    );
+  });
+
+  it("leaves the constant budget total intact", () => {
+    expect(normalizeForCacheKey("≈$3.10 of $10.00 remaining")).toBe(
+      "≈$ of $10.00 remaining",
+    );
   });
 });

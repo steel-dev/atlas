@@ -42,6 +42,14 @@ function trackUsage(runUsage: RunUsage, role: string, usage: TokenUsage): void {
   runUsage.byRole.set(role, existing);
 }
 
+export function totalFreshTokens(usage: RunUsage): number {
+  let total = 0;
+  for (const roleUsage of usage.byRole.values()) {
+    total += roleUsage.input + roleUsage.output + roleUsage.cacheWrite;
+  }
+  return total;
+}
+
 export function tokenUsageFromV3(usage: LanguageModelV3Usage): TokenUsage {
   const cacheRead = usage.inputTokens.cacheRead ?? 0;
   const cacheWrite = usage.inputTokens.cacheWrite ?? 0;
@@ -75,6 +83,24 @@ export interface EngineModelHooks {
   onRateLimit?: ((notice: RateLimitNotice) => void) | undefined;
 }
 
+// Atlas injects approximate, run-timing-dependent dollar readouts into prompts
+// as a hint to the agent: the per-tool-result budget line (budgetStatusLine in
+// state.ts) and the "remaining research budget" continuation anchor (prompts.ts).
+// Their exact value depends on which concurrent model calls and background
+// extraction tasks happen to have settled at that instant, so a resumed run
+// recomputes slightly different figures. Those figures must NOT enter the replay
+// cache key, or every cached call after the first would miss its hash and be
+// re-invoked at full cost — defeating the point of journaled resume. Atlas writes
+// all such volatile money as "≈$<amount>"; collapse the amount to a stable token
+// before hashing. Exact "$<amount>" figures — the constant budget total, prices
+// quoted in fetched source content — are deliberately left intact so they still
+// distinguish genuinely different prompts.
+const VOLATILE_USD_RE = /≈\$\d[\d,]*(?:\.\d+)?/g;
+
+export function normalizeForCacheKey(serialized: string): string {
+  return serialized.replace(VOLATILE_USD_RE, "≈$");
+}
+
 function callKey(
   model: LanguageModelV3,
   params: LanguageModelV3CallOptions,
@@ -96,7 +122,7 @@ function callKey(
     maxOutputTokens: params.maxOutputTokens,
   };
   return createHash("sha256")
-    .update(JSON.stringify(material))
+    .update(normalizeForCacheKey(JSON.stringify(material)))
     .digest("hex")
     .slice(0, 40);
 }

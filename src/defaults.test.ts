@@ -135,3 +135,35 @@ describe("resolveRunConfig model routing", () => {
     expect(resolved.models.verify).toBe(lead);
   });
 });
+
+describe("resolveRunConfig hard caps", () => {
+  it("defaults the token and agent caps to the effort envelope", () => {
+    const lead = fakeModel("anthropic.messages", "claude-opus-4-8");
+    const balanced = resolveRunConfig({ model: lead }, { effort: "balanced" });
+    expect(balanced.maxTokens).toBe(20_000_000);
+    expect(balanced.maxAgents).toBe(80);
+    const max = resolveRunConfig({ model: lead }, { effort: "max" });
+    expect(max.maxTokens).toBe(250_000_000);
+    expect(max.maxAgents).toBe(800);
+  });
+
+  it("lets budget overrides replace the envelope caps", () => {
+    const lead = fakeModel("anthropic.messages", "claude-opus-4-8");
+    const resolved = resolveRunConfig(
+      { model: lead },
+      { effort: "deep", budget: { maxTokens: 5_000_000, maxAgents: 12 } },
+    );
+    expect(resolved.maxTokens).toBe(5_000_000);
+    expect(resolved.maxAgents).toBe(12);
+  });
+
+  it("rejects non-positive cap overrides", () => {
+    const lead = fakeModel("anthropic.messages", "claude-opus-4-8");
+    expect(() =>
+      resolveRunConfig({ model: lead }, { budget: { maxTokens: 0 } }),
+    ).toThrow(/maxTokens/);
+    expect(() =>
+      resolveRunConfig({ model: lead }, { budget: { maxAgents: 0 } }),
+    ).toThrow(/maxAgents/);
+  });
+});

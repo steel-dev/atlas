@@ -39,6 +39,7 @@ export interface RunCounters {
   sourcesFetched: number;
   sourcesFailed: number;
   agentsSpawned: number;
+  researchSpawned: number;
   maxDepth: number;
   claimsVerified: number;
 }
@@ -49,6 +50,7 @@ export function createRunCounters(): RunCounters {
     sourcesFetched: 0,
     sourcesFailed: 0,
     agentsSpawned: 0,
+    researchSpawned: 0,
     maxDepth: 0,
     claimsVerified: 0,
   };

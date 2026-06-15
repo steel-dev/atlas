@@ -296,3 +296,96 @@ describe("startRun end to end", () => {
     expect(run.status()).toBe("cancelled");
   });
 });
+
+function systemText(options: LanguageModelV3CallOptions): string {
+  for (const message of options.prompt) {
+    if (message.role === "system") return message.content;
+  }
+  return "";
+}
+
+function spawnResult(n: number): LanguageModelV3GenerateResult {
+  return {
+    content: [
+      {
+        type: "tool-call",
+        toolCallId: `spawn_${n}`,
+        toolName: "spawn",
+        input: JSON.stringify({
+          role: "research",
+          task: `Investigate facet ${n} of the question.`,
+        }),
+      },
+    ],
+    finishReason: { unified: "tool-calls", raw: undefined },
+    usage: USAGE,
+    warnings: [],
+  };
+}
+
+function leadThatSpawns(attempts: number): MockLanguageModelV3 {
+  let leadTurns = 0;
+  return new MockLanguageModelV3({
+    provider: "mock-provider",
+    modelId: "claude-sonnet-4-6",
+    doGenerate: async (options: LanguageModelV3CallOptions) => {
+      if (options.responseFormat?.type === "json") {
+        return textResult(JSON.stringify({ openQuestions: [] }));
+      }
+      if (systemText(options).includes("lead agent")) {
+        leadTurns++;
+        return leadTurns <= attempts
+          ? spawnResult(leadTurns)
+          : textResult("Done spawning; closing the research stage.");
+      }
+      return textResult("Sub-task complete; nothing further to add.");
+    },
+  });
+}
+
+describe("hard caps", () => {
+  it("refuses research spawns once the run-wide agent cap is reached", async () => {
+    const atlas = new Atlas({
+      model: leadThatSpawns(6) as unknown as ResolvedModel,
+      search: stubSearch,
+      effort: "balanced",
+      budget: { maxAgents: 3, maxUSD: 100 },
+    });
+    const result = await atlas
+      .start("test question", { runId: "run_agent_cap" })
+      .result();
+
+    expect(result.stats.agentsSpawned).toBe(3);
+    expect(result.stats.agentCapReached).toBe(true);
+    expect(result.stats.maxDepth).toBe(1);
+  });
+
+  it("stops the run once the token cap is reached", async () => {
+    const atlas = new Atlas({
+      model: scriptedModel() as unknown as ResolvedModel,
+      search: stubSearch,
+      effort: "fast",
+      budget: { maxTokens: 500, maxUSD: 100 },
+    });
+    const run = atlas.start("test question", { runId: "run_token_cap" });
+    const result = await run.result();
+
+    expect(run.status()).toBe("completed");
+    expect(result.stats.tokensExhausted).toBe(true);
+    expect(result.stats.searches).toBeLessThanOrEqual(1);
+  });
+
+  it("leaves both flags clear on a run that stays within its caps", async () => {
+    const atlas = new Atlas({
+      model: scriptedModel() as unknown as ResolvedModel,
+      search: stubSearch,
+      effort: "fast",
+    });
+    const result = await atlas
+      .start("test question", { runId: "run_no_cap" })
+      .result();
+
+    expect(result.stats.tokensExhausted).toBe(false);
+    expect(result.stats.agentCapReached).toBe(false);
+  });
+});

@@ -12,7 +12,12 @@ import { ECONOMY } from "./economy.js";
 import type { EventHub } from "./event-hub.js";
 import type { ResearchEvent } from "./events.js";
 import { createLedger, type ResearchClaim } from "./ledger.js";
-import { createRunUsage, engineModel, type ModelRole } from "./model.js";
+import {
+  createRunUsage,
+  engineModel,
+  totalFreshTokens,
+  type ModelRole,
+} from "./model.js";
 import { defaultFetchProviders } from "./providers/fetch.js";
 import {
   combineSearchProviders,
@@ -75,6 +80,8 @@ export async function assembleRun(args: AssembleRunArgs): Promise<RunAssembly> {
     : undefined;
 
   const budgetExhausted = (): boolean => meter.exhausted();
+  const tokensExhausted = (): boolean =>
+    totalFreshTokens(usage) >= resolved.maxTokens;
 
   const emit = (event: ResearchEvent): void => {
     args.hub.emit(event);
@@ -208,6 +215,7 @@ export async function assembleRun(args: AssembleRunArgs): Promise<RunAssembly> {
         return "timeout approaching";
       }
       if (budgetExhausted()) return "budget exhausted";
+      if (tokensExhausted()) return "token budget reached";
       return null;
     },
   };

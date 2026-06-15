@@ -21,7 +21,7 @@ import { AtlasError, errorMessage, ResumeError } from "./errors.js";
 import { EventHub } from "./event-hub.js";
 import type { ResearchEvent, RunStats } from "./events.js";
 import type { ResearchClaim } from "./ledger.js";
-import { MODEL_CALL_MAX_RETRIES } from "./model.js";
+import { MODEL_CALL_MAX_RETRIES, totalFreshTokens } from "./model.js";
 import { runOrchestrator } from "./orchestrator.js";
 import { isoDate } from "./prompts.js";
 import {
@@ -719,6 +719,8 @@ function buildStats(opts: {
       ) / 10_000,
     durationMs: opts.durationMs,
     budgetExhausted: rctx.meter.exhausted(),
+    tokensExhausted: totalFreshTokens(rctx.usage) >= rctx.config.maxTokens,
+    agentCapReached: rctx.counters.researchSpawned >= rctx.config.maxAgents,
   };
 }
 
