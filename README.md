@@ -110,12 +110,12 @@ Structured output: pass a Zod schema via `output: { kind: "structured", schema }
 
 One meter for everything. Pick an effort, or override any cap with `budget`.
 
-| effort     | ~budget | depth | spawns/turn | sources | agents |
-| ---------- | ------- | ----- | ----------- | ------- | ------ |
-| `fast`     | $0.50   | 1     | 1           | 15      | 20     |
-| `balanced` | $2.50   | 2     | 4           | 40      | 80     |
-| `deep`     | $10     | 3     | 8           | 100     | 250    |
-| `max`      | $40     | 4     | 12          | 250     | 800    |
+| effort     | ~budget | depth | spawns/turn | sources | agents | tokens |
+| ---------- | ------- | ----- | ----------- | ------- | ------ | ------ |
+| `fast`     | $0.50   | 1     | 1           | 15      | 20     | 5M     |
+| `balanced` | $2.50   | 2     | 4           | 40      | 80     | 20M    |
+| `deep`     | $10     | 3     | 8           | 100     | 250    | 80M    |
+| `max`      | $40     | 4     | 12          | 250     | 800    | 250M   |
 
 ```ts
 await atlas.research(question, {
@@ -126,13 +126,13 @@ await atlas.research(question, {
 
 `maxUSD` is a **best-effort target, not a hard ceiling.** Cost is metered per model call against a built-in pricing table, and the budget is checked between agent turns: a run stops *starting* new work once the meter is spent, but can still overshoot. In-flight calls (up to `concurrency.models` at a time) are billed at their actual cost only after they return, so the dollar figure is a typical total, not a guarantee. The table also goes stale when a provider changes prices, and unknown models are costed conservatively — pass `pricing` to correct a model's rate when the dollar cap must be accurate.
 
-Because the dollar cap rides on those prices, the real backstops are **price-independent and hard.** Each defaults to the effort row above and is enforced regardless of what prices say:
+Because the dollar cap rides on those prices, the real backstops are **price-independent.** Each defaults to the effort row above and is enforced regardless of what prices say:
 
-- `budget.maxTokens` — input + output tokens run-wide (cache reads excluded, since they re-read already-counted text); stops the run when reached.
-- `budget.maxAgents` — research subagents spawned run-wide (the recursive fan-out that can otherwise grow as breadth^depth); further `spawn` calls are refused and the lead finishes inline. Verifier agents are already bounded internally and count toward `maxTokens`, not this cap.
+- `budget.maxTokens` — input + output tokens run-wide (cache reads excluded, since they re-read already-counted text). Like `maxUSD` it is checked between agent turns, so in-flight calls can push the total slightly past the cap; unlike `maxUSD` it never drifts with provider prices.
+- `budget.maxAgents` — research subagents spawned run-wide (the recursive fan-out that can otherwise grow as breadth^depth). Enforced synchronously, with no overshoot: once it is reached, further `spawn` calls are refused and the lead finishes inline. Verifier agents are bounded separately and count toward `maxTokens`, not this cap.
 - `budget.maxSources`, `budget.maxDurationMs` — fetched-source and wall-clock caps.
 
-`result.stats` reports `budgetExhausted`, `tokensExhausted`, and `agentCapReached` so you can see which limit, if any, bound the run. Leave headroom on `maxUSD`, or set a provider-side spend limit, when the cap is truly hard.
+`result.stats` reports `budgetExhausted`, `tokensExhausted`, and `agentCapReached` so you can see which limit, if any, bound the run — `agentCapReached` is set only when the cap actually refused a spawn, not merely when the count was reached. Leave headroom on `maxUSD`, or set a provider-side spend limit, when the cap is truly hard.
 
 ## Safety
 
