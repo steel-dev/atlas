@@ -274,6 +274,75 @@ function normalizeLenses(lenses: string[] | undefined): VerifierLens[] {
   return valid.length > 0 ? [...new Set(valid)] : ALL_LENSES;
 }
 
+async function collectVotes(
+  rctx: RunCtx,
+  args: VerifySpawnArgs,
+  claim: ResearchClaim,
+  lenses: VerifierLens[],
+  flags: { lensesExplicit: boolean; conflicted: boolean; panelAffordable: boolean },
+): Promise<ClaimVote[]> {
+  const alreadyScreened = claim.status === "screened";
+  const screenFirst =
+    !flags.lensesExplicit &&
+    !flags.conflicted &&
+    !alreadyScreened &&
+    (claim.importance !== "central" || !flags.panelAffordable);
+  if (screenFirst) {
+    const screened = await screenClaim(rctx, args.grant, claim);
+    if (screened) return screened;
+  }
+  const panel = flags.panelAffordable
+    ? (
+        await Promise.all(
+          lenses.map((lens) => castVote(rctx, args, claim, lens)),
+        )
+      ).filter((vote): vote is ClaimVote => vote !== null)
+    : [];
+  if (panel.length === 0 && alreadyScreened) return claim.votes;
+  return panel;
+}
+
+async function verifyClaim(
+  rctx: RunCtx,
+  args: VerifySpawnArgs,
+  claim: ResearchClaim,
+  lenses: VerifierLens[],
+  lensesExplicit: boolean,
+): Promise<void> {
+  const inFlight = rctx.verifyInFlight.get(claim.id);
+  if (inFlight) {
+    await inFlight;
+    return;
+  }
+  if (claim.votes.length >= MIN_VOTES_TO_SETTLE) return;
+  const conflicted = (claim.conflictsWith?.length ?? 0) > 0;
+  const panelAffordable =
+    lensesExplicit ||
+    args.grant.remainingUSD() >= rctx.config.envelope.panelGrantUSD;
+  if (conflicted && !panelAffordable) return;
+  const job = (async () => {
+    const votes = await collectVotes(rctx, args, claim, lenses, {
+      lensesExplicit,
+      conflicted,
+      panelAffordable,
+    });
+    settleClaim(claim, votes);
+    rctx.counters.claimsVerified++;
+    rctx.emit({
+      type: "claim.verified",
+      claimId: claim.id,
+      status: claim.status,
+      votes: voteSplit(claim),
+    });
+  })();
+  rctx.verifyInFlight.set(claim.id, job);
+  try {
+    await job;
+  } finally {
+    rctx.verifyInFlight.delete(claim.id);
+  }
+}
+
 export async function runVerifySpawn(
   rctx: RunCtx,
   args: VerifySpawnArgs,
@@ -302,60 +371,7 @@ export async function runVerifySpawn(
 
   const verdicts: VerifySpawnVerdict[] = [];
   await mapWithConcurrency(unique, CLAIM_CONCURRENCY, async (claim) => {
-    const inFlight = rctx.verifyInFlight.get(claim.id);
-    if (inFlight) {
-      await inFlight;
-      verdicts.push(verdictOf(claim));
-      return;
-    }
-    if (claim.votes.length >= MIN_VOTES_TO_SETTLE) {
-      verdicts.push(verdictOf(claim));
-      return;
-    }
-    const conflicted = (claim.conflictsWith?.length ?? 0) > 0;
-    const panelAffordable =
-      lensesExplicit ||
-      args.grant.remainingUSD() >= rctx.config.envelope.panelGrantUSD;
-    if (conflicted && !panelAffordable) {
-      verdicts.push(verdictOf(claim));
-      return;
-    }
-    const job = (async () => {
-      const alreadyScreened = claim.status === "screened";
-      let votes: ClaimVote[] | null = null;
-      if (
-        !lensesExplicit &&
-        !conflicted &&
-        !alreadyScreened &&
-        (claim.importance !== "central" || !panelAffordable)
-      ) {
-        votes = await screenClaim(rctx, args.grant, claim);
-      }
-      if (!votes) {
-        const panel = panelAffordable
-          ? (
-              await Promise.all(
-                lenses.map((lens) => castVote(rctx, args, claim, lens)),
-              )
-            ).filter((vote): vote is ClaimVote => vote !== null)
-          : [];
-        votes = panel.length === 0 && alreadyScreened ? claim.votes : panel;
-      }
-      settleClaim(claim, votes);
-      rctx.counters.claimsVerified++;
-      rctx.emit({
-        type: "claim.verified",
-        claimId: claim.id,
-        status: claim.status,
-        votes: voteSplit(claim),
-      });
-    })();
-    rctx.verifyInFlight.set(claim.id, job);
-    try {
-      await job;
-    } finally {
-      rctx.verifyInFlight.delete(claim.id);
-    }
+    await verifyClaim(rctx, args, claim, lenses, lensesExplicit);
     verdicts.push(verdictOf(claim));
   });
 
