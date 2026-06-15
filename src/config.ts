@@ -270,10 +270,11 @@ export function resolveRunConfig(
   if (!Number.isFinite(maxTokens) || maxTokens <= 0) {
     throw new ConfigError(`budget.maxTokens must be > 0 (got ${maxTokens})`);
   }
-  const maxAgents = budget.maxAgents ?? envelope.maxAgents;
-  if (!Number.isFinite(maxAgents) || maxAgents < 1) {
-    throw new ConfigError(`budget.maxAgents must be >= 1 (got ${maxAgents})`);
+  const maxAgentsRaw = budget.maxAgents ?? envelope.maxAgents;
+  if (!Number.isFinite(maxAgentsRaw) || maxAgentsRaw < 1) {
+    throw new ConfigError(`budget.maxAgents must be >= 1 (got ${maxAgentsRaw})`);
   }
+  const maxAgents = Math.floor(maxAgentsRaw);
   const lead = config.model;
   const derived =
     config.models?.extract && config.models?.verify

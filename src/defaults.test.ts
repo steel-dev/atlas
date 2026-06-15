@@ -166,4 +166,16 @@ describe("resolveRunConfig hard caps", () => {
       resolveRunConfig({ model: lead }, { budget: { maxAgents: 0 } }),
     ).toThrow(/maxAgents/);
   });
+
+  it("floors a fractional maxAgents override to a whole-agent cap", () => {
+    const lead = fakeModel("anthropic.messages", "claude-opus-4-8");
+    const resolved = resolveRunConfig(
+      { model: lead },
+      { budget: { maxAgents: 2.5 } },
+    );
+    expect(resolved.maxAgents).toBe(2);
+    expect(() =>
+      resolveRunConfig({ model: lead }, { budget: { maxAgents: 0.5 } }),
+    ).toThrow(/maxAgents/);
+  });
 });
