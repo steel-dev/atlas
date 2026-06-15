@@ -102,6 +102,7 @@ export function usageCostUSD(
 
 const GRANT_FLOOR_USD = ECONOMY.grantFloorUSD;
 const DEFAULT_GRANT_FRACTION = ECONOMY.defaultGrantFraction;
+const METER_EXHAUSTION_EPSILON_USD = 0.01;
 
 export interface GrantOptions {
   fraction?: number;
@@ -128,6 +129,7 @@ export interface BudgetGrant {
 export interface BudgetMeter extends BudgetGrant {
   readonly totalUSD: number;
   totalSpentUSD(): number;
+  exhausted(): boolean;
 }
 
 interface SharedSpend {
@@ -226,6 +228,10 @@ class RootMeter extends GrantNode implements BudgetMeter {
 
   totalSpentUSD(): number {
     return this.shared.spent;
+  }
+
+  exhausted(): boolean {
+    return this.totalSpentUSD() >= this.totalUSD - METER_EXHAUSTION_EPSILON_USD;
   }
 }
 

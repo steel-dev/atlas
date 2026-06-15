@@ -74,8 +74,7 @@ export async function assembleRun(args: AssembleRunArgs): Promise<RunAssembly> {
     ? args.startedAt + resolved.maxDurationMs
     : undefined;
 
-  const budgetExhausted = (): boolean =>
-    meter.totalSpentUSD() >= meter.totalUSD - 0.01;
+  const budgetExhausted = (): boolean => meter.exhausted();
 
   const emit = (event: ResearchEvent): void => {
     args.hub.emit(event);

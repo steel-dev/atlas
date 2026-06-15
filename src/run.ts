@@ -718,7 +718,7 @@ function buildStats(opts: {
           10_000,
       ) / 10_000,
     durationMs: opts.durationMs,
-    budgetExhausted: rctx.meter.totalSpentUSD() >= rctx.meter.totalUSD - 0.01,
+    budgetExhausted: rctx.meter.exhausted(),
   };
 }
 
