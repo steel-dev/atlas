@@ -242,3 +242,17 @@ export function createBudgetMeter(totalUSD: number): BudgetMeter {
   }
   return new RootMeter(totalUSD, { spent: 0 });
 }
+
+export async function withGrant<T>(
+  reserve: BudgetGrant,
+  opts: GrantOptions,
+  fn: (grant: BudgetGrant) => Promise<T>,
+): Promise<T | null> {
+  const grant = reserve.grant(opts);
+  if (!grant) return null;
+  try {
+    return await fn(grant);
+  } finally {
+    grant.release();
+  }
+}

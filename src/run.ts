@@ -5,7 +5,7 @@ import { adjudicateCoverage } from "./adjudicate.js";
 import { mapWithConcurrency } from "./async.js";
 import type { AgentResult } from "./agent.js";
 import { bindCitations, type Citation } from "./bind.js";
-import type { BudgetGrant, BudgetMeter } from "./budget.js";
+import { withGrant, type BudgetGrant, type BudgetMeter } from "./budget.js";
 import {
   resolveRunConfig,
   type AtlasConfig,
@@ -121,22 +121,24 @@ async function sweepVerification(
     ECONOMY.verifySweep.concurrency,
     async (claim) => {
       if (reserve.floored() || rctx.signal?.aborted) return;
-      const grant = reserve.grant({
-        fraction: ECONOMY.verifySweep.fraction,
-        minUSD: rctx.config.envelope.panelGrantUSD,
-      });
-      if (!grant) return;
-      try {
-        await rctx.verifySpawn({
-          claimIds: [claim.id],
-          grant,
-          depth: 1,
-        });
-      } catch (err) {
-        if (rctx.signal?.aborted) throw err;
-      } finally {
-        grant.release();
-      }
+      await withGrant(
+        reserve,
+        {
+          fraction: ECONOMY.verifySweep.fraction,
+          minUSD: rctx.config.envelope.panelGrantUSD,
+        },
+        async (grant) => {
+          try {
+            await rctx.verifySpawn({
+              claimIds: [claim.id],
+              grant,
+              depth: 1,
+            });
+          } catch (err) {
+            if (rctx.signal?.aborted) throw err;
+          }
+        },
+      );
     },
   );
 }
@@ -487,19 +489,17 @@ async function consolidateClaims(
   args: ExecuteRunArgs,
 ): Promise<void> {
   if (!args.stopSignal.aborted) {
-    const conflictGrant = verifyReserve.grant({
-      fraction: ECONOMY.conflicts.fraction,
-      minUSD: ECONOMY.conflicts.minUSD,
-    });
-    if (conflictGrant) {
-      try {
-        await conflictPass(rctx, conflictGrant);
-      } catch (err) {
-        if (args.hardSignal.aborted) throw err;
-      } finally {
-        conflictGrant.release();
-      }
-    }
+    await withGrant(
+      verifyReserve,
+      { fraction: ECONOMY.conflicts.fraction, minUSD: ECONOMY.conflicts.minUSD },
+      async (grant) => {
+        try {
+          await conflictPass(rctx, grant);
+        } catch (err) {
+          if (args.hardSignal.aborted) throw err;
+        }
+      },
+    );
   }
   try {
     if (!args.stopSignal.aborted) {

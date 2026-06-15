@@ -1,5 +1,5 @@
 import { generateText, stepCountIs, type ModelMessage } from "ai";
-import type { BudgetGrant } from "./budget.js";
+import { withGrant, type BudgetGrant } from "./budget.js";
 import { ECONOMY } from "./economy.js";
 import { errorMessage } from "./errors.js";
 import type { AgentRole } from "./events.js";
@@ -216,57 +216,59 @@ async function executeSpawn(
     return executeVerifySpawn(rctx, parentActx, input, childDepth);
   }
 
-  const grant = parentActx.grant.grant({
-    fraction: input.budget_fraction ?? ECONOMY.researchSpawnFraction,
-  });
-  if (!grant) {
-    return "Spawn refused: insufficient budget remaining — do the work inline or finish.";
-  }
-  const trail = rctx.trail.render(
-    trailCapsFor(rctx.config.maxSources, SPAWN_TRAIL_FRACTION),
-  );
-  const childTask = trail
-    ? `${task}\n\nTrail so far — searches already run and fetches that dead-ended across the whole run. Do not repeat them; vary the terms or angle instead:\n${trail}`
-    : task;
-  try {
-    const child = await runAgent(rctx, {
-      role: "research",
-      modelRole: "research",
-      task: childTask,
-      system: researchAgentSystem(rctx.todayISO),
-      tools: RESEARCH_TOOLS,
-      grant,
-      depth: childDepth,
-      parentId: parentActx.agentId,
-      maxTurns: rctx.config.envelope.maxSubagentTurns,
-    });
-    childClaims.push(...child.claimsAdded);
-    const newClaims = child.claimsAdded
-      .map((id) => rctx.ledger.byId(id))
-      .filter(
-        (claim): claim is NonNullable<typeof claim> =>
-          claim !== undefined && !claim.duplicateOf,
+  const result = await withGrant(
+    parentActx.grant,
+    { fraction: input.budget_fraction ?? ECONOMY.researchSpawnFraction },
+    async (grant) => {
+      const trail = rctx.trail.render(
+        trailCapsFor(rctx.config.maxSources, SPAWN_TRAIL_FRACTION),
       );
-    return JSON.stringify(
-      {
-        note: child.note,
-        stop_reason: child.stopReason,
-        claims_added: child.claimsAdded.length,
-        new_claims_digest: renderLedgerDigest(
-          newClaims,
-          SPAWN_DIGEST_MAX_CLAIMS,
-        ),
-        spent_usd: round2(child.spentUSD),
-      },
-      null,
-      2,
-    );
-  } catch (err) {
-    if (rctx.signal?.aborted) throw err;
-    return `Spawn failed: ${errorMessage(err)}`;
-  } finally {
-    grant.release();
-  }
+      const childTask = trail
+        ? `${task}\n\nTrail so far — searches already run and fetches that dead-ended across the whole run. Do not repeat them; vary the terms or angle instead:\n${trail}`
+        : task;
+      try {
+        const child = await runAgent(rctx, {
+          role: "research",
+          modelRole: "research",
+          task: childTask,
+          system: researchAgentSystem(rctx.todayISO),
+          tools: RESEARCH_TOOLS,
+          grant,
+          depth: childDepth,
+          parentId: parentActx.agentId,
+          maxTurns: rctx.config.envelope.maxSubagentTurns,
+        });
+        childClaims.push(...child.claimsAdded);
+        const newClaims = child.claimsAdded
+          .map((id) => rctx.ledger.byId(id))
+          .filter(
+            (claim): claim is NonNullable<typeof claim> =>
+              claim !== undefined && !claim.duplicateOf,
+          );
+        return JSON.stringify(
+          {
+            note: child.note,
+            stop_reason: child.stopReason,
+            claims_added: child.claimsAdded.length,
+            new_claims_digest: renderLedgerDigest(
+              newClaims,
+              SPAWN_DIGEST_MAX_CLAIMS,
+            ),
+            spent_usd: round2(child.spentUSD),
+          },
+          null,
+          2,
+        );
+      } catch (err) {
+        if (rctx.signal?.aborted) throw err;
+        return `Spawn failed: ${errorMessage(err)}`;
+      }
+    },
+  );
+  return (
+    result ??
+    "Spawn refused: insufficient budget remaining — do the work inline or finish."
+  );
 }
 
 async function executeVerifySpawn(
@@ -289,40 +291,44 @@ async function executeVerifySpawn(
   if (unknown.length > 0) {
     return `Spawn refused: unknown claim ids: ${unknown.join(", ")}.`;
   }
-  const grant = rctx.verifyReserve.grant({
-    fraction: input.budget_fraction ?? ECONOMY.verifySpawn.fraction,
-    minUSD: rctx.config.envelope.panelGrantUSD,
-  });
-  if (!grant) {
-    return "Spawn refused: verification budget reserve is exhausted — finish and report.";
-  }
-  try {
-    const outcome = await rctx.verifySpawn({
-      claimIds,
-      lenses: input.lenses,
-      grant,
-      parentId: parentActx.agentId,
-      depth: childDepth,
-    });
-    return JSON.stringify(
-      {
-        note: outcome.note,
-        verdicts: outcome.verdicts.map((verdict) => ({
-          claim_id: verdict.claimId,
-          status: verdict.status,
-          votes: verdict.votes,
-        })),
-        spent_usd: round2(grant.spentUSD()),
-      },
-      null,
-      2,
-    );
-  } catch (err) {
-    if (rctx.signal?.aborted) throw err;
-    return `Spawn failed: ${errorMessage(err)}`;
-  } finally {
-    grant.release();
-  }
+  const result = await withGrant(
+    rctx.verifyReserve,
+    {
+      fraction: input.budget_fraction ?? ECONOMY.verifySpawn.fraction,
+      minUSD: rctx.config.envelope.panelGrantUSD,
+    },
+    async (grant) => {
+      try {
+        const outcome = await rctx.verifySpawn({
+          claimIds,
+          lenses: input.lenses,
+          grant,
+          parentId: parentActx.agentId,
+          depth: childDepth,
+        });
+        return JSON.stringify(
+          {
+            note: outcome.note,
+            verdicts: outcome.verdicts.map((verdict) => ({
+              claim_id: verdict.claimId,
+              status: verdict.status,
+              votes: verdict.votes,
+            })),
+            spent_usd: round2(grant.spentUSD()),
+          },
+          null,
+          2,
+        );
+      } catch (err) {
+        if (rctx.signal?.aborted) throw err;
+        return `Spawn failed: ${errorMessage(err)}`;
+      }
+    },
+  );
+  return (
+    result ??
+    "Spawn refused: verification budget reserve is exhausted — finish and report."
+  );
 }
 
 function round2(value: number): number {
