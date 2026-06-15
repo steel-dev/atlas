@@ -202,7 +202,10 @@ async function executeSpawn(
   if (parentActx.spawnsThisStep.count >= breadthCap) {
     return `Spawn refused: per-turn spawn cap (${breadthCap}) reached. Integrate the results you have before spawning more.`;
   }
-  if (rctx.counters.researchSpawned >= rctx.config.maxAgents) {
+  if (
+    input.role !== "verify" &&
+    rctx.counters.researchSpawned >= rctx.config.maxAgents
+  ) {
     return `Spawn refused: run-wide research-agent cap (${rctx.config.maxAgents}) reached. Do the remaining work inline and finish.`;
   }
   parentActx.spawnsThisStep.count++;
