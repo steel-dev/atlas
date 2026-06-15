@@ -83,22 +83,17 @@ export interface EngineModelHooks {
   onRateLimit?: ((notice: RateLimitNotice) => void) | undefined;
 }
 
-// Atlas injects approximate, run-timing-dependent dollar readouts into prompts
-// as a hint to the agent: the per-tool-result budget line (budgetStatusLine in
-// state.ts) and the "remaining research budget" continuation anchor (prompts.ts).
-// Their exact value depends on which concurrent model calls and background
-// extraction tasks happen to have settled at that instant, so a resumed run
-// recomputes slightly different figures. Those figures must NOT enter the replay
-// cache key, or every cached call after the first would miss its hash and be
-// re-invoked at full cost — defeating the point of journaled resume. Atlas writes
-// all such volatile money as "≈$<amount>"; collapse the amount to a stable token
-// before hashing. Exact "$<amount>" figures — the constant budget total, prices
-// quoted in fetched source content — are deliberately left intact so they still
-// distinguish genuinely different prompts.
-const VOLATILE_USD_RE = /≈\$\d[\d,]*(?:\.\d+)?/g;
+const VOLATILE_BUDGET_PATTERNS: ReadonlyArray<RegExp> = [
+  /(budget: )≈\$-?\d[\d,]*(?:\.\d+)?/g,
+  /(Remaining research budget: )≈\$-?\d[\d,]*(?:\.\d+)?/g,
+];
 
 export function normalizeForCacheKey(serialized: string): string {
-  return serialized.replace(VOLATILE_USD_RE, "≈$");
+  let out = serialized;
+  for (const pattern of VOLATILE_BUDGET_PATTERNS) {
+    out = out.replace(pattern, (_match, label: string) => `${label}≈$`);
+  }
+  return out;
 }
 
 function callKey(

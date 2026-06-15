@@ -67,7 +67,7 @@ export function orchestratorAnchor(opts: {
       : "";
   return (
     `Research question: ${opts.question}\n\n` +
-    `Run envelope: effort ${opts.effort}, budget ≈$${opts.budgetUSD.toFixed(2)}, spawn depth cap ${opts.depthCap}, at most ${opts.breadthCap} spawns per turn.\n\n` +
+    `Run envelope: effort ${opts.effort}, budget $${opts.budgetUSD.toFixed(2)}, spawn depth cap ${opts.depthCap}, at most ${opts.breadthCap} spawns per turn.\n\n` +
     floor +
     "State your plan, then execute it. Remember: a turn with no tool calls ends the research stage."
   );

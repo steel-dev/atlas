@@ -456,10 +456,34 @@ describe("totalFreshTokens", () => {
 });
 
 describe("normalizeForCacheKey", () => {
-  it("collapses volatile ≈$ budget figures to a stable token", () => {
+  it("collapses the volatile budget status line to a stable token", () => {
     expect(
       normalizeForCacheKey("plan\n[budget: ≈$9.80 of $10.00 remaining]"),
     ).toBe(normalizeForCacheKey("plan\n[budget: ≈$2.13 of $10.00 remaining]"));
+  });
+
+  it("collapses a negative overshoot readout to the same token as a positive one", () => {
+    expect(normalizeForCacheKey("[budget: ≈$-1.23 of $10.00 remaining]")).toBe(
+      normalizeForCacheKey("[budget: ≈$9.80 of $10.00 remaining]"),
+    );
+  });
+
+  it("collapses thousands-separated amounts too", () => {
+    expect(
+      normalizeForCacheKey("[budget: ≈$1,234.56 of $5,000.00 remaining]"),
+    ).toBe(normalizeForCacheKey("[budget: ≈$0.01 of $5,000.00 remaining]"));
+  });
+
+  it("collapses the remaining-budget continuation anchor", () => {
+    expect(normalizeForCacheKey("Remaining research budget: ≈$2.50.")).toBe(
+      normalizeForCacheKey("Remaining research budget: ≈$0.10."),
+    );
+  });
+
+  it("redacts only the volatile figure and keeps the constant total", () => {
+    expect(normalizeForCacheKey("budget: ≈$3.10 of $10.00 remaining")).toBe(
+      "budget: ≈$ of $10.00 remaining",
+    );
   });
 
   it("preserves exact $ figures so real content still distinguishes prompts", () => {
@@ -468,15 +492,12 @@ describe("normalizeForCacheKey", () => {
     );
   });
 
-  it("collapses thousands-separated amounts too", () => {
-    expect(normalizeForCacheKey("≈$1,234.56")).toBe(
-      normalizeForCacheKey("≈$0.01"),
+  it("leaves a bare ≈$ figure in source content untouched", () => {
+    expect(normalizeForCacheKey("street value ≈$50.00 today")).toBe(
+      "street value ≈$50.00 today",
     );
-  });
-
-  it("leaves the constant budget total intact", () => {
-    expect(normalizeForCacheKey("≈$3.10 of $10.00 remaining")).toBe(
-      "≈$ of $10.00 remaining",
+    expect(normalizeForCacheKey("street value ≈$50.00 today")).not.toBe(
+      normalizeForCacheKey("street value ≈$90.00 today"),
     );
   });
 });

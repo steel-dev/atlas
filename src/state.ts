@@ -113,5 +113,5 @@ export interface RunCtx {
 export function budgetStatusLine(rctx: RunCtx): string {
   const spent = rctx.meter.totalSpentUSD();
   const total = rctx.meter.totalUSD;
-  return `budget: ≈$${(total - spent).toFixed(2)} of $${total.toFixed(2)} remaining`;
+  return `budget: ≈$${Math.max(0, total - spent).toFixed(2)} of $${total.toFixed(2)} remaining`;
 }
