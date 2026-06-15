@@ -206,6 +206,7 @@ async function executeSpawn(
     input.role !== "verify" &&
     rctx.counters.researchSpawned >= rctx.config.maxAgents
   ) {
+    rctx.counters.researchSpawnsBlocked++;
     return `Spawn refused: run-wide research-agent cap (${rctx.config.maxAgents}) reached. Do the remaining work inline and finish.`;
   }
   parentActx.spawnsThisStep.count++;

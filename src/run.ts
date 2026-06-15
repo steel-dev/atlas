@@ -722,7 +722,7 @@ function buildStats(opts: {
     durationMs: opts.durationMs,
     budgetExhausted: rctx.meter.exhausted(),
     tokensExhausted: totalFreshTokens(rctx.usage) >= rctx.config.maxTokens,
-    agentCapReached: rctx.counters.researchSpawned >= rctx.config.maxAgents,
+    agentCapReached: rctx.counters.researchSpawnsBlocked > 0,
   };
 }
 
