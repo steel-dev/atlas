@@ -288,6 +288,8 @@ async function executeRun(args: ExecuteRunArgs): Promise<ResearchResult> {
     question,
     effort: resolved.effort,
     budgetUSD: resolved.budgetUSD,
+    maxTokens: resolved.maxTokens,
+    maxAgents: resolved.maxAgents,
     ...(resolved.maxDurationMs !== undefined
       ? { maxDurationMs: resolved.maxDurationMs }
       : {}),
@@ -762,6 +764,8 @@ export async function resumeRun(
   const replay = await loadReplayCache(store, runId);
   const budget: Budget = {
     ...(typeof meta.budgetUSD === "number" ? { maxUSD: meta.budgetUSD } : {}),
+    ...(typeof meta.maxTokens === "number" ? { maxTokens: meta.maxTokens } : {}),
+    ...(typeof meta.maxAgents === "number" ? { maxAgents: meta.maxAgents } : {}),
     ...(typeof meta.maxDurationMs === "number"
       ? { maxDurationMs: meta.maxDurationMs }
       : {}),

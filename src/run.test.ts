@@ -6,7 +6,7 @@ import type {
 import { describe, expect, it } from "vitest";
 import { Atlas } from "./atlas.js";
 import type { ResolvedModel } from "./model.js";
-import { memoryStore } from "./providers/store.js";
+import { loadRunMeta, memoryStore } from "./providers/store.js";
 import type { SearchProvider } from "./providers/search.js";
 import type { ResearchEvent } from "./events.js";
 
@@ -387,5 +387,25 @@ describe("hard caps", () => {
 
     expect(result.stats.tokensExhausted).toBe(false);
     expect(result.stats.agentCapReached).toBe(false);
+  });
+
+  it("journals the token and agent caps and restores them on resume", async () => {
+    const store = memoryStore();
+    const atlas = new Atlas({
+      model: scriptedModel() as unknown as ResolvedModel,
+      search: stubSearch,
+      store,
+      effort: "fast",
+      budget: { maxAgents: 7, maxTokens: 1_234_567, maxUSD: 100 },
+    });
+    await atlas.start("test question", { runId: "run_meta_caps" }).result();
+
+    const meta = await loadRunMeta(store, "run_meta_caps");
+    expect(meta?.maxAgents).toBe(7);
+    expect(meta?.maxTokens).toBe(1_234_567);
+
+    const resumed = await atlas.resume("run_meta_caps");
+    const replayed = await resumed.result();
+    expect(replayed.runId).toBe("run_meta_caps");
   });
 });
