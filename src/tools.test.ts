@@ -90,6 +90,22 @@ describe("add_claim tool", () => {
   });
 });
 
+describe("run_code tool gating", () => {
+  const actx = { agentId: "agent_1", role: "research" } as AgentCtx;
+  const gateRctx = (runCodeEnabled: boolean) =>
+    ({ customTools: new Map(), runCodeEnabled }) as unknown as RunCtx;
+
+  it("registers run_code when the sandbox is available", () => {
+    const tools = buildAgentTools(gateRctx(true), actx, ["run_code"]);
+    expect(tools.run_code).toBeDefined();
+  });
+
+  it("omits run_code when the sandbox is unavailable", () => {
+    const tools = buildAgentTools(gateRctx(false), actx, ["run_code"]);
+    expect(tools.run_code).toBeUndefined();
+  });
+});
+
 describe("fetch extraction by role", () => {
   function replayRctx(queued: { count: number }) {
     const markdown =

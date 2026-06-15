@@ -25,6 +25,7 @@ import {
   type RunCtx,
   type SourceStore,
 } from "./state.js";
+import { isRunCodeAvailable } from "./sandbox.js";
 import { createTrail } from "./trail.js";
 import { runVerifySpawn } from "./verify.js";
 
@@ -143,6 +144,7 @@ export async function assembleRun(args: AssembleRunArgs): Promise<RunAssembly> {
       ? [args.config.fetch]
       : defaultFetchProviders();
   const customTools = await resolveCustomTools(args.config.tools);
+  const runCodeEnabled = await isRunCodeAvailable();
 
   const synthesisGrant =
     meter.grant({
@@ -181,6 +183,7 @@ export async function assembleRun(args: AssembleRunArgs): Promise<RunAssembly> {
     search: combineSearchProviders(searchProviders),
     fetchChain,
     customTools,
+    runCodeEnabled,
     emit,
     journal: args.journal,
     replay: args.replay,

@@ -313,6 +313,15 @@ async function executeRun(args: ExecuteRunArgs): Promise<ResearchResult> {
         "set models.extract and models.verify to a cheaper model to control cost",
     });
   }
+  if (!rctx.runCodeEnabled) {
+    emit({
+      type: "run_code.unavailable",
+      detail:
+        'the optional "isolated-vm" sandbox dependency is not installed or failed to build, ' +
+        "so the run_code tool is omitted this run; install it to let agents compute over source text. " +
+        "Research continues without it.",
+    });
+  }
 
   const orchestrator = await runResearchPhase(
     rctx,

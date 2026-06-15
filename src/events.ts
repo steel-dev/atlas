@@ -123,6 +123,7 @@ export type ResearchEvent =
     }
   | { type: "pricing.missing"; modelId: string; detail: string }
   | { type: "model.fallback"; roles: string[]; modelId: string; detail: string }
+  | { type: "run_code.unavailable"; detail: string }
   | { type: "rate.limited"; retryAfterSeconds: number }
   | { type: "tool.event"; tool: string; data: unknown }
   | { type: "run.completed"; stats: RunStats }
@@ -134,4 +135,4 @@ export type ResearchEventMap = {
   [E in ResearchEvent as E["type"]]: E;
 };
 
-export const EVENT_SCHEMA_VERSION = "3.1";
+export const EVENT_SCHEMA_VERSION = "3.2";

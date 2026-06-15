@@ -68,6 +68,10 @@ function loadIsolatedVm(): Promise<IsolatedVM | null> {
   return isolatedVmPromise;
 }
 
+export async function isRunCodeAvailable(): Promise<boolean> {
+  return (await loadIsolatedVm()) !== null;
+}
+
 const RUNNER_SCRIPT = String.raw`
 const documents = Array.isArray(globalThis.sources) ? globalThis.sources : [];
 const __lines = [];

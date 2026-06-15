@@ -88,6 +88,7 @@ export interface RunCtx {
   search: ResolvedSearch;
   fetchChain: FetchProvider[];
   customTools: ReadonlyMap<string, ResolvedCustomTool>;
+  runCodeEnabled: boolean;
   emit(event: ResearchEvent): void;
   journal?: JournalWriter | undefined;
   replay?: ReplayCache | undefined;

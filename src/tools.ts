@@ -786,7 +786,7 @@ export function buildAgentTools(
     });
   }
 
-  if (enabled.has("run_code")) {
+  if (enabled.has("run_code") && rctx.runCodeEnabled) {
     tools.run_code = tool({
       description:
         "Run JavaScript in an isolated V8 sandbox over the full text of stored sources to extract exact values, compute, or reconcile figures across sources. In scope: `sources` (array of {source_id, url, title, text}), `grep(pattern, {source_ids?, ignore_case?, context?, max?})`, and `print(...)`. The final expression is returned as `result`. No network, filesystem, require, or process access.",
