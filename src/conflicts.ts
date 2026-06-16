@@ -6,10 +6,8 @@ import { ECONOMY } from "./economy.js";
 import { MODEL_CALL_MAX_RETRIES } from "./model.js";
 import { normalizeForQuoteMatch, type ResearchClaim } from "./ledger.js";
 import type { RunCtx } from "./state.js";
-import { evidenceStrength } from "./claim-status.js";
 
 const SIMILARITY_THRESHOLD = 0.3;
-const DECISIVE_STRENGTH_GAP = 2;
 const IMPORTANCE_RANK: Record<string, number> = {
   central: 0,
   supporting: 1,
@@ -112,32 +110,22 @@ export function candidateConflictPairs(
 }
 
 function markConflict(
-  rctx: RunCtx,
   a: ResearchClaim,
   b: ResearchClaim,
   toVerify: Set<string>,
 ): boolean {
   if (a.duplicateOf || b.duplicateOf || a.id === b.id) return false;
   let changed = false;
-  const gap =
-    evidenceStrength(a, rctx.todayISO) - evidenceStrength(b, rctx.todayISO);
-  const link = (
-    claim: ResearchClaim,
-    other: ResearchClaim,
-    decisivelyStronger: boolean,
-  ) => {
+  const link = (claim: ResearchClaim, other: ResearchClaim) => {
     const conflicts = new Set(claim.conflictsWith ?? []);
     if (conflicts.has(other.id)) return;
     conflicts.add(other.id);
     claim.conflictsWith = [...conflicts];
+    toVerify.add(claim.id);
     changed = true;
-    // The decisively stronger side keeps its standing; the weaker (or evenly matched) side
-    // is sent to the panel to adjudicate the conflict, rather than being contested on
-    // lexical similarity alone.
-    if (!decisivelyStronger) toVerify.add(claim.id);
   };
-  link(a, b, gap >= DECISIVE_STRENGTH_GAP);
-  link(b, a, -gap >= DECISIVE_STRENGTH_GAP);
+  link(a, b);
+  link(b, a);
   return changed;
 }
 
@@ -193,7 +181,7 @@ export async function conflictPass(
         if (item.verdict === "duplicate") {
           if (rctx.ledger.merge(pair.b.id, pair.a.id)) outcome.merged++;
         } else if (item.verdict === "contradicts") {
-          if (markConflict(rctx, pair.a, pair.b, toVerify)) outcome.contradicted++;
+          if (markConflict(pair.a, pair.b, toVerify)) outcome.contradicted++;
         }
       }
     } catch (err) {

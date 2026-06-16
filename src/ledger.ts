@@ -20,7 +20,6 @@ export type ClaimSourceQuality =
   | "unreliable";
 
 export type ClaimStatus =
-  | "quoted"
   | "confirmed"
   | "screened"
   | "contested"
@@ -217,7 +216,7 @@ export function renderLedgerDigest(
 ): string {
   const representatives = claims.filter((claim) => !claim.duplicateOf);
   const lines = representatives.slice(0, maxClaims).map((claim) => {
-    const statusTag = claim.status === "quoted" ? "" : `·${claim.status}`;
+    const statusTag = claim.status === "unverified" ? "" : `·${claim.status}`;
     const corroboration =
       claim.corroboration && claim.corroboration > 1
         ? ` (×${claim.corroboration} sources)`
@@ -410,7 +409,7 @@ export function createLedger(ctx: LedgerContext): Ledger {
         url: document.url,
         title: document.title,
         ...(publishedTime ? { publishedTime } : {}),
-        status: "quoted",
+        status: "unverified",
         votes: [],
         agentId: opts.agentId,
       };
@@ -462,7 +461,7 @@ export function createLedger(ctx: LedgerContext): Ledger {
       ...(document.metadata.publishedTime
         ? { publishedTime: document.metadata.publishedTime }
         : {}),
-      status: "quoted",
+      status: "unverified",
       votes: [],
       agentId: input.agentId,
     };

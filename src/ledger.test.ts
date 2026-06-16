@@ -411,7 +411,7 @@ describe("ledger addClaim", () => {
     expect(result.outcome).toBe("added");
     if (result.outcome !== "added") throw new Error("unreachable");
     expect(result.claim.id).toBe("claim_1");
-    expect(result.claim.status).toBe("quoted");
+    expect(result.claim.status).toBe("unverified");
     expect(result.claim.sourceQuality).toBe("secondary");
     expect(result.claim.agentId).toBe("agent_1");
     expect(events).toContain("claim.extracted");

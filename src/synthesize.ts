@@ -125,7 +125,7 @@ export function partitionClaims(
   );
   const refuted = representatives.filter((claim) => claim.status === "refuted");
   const unverified = representatives.filter(
-    (claim) => claim.status === "quoted" || claim.status === "unverified",
+    (claim) => claim.status === "unverified",
   );
   const candidates = unverified
     .slice()

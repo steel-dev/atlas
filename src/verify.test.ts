@@ -36,7 +36,7 @@ function claim(): ResearchClaim {
     sourceId: "source_1",
     url: "https://example.com",
     title: "Example",
-    status: "quoted",
+    status: "unverified",
     votes: [],
     agentId: "agent_1",
   };

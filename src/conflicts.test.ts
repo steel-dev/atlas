@@ -22,7 +22,7 @@ function fakeClaim(id: string, text: string, url: string): ResearchClaim {
     sourceId: `source_${id}`,
     url,
     title: "Test",
-    status: "quoted",
+    status: "unverified",
     votes: [],
     agentId: "agent_1",
   };
@@ -204,24 +204,6 @@ describe("conflictPass", () => {
     expect(b.conflictsWith).toEqual([a.id]);
     expect(verified).toContain(a.id);
     expect(verified).toContain(b.id);
-  });
-
-  it("routes only the decisively weaker side of a contradiction to the panel", async () => {
-    const ledger = await seededLedger();
-    const [strong, weak] = ledger.representatives();
-    strong.sourceQuality = "primary";
-    strong.corroboration = 3;
-    weak.sourceQuality = "forum";
-    const { rctx, verified } = fakeRunCtx(ledger, [
-      { index: 0, verdict: "contradicts" },
-    ]);
-    const outcome = await conflictPass(rctx, createBudgetMeter(1));
-    expect(outcome.contradicted).toBe(1);
-    expect(strong.conflictsWith).toEqual([weak.id]);
-    expect(weak.conflictsWith).toEqual([strong.id]);
-    expect(verified).toContain(weak.id);
-    expect(verified).not.toContain(strong.id);
-    expect(strong.status).toBe("quoted");
   });
 
   it("preserves an already-settled claim while routing its conflict", async () => {

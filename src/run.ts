@@ -358,9 +358,7 @@ async function executeRun(args: ExecuteRunArgs): Promise<ResearchResult> {
       refuted: partition.refuted,
       unverified: ledger
         .representatives()
-        .filter(
-          (claim) => claim.status === "quoted" || claim.status === "unverified",
-        ),
+        .filter((claim) => claim.status === "unverified"),
     },
     openQuestions,
     sources: rctx.sources.fetchedSources.map((source) => {
