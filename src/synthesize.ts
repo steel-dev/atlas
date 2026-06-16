@@ -285,7 +285,7 @@ const SYNTHESIS_SYSTEM_PROMPT =
   "You may consult the stored sources before writing: search_sources finds passages, read_source reads exact text, run_code computes over them. " +
   "Use them to merge duplicates confidently and to recover precise wording, figures, units, and dates around the listed claims' quotes — a few tool turns at most; your final reply with no tool calls is the report itself. " +
   "That final reply must begin with the report's first sentence — no preamble, no announcement that you are about to write, no leading horizontal rule. " +
-  "Source detail may sharpen a sentence, but every factual sentence still carries its {{claim_id}} marker and must stay within what that claim's source supports — markers are machine-checked against the claim, its quote, and the surrounding source text. " +
+  "Source detail may sharpen a sentence, but every factual sentence still carries its {{claim_id}} marker(s) and must stay within what its cited claims support — markers are machine-checked against those claims, their quotes, and the surrounding source text. When a sentence combines facts from several claims, cite them together as {{claim_3,claim_7}}: a composed sentence passes as long as each part traces to one of its cited claims, so prefer composing cited facts into one informative sentence over flattening the report into one fact per sentence. " +
   "Surface a caveat only where it changes how the answer should be read, inline next to the point it qualifies. " +
   "Do not add generic 'Caveats' or 'Open Questions' sections.";
 
@@ -440,9 +440,10 @@ const REPAIR_MAX_PROBLEMS = 24;
 const REPAIR_SYSTEM_PROMPT =
   "You repair a research report draft so every factual sentence is supported by the claims it cites. " +
   "You receive the draft with {{claim_id}} markers, a list of problem sentences, and the claim ledger digest. " +
-  "Fix ONLY the problem sentences: rewrite each to assert exactly what its cited claim supports (keeping a correct {{claim_id}} marker), " +
-  "attach the right marker when a listed claim does support the sentence, or delete the sentence when nothing supports it. " +
-  "Leave every other sentence unchanged. Never invent claims, sources, ids, or facts. " +
+  "Fix ONLY the listed problem sentences; leave every other sentence and its markers exactly as they are. " +
+  "Prefer the least destructive fix, in this order: (1) re-cite — attach or add the {{claim_id}} markers that do support the sentence, citing several jointly as {{claim_3,claim_7}} when it composes them; (2) trim — narrow the sentence to exactly what its cited claims support together; (3) delete — only when no ledger claim supports any part of the sentence. " +
+  "Keep a composed sentence composed — never split it into one fact per sentence — and never drop a sentence that is already supported just to shorten the draft. " +
+  "Never invent claims, sources, ids, or facts. " +
   "Return the full corrected draft and nothing else.";
 
 export async function repairReport(
@@ -467,7 +468,7 @@ export async function repairReport(
         ? "the marker cites a claim id that does not exist in the ledger; attach a real claim that supports the sentence or delete it."
         : citation.status === "refuted"
           ? "the cited claim was refuted during verification; either state that it was ruled out or delete the sentence."
-          : "the sentence asserts more than this claim supports.";
+          : "the sentence asserts more than its cited claims support together; trim it to what they jointly establish, or cite an additional ledger claim that covers the rest.";
     problems.push(
       `- Sentence: "${sentence}"\n` +
         `  Cited claim ${citation.claimId}: "${claim?.text ?? "unknown claim"}"\n` +

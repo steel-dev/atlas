@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { MockLanguageModelV3 } from "ai/test";
 import { bindCitations, createMarkerStripper, stripMarkers } from "./bind.js";
 import { EFFORT_ENVELOPES } from "./config.js";
 import type { ResearchClaim } from "./ledger.js";
@@ -226,5 +227,104 @@ describe("createMarkerStripper", () => {
       stripper.push("A fact. {{claim_2,claim_3}} Another fact.") +
       stripper.flush();
     expect(out).toBe("A fact. Another fact.");
+  });
+});
+
+describe("bindCitations joint entailment", () => {
+  const grant = {
+    limitUSD: 1,
+    spentUSD: () => 0,
+    remainingUSD: () => 1,
+    floored: () => false,
+    charge: () => {},
+    reserve: () => null,
+    grant: () => null,
+    release: () => {},
+  };
+  const source = "In 2024 revenue rose 10% while costs rose 30% at the firm.";
+  const claims: ResearchClaim[] = [
+    {
+      ...makeClaim("claim_1", "revenue rose 10%"),
+      text: "Revenue rose ten percent in 2024",
+    },
+    {
+      ...makeClaim("claim_2", "costs rose 30%"),
+      text: "Costs rose thirty percent in 2024",
+    },
+  ];
+
+  function entailmentModel(supported: boolean, calls: string[]) {
+    return new MockLanguageModelV3({
+      doGenerate: async (options) => {
+        calls.push(JSON.stringify(options.prompt));
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({ checks: [{ index: 0, supported }] }),
+            },
+          ],
+          finishReason: { unified: "stop", raw: undefined },
+          usage: {
+            inputTokens: { total: 100, noCache: 100, cacheRead: 0, cacheWrite: 0 },
+            outputTokens: { total: 50, text: 50, reasoning: 0 },
+          },
+          warnings: [],
+        };
+      },
+    });
+  }
+
+  function entailmentCtx(model: MockLanguageModelV3): RunCtx {
+    const byId = new Map(claims.map((claim) => [claim.id, claim]));
+    const document = createSourceDocument(
+      "https://example.com/page",
+      "Example",
+      source,
+      { markdownChars: source.length, extractionNotes: [] },
+      source.length,
+      "source_1",
+    );
+    return {
+      config: {
+        envelope: { ...EFFORT_ENVELOPES.balanced, maxEntailmentChecks: 10 },
+      },
+      ledger: { byId: (id: string) => byId.get(id) },
+      sources: { byId: new Map([["source_1", document]]) },
+      bindModel: () => model,
+      emit: () => {},
+    } as unknown as RunCtx;
+  }
+
+  it("checks a multi-claim sentence as one joint group and keeps both citations when the union entails it", async () => {
+    const calls: string[] = [];
+    const rctx = entailmentCtx(entailmentModel(true, calls));
+    const outcome = await bindCitations(
+      rctx,
+      grant as never,
+      "In 2024 revenue rose 10% while costs rose 30% at the firm. {{claim_1,claim_2}}",
+    );
+    expect(outcome.citations).toHaveLength(2);
+    expect(outcome.citations.every((citation) => citation.verified)).toBe(true);
+    expect(outcome.citationsBound).toBe(2);
+    expect(outcome.citationsUnsupported).toBe(0);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toContain("Revenue rose ten percent in 2024");
+    expect(calls[0]).toContain("Costs rose thirty percent in 2024");
+  });
+
+  it("flips every citation in the group when the union does not entail the sentence", async () => {
+    const calls: string[] = [];
+    const rctx = entailmentCtx(entailmentModel(false, calls));
+    const outcome = await bindCitations(
+      rctx,
+      grant as never,
+      "In 2024 revenue rose 10%, so the firm became profitable. {{claim_1,claim_2}}",
+    );
+    expect(outcome.citations).toHaveLength(2);
+    expect(outcome.citations.every((citation) => !citation.verified)).toBe(true);
+    expect(outcome.citationsBound).toBe(0);
+    expect(outcome.citationsUnsupported).toBe(2);
+    expect(calls).toHaveLength(1);
   });
 });

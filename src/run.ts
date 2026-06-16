@@ -561,6 +561,21 @@ async function draftReport(
   return fallback();
 }
 
+interface RepairBalance {
+  citationsUnsupported: number;
+  citationsBound: number;
+}
+
+export function acceptsRepair(
+  before: RepairBalance,
+  after: RepairBalance,
+): boolean {
+  return (
+    after.citationsUnsupported < before.citationsUnsupported &&
+    after.citationsBound >= before.citationsBound
+  );
+}
+
 async function bindAndRepair(
   rctx: RunCtx,
   grant: BudgetGrant,
@@ -573,7 +588,7 @@ async function bindAndRepair(
       const repaired = await repairReport(rctx, grant, { draft, bound });
       if (repaired && repaired !== draft) {
         const rebound = await bindCitations(rctx, grant, repaired);
-        if (rebound.citationsUnsupported < bound.citationsUnsupported) {
+        if (acceptsRepair(bound, rebound)) {
           bound = rebound;
         }
       }

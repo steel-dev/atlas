@@ -5,7 +5,6 @@ import type { BudgetGrant } from "./budget.js";
 import {
   quoteSupportedByDocument,
   type ClaimStatus,
-  type ResearchClaim,
 } from "./ledger.js";
 import { MODEL_CALL_MAX_RETRIES } from "./model.js";
 import type { RunCtx } from "./state.js";
@@ -182,11 +181,17 @@ const factualSchema = z.object({
   factual: z.array(z.number().int()),
 });
 
+interface EntailmentClaim {
+  text: string;
+  quote: string;
+  context?: string | undefined;
+}
+
 interface EntailmentItem {
   index: number;
+  citationIndices: number[];
   sentence: string;
-  claim: ResearchClaim;
-  context?: string | undefined;
+  claims: EntailmentClaim[];
 }
 
 async function runEntailmentChecks(
@@ -208,14 +213,23 @@ async function runEntailmentChecks(
   await mapWithConcurrency(batches, ENTAILMENT_BATCH_CONCURRENCY, async (batch) => {
     if (grant.floored()) return;
     const prompt =
-      "For each numbered item, judge whether the report sentence is entailed by the claim, its verbatim source quote, and (when given) the quote's surrounding source context — i.e. every factual assertion in the sentence is supported by them. Judge entailment only; ignore style.\n\n" +
+      "For each numbered item, judge whether the report sentence is entailed by its cited claims TAKEN TOGETHER — the union of their verbatim quotes and (when given) surrounding source context. " +
+      "A sentence that composes facts from several claims is supported as long as every factual assertion in it traces to at least one of the cited claims; the claims need not each support the whole sentence on their own. " +
+      "Mark it unsupported only when the sentence asserts something none of the cited claims establish even jointly — a figure, entity, causal link, or conclusion present in none of them. Judge entailment only; ignore style.\n\n" +
       batch
         .map(
           (item) =>
-            `[${item.index}]\nSentence: "${item.sentence}"\nClaim: "${item.claim.text}"\nQuote: "${item.claim.quote}"` +
-            (item.context
-              ? `\nSource context around the quote: "${item.context}"`
-              : ""),
+            `[${item.index}]\nSentence: "${item.sentence}"\n` +
+            "Cited claims (the sentence may rest on these jointly):\n" +
+            item.claims
+              .map(
+                (claim, i) =>
+                  `  (${i + 1}) Claim: "${claim.text}"\n      Quote: "${claim.quote}"` +
+                  (claim.context
+                    ? `\n      Source context: "${claim.context}"`
+                    : ""),
+              )
+              .join("\n"),
         )
         .join("\n\n") +
       "\n\nReturn one verdict per index.";
@@ -310,10 +324,14 @@ export async function bindCitations(
   const entailmentItems: EntailmentItem[] = [];
   const markerSpans: Array<[number, number]> = [];
 
+  let entailmentGroupId = 0;
   for (const marker of markers) {
     const span = sentenceSpanEndingAt(report, marker.pos);
     markerSpans.push(span);
     const sentence = report.slice(span[0], span[1]).trim();
+    const groupCitationIndices: number[] = [];
+    const groupClaims: EntailmentClaim[] = [];
+    const seenClaimIds = new Set<string>();
     for (const claimId of marker.claimIds) {
       const rawClaim = rctx.ledger.byId(claimId);
       if (!rawClaim) {
@@ -334,6 +352,7 @@ export async function bindCitations(
         ? quoteSupportedByDocument(claim.quote, document)
         : false;
       const verified = quoteOk && claim.status !== "refuted";
+      const citationIndex = citations.length;
       citations.push({
         sentenceSpan: span,
         claimId: claim.id,
@@ -343,13 +362,24 @@ export async function bindCitations(
         verified,
       });
       if (verified && rctx.config.envelope.maxEntailmentChecks > 0) {
-        entailmentItems.push({
-          index: citations.length - 1,
-          sentence,
-          claim,
-          context: quoteContext(rctx, claim),
-        });
+        groupCitationIndices.push(citationIndex);
+        if (!seenClaimIds.has(claim.id)) {
+          seenClaimIds.add(claim.id);
+          groupClaims.push({
+            text: claim.text,
+            quote: claim.quote,
+            context: quoteContext(rctx, claim),
+          });
+        }
       }
+    }
+    if (groupClaims.length > 0) {
+      entailmentItems.push({
+        index: entailmentGroupId++,
+        citationIndices: groupCitationIndices,
+        sentence,
+        claims: groupClaims,
+      });
     }
   }
 
@@ -359,9 +389,13 @@ export async function bindCitations(
   );
   const entailment = await runEntailmentChecks(rctx, grant, cappedItems);
   for (const item of cappedItems) {
-    const verdict = entailment.get(item.index);
-    if (verdict === false) {
-      citations[item.index] = { ...citations[item.index], verified: false };
+    if (entailment.get(item.index) === false) {
+      for (const citationIndex of item.citationIndices) {
+        citations[citationIndex] = {
+          ...citations[citationIndex],
+          verified: false,
+        };
+      }
     }
   }
 

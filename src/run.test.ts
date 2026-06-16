@@ -5,6 +5,7 @@ import type {
 } from "@ai-sdk/provider";
 import { describe, expect, it } from "vitest";
 import { Atlas } from "./atlas.js";
+import { acceptsRepair } from "./run.js";
 import type { ResolvedModel } from "./model.js";
 import { loadRunMeta, memoryStore } from "./providers/store.js";
 import type { SearchProvider } from "./providers/search.js";
@@ -450,5 +451,43 @@ describe("hard caps", () => {
     const resumed = await atlas.resume("run_meta_caps");
     const replayed = await resumed.result();
     expect(replayed.runId).toBe("run_meta_caps");
+  });
+});
+
+describe("acceptsRepair", () => {
+  it("accepts a repair that cuts unsupported citations without losing bound ones", () => {
+    expect(
+      acceptsRepair(
+        { citationsUnsupported: 3, citationsBound: 5 },
+        { citationsUnsupported: 1, citationsBound: 5 },
+      ),
+    ).toBe(true);
+  });
+
+  it("accepts a repair that cuts unsupported and gains bound citations", () => {
+    expect(
+      acceptsRepair(
+        { citationsUnsupported: 2, citationsBound: 4 },
+        { citationsUnsupported: 0, citationsBound: 5 },
+      ),
+    ).toBe(true);
+  });
+
+  it("rejects a repair that wins on the count by dropping verified content", () => {
+    expect(
+      acceptsRepair(
+        { citationsUnsupported: 3, citationsBound: 6 },
+        { citationsUnsupported: 0, citationsBound: 2 },
+      ),
+    ).toBe(false);
+  });
+
+  it("rejects a repair that does not reduce unsupported citations", () => {
+    expect(
+      acceptsRepair(
+        { citationsUnsupported: 2, citationsBound: 5 },
+        { citationsUnsupported: 2, citationsBound: 7 },
+      ),
+    ).toBe(false);
   });
 });
