@@ -2,14 +2,11 @@ import { generateObject } from "ai";
 import { z } from "zod";
 import { mapWithConcurrency } from "./async.js";
 import type { BudgetGrant } from "./budget.js";
+import { ECONOMY } from "./economy.js";
 import { MODEL_CALL_MAX_RETRIES } from "./model.js";
 import { normalizeForQuoteMatch, type ResearchClaim } from "./ledger.js";
 import type { RunCtx } from "./state.js";
-import {
-  evidenceStrength,
-  markContestedByConflict,
-  voteSplit,
-} from "./claim-status.js";
+import { evidenceStrength } from "./claim-status.js";
 
 const SIMILARITY_THRESHOLD = 0.3;
 const DECISIVE_STRENGTH_GAP = 2;
@@ -118,6 +115,7 @@ function markConflict(
   rctx: RunCtx,
   a: ResearchClaim,
   b: ResearchClaim,
+  toVerify: Set<string>,
 ): boolean {
   if (a.duplicateOf || b.duplicateOf || a.id === b.id) return false;
   let changed = false;
@@ -133,14 +131,10 @@ function markConflict(
     conflicts.add(other.id);
     claim.conflictsWith = [...conflicts];
     changed = true;
-    if (!decisivelyStronger && markContestedByConflict(claim)) {
-      rctx.emit({
-        type: "claim.verified",
-        claimId: claim.id,
-        status: claim.status,
-        votes: voteSplit(claim),
-      });
-    }
+    // The decisively stronger side keeps its standing; the weaker (or evenly matched) side
+    // is sent to the panel to adjudicate the conflict, rather than being contested on
+    // lexical similarity alone.
+    if (!decisivelyStronger) toVerify.add(claim.id);
   };
   link(a, b, gap >= DECISIVE_STRENGTH_GAP);
   link(b, a, -gap >= DECISIVE_STRENGTH_GAP);
@@ -163,6 +157,7 @@ export async function conflictPass(
   });
   const outcome: ConflictPassOutcome = { merged: 0, contradicted: 0 };
   if (pairs.length === 0) return outcome;
+  const toVerify = new Set<string>();
   const model = rctx.bindModel("extract", grant);
   const batches: CandidatePair[][] = [];
   for (let offset = 0; offset < pairs.length; offset += PAIR_BATCH_SIZE) {
@@ -198,13 +193,26 @@ export async function conflictPass(
         if (item.verdict === "duplicate") {
           if (rctx.ledger.merge(pair.b.id, pair.a.id)) outcome.merged++;
         } else if (item.verdict === "contradicts") {
-          if (markConflict(rctx, pair.a, pair.b)) outcome.contradicted++;
+          if (markConflict(rctx, pair.a, pair.b, toVerify)) outcome.contradicted++;
         }
       }
     } catch (err) {
       if (rctx.signal?.aborted) throw err;
     }
   });
+  if (toVerify.size > 0 && !rctx.stopReason()) {
+    try {
+      await rctx.verify({
+        claimIds: [...toVerify],
+        reserve: rctx.verifyReserve,
+        perClaimFraction: ECONOMY.verify.perClaimFraction,
+        concurrency: ECONOMY.verify.concurrency,
+        cap: envelope.maxConflictPairs,
+      });
+    } catch (err) {
+      if (rctx.signal?.aborted) throw err;
+    }
+  }
   if (outcome.merged > 0 || outcome.contradicted > 0) {
     rctx.emit({
       type: "tool.event",

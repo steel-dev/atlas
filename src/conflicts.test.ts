@@ -149,19 +149,27 @@ describe("conflictPass", () => {
     ledger: Ledger,
     verdicts: Array<{ index: number; verdict: string }>,
     emit: (event: { type: string }) => void = () => {},
-  ): RunCtx {
-    return {
+  ): { rctx: RunCtx; verified: string[] } {
+    const verified: string[] = [];
+    const rctx = {
       ledger,
       config: { envelope: EFFORT_ENVELOPES.balanced },
       bindModel: () => judgeModel(verdicts),
       signal: undefined,
       emit,
+      verifyReserve: createBudgetMeter(1),
+      stopReason: () => null,
+      verify: async (args: { claimIds: string[] }) => {
+        verified.push(...args.claimIds);
+        return { verdicts: [], note: "" };
+      },
     } as unknown as RunCtx;
+    return { rctx, verified };
   }
 
   it("merges judged duplicates and records corroboration", async () => {
     const ledger = await seededLedger();
-    const rctx = fakeRunCtx(ledger, [{ index: 0, verdict: "duplicate" }]);
+    const { rctx } = fakeRunCtx(ledger, [{ index: 0, verdict: "duplicate" }]);
     const outcome = await conflictPass(rctx, createBudgetMeter(1));
     expect(outcome.merged).toBe(1);
     const representatives = ledger.representatives();
@@ -174,52 +182,49 @@ describe("conflictPass", () => {
 
   it("leaves distinct pairs untouched", async () => {
     const ledger = await seededLedger();
-    const rctx = fakeRunCtx(ledger, [{ index: 0, verdict: "distinct" }]);
+    const { rctx } = fakeRunCtx(ledger, [{ index: 0, verdict: "distinct" }]);
     const outcome = await conflictPass(rctx, createBudgetMeter(1));
     expect(outcome.merged).toBe(0);
     expect(outcome.contradicted).toBe(0);
     expect(ledger.representatives()).toHaveLength(2);
   });
 
-  it("marks judged contradictions contested and links both claims", async () => {
+  it("links judged contradictions and routes both sides to the panel", async () => {
     const ledger = await seededLedger();
-    const events: Array<{ type: string }> = [];
-    const rctx = fakeRunCtx(
-      ledger,
-      [{ index: 0, verdict: "contradicts" }],
-      (event) => events.push(event),
-    );
+    const { rctx, verified } = fakeRunCtx(ledger, [
+      { index: 0, verdict: "contradicts" },
+    ]);
     const outcome = await conflictPass(rctx, createBudgetMeter(1));
     expect(outcome.contradicted).toBe(1);
     expect(outcome.merged).toBe(0);
     const representatives = ledger.representatives();
     expect(representatives).toHaveLength(2);
     const [a, b] = representatives;
-    expect(a.status).toBe("contested");
-    expect(b.status).toBe("contested");
     expect(a.conflictsWith).toEqual([b.id]);
     expect(b.conflictsWith).toEqual([a.id]);
-    expect(
-      events.filter((event) => event.type === "claim.verified"),
-    ).toHaveLength(2);
+    expect(verified).toContain(a.id);
+    expect(verified).toContain(b.id);
   });
 
-  it("contests only the decisively weaker side of a contradiction", async () => {
+  it("routes only the decisively weaker side of a contradiction to the panel", async () => {
     const ledger = await seededLedger();
     const [strong, weak] = ledger.representatives();
     strong.sourceQuality = "primary";
     strong.corroboration = 3;
     weak.sourceQuality = "forum";
-    const rctx = fakeRunCtx(ledger, [{ index: 0, verdict: "contradicts" }]);
+    const { rctx, verified } = fakeRunCtx(ledger, [
+      { index: 0, verdict: "contradicts" },
+    ]);
     const outcome = await conflictPass(rctx, createBudgetMeter(1));
     expect(outcome.contradicted).toBe(1);
-    expect(strong.status).toBe("quoted");
-    expect(weak.status).toBe("contested");
     expect(strong.conflictsWith).toEqual([weak.id]);
     expect(weak.conflictsWith).toEqual([strong.id]);
+    expect(verified).toContain(weak.id);
+    expect(verified).not.toContain(strong.id);
+    expect(strong.status).toBe("quoted");
   });
 
-  it("does not downgrade already-voted claims when marking conflicts", async () => {
+  it("preserves an already-settled claim while routing its conflict", async () => {
     const ledger = await seededLedger();
     const confirmed = ledger.representatives()[0];
     confirmed.votes = [
@@ -227,12 +232,12 @@ describe("conflictPass", () => {
       { lens: "source-strength", refuted: false, evidence: "e", confidence: "high" },
     ];
     confirmed.status = "confirmed";
-    const rctx = fakeRunCtx(ledger, [{ index: 0, verdict: "contradicts" }]);
+    const { rctx } = fakeRunCtx(ledger, [{ index: 0, verdict: "contradicts" }]);
     const outcome = await conflictPass(rctx, createBudgetMeter(1));
     expect(outcome.contradicted).toBe(1);
     expect(confirmed.status).toBe("confirmed");
     expect(confirmed.conflictsWith).toHaveLength(1);
-    expect(ledger.representatives()[1].status).toBe("contested");
+    expect(ledger.representatives()[1].conflictsWith).toHaveLength(1);
   });
 });
 

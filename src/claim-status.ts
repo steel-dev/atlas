@@ -57,13 +57,6 @@ export function settleClaim(claim: ResearchClaim, votes: ClaimVote[]): void {
   }
 }
 
-export function markContestedByConflict(claim: ResearchClaim): boolean {
-  if (claim.votes.length > 0) return false;
-  if (claim.status !== "quoted" && claim.status !== "unverified") return false;
-  claim.status = "contested";
-  return true;
-}
-
 export function adoptVerdictsOnMerge(
   representative: ResearchClaim,
   duplicate: ResearchClaim,
