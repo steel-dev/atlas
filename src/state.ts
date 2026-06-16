@@ -66,6 +66,17 @@ export interface VerifySpawnArgs {
   depth: number;
 }
 
+export interface VerifyScheduleArgs {
+  claimIds: string[];
+  reserve: BudgetGrant;
+  perClaimFraction: number;
+  concurrency: number;
+  cap?: number | undefined;
+  lenses?: string[] | undefined;
+  parentId?: string | undefined;
+  depth?: number | undefined;
+}
+
 export interface VerifySpawnVerdict {
   claimId: string;
   status: string;
@@ -108,7 +119,7 @@ export interface RunCtx {
   agentSequence: { next: number };
   bindModel(role: ModelRole, grant: BudgetGrant): LanguageModelV3;
   rawModel(role: ModelRole): ResolvedModel;
-  verifySpawn(args: VerifySpawnArgs): Promise<VerifySpawnOutcome>;
+  verify(args: VerifyScheduleArgs): Promise<VerifySpawnOutcome>;
   stopReason(): string | null;
 }
 

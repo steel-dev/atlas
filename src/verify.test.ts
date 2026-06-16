@@ -1,11 +1,30 @@
 import { MockLanguageModelV3 } from "ai/test";
 import { describe, expect, it } from "vitest";
-import { runVerifySpawn, screenClaim, settleClaim, voteSplit } from "./verify.js";
+import { screenClaim, settleClaim, verifyClaims, voteSplit } from "./verify.js";
 import { createBudgetMeter } from "./budget.js";
 import { EFFORT_ENVELOPES } from "./config.js";
 import type { ClaimVote, ResearchClaim } from "./ledger.js";
 import { createSourceDocument } from "./source-documents.js";
 import type { RunCtx } from "./state.js";
+
+function schedule(
+  rctx: RunCtx,
+  opts: {
+    claimIds: string[];
+    budgetUSD: number;
+    parentId?: string;
+    depth?: number;
+  },
+) {
+  return verifyClaims(rctx, {
+    claimIds: opts.claimIds,
+    reserve: createBudgetMeter(opts.budgetUSD),
+    perClaimFraction: 0.08,
+    concurrency: 1,
+    ...(opts.parentId ? { parentId: opts.parentId } : {}),
+    depth: opts.depth ?? 1,
+  });
+}
 
 function claim(): ResearchClaim {
   return {
@@ -118,7 +137,7 @@ describe("screenClaim", () => {
   });
 });
 
-describe("runVerifySpawn staged verification", () => {
+describe("verifyClaims staged verification", () => {
   it("settles non-central claims from the screen without a panel", async () => {
     const supporting = claim();
     supporting.importance = "supporting";
@@ -128,11 +147,10 @@ describe("runVerifySpawn staged verification", () => {
       confidence: "medium",
       note: "supported in context",
     }));
-    const outcome = await runVerifySpawn(rctx, {
+    const outcome = await schedule(rctx, {
       claimIds: ["claim_1"],
-      grant: createBudgetMeter(1),
+      budgetUSD: 1,
       parentId: "agent_1",
-      depth: 1,
     });
     expect(outcome.verdicts).toHaveLength(1);
     expect(outcome.verdicts[0].status).toBe("screened");
@@ -148,11 +166,10 @@ describe("runVerifySpawn staged verification", () => {
       confidence: "high",
       note: "context plainly supports the claim",
     }));
-    const outcome = await runVerifySpawn(rctx, {
+    const outcome = await schedule(rctx, {
       claimIds: ["claim_1"],
-      grant: createBudgetMeter(0.03),
+      budgetUSD: 0.03,
       parentId: "agent_1",
-      depth: 1,
     });
     expect(outcome.verdicts).toHaveLength(1);
     expect(outcome.verdicts[0].status).toBe("screened");
@@ -170,11 +187,10 @@ describe("runVerifySpawn staged verification", () => {
       confidence: "high",
       note: "unused",
     }));
-    const outcome = await runVerifySpawn(rctx, {
+    const outcome = await schedule(rctx, {
       claimIds: ["claim_1"],
-      grant: createBudgetMeter(0.03),
+      budgetUSD: 0.03,
       parentId: "agent_1",
-      depth: 1,
     });
     expect(outcome.verdicts).toHaveLength(1);
     expect(outcome.verdicts[0].status).toBe("contested");
@@ -196,10 +212,9 @@ describe("runVerifySpawn staged verification", () => {
       confidence: "high",
       note: "unused",
     }));
-    const outcome = await runVerifySpawn(rctx, {
+    const outcome = await schedule(rctx, {
       claimIds: ["claim_1"],
-      grant: createBudgetMeter(0.03),
-      depth: 1,
+      budgetUSD: 0.03,
     });
     expect(outcome.verdicts).toHaveLength(1);
     expect(outcome.verdicts[0].status).toBe("screened");
@@ -218,11 +233,10 @@ describe("runVerifySpawn staged verification", () => {
       }),
       EFFORT_ENVELOPES.max,
     );
-    const outcome = await runVerifySpawn(rctx, {
+    const outcome = await schedule(rctx, {
       claimIds: ["claim_1"],
-      grant: createBudgetMeter(0.5),
+      budgetUSD: 0.5,
       parentId: "agent_1",
-      depth: 1,
     });
     expect(outcome.verdicts).toHaveLength(1);
     expect(outcome.verdicts[0].status).toBe("screened");
@@ -272,11 +286,10 @@ describe("runVerifySpawn staged verification", () => {
         return verdictModel;
       },
     });
-    const outcome = await runVerifySpawn(rctx, {
+    const outcome = await schedule(rctx, {
       claimIds: ["claim_1"],
-      grant: createBudgetMeter(2),
+      budgetUSD: 2,
       parentId: "agent_1",
-      depth: 1,
     });
     expect(outcome.verdicts).toHaveLength(1);
     expect(outcome.verdicts[0].status).toBe("confirmed");
@@ -295,11 +308,10 @@ describe("runVerifySpawn staged verification", () => {
       confidence: "high",
       note: "would have settled from the screen",
     }));
-    const outcome = await runVerifySpawn(rctx, {
+    const outcome = await schedule(rctx, {
       claimIds: ["claim_1"],
-      grant: createBudgetMeter(1),
+      budgetUSD: 1,
       parentId: "agent_1",
-      depth: 1,
     });
     expect(outcome.verdicts).toHaveLength(1);
     expect(outcome.verdicts[0].status).not.toBe("confirmed");
@@ -307,7 +319,7 @@ describe("runVerifySpawn staged verification", () => {
   });
 });
 
-describe("runVerifySpawn dedup", () => {
+describe("verifyClaims dedup", () => {
   function rctxFor(claims: ResearchClaim[]): RunCtx {
     return {
       config: { envelope: EFFORT_ENVELOPES.balanced },
@@ -318,29 +330,18 @@ describe("runVerifySpawn dedup", () => {
       counters: { claimsVerified: 0 },
       emit: () => {},
       stopReason: () => null,
+      signal: undefined,
     } as unknown as RunCtx;
   }
-
-  const grant = {
-    limitUSD: 1,
-    spentUSD: () => 0,
-    remainingUSD: () => 1,
-    floored: () => true,
-    charge: () => {},
-    reserve: () => null,
-    grant: () => null,
-    release: () => {},
-  };
 
   it("returns the existing verdict for settled claims without re-voting", async () => {
     const settled = claim();
     settleClaim(settled, [vote(false), vote(false), vote(false)]);
     const rctx = rctxFor([settled]);
-    const outcome = await runVerifySpawn(rctx, {
+    const outcome = await schedule(rctx, {
       claimIds: ["claim_1"],
-      grant,
+      budgetUSD: 1,
       parentId: "agent_1",
-      depth: 1,
     });
     expect(outcome.verdicts).toHaveLength(1);
     expect(outcome.verdicts[0].status).toBe("confirmed");
@@ -359,11 +360,10 @@ describe("runVerifySpawn dedup", () => {
       release = resolve;
     });
     rctx.verifyInFlight.set("claim_1", job);
-    const outcomePromise = runVerifySpawn(rctx, {
+    const outcomePromise = schedule(rctx, {
       claimIds: ["claim_1"],
-      grant,
+      budgetUSD: 1,
       parentId: "agent_1",
-      depth: 1,
     });
     settleClaim(pending, [vote(false), vote(false)]);
     release();

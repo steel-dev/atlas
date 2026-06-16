@@ -32,7 +32,7 @@ import {
 } from "./state.js";
 import { isRunCodeAvailable } from "./sandbox.js";
 import { createTrail } from "./trail.js";
-import { runVerifySpawn } from "./verify.js";
+import { verifyClaims } from "./verify.js";
 
 const TIMEOUT_SYNTHESIS_RESERVE_MS = 120_000;
 const BUDGET_WARNING_FRACTIONS = [0.5, 0.8, 0.95];
@@ -205,7 +205,7 @@ export async function assembleRun(args: AssembleRunArgs): Promise<RunAssembly> {
     agentSequence: { next: 1 },
     bindModel,
     rawModel: (role: ModelRole) => resolved.models[role],
-    verifySpawn: (spawnArgs) => runVerifySpawn(rctx, spawnArgs),
+    verify: (spawnArgs) => verifyClaims(rctx, spawnArgs),
     stopReason: () => {
       if (args.stopSignal.aborted) return "stop requested";
       if (
@@ -222,25 +222,20 @@ export async function assembleRun(args: AssembleRunArgs): Promise<RunAssembly> {
 
   function eagerVerify(claim: ResearchClaim): void {
     if (claim.importance !== "central") return;
-    if (eagerVerifyStarted >= ECONOMY.eagerVerifyMaxClaims) return;
-    if (rctx.stopReason()) return;
-    const grant = verifyReserve.grant({
-      fraction: ECONOMY.verifySweep.fraction,
-      minUSD: resolved.envelope.panelGrantUSD,
-    });
-    if (!grant) return;
+    if (eagerVerifyStarted >= ECONOMY.verify.eagerMaxClaims) return;
+    if (rctx.stopReason() || verifyReserve.floored()) return;
     eagerVerifyStarted++;
     const task = rctx
-      .verifySpawn({
+      .verify({
         claimIds: [claim.id],
-        grant,
-        depth: 1,
+        reserve: verifyReserve,
+        perClaimFraction: ECONOMY.verify.perClaimFraction,
+        concurrency: 1,
       })
       .then(
         () => undefined,
         () => undefined,
-      )
-      .finally(() => grant.release());
+      );
     eagerVerifications.add(task);
     void task.finally(() => eagerVerifications.delete(task));
   }

@@ -2,7 +2,6 @@ import { randomUUID } from "node:crypto";
 import { generateObject } from "ai";
 import { z } from "zod";
 import { adjudicateCoverage } from "./adjudicate.js";
-import { mapWithConcurrency } from "./async.js";
 import type { AgentResult } from "./agent.js";
 import { bindCitations, type Citation } from "./bind.js";
 import { withGrant, type BudgetGrant, type BudgetMeter } from "./budget.js";
@@ -114,33 +113,19 @@ async function sweepVerification(
         (IMPORTANCE_RANK[a.importance] ?? 3) -
         (IMPORTANCE_RANK[b.importance] ?? 3),
     )
-    .slice(0, ECONOMY.verifySweep.maxClaims);
+    .map((claim) => claim.id);
   if (pending.length === 0) return;
-  await mapWithConcurrency(
-    pending,
-    ECONOMY.verifySweep.concurrency,
-    async (claim) => {
-      if (reserve.floored() || rctx.signal?.aborted) return;
-      await withGrant(
-        reserve,
-        {
-          fraction: ECONOMY.verifySweep.fraction,
-          minUSD: rctx.config.envelope.panelGrantUSD,
-        },
-        async (grant) => {
-          try {
-            await rctx.verifySpawn({
-              claimIds: [claim.id],
-              grant,
-              depth: 1,
-            });
-          } catch (err) {
-            if (rctx.signal?.aborted) throw err;
-          }
-        },
-      );
-    },
-  );
+  try {
+    await rctx.verify({
+      claimIds: pending,
+      reserve,
+      perClaimFraction: ECONOMY.verify.perClaimFraction,
+      concurrency: ECONOMY.verify.concurrency,
+      cap: ECONOMY.verify.sweepMaxClaims,
+    });
+  } catch (err) {
+    if (rctx.signal?.aborted) throw err;
+  }
 }
 
 export interface StartRunOptions {

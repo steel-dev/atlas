@@ -1,12 +1,13 @@
-import { generateObject, type ModelMessage } from "ai";
+import { generateObject } from "ai";
 import { z } from "zod";
 import { mapWithConcurrency } from "./async.js";
 import { runAgent } from "./agent.js";
-import type { BudgetGrant } from "./budget.js";
+import { withGrant, type BudgetGrant } from "./budget.js";
 import { MODEL_CALL_MAX_RETRIES } from "./model.js";
 import { LEDGER_DATA_NOTE, QUARANTINE_NOTE, quarantine } from "./safety.js";
 import type {
   RunCtx,
+  VerifyScheduleArgs,
   VerifySpawnArgs,
   VerifySpawnOutcome,
   VerifySpawnVerdict,
@@ -35,7 +36,6 @@ export const ALL_LENSES: VerifierLens[] = [
 ];
 
 const MAX_CLAIMS_PER_SPAWN = 8;
-const CLAIM_CONCURRENCY = 4;
 const VOTER_STEP_MAX_TOKENS = 1_200;
 const VERDICT_MAX_TOKENS = 600;
 
@@ -136,22 +136,20 @@ async function castVote(
       parentId: args.parentId,
       maxTurns: envelope.verifierMaxTurns,
       maxOutputTokensPerStep: VOTER_STEP_MAX_TOKENS,
-      captureMessages: true,
+      finalTool: { name: "submit_verdict", inputSchema: verdictSchema },
     });
     if (rctx.stopReason()) return null;
-    const transcript: ModelMessage[] = [
-      { role: "user", content: task },
-      ...(voter.messages ?? []),
-      {
-        role: "user",
-        content:
-          "Return your verdict now as structured output: refuted, evidence, confidence.",
-      },
-    ];
+    if (voter.final) {
+      const parsed = verdictSchema.safeParse(voter.final);
+      if (parsed.success) return { lens, ...parsed.data };
+    }
     const verdict = await generateObject({
       model: rctx.bindModel(envelope.panelModelRole, args.grant),
       system: VERIFIER_SYSTEM,
-      messages: transcript,
+      prompt:
+        `${task}\n\nYou investigated this claim but did not record a verdict. ` +
+        `Your findings:\n${voter.note || "(none)"}\n\n` +
+        "Return your verdict now: refuted, evidence, confidence.",
       schema: verdictSchema,
       maxOutputTokens: VERDICT_MAX_TOKENS,
       maxRetries: MODEL_CALL_MAX_RETRIES,
@@ -279,27 +277,27 @@ async function collectVotes(
   args: VerifySpawnArgs,
   claim: ResearchClaim,
   lenses: VerifierLens[],
-  flags: { lensesExplicit: boolean; conflicted: boolean; panelAffordable: boolean },
+  opts: { lensesExplicit: boolean; panelAffordable: boolean },
 ): Promise<ClaimVote[]> {
-  const alreadyScreened = claim.status === "screened";
-  const screenFirst =
-    !flags.lensesExplicit &&
-    !flags.conflicted &&
-    !alreadyScreened &&
-    (claim.importance !== "central" || !flags.panelAffordable);
-  if (screenFirst) {
-    const screened = await screenClaim(rctx, args.grant, claim);
-    if (screened) return screened;
+  const conflicted = (claim.conflictsWith?.length ?? 0) > 0;
+  const wantsPanel =
+    opts.lensesExplicit || conflicted || claim.importance === "central";
+  const screenedVotes = claim.status === "screened" ? claim.votes : null;
+
+  // Tier 0 — cheap screen. The target for claims we would not panel anyway, and a
+  // fallback when the panel is unaffordable. A conflicted claim is never settled as
+  // merely "screened"; it always escalates to the panel to adjudicate the conflict.
+  if (!(wantsPanel && opts.panelAffordable) && !conflicted) {
+    const screened = screenedVotes ?? (await screenClaim(rctx, args.grant, claim));
+    if (screened && screened.length > 0) return screened;
+    if (!opts.panelAffordable) return [];
   }
-  const panel = flags.panelAffordable
-    ? (
-        await Promise.all(
-          lenses.map((lens) => castVote(rctx, args, claim, lens)),
-        )
-      ).filter((vote): vote is ClaimVote => vote !== null)
-    : [];
-  if (panel.length === 0 && alreadyScreened) return claim.votes;
-  return panel;
+
+  // Tier 1 — adversarial panel.
+  const panel = (
+    await Promise.all(lenses.map((lens) => castVote(rctx, args, claim, lens)))
+  ).filter((vote): vote is ClaimVote => vote !== null);
+  return panel.length > 0 ? panel : (screenedVotes ?? []);
 }
 
 async function verifyClaim(
@@ -319,11 +317,24 @@ async function verifyClaim(
   const panelAffordable =
     lensesExplicit ||
     args.grant.remainingUSD() >= rctx.config.envelope.panelGrantUSD;
-  if (conflicted && !panelAffordable) return;
+  // A conflicted claim we cannot fund a panel for is left for a better-funded pass; we
+  // still surface the known disagreement as contested rather than spending on a screen
+  // that would mislabel it "screened".
+  if (conflicted && !panelAffordable) {
+    if (claim.votes.length === 0) {
+      settleClaim(claim, []);
+      rctx.emit({
+        type: "claim.verified",
+        claimId: claim.id,
+        status: claim.status,
+        votes: voteSplit(claim),
+      });
+    }
+    return;
+  }
   const job = (async () => {
     const votes = await collectVotes(rctx, args, claim, lenses, {
       lensesExplicit,
-      conflicted,
       panelAffordable,
     });
     settleClaim(claim, votes);
@@ -343,16 +354,16 @@ async function verifyClaim(
   }
 }
 
-export async function runVerifySpawn(
+export async function verifyClaims(
   rctx: RunCtx,
-  args: VerifySpawnArgs,
+  args: VerifyScheduleArgs,
 ): Promise<VerifySpawnOutcome> {
   const lensesExplicit = (args.lenses ?? []).some((lens) =>
     (ALL_LENSES as string[]).includes(lens),
   );
   const lenses = normalizeLenses(args.lenses);
   const claims = args.claimIds
-    .slice(0, MAX_CLAIMS_PER_SPAWN)
+    .slice(0, args.cap ?? MAX_CLAIMS_PER_SPAWN)
     .map((id) => rctx.ledger.byId(id))
     .filter((claim): claim is ResearchClaim => claim !== undefined)
     .map((claim) =>
@@ -370,8 +381,29 @@ export async function runVerifySpawn(
   });
 
   const verdicts: VerifySpawnVerdict[] = [];
-  await mapWithConcurrency(unique, CLAIM_CONCURRENCY, async (claim) => {
-    await verifyClaim(rctx, args, claim, lenses, lensesExplicit);
+  await mapWithConcurrency(unique, args.concurrency, async (claim) => {
+    if (rctx.signal?.aborted) return;
+    await withGrant(
+      args.reserve,
+      {
+        fraction: args.perClaimFraction,
+        minUSD: rctx.config.envelope.panelGrantUSD,
+      },
+      (grant) =>
+        verifyClaim(
+          rctx,
+          {
+            claimIds: [claim.id],
+            grant,
+            ...(args.lenses ? { lenses: args.lenses } : {}),
+            depth: args.depth ?? 1,
+            ...(args.parentId ? { parentId: args.parentId } : {}),
+          },
+          claim,
+          lenses,
+          lensesExplicit,
+        ),
+    );
     verdicts.push(verdictOf(claim));
   });
 

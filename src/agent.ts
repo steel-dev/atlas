@@ -1,4 +1,10 @@
-import { generateText, stepCountIs, type ModelMessage } from "ai";
+import {
+  generateText,
+  stepCountIs,
+  tool,
+  type FlexibleSchema,
+  type ModelMessage,
+} from "ai";
 import { withGrant, type BudgetGrant } from "./budget.js";
 import { ECONOMY } from "./economy.js";
 import { errorMessage } from "./errors.js";
@@ -47,6 +53,7 @@ export interface AgentSpec {
   maxOutputTokensPerStep?: number | undefined;
   maxContextTokens?: number | undefined;
   captureMessages?: boolean | undefined;
+  finalTool?: { name: string; inputSchema: FlexibleSchema } | undefined;
 }
 
 export interface AgentResult {
@@ -56,6 +63,7 @@ export interface AgentResult {
   spentUSD: number;
   stopReason: string;
   messages?: ModelMessage[];
+  final?: unknown;
 }
 
 export async function runAgent(
@@ -95,7 +103,21 @@ export async function runAgent(
   const toolNames = allowSpawn
     ? spec.tools
     : spec.tools.filter((name) => name !== "spawn");
-  const tools = buildAgentTools(rctx, actx, toolNames);
+  let finalValue: unknown;
+  const tools = spec.finalTool
+    ? {
+        ...buildAgentTools(rctx, actx, toolNames),
+        [spec.finalTool.name]: tool({
+          description:
+            "Record your final structured verdict for this task. Call this exactly once, when your investigation is complete.",
+          inputSchema: spec.finalTool.inputSchema,
+          execute: async (input: unknown) => {
+            finalValue = input;
+            return "Verdict recorded.";
+          },
+        }),
+      }
+    : buildAgentTools(rctx, actx, toolNames);
   const model = rctx.bindModel(spec.modelRole, spec.grant);
 
   let planEmitted = spec.role !== "orchestrator";
@@ -115,6 +137,7 @@ export async function runAgent(
     stopWhen: [
       stepCountIs(spec.maxTurns ?? rctx.config.envelope.maxTurns),
       ({ steps }) => {
+        if (spec.finalTool && finalValue !== undefined) return true;
         if (spec.grant.floored()) {
           governorReason = "budget exhausted";
           return true;
@@ -184,6 +207,7 @@ export async function runAgent(
     spentUSD: spec.grant.spentUSD(),
     stopReason,
     ...(spec.captureMessages ? { messages: result.response.messages } : {}),
+    ...(finalValue !== undefined ? { final: finalValue } : {}),
   };
 }
 
@@ -299,44 +323,37 @@ async function executeVerifySpawn(
   if (unknown.length > 0) {
     return `Spawn refused: unknown claim ids: ${unknown.join(", ")}.`;
   }
-  const result = await withGrant(
-    rctx.verifyReserve,
-    {
-      fraction: input.budget_fraction ?? ECONOMY.verifySpawn.fraction,
-      minUSD: rctx.config.envelope.panelGrantUSD,
-    },
-    async (grant) => {
-      try {
-        const outcome = await rctx.verifySpawn({
-          claimIds,
-          lenses: input.lenses,
-          grant,
-          parentId: parentActx.agentId,
-          depth: childDepth,
-        });
-        return JSON.stringify(
-          {
-            note: outcome.note,
-            verdicts: outcome.verdicts.map((verdict) => ({
-              claim_id: verdict.claimId,
-              status: verdict.status,
-              votes: verdict.votes,
-            })),
-            spent_usd: round2(grant.spentUSD()),
-          },
-          null,
-          2,
-        );
-      } catch (err) {
-        if (rctx.signal?.aborted) throw err;
-        return `Spawn failed: ${errorMessage(err)}`;
-      }
-    },
-  );
-  return (
-    result ??
-    "Spawn refused: verification budget reserve is exhausted — finish and report."
-  );
+  if (rctx.verifyReserve.floored()) {
+    return "Spawn refused: verification budget reserve is exhausted — finish and report.";
+  }
+  const before = rctx.verifyReserve.spentUSD();
+  try {
+    const outcome = await rctx.verify({
+      claimIds,
+      reserve: rctx.verifyReserve,
+      perClaimFraction: input.budget_fraction ?? ECONOMY.verify.perClaimFraction,
+      concurrency: ECONOMY.verify.concurrency,
+      lenses: input.lenses,
+      parentId: parentActx.agentId,
+      depth: childDepth,
+    });
+    return JSON.stringify(
+      {
+        note: outcome.note,
+        verdicts: outcome.verdicts.map((verdict) => ({
+          claim_id: verdict.claimId,
+          status: verdict.status,
+          votes: verdict.votes,
+        })),
+        spent_usd: round2(rctx.verifyReserve.spentUSD() - before),
+      },
+      null,
+      2,
+    );
+  } catch (err) {
+    if (rctx.signal?.aborted) throw err;
+    return `Spawn failed: ${errorMessage(err)}`;
+  }
 }
 
 function round2(value: number): number {
