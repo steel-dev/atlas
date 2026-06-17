@@ -157,6 +157,39 @@ export function createDynamicConcurrencyGate(
   return new DynamicSemaphore(limitFn);
 }
 
+export interface AdaptiveLimit {
+  value(): number;
+  onSuccess(): void;
+  onThrottle(): void;
+}
+
+export function createAdaptiveLimit(opts: {
+  start: number;
+  min: number;
+  max: number;
+}): AdaptiveLimit {
+  const min = Math.max(1, Math.floor(opts.min));
+  const max = Math.max(min, Math.floor(opts.max));
+  const clamp = (n: number): number => Math.min(max, Math.max(min, n));
+  let width = clamp(Math.floor(opts.start));
+  let cleanRun = 0;
+  return {
+    value: () => width,
+    onSuccess: () => {
+      if (width >= max) return;
+      cleanRun++;
+      if (cleanRun >= width) {
+        width = clamp(width + 1);
+        cleanRun = 0;
+      }
+    },
+    onThrottle: () => {
+      width = clamp(Math.floor(width / 2));
+      cleanRun = 0;
+    },
+  };
+}
+
 export async function mapWithConcurrency<T, R>(
   items: T[],
   limit: number,

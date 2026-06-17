@@ -1,6 +1,7 @@
 import {
   createConcurrencyGate,
   createDynamicConcurrencyGate,
+  createAdaptiveLimit,
   type ConcurrencyGate,
 } from "./async.js";
 import {
@@ -75,7 +76,12 @@ export async function assembleRun(args: AssembleRunArgs): Promise<RunAssembly> {
   const meter = createBudgetMeter(resolved.budgetUSD);
   const usage = createRunUsage();
   const pricing: PricingTable = { ...DEFAULT_PRICING, ...resolved.pricing };
-  const modelGate = createConcurrencyGate(resolved.maxConcurrentModelCalls);
+  const modelLimit = createAdaptiveLimit({
+    start: resolved.maxConcurrentModelCalls,
+    min: Math.min(2, resolved.maxConcurrentModelCalls),
+    max: resolved.maxConcurrentModelCalls * 3,
+  });
+  const modelGate = createDynamicConcurrencyGate(() => modelLimit.value());
   const ioGate = createConcurrencyGate(resolved.maxConcurrentIo);
   const modelCache = createModelCallCache();
   const counters = createRunCounters();
@@ -106,6 +112,7 @@ export async function assembleRun(args: AssembleRunArgs): Promise<RunAssembly> {
   };
 
   const onCost = (): void => {
+    modelLimit.onSuccess();
     const fraction = meter.totalSpentUSD() / meter.totalUSD;
     for (const threshold of BUDGET_WARNING_FRACTIONS) {
       if (fraction >= threshold && !warnedFractions.has(threshold)) {
@@ -129,11 +136,13 @@ export async function assembleRun(args: AssembleRunArgs): Promise<RunAssembly> {
       detail: `no pricing entry for model "${modelId}"; charging conservative default rates`,
     });
   };
-  const onRateLimit = ({ delayMs }: { delayMs: number }): void =>
+  const onRateLimit = ({ delayMs }: { delayMs: number }): void => {
+    modelLimit.onThrottle();
     emit({
       type: "rate.limited",
       retryAfterSeconds: Math.max(1, Math.round(delayMs / 1000)),
     });
+  };
   const bindModelWithGate = (
     role: ModelRole,
     grant: BudgetGrant,

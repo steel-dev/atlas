@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { createDynamicConcurrencyGate, withTimeout } from "./async.js";
+import {
+  createAdaptiveLimit,
+  createDynamicConcurrencyGate,
+  withTimeout,
+} from "./async.js";
 
 describe("withTimeout", () => {
   it("resolves when the task finishes in time", async () => {
@@ -83,5 +87,45 @@ describe("createDynamicConcurrencyGate", () => {
     }
     await Promise.all(all);
     expect(active).toBe(0);
+  });
+});
+
+describe("createAdaptiveLimit", () => {
+  it("grows additively after width consecutive successes and clamps at max", () => {
+    const limit = createAdaptiveLimit({ start: 2, min: 1, max: 4 });
+    expect(limit.value()).toBe(2);
+    limit.onSuccess();
+    expect(limit.value()).toBe(2);
+    limit.onSuccess();
+    expect(limit.value()).toBe(3);
+    limit.onSuccess();
+    limit.onSuccess();
+    limit.onSuccess();
+    expect(limit.value()).toBe(4);
+    for (let i = 0; i < 10; i++) limit.onSuccess();
+    expect(limit.value()).toBe(4);
+  });
+
+  it("shrinks multiplicatively on throttle and clamps at min", () => {
+    const limit = createAdaptiveLimit({ start: 8, min: 2, max: 8 });
+    limit.onThrottle();
+    expect(limit.value()).toBe(4);
+    limit.onThrottle();
+    expect(limit.value()).toBe(2);
+    limit.onThrottle();
+    expect(limit.value()).toBe(2);
+  });
+
+  it("resets the clean run on throttle", () => {
+    const limit = createAdaptiveLimit({ start: 4, min: 2, max: 8 });
+    limit.onSuccess();
+    limit.onSuccess();
+    limit.onSuccess();
+    limit.onThrottle();
+    expect(limit.value()).toBe(2);
+    limit.onSuccess();
+    expect(limit.value()).toBe(2);
+    limit.onSuccess();
+    expect(limit.value()).toBe(3);
   });
 });
