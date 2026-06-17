@@ -293,8 +293,7 @@ export function computeDigest(
       subtreeMs: Math.round(wrapper ? wrapper.durationMs : intervalUnionMs(own)),
       costUSD:
         Math.round(
-          (wrapper?.costUSD ??
-            own.reduce((sum, s) => sum + (s.costUSD ?? 0), 0)) * 10_000,
+          own.reduce((sum, s) => sum + (s.costUSD ?? 0), 0) * 10_000,
         ) / 10_000,
       tokens: own.reduce((sum, s) => sum + tokensOf(s), 0),
       spanCount: own.length,

@@ -116,7 +116,7 @@ describe("computeDigest", () => {
     expect(digest.anomalies.some((a) => a.kind === "redundant-call")).toBe(true);
   });
 
-  it("rolls per-agent self-time and uses the agent span for cost", () => {
+  it("rolls per-agent self-time and sums own model spans for cost", () => {
     const spans = [
       span({
         id: "agent",
@@ -127,7 +127,7 @@ describe("computeDigest", () => {
         role: "research",
         t0: 0,
         t1: 200,
-        costUSD: 0.42,
+        costUSD: 0.99, // grant snapshot — cumulative, not this agent's spend
       }),
       span({
         id: "m1",
@@ -153,7 +153,7 @@ describe("computeDigest", () => {
     const digest = computeDigest(spans, [], { ...META, wallMs: 200 });
     const agent = digest.byAgent.find((a) => a.agentId === "agent_2");
     expect(agent).toBeDefined();
-    expect(agent?.costUSD).toBe(0.42); // from the agent span, not summed model spans
+    expect(agent?.costUSD).toBeCloseTo(0.42); // 0.2 + 0.22, not the 0.99 grant snapshot
     expect(agent?.subtreeMs).toBe(200);
     expect(agent?.selfMs).toBe(100); // union of [10,60] and [50,110]
     expect(agent?.tokens).toBe(210);
