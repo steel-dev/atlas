@@ -1,3 +1,5 @@
+import { trailKey } from "./search-normalize.js";
+
 const RENDER_MAX_SEARCHES = 50;
 const RENDER_MAX_DEAD_ENDS = 25;
 const REASON_MAX_CHARS = 120;
@@ -45,7 +47,7 @@ export function createTrail(): Trail {
     recordSearch(query, results) {
       const text = query.trim();
       if (!text) return;
-      const key = text.toLowerCase();
+      const key = trailKey(text);
       const existing = searches.get(key);
       if (existing) {
         existing.results = Math.max(existing.results, results);

@@ -25,7 +25,13 @@ import type { SourceDocument } from "./sources.js";
 import { fetchThroughChain, looksBlockedPage } from "./providers/fetch.js";
 import type { MergedSearchResult } from "./providers/search.js";
 import { ROLE_CAPABILITIES } from "./roles.js";
-import { budgetStatusLine, type RunCtx, type SourceStore } from "./state.js";
+import { canonicalQuery } from "./search-normalize.js";
+import {
+  budgetStatusLine,
+  type RunCtx,
+  type SearchCacheEntry,
+  type SourceStore,
+} from "./state.js";
 import { currentFrame, type SpanStatus } from "./trace.js";
 import type { ToolContext } from "./custom-tools.js";
 import { trailCapsFor } from "./trail.js";
@@ -126,6 +132,33 @@ function domainAllowed(rctx: RunCtx, url: string): boolean {
   return true;
 }
 
+function liveSearch(
+  rctx: RunCtx,
+  query: string,
+  limit: number,
+): Promise<SearchCacheEntry> {
+  const key = `${limit}:${canonicalQuery(query)}`;
+  const existing = rctx.sources.searchCache.get(key);
+  if (existing) {
+    rctx.counters.searchCacheHits++;
+    return existing;
+  }
+  const pending = (async () => {
+    try {
+      return await rctx.ioGate.run(() =>
+        withTimeout(SEARCH_TIMEOUT_MS, rctx.signal, "search", (signal) =>
+          rctx.search.run({ query, maxResults: limit, signal }),
+        ),
+      );
+    } catch (err) {
+      rctx.sources.searchCache.delete(key);
+      throw err;
+    }
+  })();
+  rctx.sources.searchCache.set(key, pending);
+  return pending;
+}
+
 export async function execSearchTool(
   rctx: RunCtx,
   queries: string[],
@@ -142,21 +175,12 @@ export async function execSearchTool(
     rctx.counters.searches++;
     const ioKey = `search:${limit}:${query}`;
     try {
-      const cached = rctx.replay?.take(ioKey) as
-        | { merged: MergedSearchResult[]; warnings: string[] }
+      const replayed = rctx.replay?.take(ioKey) as
+        | SearchCacheEntry
         | undefined;
       const { merged, warnings } =
-        cached ??
-        (await rctx.ioGate.run(() =>
-          withTimeout(SEARCH_TIMEOUT_MS, rctx.signal, "search", (signal) =>
-            rctx.search.run({
-              query,
-              maxResults: limit,
-              signal,
-            }),
-          ),
-        ));
-      if (!cached) rctx.journal?.io(ioKey, { merged, warnings });
+        replayed ?? (await liveSearch(rctx, query, limit));
+      if (!replayed) rctx.journal?.io(ioKey, { merged, warnings });
       allWarnings.push(...warnings);
       const kept = merged.filter((result) => domainAllowed(rctx, result.url));
       rctx.trail.recordSearch(query, kept.length);

@@ -4,6 +4,7 @@ import { createSourceDocument } from "./source-documents.js";
 import type { RunCtx } from "./state.js";
 import {
   buildAgentTools,
+  execSearchTool,
   fetchOneUrl,
   type AgentCtx,
 } from "./tools.js";
@@ -182,5 +183,61 @@ describe("fetch extraction by role", () => {
     expect(queued.count).toBe(0);
     expect(rctx.sources.byId.has("source_1")).toBe(true);
     expect(rctx.counters.sourcesFetched).toBe(1);
+  });
+});
+
+describe("execSearchTool live cache", () => {
+  function searchRctx(calls: { count: number }) {
+    return {
+      replay: undefined,
+      ioGate: { run: <T>(fn: () => Promise<T>) => fn() },
+      signal: undefined,
+      journal: undefined,
+      recorder: undefined,
+      config: {},
+      counters: { searches: 0, searchCacheHits: 0 },
+      sources: { searchCache: new Map() },
+      trail: { recordSearch: () => {} },
+      emit: () => {},
+      search: {
+        providers: [{ id: "stub" }],
+        run: async ({ query }: { query: string }) => {
+          calls.count++;
+          return {
+            merged: [
+              {
+                title: `T:${query}`,
+                url: `https://example.com/${calls.count}`,
+                snippet: "s",
+                provider: "stub",
+                providerRank: 1,
+                providers: ["stub"],
+                score: 1,
+              },
+            ],
+            warnings: [],
+          };
+        },
+      },
+    } as unknown as RunCtx;
+  }
+
+  it("serves identical normalized queries from the run cache", async () => {
+    const calls = { count: 0 };
+    const rctx = searchRctx(calls);
+    await execSearchTool(rctx, ["cold start lambda"], 8);
+    await execSearchTool(rctx, ["Lambda  Cold  Start"], 8);
+    expect(calls.count).toBe(1);
+    expect(rctx.counters.searchCacheHits).toBe(1);
+    expect(rctx.counters.searches).toBe(2);
+  });
+
+  it("issues distinct network calls for genuinely different queries", async () => {
+    const calls = { count: 0 };
+    const rctx = searchRctx(calls);
+    await execSearchTool(rctx, ["lambda pricing"], 8);
+    await execSearchTool(rctx, ["workers pricing"], 8);
+    expect(calls.count).toBe(2);
+    expect(rctx.counters.searchCacheHits).toBe(0);
   });
 });

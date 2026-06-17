@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { withTimeout } from "./async.js";
+import { createDynamicConcurrencyGate, withTimeout } from "./async.js";
 
 describe("withTimeout", () => {
   it("resolves when the task finishes in time", async () => {
@@ -45,5 +45,43 @@ describe("withTimeout", () => {
     );
     controller.abort(new Error("parent aborted"));
     await expect(pending).rejects.toThrow("parent aborted");
+  });
+});
+
+describe("createDynamicConcurrencyGate", () => {
+  it("honors a limit that changes over time", async () => {
+    let limit = 1;
+    const gate = createDynamicConcurrencyGate(() => limit);
+    let active = 0;
+    let peak = 0;
+    const releases: Array<() => void> = [];
+    const make = () =>
+      gate.run(
+        () =>
+          new Promise<void>((resolve) => {
+            active++;
+            peak = Math.max(peak, active);
+            releases.push(() => {
+              active--;
+              resolve();
+            });
+          }),
+      );
+    const all = [make(), make(), make(), make()];
+    const tick = async () => {
+      for (let i = 0; i < 6; i++) await Promise.resolve();
+    };
+    await tick();
+    expect(peak).toBe(1);
+    limit = 2;
+    releases.shift()?.();
+    await tick();
+    expect(peak).toBe(2);
+    while (releases.length) {
+      releases.shift()?.();
+      await tick();
+    }
+    await Promise.all(all);
+    expect(active).toBe(0);
   });
 });

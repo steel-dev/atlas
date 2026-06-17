@@ -67,6 +67,20 @@ export interface AgentResult {
   final?: unknown;
 }
 
+async function withResearchInFlight<T>(
+  rctx: RunCtx,
+  role: AgentRole,
+  fn: () => Promise<T>,
+): Promise<T> {
+  if (role !== "research") return fn();
+  rctx.counters.researchInFlight++;
+  try {
+    return await fn();
+  } finally {
+    rctx.counters.researchInFlight--;
+  }
+}
+
 export async function runAgent(
   rctx: RunCtx,
   spec: AgentSpec,
@@ -139,7 +153,8 @@ export async function runAgent(
     ...(agentSpanId ? { parentSpanId: agentSpanId } : {}),
   };
 
-  const result = await withTraceFrame(recorder, agentFrame, () =>
+  const result = await withResearchInFlight(rctx, spec.role, () =>
+    withTraceFrame(recorder, agentFrame, () =>
     generateText({
     model,
     system: spec.system,
@@ -188,6 +203,7 @@ export async function runAgent(
       }
     },
     }),
+    ),
   );
 
   if (ROLE_CAPABILITIES[spec.role].ledgerFlushOnReturn) {

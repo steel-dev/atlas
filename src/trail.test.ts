@@ -43,6 +43,17 @@ describe("createTrail", () => {
     expect(trail.render()).toContain('- "Steel Browser" → 5 result(s)');
   });
 
+  it("collapses reordered and bare-year query variants", () => {
+    const trail = createTrail();
+    trail.recordSearch("cloudflare workers cpu limit", 3);
+    trail.recordSearch("cpu limit cloudflare workers", 5);
+    trail.recordSearch("cloudflare workers cpu limit 2024 2025", 4);
+    expect(trail.searchCount).toBe(1);
+    expect(trail.render()).toContain(
+      '- "cloudflare workers cpu limit" → 5 result(s)',
+    );
+  });
+
   it("ignores empty queries and urls", () => {
     const trail = createTrail();
     trail.recordSearch("  ", 3);

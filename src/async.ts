@@ -100,6 +100,63 @@ export function createConcurrencyGate(limit: number): ConcurrencyGate {
   return new Semaphore(normalized);
 }
 
+class DynamicSemaphore implements ConcurrencyGate {
+  private active = 0;
+  private readonly waiting: Array<() => void> = [];
+
+  constructor(private readonly limitFn: () => number) {}
+
+  async run<T>(fn: () => Promise<T>): Promise<T> {
+    const release = await this.acquire();
+    try {
+      return await fn();
+    } finally {
+      release();
+    }
+  }
+
+  async acquire(): Promise<() => void> {
+    await this.acquireSlot();
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.releaseSlot();
+    };
+  }
+
+  private limit(): number {
+    const raw = this.limitFn();
+    return Number.isFinite(raw) ? Math.max(1, Math.floor(raw)) : 1;
+  }
+
+  private async acquireSlot(): Promise<void> {
+    if (this.active < this.limit()) {
+      this.active++;
+      return;
+    }
+    await new Promise<void>((resolve) =>
+      this.waiting.push(() => {
+        this.active++;
+        resolve();
+      }),
+    );
+  }
+
+  private releaseSlot(): void {
+    this.active--;
+    while (this.active < this.limit() && this.waiting.length > 0) {
+      this.waiting.shift()?.();
+    }
+  }
+}
+
+export function createDynamicConcurrencyGate(
+  limitFn: () => number,
+): ConcurrencyGate {
+  return new DynamicSemaphore(limitFn);
+}
+
 export async function mapWithConcurrency<T, R>(
   items: T[],
   limit: number,

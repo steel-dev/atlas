@@ -1,4 +1,8 @@
-import { createConcurrencyGate, type ConcurrencyGate } from "./async.js";
+import {
+  createConcurrencyGate,
+  createDynamicConcurrencyGate,
+  type ConcurrencyGate,
+} from "./async.js";
 import {
   createBudgetMeter,
   DEFAULT_PRICING,
@@ -175,8 +179,10 @@ export async function assembleRun(args: AssembleRunArgs): Promise<RunAssembly> {
     }) ?? meter;
 
   const eagerVerifications = new Set<Promise<void>>();
-  const eagerVerifyGate = createConcurrencyGate(
-    ECONOMY.verify.eagerConcurrency,
+  const eagerVerifyGate = createDynamicConcurrencyGate(() =>
+    counters.researchInFlight > 0
+      ? ECONOMY.verify.eagerConcurrencyDuringResearch
+      : ECONOMY.verify.eagerConcurrency,
   );
   let eagerVerifyStarted = 0;
   const ledger = createLedger({

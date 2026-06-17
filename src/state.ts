@@ -6,12 +6,17 @@ import type { ResearchEvent } from "./events.js";
 import type { Ledger } from "./ledger.js";
 import type { ModelRole, ResolvedModel, RunUsage } from "./model.js";
 import type { FetchProvider } from "./providers/fetch.js";
-import type { ResolvedSearch } from "./providers/search.js";
+import type { MergedSearchResult, ResolvedSearch } from "./providers/search.js";
 import type { JournalWriter, ReplayCache } from "./providers/store.js";
 import type { ResolvedCustomTool } from "./custom-tools.js";
 import type { FetchedSource, SourceDocument } from "./sources.js";
 import type { TraceRecorder } from "./trace.js";
 import type { Trail } from "./trail.js";
+
+export interface SearchCacheEntry {
+  merged: MergedSearchResult[];
+  warnings: string[];
+}
 
 export interface SourceStore {
   fetchedSources: FetchedSource[];
@@ -21,6 +26,7 @@ export interface SourceStore {
   reservedSlots: number;
   nextSourceNumber: number;
   inFlight: Map<string, Promise<SourceDocument | null>>;
+  searchCache: Map<string, Promise<SearchCacheEntry>>;
 }
 
 export function createSourceStore(): SourceStore {
@@ -32,16 +38,19 @@ export function createSourceStore(): SourceStore {
     reservedSlots: 0,
     nextSourceNumber: 1,
     inFlight: new Map(),
+    searchCache: new Map(),
   };
 }
 
 export interface RunCounters {
   searches: number;
+  searchCacheHits: number;
   sourcesFetched: number;
   sourcesFailed: number;
   agentsSpawned: number;
   researchSpawned: number;
   researchSpawnsBlocked: number;
+  researchInFlight: number;
   maxDepth: number;
   claimsVerified: number;
   coverageAnswered: boolean;
@@ -50,11 +59,13 @@ export interface RunCounters {
 export function createRunCounters(): RunCounters {
   return {
     searches: 0,
+    searchCacheHits: 0,
     sourcesFetched: 0,
     sourcesFailed: 0,
     agentsSpawned: 0,
     researchSpawned: 0,
     researchSpawnsBlocked: 0,
+    researchInFlight: 0,
     maxDepth: 0,
     claimsVerified: 0,
     coverageAnswered: false,
