@@ -1,6 +1,7 @@
 import { MockLanguageModelV3 } from "ai/test";
 import { describe, expect, it } from "vitest";
 import { screenClaim, settleClaim, verifyClaims, voteSplit } from "./verify.js";
+import { screenSufficient } from "./claim-status.js";
 import { createBudgetMeter } from "./budget.js";
 import { EFFORT_ENVELOPES } from "./config.js";
 import type { ClaimVote, ResearchClaim } from "./ledger.js";
@@ -369,6 +370,124 @@ describe("verifyClaims staged verification", () => {
     expect(outcome.verdicts).toHaveLength(1);
     expect(outcome.verdicts[0].status).not.toBe("confirmed");
     expect(conflicted.votes).toHaveLength(0);
+  });
+});
+
+function verdictModel(refuted: boolean): MockLanguageModelV3 {
+  return new MockLanguageModelV3({
+    doGenerate: async () => ({
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({ refuted, evidence: "checked", confidence: "high" }),
+        },
+      ],
+      finishReason: { unified: "stop", raw: undefined },
+      usage: {
+        inputTokens: { total: 100, noCache: 100, cacheRead: 0, cacheWrite: 0 },
+        outputTokens: { total: 50, text: 50, reasoning: 0 },
+      },
+      warnings: [],
+    }),
+  });
+}
+
+function panelShadowRctx(
+  c: ResearchClaim,
+  model: MockLanguageModelV3,
+): { rctx: RunCtx; counters: Record<string, number> } {
+  const counters = {
+    claimsVerified: 0,
+    agentsSpawned: 0,
+    maxDepth: 0,
+    verifyPanelRuns: 0,
+    verifyPanelDowngradable: 0,
+    verifyPanelCheapMisses: 0,
+  };
+  const rctx = screeningRctx(
+    [c],
+    screenModel({
+      quote_supports_claim: true,
+      source_is_evidence: true,
+      confidence: "high",
+      note: "unused",
+    }),
+    EFFORT_ENVELOPES.max,
+  );
+  Object.assign(rctx as unknown as Record<string, unknown>, {
+    ledger: {
+      byId: (id: string) => (id === "claim_1" ? c : undefined),
+      claims: [],
+    },
+    counters,
+    agentSequence: { next: 1 },
+    bindModel: () => model,
+  });
+  return { rctx, counters };
+}
+
+describe("screenSufficient", () => {
+  it("is true for an uncontested primary-source claim", () => {
+    const c = claim();
+    c.sourceQuality = "primary";
+    expect(screenSufficient(c)).toBe(true);
+  });
+
+  it("is false for a non-primary source", () => {
+    expect(screenSufficient(claim())).toBe(false);
+  });
+
+  it("is false for a conflicted primary claim", () => {
+    const c = claim();
+    c.sourceQuality = "primary";
+    c.conflictsWith = ["claim_2"];
+    expect(screenSufficient(c)).toBe(false);
+  });
+});
+
+describe("verify panel shadow accounting", () => {
+  it("flags a confirmed primary panel as downgradable", async () => {
+    const c = claim();
+    c.sourceQuality = "primary";
+    const { rctx, counters } = panelShadowRctx(c, verdictModel(false));
+    const outcome = await schedule(rctx, {
+      claimIds: ["claim_1"],
+      budgetUSD: 2,
+      parentId: "agent_1",
+    });
+    expect(outcome.verdicts[0].status).toBe("confirmed");
+    expect(counters.verifyPanelRuns).toBe(1);
+    expect(counters.verifyPanelDowngradable).toBe(1);
+    expect(counters.verifyPanelCheapMisses).toBe(0);
+  });
+
+  it("flags a refuted primary panel as a cheap miss, never downgradable", async () => {
+    const c = claim();
+    c.sourceQuality = "primary";
+    const { rctx, counters } = panelShadowRctx(c, verdictModel(true));
+    const outcome = await schedule(rctx, {
+      claimIds: ["claim_1"],
+      budgetUSD: 2,
+      parentId: "agent_1",
+    });
+    expect(outcome.verdicts[0].status).toBe("refuted");
+    expect(counters.verifyPanelRuns).toBe(1);
+    expect(counters.verifyPanelDowngradable).toBe(0);
+    expect(counters.verifyPanelCheapMisses).toBe(1);
+  });
+
+  it("counts a non-primary panel run without marking it downgradable", async () => {
+    const c = claim();
+    const { rctx, counters } = panelShadowRctx(c, verdictModel(false));
+    const outcome = await schedule(rctx, {
+      claimIds: ["claim_1"],
+      budgetUSD: 2,
+      parentId: "agent_1",
+    });
+    expect(outcome.verdicts[0].status).toBe("confirmed");
+    expect(counters.verifyPanelRuns).toBe(1);
+    expect(counters.verifyPanelDowngradable).toBe(0);
+    expect(counters.verifyPanelCheapMisses).toBe(0);
   });
 });
 

@@ -54,6 +54,9 @@ export interface RunCounters {
   researchInFlight: number;
   maxDepth: number;
   claimsVerified: number;
+  verifyPanelRuns: number;
+  verifyPanelDowngradable: number;
+  verifyPanelCheapMisses: number;
   coverageAnswered: boolean;
 }
 
@@ -70,6 +73,9 @@ export function createRunCounters(): RunCounters {
     researchInFlight: 0,
     maxDepth: 0,
     claimsVerified: 0,
+    verifyPanelRuns: 0,
+    verifyPanelDowngradable: 0,
+    verifyPanelCheapMisses: 0,
     coverageAnswered: false,
   };
 }

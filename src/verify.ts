@@ -22,6 +22,7 @@ import type {
 import {
   MIN_VOTES_TO_SETTLE,
   SCREENING_LENS,
+  screenSufficient,
   settleClaim,
   voteSplit,
 } from "./claim-status.js";
@@ -325,6 +326,22 @@ async function collectVotes(
   return panel.length > 0 ? panel : (screenedVotes ?? []);
 }
 
+function recordPanelShadow(
+  rctx: RunCtx,
+  claim: ResearchClaim,
+  votes: ClaimVote[],
+): void {
+  const paneled = votes.some((vote) => vote.lens !== SCREENING_LENS);
+  if (!paneled) return;
+  rctx.counters.verifyPanelRuns++;
+  if (!screenSufficient(claim)) return;
+  if (claim.status === "confirmed") {
+    rctx.counters.verifyPanelDowngradable++;
+  } else if (claim.status === "contested" || claim.status === "refuted") {
+    rctx.counters.verifyPanelCheapMisses++;
+  }
+}
+
 async function verifyClaim(
   rctx: RunCtx,
   args: VerifySpawnArgs,
@@ -364,6 +381,7 @@ async function verifyClaim(
     });
     settleClaim(claim, votes);
     rctx.counters.claimsVerified++;
+    recordPanelShadow(rctx, claim, votes);
     rctx.emit({
       type: "claim.verified",
       claimId: claim.id,
