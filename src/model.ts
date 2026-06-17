@@ -612,9 +612,9 @@ export function engineModel(
       let acquired = false;
       let result: LanguageModelV3GenerateResult;
       try {
-        result = await hooks.gate.run(() =>
-          callWithRetry(
-            () => {
+        result = await callWithRetry(
+          () =>
+            hooks.gate.run(() => {
               if (!recorder) return Promise.resolve(doGenerate());
               const s = recorder.now();
               if (!acquired) {
@@ -631,10 +631,9 @@ export function engineModel(
                   throw e;
                 },
               );
-            },
-            params.abortSignal,
-            hooks.onRateLimit,
-          ),
+            }),
+          params.abortSignal,
+          hooks.onRateLimit,
         );
       } catch (err) {
         settleFailure(reservation, err, params.abortSignal);
