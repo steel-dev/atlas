@@ -134,6 +134,8 @@ Because the dollar cap rides on those prices, the real backstops are **price-ind
 
 `result.stats` reports `budgetExhausted`, `tokensExhausted`, and `agentCapReached` so you can see which limit, if any, bound the run — `agentCapReached` is set only when the cap actually refused a spawn, not merely when the count was reached. Leave headroom on `maxUSD`, or set a provider-side spend limit, when the cap is truly hard.
 
+`result.stats.stopReason` folds those signals into one normalized value — `"answered"` (coverage judged the question answered), `"completed"` (ran to a natural end without a positive answered signal), `"stopped"` (`run.stop()`), or a binding cap: `"budget"`, `"tokens"`, `"timeout"`, `"agent-cap"`. When several apply, the most proximate cause wins (an explicit `stop()` over a cap, a cap over `answered`), so it is a single headline reason rather than a replacement for the booleans above.
+
 ## Safety
 
 Untrusted web content is quarantined (data, not instructions). Fetches pass SSRF guards hop-by-hop; `run_code` runs in a memory-capped V8 isolate with no network, filesystem, or host access. Direct fetch honors robots.txt.

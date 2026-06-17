@@ -18,7 +18,7 @@ import { conflictPass } from "./conflicts.js";
 import { ECONOMY } from "./economy.js";
 import { AtlasError, errorMessage, ResumeError } from "./errors.js";
 import { EventHub } from "./event-hub.js";
-import type { ResearchEvent, RunStats } from "./events.js";
+import type { ResearchEvent, RunStats, StopReason } from "./events.js";
 import type { ResearchClaim } from "./ledger.js";
 import { MODEL_CALL_MAX_RETRIES, totalFreshTokens } from "./model.js";
 import { runOrchestrator } from "./orchestrator.js";
@@ -343,6 +343,7 @@ async function executeRun(args: ExecuteRunArgs): Promise<ResearchResult> {
       citationsUnsupported: bound.citationsUnsupported,
     },
     durationMs,
+    stopped: args.stopSignal.aborted,
   });
   const result: ResearchResult = {
     runId,
@@ -441,6 +442,7 @@ async function adjudicatedFollowUps(
     if (grant.remainingUSD() < threshold) break;
     const verdict = await adjudicateCoverage(rctx, grant, orchestrator.note);
     if (!verdict) break;
+    rctx.counters.coverageAnswered = verdict.answered;
     rctx.emit({
       type: "coverage.assessed",
       round,
@@ -679,11 +681,31 @@ async function deriveOpenQuestions(
   }
 }
 
+export interface StopReasonInputs {
+  stopped: boolean;
+  budgetExhausted: boolean;
+  tokensExhausted: boolean;
+  timedOut: boolean;
+  agentCapReached: boolean;
+  answered: boolean;
+}
+
+export function deriveStopReason(inputs: StopReasonInputs): StopReason {
+  if (inputs.stopped) return "stopped";
+  if (inputs.budgetExhausted) return "budget";
+  if (inputs.tokensExhausted) return "tokens";
+  if (inputs.timedOut) return "timeout";
+  if (inputs.agentCapReached) return "agent-cap";
+  if (inputs.answered) return "answered";
+  return "completed";
+}
+
 function buildStats(opts: {
   rctx: RunCtx;
   partition: ClaimPartition;
   bound: { citationsBound: number; citationsUnsupported: number };
   durationMs: number;
+  stopped: boolean;
 }): RunStats {
   const { rctx, partition } = opts;
   const tokens: Record<string, { input: number; output: number }> = {};
@@ -693,6 +715,11 @@ function buildStats(opts: {
       output: roleUsage.output,
     };
   }
+  const budgetExhausted = rctx.meter.exhausted();
+  const tokensExhausted = totalFreshTokens(rctx.usage) >= rctx.config.maxTokens;
+  const agentCapReached = rctx.counters.researchSpawnsBlocked > 0;
+  const timedOut =
+    rctx.deadlineAt !== undefined && rctx.now() >= rctx.deadlineAt;
   return {
     effort: rctx.config.effort,
     searches: rctx.counters.searches,
@@ -718,9 +745,17 @@ function buildStats(opts: {
           10_000,
       ) / 10_000,
     durationMs: opts.durationMs,
-    budgetExhausted: rctx.meter.exhausted(),
-    tokensExhausted: totalFreshTokens(rctx.usage) >= rctx.config.maxTokens,
-    agentCapReached: rctx.counters.researchSpawnsBlocked > 0,
+    budgetExhausted,
+    tokensExhausted,
+    agentCapReached,
+    stopReason: deriveStopReason({
+      stopped: opts.stopped,
+      budgetExhausted,
+      tokensExhausted,
+      timedOut,
+      agentCapReached,
+      answered: rctx.counters.coverageAnswered,
+    }),
   };
 }
 

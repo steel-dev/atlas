@@ -5,7 +5,8 @@ import type {
 } from "@ai-sdk/provider";
 import { describe, expect, it } from "vitest";
 import { Atlas } from "./atlas.js";
-import { acceptsRepair } from "./run.js";
+import { acceptsRepair, deriveStopReason } from "./run.js";
+import type { StopReasonInputs } from "./run.js";
 import type { ResolvedModel } from "./model.js";
 import { loadRunMeta, memoryStore } from "./providers/store.js";
 import type { SearchProvider } from "./providers/search.js";
@@ -489,5 +490,57 @@ describe("acceptsRepair", () => {
         { citationsUnsupported: 2, citationsBound: 7 },
       ),
     ).toBe(false);
+  });
+});
+
+describe("deriveStopReason", () => {
+  const base: StopReasonInputs = {
+    stopped: false,
+    budgetExhausted: false,
+    tokensExhausted: false,
+    timedOut: false,
+    agentCapReached: false,
+    answered: false,
+  };
+
+  it("falls back to completed when nothing bound the run", () => {
+    expect(deriveStopReason(base)).toBe("completed");
+  });
+
+  it("reports answered when coverage judged the question answered", () => {
+    expect(deriveStopReason({ ...base, answered: true })).toBe("answered");
+  });
+
+  it("maps each binding cap to its reason", () => {
+    expect(deriveStopReason({ ...base, budgetExhausted: true })).toBe("budget");
+    expect(deriveStopReason({ ...base, tokensExhausted: true })).toBe("tokens");
+    expect(deriveStopReason({ ...base, timedOut: true })).toBe("timeout");
+    expect(deriveStopReason({ ...base, agentCapReached: true })).toBe(
+      "agent-cap",
+    );
+  });
+
+  it("prefers an explicit stop over any cap", () => {
+    expect(
+      deriveStopReason({ ...base, stopped: true, budgetExhausted: true }),
+    ).toBe("stopped");
+  });
+
+  it("prefers a binding cap over a positive answered signal", () => {
+    expect(
+      deriveStopReason({ ...base, budgetExhausted: true, answered: true }),
+    ).toBe("budget");
+  });
+
+  it("ranks budget over tokens, timeout, and agent-cap when several apply", () => {
+    expect(
+      deriveStopReason({
+        ...base,
+        budgetExhausted: true,
+        tokensExhausted: true,
+        timedOut: true,
+        agentCapReached: true,
+      }),
+    ).toBe("budget");
   });
 });

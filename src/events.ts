@@ -3,6 +3,15 @@ import type { ClaimImportance, ClaimStatus } from "./ledger.js";
 
 export type AgentRole = "orchestrator" | "research" | "verify" | "write";
 
+export type StopReason =
+  | "answered"
+  | "completed"
+  | "stopped"
+  | "budget"
+  | "tokens"
+  | "timeout"
+  | "agent-cap";
+
 export interface RunStats {
   effort: Effort;
   searches: number;
@@ -27,6 +36,7 @@ export interface RunStats {
   budgetExhausted: boolean;
   tokensExhausted: boolean;
   agentCapReached: boolean;
+  stopReason: StopReason;
 }
 
 export type ResearchEvent =

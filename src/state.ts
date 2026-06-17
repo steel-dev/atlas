@@ -43,6 +43,7 @@ export interface RunCounters {
   researchSpawnsBlocked: number;
   maxDepth: number;
   claimsVerified: number;
+  coverageAnswered: boolean;
 }
 
 export function createRunCounters(): RunCounters {
@@ -55,6 +56,7 @@ export function createRunCounters(): RunCounters {
     researchSpawnsBlocked: 0,
     maxDepth: 0,
     claimsVerified: 0,
+    coverageAnswered: false,
   };
 }
 

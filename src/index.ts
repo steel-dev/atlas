@@ -24,6 +24,7 @@ export type {
   ResearchEventMap,
   ResearchEventType,
   RunStats,
+  StopReason,
 } from "./events.js";
 export { EVENT_SCHEMA_VERSION } from "./events.js";
 export type {
