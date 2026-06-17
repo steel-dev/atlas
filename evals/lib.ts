@@ -284,6 +284,7 @@ export function traceEvent(
     case "report.delta":
     case "report.reset":
     case "report.completed":
+    case "run_code.unavailable":
       return null;
   }
 }
@@ -348,6 +349,7 @@ export function progressLine(
     case "report.reset":
     case "report.completed":
     case "tool.event":
+    case "run_code.unavailable":
       return null;
   }
 }
