@@ -159,7 +159,7 @@ function extractModel(): MockLanguageModelV3 {
     doGenerate: async () =>
       textResult(
         JSON.stringify({
-          sourceQuality: "primary",
+          sourceQuality: "blog",
           claims: [
             {
               claim: "The tower is 330 meters tall",

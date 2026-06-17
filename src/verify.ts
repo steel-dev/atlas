@@ -14,7 +14,11 @@ import type {
   VerifySpawnVerdict,
 } from "./state.js";
 import type { ToolName } from "./tools.js";
-import type { ClaimVote, ResearchClaim } from "./ledger.js";
+import type {
+  ClaimSourceQuality,
+  ClaimVote,
+  ResearchClaim,
+} from "./ledger.js";
 import {
   MIN_VOTES_TO_SETTLE,
   SCREENING_LENS,
@@ -39,6 +43,12 @@ export const ALL_LENSES: VerifierLens[] = [
 const MAX_CLAIMS_PER_SPAWN = 8;
 const VOTER_STEP_MAX_TOKENS = 1_200;
 const VERDICT_MAX_TOKENS = 600;
+
+const WEB_CONTRADICTION_QUALITIES = new Set<ClaimSourceQuality>([
+  "blog",
+  "forum",
+  "unreliable",
+]);
 
 const LENS_TOOLS: Record<VerifierLens, ToolName[]> = {
   "quote-fidelity": ["read_source", "search_sources", "run_code"],
@@ -299,8 +309,18 @@ async function collectVotes(
   }
 
   // Tier 1 — adversarial panel.
+  const panelLenses = opts.lensesExplicit
+    ? lenses
+    : lenses.filter(
+        (lens) =>
+          lens !== "contradiction" ||
+          conflicted ||
+          WEB_CONTRADICTION_QUALITIES.has(claim.sourceQuality),
+      );
   const panel = (
-    await Promise.all(lenses.map((lens) => castVote(rctx, args, claim, lens)))
+    await Promise.all(
+      panelLenses.map((lens) => castVote(rctx, args, claim, lens)),
+    )
   ).filter((vote): vote is ClaimVote => vote !== null);
   return panel.length > 0 ? panel : (screenedVotes ?? []);
 }

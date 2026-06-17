@@ -246,6 +246,7 @@ describe("verifyClaims staged verification", () => {
 
   it("runs the panel on the envelope's panel model role", async () => {
     const central = claim();
+    central.sourceQuality = "blog";
     const boundRoles: string[] = [];
     const model = screenModel({
       quote_supports_claim: true,
@@ -296,6 +297,58 @@ describe("verifyClaims staged verification", () => {
     expect(central.votes).toHaveLength(3);
     expect(boundRoles).toContain("lead");
     expect(boundRoles).not.toContain("verify");
+  });
+
+  it("skips the web-search contradiction lens for strong uncontested sources", async () => {
+    const central = claim();
+    central.sourceQuality = "primary";
+    const verdictModel = new MockLanguageModelV3({
+      doGenerate: async () => ({
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({
+              refuted: false,
+              evidence: "checked",
+              confidence: "high",
+            }),
+          },
+        ],
+        finishReason: { unified: "stop", raw: undefined },
+        usage: {
+          inputTokens: { total: 100, noCache: 100, cacheRead: 0, cacheWrite: 0 },
+          outputTokens: { total: 50, text: 50, reasoning: 0 },
+        },
+        warnings: [],
+      }),
+    });
+    const rctx = screeningRctx(
+      [central],
+      screenModel({
+        quote_supports_claim: true,
+        source_is_evidence: true,
+        confidence: "high",
+        note: "unused",
+      }),
+      EFFORT_ENVELOPES.max,
+    );
+    Object.assign(rctx as unknown as Record<string, unknown>, {
+      ledger: {
+        byId: (id: string) => (id === "claim_1" ? central : undefined),
+        claims: [],
+      },
+      counters: { claimsVerified: 0, agentsSpawned: 0, maxDepth: 0 },
+      agentSequence: { next: 1 },
+      bindModel: () => verdictModel,
+    });
+    const outcome = await schedule(rctx, {
+      claimIds: ["claim_1"],
+      budgetUSD: 2,
+      parentId: "agent_1",
+    });
+    expect(outcome.verdicts[0].status).toBe("confirmed");
+    expect(central.votes).toHaveLength(2);
+    expect(central.votes.map((v) => v.lens)).not.toContain("contradiction");
   });
 
   it("escalates conflicted claims to the panel instead of the screen", async () => {
