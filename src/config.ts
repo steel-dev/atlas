@@ -232,7 +232,7 @@ export interface ResolvedRunConfig {
   trace: TraceMode;
 }
 
-const DEFAULT_MODEL_CONCURRENCY = 8;
+const DEFAULT_MODEL_CONCURRENCY = 4;
 const DEFAULT_IO_CONCURRENCY = 10;
 
 function resolveConcurrency(
