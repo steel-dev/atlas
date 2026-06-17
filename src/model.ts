@@ -86,6 +86,7 @@ export interface EngineModelHooks {
   onCost?: ((usd: number) => void) | undefined;
   onUnknownModel?: ((modelId: string) => void) | undefined;
   onRateLimit?: ((notice: RateLimitNotice) => void) | undefined;
+  onCacheHit?: (() => void) | undefined;
   budgetExhausted?: (() => boolean) | undefined;
 }
 
@@ -586,6 +587,7 @@ export function engineModel(
       const reused = hooks.modelCache?.get(key);
       if (reused) {
         recordReplayStep(key, params, reused);
+        hooks.onCacheHit?.();
         return {
           content: reused.content,
           finishReason: reused.finishReason,

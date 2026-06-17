@@ -117,6 +117,7 @@ describe("engineModel", () => {
   it("serves an identical call from the run cache without re-invoking or recharging", async () => {
     const meter = createBudgetMeter(10);
     const inner = mock();
+    let cacheHits = 0;
     const model = engineModel(inner as unknown as ResolvedModel, {
       role: "verify",
       grant: meter,
@@ -124,6 +125,9 @@ describe("engineModel", () => {
       gate: createConcurrencyGate(2),
       usage: createRunUsage(),
       modelCache: createModelCallCache(),
+      onCacheHit: () => {
+        cacheHits++;
+      },
     });
     const first = await generateText({
       model: model as LanguageModelV3,
@@ -137,6 +141,7 @@ describe("engineModel", () => {
     expect(second.text).toBe("hello");
     expect(inner.doGenerateCalls).toHaveLength(1);
     expect(meter.totalSpentUSD()).toBeCloseTo(3);
+    expect(cacheHits).toBe(1);
   });
 
   it("issues a fresh call when the prompt differs", async () => {

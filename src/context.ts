@@ -152,6 +152,9 @@ export async function assembleRun(args: AssembleRunArgs): Promise<RunAssembly> {
       onCost,
       onUnknownModel,
       onRateLimit,
+      onCacheHit: () => {
+        counters.modelCacheHits++;
+      },
       budgetExhausted: () => grant.spentUSD() >= grant.limitUSD,
     });
   const bindModel = (role: ModelRole, grant: BudgetGrant) =>

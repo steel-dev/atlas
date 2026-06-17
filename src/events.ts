@@ -16,6 +16,7 @@ export interface RunStats {
   effort: Effort;
   searches: number;
   searchCacheHits: number;
+  modelCacheHits: number;
   sourcesFetched: number;
   sourcesFailed: number;
   claimsExtracted: number;
