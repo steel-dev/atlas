@@ -1,5 +1,7 @@
 #!/usr/bin/env node
-import { writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { execSync } from "node:child_process";
 import { parseArgs } from "node:util";
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { createOpenAI } from "@ai-sdk/openai";
@@ -12,6 +14,7 @@ import {
   type ResearchEvent,
   type ResearchResult,
   type ResearchRun,
+  type TraceMode,
 } from "../src/index.js";
 import {
   DEFAULT_ANTHROPIC_MODEL,
@@ -35,6 +38,9 @@ Options:
       --model ID          Model id (default: ATLAS_MODEL or provider default)
       --store DIR         Journal the run to DIR (enables --resume)
       --resume RUNID      Resume a parked or failed run from --store
+      --trace MODE        off | spans | full — capture a timing/cost trace +
+                          bottleneck digest to eval-runs/traces/<commit>/
+                          (inspect with: tsx examples/trace.ts)
   -o, --out FILE          Write the report markdown to FILE instead of stdout
       --json              Print the full ResearchResult as JSON on stdout
   -q, --quiet             Suppress progress events on stderr
@@ -52,6 +58,7 @@ Examples:
   tsx examples/cli.ts "..." --effort deep --budget 5 -o report.md
   tsx examples/cli.ts "..." --json > result.json
   tsx examples/cli.ts "..." --store .atlas-runs
+  tsx examples/cli.ts "..." --trace full --effort balanced
   tsx examples/cli.ts --resume run_ab12cd34ef56 --store .atlas-runs
 `;
 
@@ -99,6 +106,12 @@ function parseEffort(raw: string | undefined): Effort | undefined {
     return raw;
   }
   fail(`--effort must be one of: fast, balanced, deep, max (got "${raw}")`);
+}
+
+function parseTrace(raw: string | undefined): TraceMode | undefined {
+  if (raw === undefined) return undefined;
+  if (raw === "off" || raw === "spans" || raw === "full") return raw;
+  fail(`--trace must be one of: off, spans, full (got "${raw}")`);
 }
 
 function resolveModel(
@@ -206,6 +219,66 @@ function formatEvent(e: ResearchEvent): string | null {
   }
 }
 
+function currentCommit(): string {
+  try {
+    const sha = execSync("git rev-parse --short HEAD", {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+    return sha || "nocommit";
+  } catch {
+    return "nocommit";
+  }
+}
+
+function fmtMs(ms: number): string {
+  return ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${Math.round(ms)}ms`;
+}
+
+function writeTrace(
+  run: ResearchRun,
+  question: string,
+  effortLabel: string,
+  quiet: boolean,
+): void {
+  const trace = run.trace();
+  if (!trace) return;
+  const commit = currentCommit();
+  const dir = join("eval-runs", "traces", commit);
+  mkdirSync(dir, { recursive: true });
+  const meta = {
+    runId: run.id,
+    commit,
+    question: question || "(resumed)",
+    effort: effortLabel,
+  };
+  writeFileSync(
+    join(dir, `${run.id}.trace.json`),
+    JSON.stringify({ ...meta, spans: trace.spans, steps: trace.steps }),
+  );
+  const digestPath = join(dir, `${run.id}.digest.json`);
+  writeFileSync(
+    digestPath,
+    JSON.stringify({ ...meta, digest: trace.digest ?? null }, null, 2),
+  );
+  if (quiet) return;
+  process.stderr.write(paint(DIM, `trace ${trace.mode} → ${digestPath}`) + "\n");
+  const d = trace.digest;
+  if (!d) return;
+  process.stderr.write(
+    paint(
+      DIM,
+      `  wall ${fmtMs(d.wallMs)} · compute ${fmtMs(d.waitVsCompute.computeMs)} / wait ${fmtMs(d.waitVsCompute.waitMs)} (ratio ${d.waitVsCompute.ratio}) · ` +
+        `peak ${d.concurrency.peakModelInFlight}/${d.concurrency.gateLimitModel} model · ${d.anomalies.length} anomal${d.anomalies.length === 1 ? "y" : "ies"}`,
+    ) + "\n",
+  );
+  const hot = d.anomalies
+    .slice(0, 3)
+    .map((a) => a.site ?? a.kind)
+    .join(" · ");
+  if (hot) process.stderr.write(paint(DIM, `  hot: ${hot}`) + "\n");
+}
+
 function footer(result: ResearchResult): string {
   const s = result.stats;
   return (
@@ -235,6 +308,7 @@ async function main(): Promise<void> {
           model: { type: "string" },
           store: { type: "string" },
           resume: { type: "string" },
+          trace: { type: "string" },
           out: { type: "string", short: "o" },
           json: { type: "boolean" },
           quiet: { type: "boolean", short: "q" },
@@ -261,6 +335,7 @@ async function main(): Promise<void> {
   if (resumeId && !values.store) fail("--resume requires --store <dir>");
 
   const effort = parseEffort(values.effort);
+  const traceMode = parseTrace(values.trace);
   const budget: Budget = {};
   const maxUSD = parsePositiveNumber(values.budget, "--budget");
   if (maxUSD !== undefined) budget.maxUSD = maxUSD;
@@ -272,6 +347,7 @@ async function main(): Promise<void> {
   const config: AtlasConfig = {
     model: resolveModel(values.provider, values.model),
     ...(values.store ? { store: fileStore(values.store) } : {}),
+    ...(traceMode && traceMode !== "off" ? { trace: traceMode } : {}),
   };
 
   const atlas = new Atlas(config);
@@ -328,6 +404,9 @@ async function main(): Promise<void> {
       if (line) process.stderr.write(line + "\n");
     }
     const result = await run.result();
+    if (traceMode && traceMode !== "off") {
+      writeTrace(run, question, effort ?? "balanced", values.quiet === true);
+    }
     if (values.json) {
       process.stdout.write(JSON.stringify(result, null, 2) + "\n");
     } else if (values.out) {

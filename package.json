@@ -24,6 +24,7 @@
     "eval:draco": "tsx evals/draco.ts",
     "eval:draco:explore": "tsx examples/eval-explorer/cli.ts",
     "draco:q": "tsx examples/eval-explorer/query.ts",
+    "trace": "tsx examples/trace.ts",
     "eval:typecheck": "tsc -p evals/tsconfig.json && tsc -p examples/eval-explorer/tsconfig.client.json",
     "build": "rm -rf dist && tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json",
