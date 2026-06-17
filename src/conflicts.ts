@@ -1,4 +1,5 @@
 import { generateObject } from "ai";
+import { withTraceFrame } from "./trace.js";
 import { z } from "zod";
 import { mapWithConcurrency } from "./async.js";
 import type { BudgetGrant } from "./budget.js";
@@ -158,7 +159,8 @@ export async function conflictPass(
     );
     if (batch.length === 0) return;
     try {
-      const result = await generateObject({
+      const result = await withTraceFrame(rctx.recorder, { site: "conflicts" }, () =>
+        generateObject({
         model,
         system: JUDGE_SYSTEM,
         prompt:
@@ -174,7 +176,8 @@ export async function conflictPass(
         maxOutputTokens: JUDGE_MAX_TOKENS,
         maxRetries: MODEL_CALL_MAX_RETRIES,
         abortSignal: rctx.signal,
-      });
+      }),
+      );
       for (const item of result.object.verdicts) {
         const pair = batch[item.index];
         if (!pair) continue;

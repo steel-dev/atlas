@@ -1,4 +1,5 @@
 import { generateObject } from "ai";
+import { withTraceFrame } from "./trace.js";
 import { z } from "zod";
 import { mapWithConcurrency } from "./async.js";
 import { runAgent } from "./agent.js";
@@ -143,7 +144,8 @@ async function castVote(
       const parsed = verdictSchema.safeParse(voter.final);
       if (parsed.success) return { lens, ...parsed.data };
     }
-    const verdict = await generateObject({
+    const verdict = await withTraceFrame(rctx.recorder, { site: "verify" }, () =>
+      generateObject({
       model: rctx.bindModel(envelope.panelModelRole, args.grant),
       system: VERIFIER_SYSTEM,
       prompt:
@@ -154,7 +156,8 @@ async function castVote(
       maxOutputTokens: VERDICT_MAX_TOKENS,
       maxRetries: MODEL_CALL_MAX_RETRIES,
       abortSignal: rctx.signal,
-    });
+    }),
+    );
     return { lens, ...verdict.object };
   } catch (err) {
     if (rctx.signal?.aborted) throw err;
@@ -227,7 +230,8 @@ export async function screenClaim(
         )
       : undefined;
   try {
-    const result = await generateObject({
+    const result = await withTraceFrame(rctx.recorder, { site: "screen" }, () =>
+      generateObject({
       model: rctx.bindModel("verify", grant),
       system: SCREEN_SYSTEM,
       prompt: screenPrompt(
@@ -241,7 +245,8 @@ export async function screenClaim(
       maxOutputTokens: SCREEN_MAX_TOKENS,
       maxRetries: MODEL_CALL_MAX_RETRIES,
       abortSignal: rctx.signal,
-    });
+    }),
+    );
     const screen = result.object;
     if (
       !screen.quote_supports_claim ||

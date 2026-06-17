@@ -1,4 +1,5 @@
 import { generateObject, type FlexibleSchema } from "ai";
+import { withTraceFrame } from "./trace.js";
 import { z } from "zod";
 import type { BudgetGrant } from "./budget.js";
 import { MODEL_CALL_MAX_RETRIES } from "./model.js";
@@ -111,7 +112,8 @@ export async function synthesizeStructured<T>(
   },
 ): Promise<StructuredOutput<T>> {
   const model = rctx.bindModel("write", grant);
-  const dataResult = await generateObject({
+  const dataResult = await withTraceFrame(rctx.recorder, { site: "structured" }, () =>
+    generateObject({
     model,
     system: DATA_SYSTEM_PROMPT,
     prompt:
@@ -127,7 +129,8 @@ export async function synthesizeStructured<T>(
     maxOutputTokens: DATA_MAX_TOKENS,
     maxRetries: MODEL_CALL_MAX_RETRIES,
     abortSignal: rctx.signal,
-  });
+  }),
+  );
   const data = dataResult.object;
 
   const paths = leafPaths(data);
@@ -139,7 +142,8 @@ export async function synthesizeStructured<T>(
 
   const numbered = [...opts.confirmed, ...opts.candidates];
   try {
-    const attribution = await generateObject({
+    const attribution = await withTraceFrame(rctx.recorder, { site: "structured" }, () =>
+      generateObject({
       model: rctx.bindModel("verify", grant),
       system: ATTRIBUTION_SYSTEM_PROMPT,
       prompt:
@@ -156,7 +160,8 @@ export async function synthesizeStructured<T>(
       maxOutputTokens: ATTRIBUTION_MAX_TOKENS,
       maxRetries: MODEL_CALL_MAX_RETRIES,
       abortSignal: rctx.signal,
-    });
+    }),
+    );
     const pathSet = new Set(paths);
     for (const field of attribution.object.fields) {
       if (!pathSet.has(field.path)) continue;

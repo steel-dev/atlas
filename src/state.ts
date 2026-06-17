@@ -10,6 +10,7 @@ import type { ResolvedSearch } from "./providers/search.js";
 import type { JournalWriter, ReplayCache } from "./providers/store.js";
 import type { ResolvedCustomTool } from "./custom-tools.js";
 import type { FetchedSource, SourceDocument } from "./sources.js";
+import type { TraceRecorder } from "./trace.js";
 import type { Trail } from "./trail.js";
 
 export interface SourceStore {
@@ -109,6 +110,7 @@ export interface RunCtx {
   emit(event: ResearchEvent): void;
   journal?: JournalWriter | undefined;
   replay?: ReplayCache | undefined;
+  recorder?: TraceRecorder | undefined;
   signal?: AbortSignal | undefined;
   stopSignal?: AbortSignal | undefined;
   deadlineAt?: number | undefined;

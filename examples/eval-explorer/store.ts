@@ -94,7 +94,9 @@ export type BlobKind =
   | "claims"
   | "sources"
   | "citations"
-  | "transcript";
+  | "transcript"
+  | "spans"
+  | "digest";
 
 const DETAIL_BLOB_KINDS: BlobKind[] = [
   "score",
@@ -133,6 +135,8 @@ export interface PersistableResult {
   sources?: unknown;
   citations?: unknown;
   transcript?: unknown;
+  spans?: unknown;
+  digest?: unknown;
 }
 
 export interface RunMeta {
@@ -252,6 +256,8 @@ function blobPayloads(r: PersistableResult): Array<{
   push("sources", r.sources);
   push("citations", r.citations);
   push("transcript", r.transcript);
+  push("spans", r.spans);
+  push("digest", r.digest);
   return out;
 }
 

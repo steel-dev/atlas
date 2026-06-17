@@ -3,6 +3,7 @@ import { wrapLanguageModel, type LanguageModel } from "ai";
 import type {
   LanguageModelV3,
   LanguageModelV3CallOptions,
+  LanguageModelV3Content,
   LanguageModelV3GenerateResult,
   LanguageModelV3Middleware,
   LanguageModelV3StreamPart,
@@ -21,6 +22,8 @@ import {
   type TokenUsage,
 } from "./budget.js";
 import { ECONOMY } from "./economy.js";
+import { errorMessage } from "./errors.js";
+import { currentFrame, type SpanStatus, type TraceRecorder } from "./trace.js";
 import type { JournalWriter, ReplayCache } from "./providers/store.js";
 
 export type ModelRole = "lead" | "research" | "verify" | "extract" | "write";
@@ -78,6 +81,7 @@ export interface EngineModelHooks {
   usage: RunUsage;
   journal?: JournalWriter | undefined;
   replay?: ReplayCache | undefined;
+  recorder?: TraceRecorder | undefined;
   onCost?: ((usd: number) => void) | undefined;
   onUnknownModel?: ((modelId: string) => void) | undefined;
   onRateLimit?: ((notice: RateLimitNotice) => void) | undefined;
@@ -406,10 +410,12 @@ export function engineModel(
   hooks: EngineModelHooks,
 ): LanguageModelV3 {
   const inner = model as LanguageModelV3;
+  const recorder = hooks.recorder;
+
   const settle = (
     usage: LanguageModelV3Usage,
     hold: BudgetHold | null,
-  ): void => {
+  ): number => {
     const tokens = tokenUsageFromV3(usage);
     const { pricing, known } = resolvePricing(inner.modelId, hooks.pricing);
     if (!known) hooks.onUnknownModel?.(inner.modelId);
@@ -418,9 +424,10 @@ export function engineModel(
     else hooks.grant.charge(cost);
     trackUsage(hooks.usage, hooks.role, tokens);
     hooks.onCost?.(cost);
+    return cost;
   };
 
-  const settleReplay = (usage: LanguageModelV3Usage): void => {
+  const settleReplay = (usage: LanguageModelV3Usage): number => {
     const tokens = tokenUsageFromV3(usage);
     const { pricing } = resolvePricing(inner.modelId, hooks.pricing);
     const cost = usageCostUSD(tokens, pricing);
@@ -428,6 +435,82 @@ export function engineModel(
     trackUsage(hooks.usage, hooks.role, tokens);
     hooks.usage.replayedUSD += cost;
     hooks.onCost?.(cost);
+    return cost;
+  };
+
+  const recordReplayStep = (
+    key: string,
+    params: LanguageModelV3CallOptions,
+    cached: JournaledCall,
+  ): void => {
+    if (!recorder) return;
+    const at = recorder.now();
+    recorder.recordModelCall(
+      {
+        callKey: key,
+        role: hooks.role,
+        provider: inner.provider,
+        modelId: inner.modelId,
+        t0: at,
+        t1: at,
+        waitMs: 0,
+        computeMs: 0,
+        tokens: tokenUsageFromV3(cached.usage),
+        finishReason: cached.finishReason.unified,
+        status: "replayed",
+        replayed: true,
+        params,
+        content: cached.content,
+      },
+      currentFrame(),
+    );
+  };
+
+  const recordCall = (
+    key: string,
+    params: LanguageModelV3CallOptions,
+    timing: { tEnqueue: number; firstWork: number; computeMs: number },
+    outcome:
+      | {
+          status: "ok";
+          usage: LanguageModelV3Usage;
+          finishReason: string;
+          costUSD: number;
+          content?: readonly LanguageModelV3Content[];
+        }
+      | { status: "error" | "aborted"; error: string },
+  ): void => {
+    if (!recorder) return;
+    const tEnd = recorder.now();
+    const waitMs = Math.max(0, timing.firstWork - timing.tEnqueue);
+    const retryDelayMs = Math.max(
+      0,
+      tEnd - timing.firstWork - timing.computeMs,
+    );
+    recorder.recordModelCall(
+      {
+        callKey: key,
+        role: hooks.role,
+        provider: inner.provider,
+        modelId: inner.modelId,
+        t0: timing.tEnqueue,
+        t1: tEnd,
+        waitMs,
+        computeMs: timing.computeMs,
+        ...(retryDelayMs ? { retryDelayMs } : {}),
+        ...(outcome.status === "ok"
+          ? {
+              tokens: tokenUsageFromV3(outcome.usage),
+              costUSD: outcome.costUSD,
+              finishReason: outcome.finishReason,
+              status: "ok" as const,
+              ...(outcome.content ? { content: outcome.content } : {}),
+            }
+          : { status: outcome.status, error: outcome.error }),
+        params,
+      },
+      currentFrame(),
+    );
   };
 
   interface CallReservation {
@@ -481,6 +564,7 @@ export function engineModel(
       const cached = hooks.replay?.take(key) as JournaledCall | undefined;
       if (cached) {
         settleReplay(cached.usage);
+        recordReplayStep(key, params, cached);
         return {
           content: cached.content,
           finishReason: cached.finishReason,
@@ -492,22 +576,60 @@ export function engineModel(
         };
       }
       const reservation = reserveFor(params);
+      const timing = {
+        tEnqueue: recorder ? recorder.now() : 0,
+        firstWork: 0,
+        computeMs: 0,
+      };
+      let acquired = false;
       let result: LanguageModelV3GenerateResult;
       try {
         result = await callWithRetry(
-          () => hooks.gate.run(() => Promise.resolve(doGenerate())),
+          () =>
+            hooks.gate.run(() => {
+              if (!recorder) return Promise.resolve(doGenerate());
+              const s = recorder.now();
+              if (!acquired) {
+                timing.firstWork = s;
+                acquired = true;
+              }
+              return Promise.resolve(doGenerate()).then(
+                (r) => {
+                  timing.computeMs += recorder.now() - s;
+                  return r;
+                },
+                (e) => {
+                  timing.computeMs += recorder.now() - s;
+                  throw e;
+                },
+              );
+            }),
           params.abortSignal,
           hooks.onRateLimit,
         );
       } catch (err) {
         settleFailure(reservation, err, params.abortSignal);
+        recordCall(key, params, timing, {
+          status:
+            isAbortError(err) || params.abortSignal?.aborted
+              ? "aborted"
+              : "error",
+          error: errorMessage(err),
+        });
         throw err;
       }
-      settle(result.usage, reservation?.hold ?? null);
+      const costUSD = settle(result.usage, reservation?.hold ?? null);
       if (hooks.journal) {
         const record = serializeResult(result);
         if (record) hooks.journal.call(key, record);
       }
+      recordCall(key, params, timing, {
+        status: "ok",
+        usage: result.usage,
+        finishReason: result.finishReason.unified,
+        costUSD,
+        content: result.content,
+      });
       return result;
     },
     wrapStream: async ({ doStream, params }) => {
@@ -515,24 +637,79 @@ export function engineModel(
       const cached = hooks.replay?.take(key) as JournaledCall | undefined;
       if (cached) {
         settleReplay(cached.usage);
+        recordReplayStep(key, params, cached);
         return { stream: streamFromJournaledCall(cached) };
       }
       const reservation = reserveFor(params);
+      const tEnqueue = recorder ? recorder.now() : 0;
+      let firstWork = tEnqueue;
       let result: Awaited<ReturnType<typeof doStream>>;
       try {
         result = await callWithRetry(
-          () => hooks.gate.run(() => Promise.resolve(doStream())),
+          () =>
+            hooks.gate.run(() => {
+              if (recorder) firstWork = recorder.now();
+              return Promise.resolve(doStream());
+            }),
           params.abortSignal,
           hooks.onRateLimit,
         );
       } catch (err) {
         settleFailure(reservation, err, params.abortSignal);
+        if (recorder) {
+          recordCall(
+            key,
+            params,
+            {
+              tEnqueue,
+              firstWork,
+              computeMs: Math.max(0, recorder.now() - firstWork),
+            },
+            {
+              status:
+                isAbortError(err) || params.abortSignal?.aborted
+                  ? "aborted"
+                  : "error",
+              error: errorMessage(err),
+            },
+          );
+        }
         throw err;
       }
       const state: StreamJournalState = {
         content: [],
         openText: new Map(),
         openReasoning: new Map(),
+      };
+      let lastCost: number | undefined;
+      let recorded = false;
+      const recordStream = (status: SpanStatus): void => {
+        if (!recorder || recorded) return;
+        recorded = true;
+        const tEnd = recorder.now();
+        recorder.recordModelCall(
+          {
+            callKey: key,
+            role: hooks.role,
+            provider: inner.provider,
+            modelId: inner.modelId,
+            t0: tEnqueue,
+            t1: tEnd,
+            waitMs: Math.max(0, firstWork - tEnqueue),
+            computeMs: Math.max(0, tEnd - firstWork),
+            ...(state.finish
+              ? { tokens: tokenUsageFromV3(state.finish.usage) }
+              : {}),
+            ...(lastCost !== undefined ? { costUSD: lastCost } : {}),
+            ...(state.finish?.finishReason
+              ? { finishReason: state.finish.finishReason.unified }
+              : {}),
+            status,
+            params,
+            content: state.content,
+          },
+          currentFrame(),
+        );
       };
       const metered = result.stream.pipeThrough(
         new TransformStream<
@@ -542,7 +719,7 @@ export function engineModel(
           transform(part, controller) {
             collectStreamPart(state, part);
             if (part.type === "finish") {
-              settle(part.usage, reservation?.hold ?? null);
+              lastCost = settle(part.usage, reservation?.hold ?? null);
             }
             controller.enqueue(part);
           },
@@ -551,6 +728,7 @@ export function engineModel(
               reservation.hold.settle(reservation.estimateUSD);
             }
             reservation?.hold.release();
+            recordStream("aborted");
           },
           flush() {
             if (reservation && !state.finish) {
@@ -569,6 +747,7 @@ export function engineModel(
               });
               if (record) hooks.journal.call(key, record);
             }
+            recordStream(state.finish ? "ok" : "aborted");
           },
         }),
       );

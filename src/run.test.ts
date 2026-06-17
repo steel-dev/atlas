@@ -8,7 +8,7 @@ import { Atlas } from "./atlas.js";
 import { acceptsRepair, deriveStopReason } from "./run.js";
 import type { StopReasonInputs } from "./run.js";
 import type { ResolvedModel } from "./model.js";
-import { loadRunMeta, memoryStore } from "./providers/store.js";
+import { loadRunMeta, loadTrace, memoryStore } from "./providers/store.js";
 import type { SearchProvider } from "./providers/search.js";
 import type { ResearchEvent } from "./events.js";
 
@@ -296,6 +296,58 @@ describe("startRun end to end", () => {
     await run.cancel();
     await expect(run.result()).rejects.toThrow(/cancelled/);
     expect(run.status()).toBe("cancelled");
+  });
+
+  it("exposes no trace when tracing is off (default)", async () => {
+    const atlas = new Atlas({
+      model: scriptedModel() as unknown as ResolvedModel,
+      search: stubSearch,
+      store: memoryStore(),
+      effort: "fast",
+    });
+    const run = atlas.start("test question", { runId: "run_off" });
+    await run.result();
+    expect(run.trace()).toBeUndefined();
+  });
+
+  it("captures spans, verbatim steps, a digest, and journals them when trace=full", async () => {
+    const store = memoryStore();
+    const atlas = new Atlas({
+      model: scriptedModel() as unknown as ResolvedModel,
+      search: stubSearch,
+      store,
+      effort: "fast",
+      trace: "full",
+    });
+    const run = atlas.start("test question", { runId: "run_trace" });
+    await run.result();
+
+    const trace = run.trace();
+    expect(trace?.mode).toBe("full");
+
+    const modelSpans = trace!.spans.filter((s) => s.kind === "model");
+    expect(modelSpans.length).toBeGreaterThan(0);
+    // every model span carries a code-attributed site
+    expect(modelSpans.every((s) => s.site.length > 0)).toBe(true);
+    // the lead's search ran as an io span attributed to "search"
+    expect(
+      trace!.spans.some((s) => s.kind === "io" && s.site === "search"),
+    ).toBe(true);
+
+    // verbatim transcript steps with the byte-exact input thread
+    expect(trace!.steps.length).toBeGreaterThan(0);
+    expect(trace!.steps.every((s) => Array.isArray(s.messages))).toBe(true);
+
+    // automatic bottleneck digest
+    expect(trace!.digest).toBeDefined();
+    expect(trace!.digest!.wallMs).toBeGreaterThanOrEqual(0);
+    expect(Object.keys(trace!.digest!.phaseBreakdown).length).toBeGreaterThan(0);
+    expect(trace!.digest!.concurrency.gateLimitModel).toBeGreaterThan(0);
+
+    // the trace is journaled and reloadable for offline analysis
+    const reloaded = await loadTrace(store, "run_trace");
+    expect(reloaded?.spans.length).toBe(trace!.spans.length);
+    expect(reloaded?.digest).toBeDefined();
   });
 });
 

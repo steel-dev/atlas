@@ -38,6 +38,11 @@ Transcript (byte-exact model steps — sliced):
                                   Show matching steps' reasoning + tool calls
                                   add --messages for the byte-exact input thread
 
+Trace (timing/cost spans + bottleneck digest):
+  digest <runId>                  Auto bottleneck digest: critical path, phase
+                                  breakdown, wait-vs-compute, anomalies + code sites
+  spans <runId> [--kind K] [--grep RE]   Raw timing spans (K=model|tool|io|agent)
+
 History:
   runs <sha> [<caseId>]           Every run (append-only), newest first
 
@@ -79,6 +84,7 @@ interface Flags {
   step?: string;
   grep?: string;
   head?: string;
+  kind?: string;
   messages: boolean;
   json: boolean;
   cost: boolean;
@@ -354,6 +360,23 @@ function cmdRuns(store: Store, positionals: string[]): void {
   out(store.listRuns(sha, positionals[2]));
 }
 
+function cmdDigest(store: Store, positionals: string[]): void {
+  out(parseJson(blobOrFail(store, need(positionals, 1, "runId"), "digest")));
+}
+
+function cmdSpans(store: Store, positionals: string[], flags: Flags): void {
+  const runId = need(positionals, 1, "runId");
+  let spans = (parseJson(blobOrFail(store, runId, "spans")) ?? []) as Array<
+    Record<string, unknown>
+  >;
+  if (flags.kind) spans = spans.filter((s) => s.kind === flags.kind);
+  if (flags.grep) {
+    const re = new RegExp(flags.grep, "i");
+    spans = spans.filter((s) => re.test(JSON.stringify(s)));
+  }
+  out(spans);
+}
+
 interface TranscriptStep {
   seq: number;
   atMs: number;
@@ -474,6 +497,7 @@ function main(): void {
       step: { type: "string" },
       grep: { type: "string" },
       head: { type: "string" },
+      kind: { type: "string" },
       messages: { type: "boolean" },
       json: { type: "boolean" },
       cost: { type: "boolean" },
@@ -498,6 +522,7 @@ function main(): void {
     step: values.step,
     grep: values.grep,
     head: values.head,
+    kind: values.kind,
     messages: Boolean(values.messages),
     json: Boolean(values.json),
     cost: Boolean(values.cost),
@@ -532,6 +557,10 @@ function main(): void {
         return cmdBlobs(store, positionals);
       case "transcript":
         return cmdTranscript(store, positionals, flags);
+      case "digest":
+        return cmdDigest(store, positionals);
+      case "spans":
+        return cmdSpans(store, positionals, flags);
       case "runs":
         return cmdRuns(store, positionals);
       default:

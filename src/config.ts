@@ -13,6 +13,8 @@ import type { ResearchTool } from "./custom-tools.js";
 
 export type Effort = "fast" | "balanced" | "deep" | "max";
 
+export type TraceMode = "off" | "spans" | "full";
+
 export interface EffortEnvelope {
   budgetUSD: number;
   depthCap: number;
@@ -196,6 +198,7 @@ export interface AtlasConfig {
   instructions?: string;
   tools?: Record<string, ResearchTool>;
   concurrency?: ConcurrencyConfig;
+  trace?: TraceMode;
 }
 
 export interface ResearchOptions {
@@ -205,6 +208,7 @@ export interface ResearchOptions {
   sources?: SourceFilter;
   signal?: AbortSignal;
   runId?: string;
+  trace?: TraceMode;
 }
 
 export interface ResolvedRunConfig {
@@ -225,6 +229,7 @@ export interface ResolvedRunConfig {
   output: OutputSpec;
   maxConcurrentModelCalls: number;
   maxConcurrentIo: number;
+  trace: TraceMode;
 }
 
 const DEFAULT_MODEL_CONCURRENCY = 8;
@@ -319,5 +324,6 @@ export function resolveRunConfig(
       DEFAULT_IO_CONCURRENCY,
       "ATLAS_IO_CONCURRENCY",
     ),
+    trace: options.trace ?? config.trace ?? "off",
   };
 }

@@ -1,4 +1,5 @@
 import { generateObject } from "ai";
+import { withTraceFrame } from "./trace.js";
 import { z } from "zod";
 import type { BudgetGrant } from "./budget.js";
 import { MODEL_CALL_MAX_RETRIES } from "./model.js";
@@ -34,7 +35,8 @@ export async function adjudicateCoverage(
     trailCapsFor(rctx.config.maxSources, ADJUDICATION_TRAIL_FRACTION),
   );
   try {
-    const result = await generateObject({
+    const result = await withTraceFrame(rctx.recorder, { site: "adjudicate" }, () =>
+      generateObject({
       model: rctx.bindModel("verify", grant),
       system: COVERAGE_SYSTEM,
       prompt:
@@ -50,7 +52,8 @@ export async function adjudicateCoverage(
       maxOutputTokens: ADJUDICATION_MAX_TOKENS,
       maxRetries: MODEL_CALL_MAX_RETRIES,
       abortSignal: rctx.signal,
-    });
+    }),
+    );
     return {
       answered: result.object.answered,
       gaps: result.object.gaps.map((gap) => gap.trim()).filter(Boolean),

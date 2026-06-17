@@ -42,6 +42,12 @@ import {
 } from "./synthesize.js";
 import { synthesizeStructured, type FieldBasis } from "./structured.js";
 import type { RunCtx } from "./state.js";
+import {
+  withTraceFrame,
+  type RunTrace,
+  type TraceRecorder,
+} from "./trace.js";
+import { computeDigest } from "./trace-digest.js";
 import { EVENT_SCHEMA_VERSION } from "./events.js";
 
 export type RunStatus =
@@ -93,6 +99,7 @@ export interface ResearchRun {
   pause(): Promise<void>;
   stop(): Promise<void>;
   status(): RunStatus;
+  trace(): RunTrace | undefined;
 }
 
 const IMPORTANCE_RANK: Record<string, number> = {
@@ -151,6 +158,7 @@ export function startRun(start: StartRunOptions): ResearchRun {
   const stopController = new AbortController();
   let statusValue: RunStatus = "running";
   let pauseRequested = false;
+  let recorder: TraceRecorder | undefined;
 
   const externalSignal = start.options.signal;
   const onExternalAbort = () => hardController.abort(externalSignal?.reason);
@@ -179,6 +187,9 @@ export function startRun(start: StartRunOptions): ResearchRun {
         now: start.now ?? Date.now,
         isPaused: () => pauseRequested,
         anchorStartedAt: start.anchorStartedAt,
+        captureRecorder: (r) => {
+          recorder = r;
+        },
       });
       statusValue = "completed";
       return result;
@@ -217,6 +228,7 @@ export function startRun(start: StartRunOptions): ResearchRun {
     events: () => hub.iterable(),
     result: () => resultPromise,
     status: () => statusValue,
+    trace: () => recorder?.snapshot(),
     cancel: async () => {
       hardController.abort();
       await resultPromise.catch(() => {});
@@ -246,6 +258,7 @@ interface ExecuteRunArgs {
   now: () => number;
   isPaused: () => boolean;
   anchorStartedAt?: number | undefined;
+  captureRecorder?: ((recorder: TraceRecorder | undefined) => void) | undefined;
 }
 
 async function executeRun(args: ExecuteRunArgs): Promise<ResearchResult> {
@@ -267,6 +280,7 @@ async function executeRun(args: ExecuteRunArgs): Promise<ResearchResult> {
       startedAt,
     });
   const { ledger, emit } = rctx;
+  args.captureRecorder?.(rctx.recorder);
 
   args.journal.meta({
     runId,
@@ -345,6 +359,19 @@ async function executeRun(args: ExecuteRunArgs): Promise<ResearchResult> {
     durationMs,
     stopped: args.stopSignal.aborted,
   });
+  if (rctx.recorder) {
+    rctx.recorder.finalize(
+      computeDigest(rctx.recorder.spans, rctx.recorder.steps, {
+        runId,
+        wallMs: durationMs,
+        costUSD: stats.costUSD,
+        freshTokens: totalFreshTokens(rctx.usage),
+        replayedUSD: rctx.usage.replayedUSD,
+        gateLimitModel: resolved.maxConcurrentModelCalls,
+        gateLimitIo: resolved.maxConcurrentIo,
+      }),
+    );
+  }
   const result: ResearchResult = {
     runId,
     question,
@@ -529,10 +556,12 @@ async function draftReport(
     partition.contested.length === 0;
   if (empty) return fallback();
   try {
-    const draft = await synthesizeReport(rctx, grant, {
-      partition,
-      closingNote,
-    });
+    const draft = await withTraceFrame(rctx.recorder, { site: "synthesize" }, () =>
+      synthesizeReport(rctx, grant, {
+        partition,
+        closingNote,
+      }),
+    );
     if (draft) return draft;
   } catch (err) {
     if (args.hardSignal.aborted) throw err;
@@ -657,7 +686,8 @@ async function deriveOpenQuestions(
   if (!note.trim() && partition.contested.length === 0) return [];
   if (grant.floored()) return [];
   try {
-    const result = await generateObject({
+    const result = await withTraceFrame(rctx.recorder, { site: "open-questions" }, () =>
+      generateObject({
       model: rctx.bindModel("verify", grant),
       system:
         "You distill the open questions a research run left unanswered. Structured output only.",
@@ -674,7 +704,8 @@ async function deriveOpenQuestions(
       maxOutputTokens: 500,
       maxRetries: MODEL_CALL_MAX_RETRIES,
       abortSignal: rctx.signal,
-    });
+    }),
+    );
     return result.object.openQuestions;
   } catch {
     return [];

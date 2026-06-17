@@ -32,6 +32,7 @@ import {
 } from "./state.js";
 import { isRunCodeAvailable } from "./sandbox.js";
 import { createTrail } from "./trail.js";
+import { createTraceRecorder } from "./trace.js";
 import { verifyClaims } from "./verify.js";
 
 const TIMEOUT_SYNTHESIS_RESERVE_MS = 120_000;
@@ -78,6 +79,15 @@ export async function assembleRun(args: AssembleRunArgs): Promise<RunAssembly> {
   const deadlineAt = resolved.maxDurationMs
     ? args.startedAt + resolved.maxDurationMs
     : undefined;
+  const recorder =
+    resolved.trace !== "off"
+      ? createTraceRecorder({
+          mode: resolved.trace,
+          now: args.now,
+          startedAt: args.startedAt,
+        })
+      : undefined;
+  recorder?.setSink((kind, _id, data) => args.journal.trace(kind, data));
 
   const budgetExhausted = (): boolean => meter.exhausted();
   const tokensExhausted = (): boolean =>
@@ -132,6 +142,7 @@ export async function assembleRun(args: AssembleRunArgs): Promise<RunAssembly> {
       usage,
       journal: args.journal,
       replay: args.replay,
+      recorder,
       onCost,
       onUnknownModel,
       onRateLimit,
@@ -193,6 +204,7 @@ export async function assembleRun(args: AssembleRunArgs): Promise<RunAssembly> {
     emit,
     journal: args.journal,
     replay: args.replay,
+    recorder,
     signal: args.hardSignal,
     stopSignal: args.stopSignal,
     deadlineAt,

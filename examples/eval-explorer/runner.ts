@@ -5,6 +5,8 @@ import {
   type ResearchEvent,
   type ResearchResult,
   type ResearchRun,
+  type RunTrace,
+  type TraceMode,
 } from "../../src/index.js";
 import { traceEvent, type EvalTraceEvent } from "../../evals/lib.js";
 import {
@@ -89,6 +91,7 @@ export interface DracoRunHostOptions {
   budget?: Budget;
   maxConcurrent?: number;
   grade?: GradeConfig;
+  trace?: TraceMode;
 }
 
 const MAX_RUNS = 200;
@@ -109,6 +112,7 @@ export class DracoRunHost {
   private readonly budget: Budget | undefined;
   private readonly maxConcurrent: number;
   private readonly grade: GradeConfig | undefined;
+  private readonly trace: TraceMode;
   private active = 0;
   private counter = 0;
 
@@ -122,6 +126,7 @@ export class DracoRunHost {
     this.budget = options.budget;
     this.maxConcurrent = Math.max(1, options.maxConcurrent ?? 1);
     this.grade = options.grade;
+    this.trace = options.trace ?? "full";
   }
 
   get canRun(): boolean {
@@ -266,6 +271,7 @@ export class DracoRunHost {
       const run = this.atlas.start(entry.dracoCase.problem, {
         ...(this.effort ? { effort: this.effort } : {}),
         ...(this.budget ? { budget: this.budget } : {}),
+        trace: this.trace,
       });
       entry.run = run;
       for await (const event of run.events()) {
@@ -281,6 +287,7 @@ export class DracoRunHost {
         push(event);
       }
       const result = await run.result();
+      const runTrace = run.trace();
       const grading = this.grade
         ? await this.gradeRun(entry, result, push, this.grade)
         : undefined;
@@ -291,7 +298,7 @@ export class DracoRunHost {
         passRate: grading?.score?.passRate ?? null,
       });
       entry.phase = "persisting";
-      this.persist(entry, result, trace, Date.now() - started, grading);
+      this.persist(entry, result, trace, Date.now() - started, grading, runTrace);
       push({
         type: "persisted",
         commit: entry.commitSha,
@@ -371,6 +378,7 @@ export class DracoRunHost {
     trace: EvalTraceEvent[],
     latencyMs: number,
     grading?: GradeOutcome,
+    runTrace?: RunTrace | undefined,
   ): void {
     const tokens = Object.values(result.stats.tokens);
     const inputTokens = tokens.reduce((sum, t) => sum + t.input, 0);
@@ -406,6 +414,9 @@ export class DracoRunHost {
         claims: result.claims,
         sources: result.sources,
         citations: { citations: result.citations },
+        ...(runTrace?.steps ? { transcript: runTrace.steps } : {}),
+        ...(runTrace?.spans ? { spans: runTrace.spans } : {}),
+        ...(runTrace?.digest ? { digest: runTrace.digest } : {}),
         finishReason: result.stats.budgetExhausted
           ? "budget-exhausted"
           : "completed",

@@ -26,6 +26,7 @@ import { fetchThroughChain, looksBlockedPage } from "./providers/fetch.js";
 import type { MergedSearchResult } from "./providers/search.js";
 import { ROLE_CAPABILITIES } from "./roles.js";
 import { budgetStatusLine, type RunCtx, type SourceStore } from "./state.js";
+import { currentFrame, type SpanStatus } from "./trace.js";
 import type { ToolContext } from "./custom-tools.js";
 import { trailCapsFor } from "./trail.js";
 import { normalizeUrlForSource } from "./url.js";
@@ -76,6 +77,30 @@ const ERROR_TITLE_PATTERN =
 const SEARCH_LISTING_TITLE_PATTERN =
   /\b(?:search results?|advanced search|site search)\b/i;
 
+function recordToolSpan(
+  rctx: RunCtx,
+  kind: "tool" | "io",
+  site: string,
+  t0: number,
+  status: SpanStatus,
+  attrs?: Record<string, unknown>,
+): void {
+  const recorder = rctx.recorder;
+  if (!recorder) return;
+  const frame = currentFrame();
+  recorder.recordToolSpan({
+    kind,
+    site,
+    ...(frame?.agentId ? { agentId: frame.agentId } : {}),
+    ...(frame?.parentSpanId ? { parentId: frame.parentSpanId } : {}),
+    t0,
+    t1: recorder.now(),
+    waitMs: 0,
+    status,
+    ...(attrs ? { attrs } : {}),
+  });
+}
+
 function withBudgetLine(rctx: RunCtx, actx: AgentCtx, content: string): string {
   if (!ROLE_CAPABILITIES[actx.role].budgetLine) return content;
   return `${content}\n\n[${budgetStatusLine(rctx)}]`;
@@ -110,6 +135,7 @@ export async function execSearchTool(
   if (cleaned.length === 0) {
     return "Error: search requires at least one non-empty query.";
   }
+  const spanStartedAt = rctx.recorder ? rctx.recorder.now() : 0;
   const allWarnings: string[] = [];
   const byUrl = new Map<string, MergedSearchResult>();
   await mapWithConcurrency(cleaned, 4, async (query) => {
@@ -164,6 +190,10 @@ export async function execSearchTool(
   const ranked = [...byUrl.values()]
     .sort((a, b) => b.score - a.score)
     .slice(0, limit);
+  recordToolSpan(rctx, "io", "search", spanStartedAt, "ok", {
+    queries: cleaned.length,
+    results: ranked.length,
+  });
   const body = JSON.stringify(
     {
       ...(cleaned.length === 1 ? { query: cleaned[0] } : { queries: cleaned }),
@@ -291,6 +321,7 @@ async function fetchSourceDocument(
     registerSourceDocument(rctx, actx, document, goal, replayed.renderedWith);
     return document;
   }
+  const fetchStartedAt = rctx.recorder ? rctx.recorder.now() : 0;
   const outcome = await rctx.ioGate.run(() =>
     fetchThroughChain(rctx.fetchChain, {
       url,
@@ -310,6 +341,11 @@ async function fetchSourceDocument(
       },
     }),
   );
+  recordToolSpan(rctx, "io", "fetch", fetchStartedAt, "ok", {
+    url,
+    sourceId,
+    ok: Boolean(outcome.page),
+  });
   if (!outcome.page) {
     const reason =
       outcome.attempts
@@ -802,6 +838,7 @@ export function buildAgentTools(
         if (documents.length === 0) {
           return "Error: no fetched source documents are available to run code over.";
         }
+        const codeStartedAt = rctx.recorder ? rctx.recorder.now() : 0;
         const output = await runCodeSandboxed({
           code,
           timeoutMs: clampSandboxTimeout(timeout_ms),
@@ -813,6 +850,14 @@ export function buildAgentTools(
           })),
         });
         const content = shapeSandboxOutput(output);
+        recordToolSpan(
+          rctx,
+          "tool",
+          "run_code",
+          codeStartedAt,
+          output.error ? "error" : "ok",
+          { output_chars: content.length },
+        );
         rctx.emit({
           type: "tool.event",
           tool: "run_code",
@@ -833,6 +878,7 @@ export function buildAgentTools(
         inputSchema: jsonSchema(custom.inputJsonSchema),
         execute: async (input) => {
           let sourcesAdded = 0;
+          const customStartedAt = rctx.recorder ? rctx.recorder.now() : 0;
           const timeoutMs = Math.min(
             MAX_CUSTOM_TOOL_TIMEOUT_MS,
             Math.max(1, custom.timeoutMs ?? DEFAULT_CUSTOM_TOOL_TIMEOUT_MS),
@@ -865,6 +911,9 @@ export function buildAgentTools(
                 return Promise.resolve(custom.execute(input, toolCtx));
               },
             );
+            recordToolSpan(rctx, "tool", custom.name, customStartedAt, "ok", {
+              sources_added: sourcesAdded,
+            });
             rctx.emit({
               type: "tool.event",
               tool: custom.name,
@@ -874,6 +923,13 @@ export function buildAgentTools(
               ? output
               : JSON.stringify(output);
           } catch (err) {
+            recordToolSpan(
+              rctx,
+              "tool",
+              custom.name,
+              customStartedAt,
+              rctx.signal?.aborted ? "aborted" : "error",
+            );
             if (rctx.signal?.aborted) throw err;
             return `Tool error: ${errorMessage(err)}`;
           }

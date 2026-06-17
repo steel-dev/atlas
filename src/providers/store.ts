@@ -1,9 +1,16 @@
 import { appendFile, mkdir, readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
+import {
+  TRACE_SCHEMA_VERSION,
+  type RunDigest,
+  type RunTrace,
+  type Span,
+  type TraceStep,
+} from "../trace.js";
 
 export interface JournalEntry {
   seq: number;
-  kind: "meta" | "event" | "call" | "io";
+  kind: "meta" | "event" | "call" | "io" | "trace";
   type?: string;
   callKey?: string;
   data: unknown;
@@ -129,6 +136,10 @@ export class JournalWriter {
     this.push({ seq: this.seq++, kind: "io", callKey, data });
   }
 
+  trace(subKind: string, data: unknown): void {
+    this.push({ seq: this.seq++, kind: "trace", type: subKind, data });
+  }
+
   private push(entry: JournalEntry): void {
     this.pending.push(entry);
     this.scheduleFlush();
@@ -208,6 +219,32 @@ export async function loadReplayCache(
     }
   }
   return cache;
+}
+
+export async function loadTrace(
+  store: RunStore,
+  runId: string,
+): Promise<RunTrace | null> {
+  const spans: Span[] = [];
+  const steps: TraceStep[] = [];
+  let digest: RunDigest | undefined;
+  let found = false;
+  for await (const entry of store.read(runId)) {
+    if (entry.kind !== "trace") continue;
+    found = true;
+    if (entry.type === "span") spans.push(entry.data as Span);
+    else if (entry.type === "step") steps.push(entry.data as TraceStep);
+    else if (entry.type === "digest") digest = entry.data as RunDigest;
+  }
+  if (!found) return null;
+  return {
+    schemaVersion: TRACE_SCHEMA_VERSION,
+    mode: steps.length > 0 ? "full" : "spans",
+    spans,
+    steps,
+    ...(digest ? { digest } : {}),
+    degraded: Boolean(digest?.degraded),
+  };
 }
 
 export async function loadRunMeta(

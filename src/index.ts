@@ -8,6 +8,7 @@ export type {
   OutputSpec,
   ResearchOptions,
   SourceFilter,
+  TraceMode,
 } from "./config.js";
 export type {
   ResearchClaims,
@@ -27,6 +28,19 @@ export type {
   StopReason,
 } from "./events.js";
 export { EVENT_SCHEMA_VERSION } from "./events.js";
+export { TRACE_SCHEMA_VERSION } from "./trace.js";
+export type {
+  CriticalSpan,
+  DigestAgent,
+  DigestAnomaly,
+  DigestPhase,
+  RunDigest,
+  RunTrace,
+  Span,
+  SpanKind,
+  SpanStatus,
+  TraceStep,
+} from "./trace.js";
 export type {
   ClaimConfidence,
   ClaimImportance,
@@ -58,7 +72,7 @@ export type {
   FetchRequest,
   FetchedPage,
 } from "./providers/fetch.js";
-export { fileStore, memoryStore } from "./providers/store.js";
+export { fileStore, loadTrace, memoryStore } from "./providers/store.js";
 export type { JournalEntry, RunStore, RunSummary } from "./providers/store.js";
 export type { FieldBasis, BasisCitation } from "./structured.js";
 export type {

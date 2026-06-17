@@ -8,6 +8,7 @@ import {
   type AtlasConfig,
   type Budget,
   type Effort,
+  type TraceMode,
 } from "../../src/index.js";
 import {
   DEFAULT_ANTHROPIC_MODEL,
@@ -40,6 +41,8 @@ Options:
       --model NAME      Research (lead) model id
       --leaf-model NAME Model for extraction & verification (default: ${DEFAULT_LEAF_MODEL} on anthropic; lead model otherwise)
       --effort LEVEL    fast | balanced | deep | max (default: balanced)
+      --trace MODE      off | spans | full (default: full) — per-run timing/cost
+                        spans + verbatim transcript for the digest/spans/transcript views
       --budget USD      Per-run spend cap in USD
       --timeout N       Per-run wall-clock cap in seconds
       --concurrency N   Max simultaneous runs (default: 1)
@@ -65,6 +68,12 @@ function parseEffort(raw: string | undefined): Effort | undefined {
     return raw;
   }
   fail(`--effort must be one of: fast, balanced, deep, max (got "${raw}")`);
+}
+
+function parseTrace(raw: string | undefined): TraceMode | undefined {
+  if (raw === undefined) return undefined;
+  if (raw === "off" || raw === "spans" || raw === "full") return raw;
+  fail(`--trace must be one of: off, spans, full (got "${raw}")`);
 }
 
 function parsePositiveNumber(
@@ -162,6 +171,7 @@ async function main(): Promise<void> {
           model: { type: "string" },
           "leaf-model": { type: "string" },
           effort: { type: "string" },
+          trace: { type: "string" },
           budget: { type: "string" },
           timeout: { type: "string" },
           concurrency: { type: "string" },
@@ -193,6 +203,7 @@ async function main(): Promise<void> {
   }
 
   const effort = parseEffort(values.effort);
+  const trace = parseTrace(values.trace);
   const budget: Budget = {};
   const maxUSD = parsePositiveNumber(values.budget, "--budget");
   if (maxUSD !== undefined) budget.maxUSD = maxUSD;
@@ -262,6 +273,7 @@ async function main(): Promise<void> {
     researchModel: modelId,
     startupCommit,
     ...(effort ? { effort } : {}),
+    ...(trace ? { trace } : {}),
     ...(Object.keys(budget).length > 0 ? { budget } : {}),
     maxConcurrent: concurrency,
     ...(grade ? { grade } : {}),

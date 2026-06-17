@@ -1,4 +1,5 @@
 import { generateObject } from "ai";
+import { withTraceFrame } from "./trace.js";
 import { z } from "zod";
 import { mapWithConcurrency } from "./async.js";
 import type { BudgetGrant } from "./budget.js";
@@ -234,7 +235,8 @@ async function runEntailmentChecks(
         .join("\n\n") +
       "\n\nReturn one verdict per index.";
     try {
-      const result = await generateObject({
+      const result = await withTraceFrame(rctx.recorder, { site: "bind" }, () =>
+        generateObject({
         model,
         system:
           "You check whether report sentences are entailed by their cited claims for a research run. Structured output only.",
@@ -243,7 +245,8 @@ async function runEntailmentChecks(
         maxOutputTokens: 2_000,
         maxRetries: MODEL_CALL_MAX_RETRIES,
         abortSignal: rctx.signal,
-      });
+      }),
+      );
       for (const check of result.object.checks) {
         supported.set(check.index, check.supported);
       }
@@ -266,7 +269,8 @@ async function classifyUnmarkedSentences(
     sentences.map((sentence, index) => `[${index}] ${sentence}`).join("\n") +
     "\n\nReturn the factual indices.";
   try {
-    const result = await generateObject({
+    const result = await withTraceFrame(rctx.recorder, { site: "bind" }, () =>
+      generateObject({
       model,
       system:
         "You triage uncited report sentences for a citation audit. Structured output only.",
@@ -275,7 +279,8 @@ async function classifyUnmarkedSentences(
       maxOutputTokens: 1_000,
       maxRetries: MODEL_CALL_MAX_RETRIES,
       abortSignal: rctx.signal,
-    });
+    }),
+    );
     return new Set(
       result.object.factual.filter(
         (index) => index >= 0 && index < sentences.length,

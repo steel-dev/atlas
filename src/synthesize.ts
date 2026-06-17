@@ -1,4 +1,5 @@
 import { generateText, stepCountIs, streamText } from "ai";
+import { withTraceFrame } from "./trace.js";
 import { createMarkerStripper, type BindOutcome } from "./bind.js";
 import type { BudgetGrant } from "./budget.js";
 import { MODEL_CALL_MAX_RETRIES } from "./model.js";
@@ -483,7 +484,8 @@ export async function repairReport(
     );
   }
   if (problems.length === 0) return undefined;
-  const result = await generateText({
+  const result = await withTraceFrame(rctx.recorder, { site: "repair" }, () =>
+    generateText({
     model: rctx.bindModel("write", grant),
     system: REPAIR_SYSTEM_PROMPT,
     prompt:
@@ -498,7 +500,8 @@ export async function repairReport(
     maxOutputTokens: rctx.config.envelope.maxReportTokens,
     maxRetries: MODEL_CALL_MAX_RETRIES,
     abortSignal: rctx.signal,
-  });
+  }),
+  );
   const repaired = stripReportPreamble(result.text.trim());
   return repaired || undefined;
 }

@@ -13,6 +13,7 @@ import { renderLedgerDigest } from "./ledger.js";
 import { MODEL_CALL_MAX_RETRIES, type ModelRole } from "./model.js";
 import { researchAgentSystem } from "./prompts.js";
 import { ROLE_CAPABILITIES } from "./roles.js";
+import { currentFrame, withTraceFrame } from "./trace.js";
 import { budgetStatusLine, type RunCtx } from "./state.js";
 import { trailCapsFor } from "./trail.js";
 import {
@@ -124,7 +125,22 @@ export async function runAgent(
   let governorReason: string | null = null;
   let lastText = "";
 
-  const result = await generateText({
+  const recorder = rctx.recorder;
+  const parentSpanId = recorder ? currentFrame()?.parentSpanId : undefined;
+  const agentSpanId = recorder?.mintSpanId();
+  const agentStartedAt = recorder ? recorder.now() : 0;
+  const logicalAgentId = spec.role === "orchestrator" ? "lead" : agentId;
+  const agentFrame = {
+    agentId,
+    logicalAgentId,
+    role: spec.role,
+    depth: spec.depth,
+    site: spec.role,
+    ...(agentSpanId ? { parentSpanId: agentSpanId } : {}),
+  };
+
+  const result = await withTraceFrame(recorder, agentFrame, () =>
+    generateText({
     model,
     system: spec.system,
     prompt: spec.task,
@@ -171,7 +187,8 @@ export async function runAgent(
         rctx.emit({ type: "plan.updated", rationale: step.text.trim() });
       }
     },
-  });
+    }),
+  );
 
   if (ROLE_CAPABILITIES[spec.role].ledgerFlushOnReturn) {
     await rctx.ledger.flush(agentId);
@@ -197,6 +214,27 @@ export async function runAgent(
       claimsAdded: claimsAdded.length,
       spentUSD: spec.grant.spentUSD(),
       stopReason,
+    });
+  }
+
+  if (recorder && agentSpanId) {
+    recorder.recordAgentSpan({
+      id: agentSpanId,
+      ...(parentSpanId ? { parentId: parentSpanId } : {}),
+      site: spec.role,
+      agentId,
+      logicalAgentId,
+      role: spec.role,
+      t0: agentStartedAt,
+      t1: recorder.now(),
+      costUSD: spec.grant.spentUSD(),
+      status: rctx.signal?.aborted ? "aborted" : "ok",
+      attrs: {
+        depth: spec.depth,
+        task: spec.task.slice(0, TASK_PREVIEW_CHARS),
+        stopReason,
+        claimsAdded: claimsAdded.length,
+      },
     });
   }
 
