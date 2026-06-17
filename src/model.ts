@@ -295,6 +295,7 @@ const RETRY_MAX_DELAY_MS = 30_000; // cap so a sustained limit can't hang minute
 interface RetryClassification {
   retryable: boolean;
   retryAfterMs?: number;
+  rateLimit?: boolean;
 }
 
 function isAbortError(err: unknown): boolean {
@@ -349,10 +350,20 @@ function classifyRetry(err: unknown): RetryClassification {
   const retryAfterMs = shapes
     .map((shape) => parseRetryAfterMs(shape.responseHeaders))
     .find((ms) => ms !== undefined);
-  const withDelay = (): RetryClassification =>
-    retryAfterMs !== undefined
-      ? { retryable: true, retryAfterMs }
-      : { retryable: true };
+  const message = shapes
+    .map((shape) => shape.message ?? "")
+    .join("\n")
+    .toLowerCase();
+  const rateLimit =
+    shapes.some((shape) => shape.statusCode === 429) ||
+    /rate limit|too many requests|overloaded|concurrent connections/.test(
+      message,
+    );
+  const withDelay = (): RetryClassification => ({
+    retryable: true,
+    ...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
+    ...(rateLimit ? { rateLimit: true } : {}),
+  });
   for (const shape of shapes) {
     if (typeof shape.isRetryable === "boolean") {
       return shape.isRetryable ? withDelay() : { retryable: false };
@@ -368,10 +379,6 @@ function classifyRetry(err: unknown): RetryClassification {
       (status !== undefined && status >= 500)
     );
   });
-  const message = shapes
-    .map((shape) => shape.message ?? "")
-    .join("\n")
-    .toLowerCase();
   const retryableMessage =
     /rate limit|too many requests|overloaded|concurrent connections|timeout|timed out|econnreset|etimedout|eai_again|socket hang up|fetch failed|network error/.test(
       message,
@@ -394,23 +401,34 @@ function backoffDelayMs(
 }
 
 async function callWithRetry<T>(
-  attempt: () => Promise<T>,
+  op: () => Promise<T>,
+  gate: ConcurrencyGate | undefined,
   signal: AbortSignal | undefined,
   onRateLimit: ((notice: RateLimitNotice) => void) | undefined,
 ): Promise<T> {
   let tries = 0;
-  for (;;) {
-    tries++;
-    try {
-      return await attempt();
-    } catch (err) {
-      const { retryable, retryAfterMs } = classifyRetry(err);
-      if (!retryable || tries >= RETRY_MAX_ATTEMPTS || signal?.aborted)
-        throw err;
-      const delayMs = backoffDelayMs(tries, retryAfterMs);
-      onRateLimit?.({ attempt: tries, delayMs, error: err });
-      await sleep(delayMs, signal);
+  let release: (() => void) | null = null;
+  try {
+    for (;;) {
+      tries++;
+      if (gate && !release) release = await gate.acquire();
+      try {
+        return await op();
+      } catch (err) {
+        const { retryable, retryAfterMs, rateLimit } = classifyRetry(err);
+        if (!retryable || tries >= RETRY_MAX_ATTEMPTS || signal?.aborted)
+          throw err;
+        const delayMs = backoffDelayMs(tries, retryAfterMs);
+        onRateLimit?.({ attempt: tries, delayMs, error: err });
+        if (release && !rateLimit) {
+          release();
+          release = null;
+        }
+        await sleep(delayMs, signal);
+      }
     }
+  } finally {
+    release?.();
   }
 }
 
@@ -613,25 +631,25 @@ export function engineModel(
       let result: LanguageModelV3GenerateResult;
       try {
         result = await callWithRetry(
-          () =>
-            hooks.gate.run(() => {
-              if (!recorder) return Promise.resolve(doGenerate());
-              const s = recorder.now();
-              if (!acquired) {
-                timing.firstWork = s;
-                acquired = true;
-              }
-              return Promise.resolve(doGenerate()).then(
-                (r) => {
-                  timing.computeMs += recorder.now() - s;
-                  return r;
-                },
-                (e) => {
-                  timing.computeMs += recorder.now() - s;
-                  throw e;
-                },
-              );
-            }),
+          () => {
+            if (!recorder) return Promise.resolve(doGenerate());
+            const s = recorder.now();
+            if (!acquired) {
+              timing.firstWork = s;
+              acquired = true;
+            }
+            return Promise.resolve(doGenerate()).then(
+              (r) => {
+                timing.computeMs += recorder.now() - s;
+                return r;
+              },
+              (e) => {
+                timing.computeMs += recorder.now() - s;
+                throw e;
+              },
+            );
+          },
+          hooks.gate,
           params.abortSignal,
           hooks.onRateLimit,
         );
@@ -687,6 +705,7 @@ export function engineModel(
             if (recorder) firstWork = recorder.now();
             return Promise.resolve(doStream());
           },
+          undefined,
           params.abortSignal,
           hooks.onRateLimit,
         );

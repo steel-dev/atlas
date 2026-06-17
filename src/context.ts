@@ -79,7 +79,7 @@ export async function assembleRun(args: AssembleRunArgs): Promise<RunAssembly> {
   const modelLimit = createAdaptiveLimit({
     start: resolved.maxConcurrentModelCalls,
     min: Math.min(2, resolved.maxConcurrentModelCalls),
-    max: resolved.maxConcurrentModelCalls * 3,
+    max: resolved.maxConcurrentModelCalls * 2,
   });
   const modelGate = createDynamicConcurrencyGate(() => modelLimit.value());
   const ioGate = createConcurrencyGate(resolved.maxConcurrentIo);

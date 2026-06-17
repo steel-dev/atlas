@@ -178,7 +178,7 @@ export function createAdaptiveLimit(opts: {
     onSuccess: () => {
       if (width >= max) return;
       cleanRun++;
-      if (cleanRun >= width) {
+      if (cleanRun >= width * 2) {
         width = clamp(width + 1);
         cleanRun = 0;
       }

@@ -91,18 +91,20 @@ describe("createDynamicConcurrencyGate", () => {
 });
 
 describe("createAdaptiveLimit", () => {
-  it("grows additively after width consecutive successes and clamps at max", () => {
+  it("grows additively after 2x width consecutive successes and clamps at max", () => {
     const limit = createAdaptiveLimit({ start: 2, min: 1, max: 4 });
     expect(limit.value()).toBe(2);
+    limit.onSuccess();
+    limit.onSuccess();
     limit.onSuccess();
     expect(limit.value()).toBe(2);
     limit.onSuccess();
     expect(limit.value()).toBe(3);
-    limit.onSuccess();
-    limit.onSuccess();
+    for (let i = 0; i < 5; i++) limit.onSuccess();
+    expect(limit.value()).toBe(3);
     limit.onSuccess();
     expect(limit.value()).toBe(4);
-    for (let i = 0; i < 10; i++) limit.onSuccess();
+    for (let i = 0; i < 20; i++) limit.onSuccess();
     expect(limit.value()).toBe(4);
   });
 
@@ -117,12 +119,15 @@ describe("createAdaptiveLimit", () => {
   });
 
   it("resets the clean run on throttle", () => {
-    const limit = createAdaptiveLimit({ start: 4, min: 2, max: 8 });
+    const limit = createAdaptiveLimit({ start: 2, min: 2, max: 8 });
     limit.onSuccess();
     limit.onSuccess();
     limit.onSuccess();
+    expect(limit.value()).toBe(2);
     limit.onThrottle();
     expect(limit.value()).toBe(2);
+    limit.onSuccess();
+    limit.onSuccess();
     limit.onSuccess();
     expect(limit.value()).toBe(2);
     limit.onSuccess();

@@ -391,7 +391,7 @@ describe("engineModel", () => {
     expect(notices).toEqual([]);
   });
 
-  it("frees the gate slot while a call is backing off", async () => {
+  it("holds the gate slot across a rate-limit backoff", async () => {
     const gate = createConcurrencyGate(1);
     const order: string[] = [];
     let slowCalls = 0;
@@ -407,6 +407,63 @@ describe("engineModel", () => {
             ),
             { statusCode: 429, isRetryable: true },
           );
+        }
+        order.push("slow");
+        return RESULT;
+      },
+    });
+    const fast = new MockLanguageModelV3({
+      provider: "mock-provider",
+      modelId: "claude-sonnet-4-6",
+      doGenerate: async () => {
+        order.push("fast");
+        return RESULT;
+      },
+    });
+    const base = {
+      role: "lead" as const,
+      pricing: {},
+      gate,
+      usage: createRunUsage(),
+    };
+    const slowModel = engineModel(slow as unknown as ResolvedModel, {
+      ...base,
+      grant: createBudgetMeter(10),
+    });
+    const fastModel = engineModel(fast as unknown as ResolvedModel, {
+      ...base,
+      grant: createBudgetMeter(10),
+    });
+    const slowP = generateText({
+      model: slowModel as LanguageModelV3,
+      prompt: "slow",
+      maxRetries: 0,
+    });
+    await sleep(50);
+    const fastP = generateText({
+      model: fastModel as LanguageModelV3,
+      prompt: "fast",
+      maxRetries: 0,
+    });
+    await Promise.all([slowP, fastP]);
+    expect(order).toEqual(["slow", "fast"]);
+    expect(slowCalls).toBe(2);
+  });
+
+  it("frees the gate slot during a non-rate-limit backoff", async () => {
+    const gate = createConcurrencyGate(1);
+    const order: string[] = [];
+    let slowCalls = 0;
+    const slow = new MockLanguageModelV3({
+      provider: "mock-provider",
+      modelId: "claude-sonnet-4-6",
+      doGenerate: async () => {
+        slowCalls++;
+        if (slowCalls === 1) {
+          throw Object.assign(new Error("service unavailable"), {
+            statusCode: 503,
+            isRetryable: true,
+          });
         }
         order.push("slow");
         return RESULT;
