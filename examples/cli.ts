@@ -14,6 +14,7 @@ import {
   type ResearchEvent,
   type ResearchResult,
   type ResearchRun,
+  type RunStats,
   type TraceMode,
 } from "../src/index.js";
 import {
@@ -239,6 +240,7 @@ function writeTrace(
   run: ResearchRun,
   question: string,
   effortLabel: string,
+  stats: RunStats,
   quiet: boolean,
 ): void {
   const trace = run.trace();
@@ -259,7 +261,7 @@ function writeTrace(
   const digestPath = join(dir, `${run.id}.digest.json`);
   writeFileSync(
     digestPath,
-    JSON.stringify({ ...meta, digest: trace.digest ?? null }, null, 2),
+    JSON.stringify({ ...meta, stats, digest: trace.digest ?? null }, null, 2),
   );
   if (quiet) return;
   process.stderr.write(paint(DIM, `trace ${trace.mode} → ${digestPath}`) + "\n");
@@ -405,7 +407,13 @@ async function main(): Promise<void> {
     }
     const result = await run.result();
     if (traceMode && traceMode !== "off") {
-      writeTrace(run, question, effort ?? "balanced", values.quiet === true);
+      writeTrace(
+        run,
+        question,
+        effort ?? "balanced",
+        result.stats,
+        values.quiet === true,
+      );
     }
     if (values.json) {
       process.stdout.write(JSON.stringify(result, null, 2) + "\n");

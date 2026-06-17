@@ -15,6 +15,7 @@ export type StopReason =
 export interface RunStats {
   effort: Effort;
   searches: number;
+  searchCacheHits: number;
   sourcesFetched: number;
   sourcesFailed: number;
   claimsExtracted: number;
