@@ -26,9 +26,6 @@ export interface RunStats {
   claimsScreened: number;
   claimsContested: number;
   claimsRefuted: number;
-  verifyPanelRuns: number;
-  verifyPanelDowngradable: number;
-  verifyPanelCheapMisses: number;
   citationsBound: number;
   citationsUnsupported: number;
   dupesDropped: number;

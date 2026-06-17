@@ -48,8 +48,3 @@ export function voteSplit(claim: ResearchClaim): string {
   const refuted = claim.votes.filter((vote) => vote.refuted).length;
   return `${claim.votes.length - refuted}-${refuted}`;
 }
-
-export function screenSufficient(claim: ResearchClaim): boolean {
-  const conflicted = (claim.conflictsWith?.length ?? 0) > 0;
-  return claim.sourceQuality === "primary" && !conflicted;
-}
