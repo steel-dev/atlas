@@ -113,6 +113,10 @@ export async function assembleRun(args: AssembleRunArgs): Promise<RunAssembly> {
 
   const onCost = (): void => {
     modelLimit.onSuccess();
+    counters.modelGatePeakWidth = Math.max(
+      counters.modelGatePeakWidth,
+      modelLimit.value(),
+    );
     const fraction = meter.totalSpentUSD() / meter.totalUSD;
     for (const threshold of BUDGET_WARNING_FRACTIONS) {
       if (fraction >= threshold && !warnedFractions.has(threshold)) {

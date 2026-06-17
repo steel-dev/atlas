@@ -46,6 +46,7 @@ export interface RunCounters {
   searches: number;
   searchCacheHits: number;
   modelCacheHits: number;
+  modelGatePeakWidth: number;
   sourcesFetched: number;
   sourcesFailed: number;
   agentsSpawned: number;
@@ -62,6 +63,7 @@ export function createRunCounters(): RunCounters {
     searches: 0,
     searchCacheHits: 0,
     modelCacheHits: 0,
+    modelGatePeakWidth: 0,
     sourcesFetched: 0,
     sourcesFailed: 0,
     agentsSpawned: 0,

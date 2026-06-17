@@ -756,6 +756,7 @@ function buildStats(opts: {
     searches: rctx.counters.searches,
     searchCacheHits: rctx.counters.searchCacheHits,
     modelCacheHits: rctx.counters.modelCacheHits,
+    modelGatePeakWidth: rctx.counters.modelGatePeakWidth,
     sourcesFetched: rctx.counters.sourcesFetched,
     sourcesFailed: rctx.counters.sourcesFailed,
     claimsExtracted: rctx.ledger.representatives().length,
