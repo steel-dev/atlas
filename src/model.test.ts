@@ -9,6 +9,7 @@ import { describe, expect, it } from "vitest";
 import { createConcurrencyGate } from "./async.js";
 import { createBudgetMeter } from "./budget.js";
 import {
+  createModelCallCache,
   createRunUsage,
   engineModel,
   normalizeForCacheKey,
@@ -111,6 +112,46 @@ describe("engineModel", () => {
       generateText({ model: model as LanguageModelV3, prompt: "second" }),
     ).rejects.toThrow(BudgetExceededError);
     expect(inner.doGenerateCalls).toHaveLength(1);
+  });
+
+  it("serves an identical call from the run cache without re-invoking or recharging", async () => {
+    const meter = createBudgetMeter(10);
+    const inner = mock();
+    const model = engineModel(inner as unknown as ResolvedModel, {
+      role: "verify",
+      grant: meter,
+      pricing: { "claude-sonnet-4-6": { inputPerMTok: 3, outputPerMTok: 15 } },
+      gate: createConcurrencyGate(2),
+      usage: createRunUsage(),
+      modelCache: createModelCallCache(),
+    });
+    const first = await generateText({
+      model: model as LanguageModelV3,
+      prompt: "same",
+    });
+    const second = await generateText({
+      model: model as LanguageModelV3,
+      prompt: "same",
+    });
+    expect(first.text).toBe("hello");
+    expect(second.text).toBe("hello");
+    expect(inner.doGenerateCalls).toHaveLength(1);
+    expect(meter.totalSpentUSD()).toBeCloseTo(3);
+  });
+
+  it("issues a fresh call when the prompt differs", async () => {
+    const inner = mock();
+    const model = engineModel(inner as unknown as ResolvedModel, {
+      role: "verify",
+      grant: createBudgetMeter(10),
+      pricing: {},
+      gate: createConcurrencyGate(2),
+      usage: createRunUsage(),
+      modelCache: createModelCallCache(),
+    });
+    await generateText({ model: model as LanguageModelV3, prompt: "alpha" });
+    await generateText({ model: model as LanguageModelV3, prompt: "beta" });
+    expect(inner.doGenerateCalls).toHaveLength(2);
   });
 
   it("tracks usage per role", async () => {

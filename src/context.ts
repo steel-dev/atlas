@@ -17,6 +17,7 @@ import type { EventHub } from "./event-hub.js";
 import type { ResearchEvent } from "./events.js";
 import { createLedger, type ResearchClaim } from "./ledger.js";
 import {
+  createModelCallCache,
   createRunUsage,
   engineModel,
   totalFreshTokens,
@@ -76,6 +77,7 @@ export async function assembleRun(args: AssembleRunArgs): Promise<RunAssembly> {
   const pricing: PricingTable = { ...DEFAULT_PRICING, ...resolved.pricing };
   const modelGate = createConcurrencyGate(resolved.maxConcurrentModelCalls);
   const ioGate = createConcurrencyGate(resolved.maxConcurrentIo);
+  const modelCache = createModelCallCache();
   const counters = createRunCounters();
   const warnedUnknownModels = new Set<string>();
   const warnedFractions = new Set<number>();
@@ -145,6 +147,7 @@ export async function assembleRun(args: AssembleRunArgs): Promise<RunAssembly> {
       usage,
       journal: args.journal,
       replay: args.replay,
+      modelCache,
       recorder,
       onCost,
       onUnknownModel,

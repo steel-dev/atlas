@@ -81,6 +81,7 @@ export interface EngineModelHooks {
   usage: RunUsage;
   journal?: JournalWriter | undefined;
   replay?: ReplayCache | undefined;
+  modelCache?: ModelCallCache | undefined;
   recorder?: TraceRecorder | undefined;
   onCost?: ((usd: number) => void) | undefined;
   onUnknownModel?: ((modelId: string) => void) | undefined;
@@ -132,6 +133,12 @@ interface JournaledCall {
   finishReason: LanguageModelV3GenerateResult["finishReason"];
   usage: LanguageModelV3Usage;
   providerMetadata?: LanguageModelV3GenerateResult["providerMetadata"];
+}
+
+export type ModelCallCache = Map<string, JournaledCall>;
+
+export function createModelCallCache(): ModelCallCache {
+  return new Map();
 }
 
 function serializeResult(
@@ -576,6 +583,19 @@ export function engineModel(
           warnings: [],
         };
       }
+      const reused = hooks.modelCache?.get(key);
+      if (reused) {
+        recordReplayStep(key, params, reused);
+        return {
+          content: reused.content,
+          finishReason: reused.finishReason,
+          usage: reused.usage,
+          ...(reused.providerMetadata
+            ? { providerMetadata: reused.providerMetadata }
+            : {}),
+          warnings: [],
+        };
+      }
       if (hooks.budgetExhausted?.()) {
         throw new BudgetExceededError(
           "budget exhausted: total run budget reached",
@@ -626,9 +646,12 @@ export function engineModel(
         throw err;
       }
       const costUSD = settle(result.usage, reservation?.hold ?? null);
-      if (hooks.journal) {
+      if (hooks.journal || hooks.modelCache) {
         const record = serializeResult(result);
-        if (record) hooks.journal.call(key, record);
+        if (record) {
+          hooks.journal?.call(key, record);
+          hooks.modelCache?.set(key, record);
+        }
       }
       recordCall(key, params, timing, {
         status: "ok",
