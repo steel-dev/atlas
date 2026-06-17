@@ -51,10 +51,16 @@ function screenModel(verdict: {
   source_is_evidence: boolean;
   confidence: string;
   note: string;
+  needs_adversarial_check?: boolean;
 }): MockLanguageModelV3 {
   return new MockLanguageModelV3({
     doGenerate: async () => ({
-      content: [{ type: "text", text: JSON.stringify(verdict) }],
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({ needs_adversarial_check: false, ...verdict }),
+        },
+      ],
       finishReason: { unified: "stop", raw: undefined },
       usage: {
         inputTokens: { total: 100, noCache: 100, cacheRead: 0, cacheWrite: 0 },
@@ -108,10 +114,10 @@ describe("screenClaim", () => {
       confidence: "high",
       note: "context plainly supports the claim",
     }));
-    const votes = await screenClaim(rctx, createBudgetMeter(1), c);
-    expect(votes).toHaveLength(1);
-    expect(votes![0].lens).toBe("screening");
-    expect(votes![0].refuted).toBe(false);
+    const screen = await screenClaim(rctx, createBudgetMeter(1), c);
+    expect(screen.votes).toHaveLength(1);
+    expect(screen.votes![0].lens).toBe("screening");
+    expect(screen.votes![0].refuted).toBe(false);
   });
 
   it("escalates when the screen flags the quote", async () => {
@@ -122,7 +128,7 @@ describe("screenClaim", () => {
       confidence: "high",
       note: "overreach",
     }));
-    expect(await screenClaim(rctx, createBudgetMeter(1), c)).toBeNull();
+    expect((await screenClaim(rctx, createBudgetMeter(1), c)).votes).toBeNull();
   });
 
   it("escalates on low confidence", async () => {
@@ -133,7 +139,7 @@ describe("screenClaim", () => {
       confidence: "low",
       note: "thin context",
     }));
-    expect(await screenClaim(rctx, createBudgetMeter(1), c)).toBeNull();
+    expect((await screenClaim(rctx, createBudgetMeter(1), c)).votes).toBeNull();
   });
 });
 
@@ -251,8 +257,9 @@ describe("verifyClaims staged verification", () => {
     const model = screenModel({
       quote_supports_claim: true,
       source_is_evidence: true,
+      needs_adversarial_check: true,
       confidence: "high",
-      note: "unused",
+      note: "benchmark figure worth a panel",
     });
     const verdictModel = new MockLanguageModelV3({
       doGenerate: async () => ({
@@ -284,7 +291,7 @@ describe("verifyClaims staged verification", () => {
       agentSequence: { next: 1 },
       bindModel: (role: string) => {
         boundRoles.push(role);
-        return verdictModel;
+        return role === "verify" ? model : verdictModel;
       },
     });
     const outcome = await schedule(rctx, {
@@ -296,7 +303,7 @@ describe("verifyClaims staged verification", () => {
     expect(outcome.verdicts[0].status).toBe("confirmed");
     expect(central.votes).toHaveLength(3);
     expect(boundRoles).toContain("lead");
-    expect(boundRoles).not.toContain("verify");
+    expect(boundRoles.filter((r) => r === "verify")).toHaveLength(1);
   });
 
   it("skips the web-search contradiction lens for strong uncontested sources", async () => {
@@ -322,16 +329,14 @@ describe("verifyClaims staged verification", () => {
         warnings: [],
       }),
     });
-    const rctx = screeningRctx(
-      [central],
-      screenModel({
-        quote_supports_claim: true,
-        source_is_evidence: true,
-        confidence: "high",
-        note: "unused",
-      }),
-      EFFORT_ENVELOPES.max,
-    );
+    const screen = screenModel({
+      quote_supports_claim: true,
+      source_is_evidence: true,
+      needs_adversarial_check: true,
+      confidence: "high",
+      note: "primary figure worth a panel",
+    });
+    const rctx = screeningRctx([central], screen, EFFORT_ENVELOPES.max);
     Object.assign(rctx as unknown as Record<string, unknown>, {
       ledger: {
         byId: (id: string) => (id === "claim_1" ? central : undefined),
@@ -339,7 +344,7 @@ describe("verifyClaims staged verification", () => {
       },
       counters: { claimsVerified: 0, agentsSpawned: 0, maxDepth: 0 },
       agentSequence: { next: 1 },
-      bindModel: () => verdictModel,
+      bindModel: (role: string) => (role === "verify" ? screen : verdictModel),
     });
     const outcome = await schedule(rctx, {
       claimIds: ["claim_1"],
@@ -369,6 +374,43 @@ describe("verifyClaims staged verification", () => {
     expect(outcome.verdicts).toHaveLength(1);
     expect(outcome.verdicts[0].status).not.toBe("confirmed");
     expect(conflicted.votes).toHaveLength(0);
+  });
+
+  it("confirms a primary-source claim straight from a clean screen", async () => {
+    const c = claim();
+    c.sourceQuality = "primary";
+    const rctx = screeningRctx([c], screenModel({
+      quote_supports_claim: true,
+      source_is_evidence: true,
+      confidence: "high",
+      note: "primary source states this directly",
+    }));
+    const outcome = await schedule(rctx, {
+      claimIds: ["claim_1"],
+      budgetUSD: 1,
+      parentId: "agent_1",
+    });
+    expect(outcome.verdicts[0].status).toBe("confirmed");
+    expect(c.votes).toHaveLength(1);
+    expect(c.votes[0].lens).toBe("screening");
+  });
+
+  it("does not panel a central definitional claim the screen clears", async () => {
+    const central = claim();
+    const rctx = screeningRctx([central], screenModel({
+      quote_supports_claim: true,
+      source_is_evidence: true,
+      confidence: "high",
+      note: "documented definition, not a measurement",
+    }));
+    const outcome = await schedule(rctx, {
+      claimIds: ["claim_1"],
+      budgetUSD: 1,
+      parentId: "agent_1",
+    });
+    expect(outcome.verdicts[0].status).toBe("screened");
+    expect(central.votes).toHaveLength(1);
+    expect(central.votes[0].lens).toBe("screening");
   });
 });
 

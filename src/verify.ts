@@ -183,7 +183,8 @@ const SCREEN_SYSTEM =
   "Decide (1) whether the quote, in context, supports the claim as stated without overreach, and (2) whether the page looks like real evidence rather than spam, an error page, or ads. " +
   "Treat marketing copy, press releases, vendor self-description, cherry-picked benchmarks, and forum speculation as weak evidence: source_is_evidence stays true only if the page is genuinely informative, but drop to low confidence for such material. " +
   "When the question is time-sensitive and the source is visibly stale, lower confidence — a screening pass cannot confirm an outdated figure is still current. " +
-  "Be calibrated: report low confidence whenever the context is too thin to be sure.\n\n" +
+  "Be calibrated: report low confidence whenever the context is too thin to be sure. " +
+  "Set needs_adversarial_check true when the claim asserts a contestable empirical measurement — a benchmark, performance figure, statistic, or quantitative comparison whose accuracy a single source cannot settle and that warrants an adversarial panel; set it false for a documented constant, definition, specification value, flag, range, or mechanism stated by an authoritative source, which a screen can settle on its own.\n\n" +
   QUARANTINE_NOTE +
   " " +
   LEDGER_DATA_NOTE;
@@ -191,9 +192,15 @@ const SCREEN_SYSTEM =
 const screenSchema = z.object({
   quote_supports_claim: z.boolean(),
   source_is_evidence: z.boolean(),
+  needs_adversarial_check: z.boolean(),
   confidence: z.enum(["high", "medium", "low"]),
   note: z.string(),
 });
+
+interface ScreenResult {
+  votes: ClaimVote[] | null;
+  escalate: boolean;
+}
 
 function screenPrompt(
   question: string,
@@ -224,10 +231,10 @@ export async function screenClaim(
   rctx: RunCtx,
   grant: BudgetGrant,
   claim: ResearchClaim,
-): Promise<ClaimVote[] | null> {
-  if (grant.floored()) return null;
+): Promise<ScreenResult> {
+  if (grant.floored()) return { votes: null, escalate: false };
   const document = rctx.sources.byId.get(claim.sourceId);
-  if (!document) return null;
+  if (!document) return { votes: null, escalate: false };
   const idx = document.markdown.indexOf(claim.quote);
   const context =
     idx >= 0
@@ -263,19 +270,22 @@ export async function screenClaim(
       !screen.source_is_evidence ||
       screen.confidence === "low"
     ) {
-      return null;
+      return { votes: null, escalate: screen.needs_adversarial_check };
     }
-    return [
-      {
-        lens: SCREENING_LENS,
-        refuted: false,
-        evidence: screen.note,
-        confidence: screen.confidence,
-      },
-    ];
+    return {
+      votes: [
+        {
+          lens: SCREENING_LENS,
+          refuted: false,
+          evidence: screen.note,
+          confidence: screen.confidence,
+        },
+      ],
+      escalate: screen.needs_adversarial_check,
+    };
   } catch (err) {
     if (rctx.signal?.aborted) throw err;
-    return null;
+    return { votes: null, escalate: false };
   }
 }
 
@@ -295,20 +305,21 @@ async function collectVotes(
   opts: { lensesExplicit: boolean; panelAffordable: boolean },
 ): Promise<ClaimVote[]> {
   const conflicted = (claim.conflictsWith?.length ?? 0) > 0;
-  const wantsPanel =
-    opts.lensesExplicit || conflicted || claim.importance === "central";
   const screenedVotes = claim.status === "screened" ? claim.votes : null;
 
-  // Tier 0 — cheap screen. The target for claims we would not panel anyway, and a
-  // fallback when the panel is unaffordable. A conflicted claim is never settled as
-  // merely "screened"; it always escalates to the panel to adjudicate the conflict.
-  if (!(wantsPanel && opts.panelAffordable) && !conflicted) {
-    const screened = screenedVotes ?? (await screenClaim(rctx, args.grant, claim));
-    if (screened && screened.length > 0) return screened;
-    if (!opts.panelAffordable) return [];
+  if (!opts.lensesExplicit && !conflicted) {
+    const screen: ScreenResult = screenedVotes
+      ? { votes: screenedVotes, escalate: false }
+      : await screenClaim(rctx, args.grant, claim);
+    const passed = (screen.votes?.length ?? 0) > 0;
+    if (passed && !(screen.escalate && opts.panelAffordable)) {
+      return screen.votes ?? [];
+    }
+    if (!passed && !opts.panelAffordable) {
+      return [];
+    }
   }
 
-  // Tier 1 — adversarial panel.
   const panelLenses = opts.lensesExplicit
     ? lenses
     : lenses.filter(
@@ -337,7 +348,12 @@ async function verifyClaim(
     await inFlight;
     return;
   }
-  if (claim.votes.length >= MIN_VOTES_TO_SETTLE) return;
+  if (
+    claim.votes.length >= MIN_VOTES_TO_SETTLE ||
+    claim.status === "confirmed" ||
+    claim.status === "refuted"
+  )
+    return;
   const conflicted = (claim.conflictsWith?.length ?? 0) > 0;
   const panelAffordable =
     lensesExplicit ||

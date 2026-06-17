@@ -22,7 +22,7 @@ export function settleClaim(claim: ResearchClaim, votes: ClaimVote[]): void {
   const screeningOnly =
     votes.length > 0 && votes.every((vote) => vote.lens === SCREENING_LENS);
   if (screeningOnly && refutedVotes === 0) {
-    claim.status = "screened";
+    claim.status = claim.sourceQuality === "primary" ? "confirmed" : "screened";
   } else if (votes.length < MIN_VOTES_TO_SETTLE) {
     claim.status = claim.conflictsWith?.length ? "contested" : "unverified";
   } else if (refutedVotes >= REFUTATIONS_REQUIRED) {
