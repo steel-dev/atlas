@@ -12,6 +12,8 @@ import type { SourceDocument } from "./sources.js";
 
 export type ClaimImportance = "central" | "supporting" | "tangential";
 
+export type ClaimKind = "empirical" | "definitional";
+
 export type ClaimSourceQuality =
   | "primary"
   | "secondary"
@@ -40,6 +42,7 @@ export interface ResearchClaim {
   text: string;
   quote: string;
   importance: ClaimImportance;
+  kind?: ClaimKind;
   sourceQuality: ClaimSourceQuality;
   sourceId: string;
   url: string;
@@ -65,6 +68,7 @@ export const NON_EVIDENCE_WARNINGS =
   /\b(?:blocked_or_challenge|thin_content|error_page|search_listing_page)\b/i;
 
 const IMPORTANCE_VALUES = ["central", "supporting", "tangential"] as const;
+const KIND_VALUES = ["empirical", "definitional"] as const;
 const QUALITY_VALUES = [
   "primary",
   "secondary",
@@ -83,6 +87,7 @@ function extractionSchema(maxClaims: number) {
           claim: z.string(),
           quote: z.string(),
           importance: z.enum(IMPORTANCE_VALUES),
+          kind: z.enum(KIND_VALUES).optional(),
         }),
       )
       .max(maxClaims),
@@ -120,6 +125,7 @@ function extractionPrompt(
     "   - be a concrete, checkable statement that preserves exact values, dates, and named entities\n" +
     "   - include a supporting quote copied VERBATIM from the source text above — it is string-matched against the stored text, so never paraphrase, correct, reorder, or splice\n" +
     "   - be rated central, supporting, or tangential to the research goal\n" +
+    '   - be classified by kind: "empirical" when it asserts a contestable measurement — a benchmark, performance figure, statistic, or quantitative comparison whose accuracy a single source cannot settle; "definitional" when it states a documented constant, definition, specification value, flag, range, or mechanism from an authoritative source\n' +
     "3. Record the publish date if the text states one.\n\n" +
     "If the source is irrelevant, empty, or low-value, return claims: [] with the appropriate sourceQuality."
   );
@@ -280,6 +286,7 @@ interface RawExtractedClaim {
   claim: string;
   quote: string;
   importance: ClaimImportance;
+  kind?: ClaimKind;
 }
 
 function isEvidenceSource(document: SourceDocument): boolean {
@@ -404,6 +411,7 @@ export function createLedger(ctx: LedgerContext): Ledger {
         text,
         quote,
         importance: raw.importance,
+        kind: raw.kind ?? "definitional",
         sourceQuality: extraction.sourceQuality,
         sourceId: document.sourceId,
         url: document.url,
@@ -454,6 +462,7 @@ export function createLedger(ctx: LedgerContext): Ledger {
       text: input.text,
       quote: input.quote,
       importance: input.importance,
+      kind: "definitional",
       sourceQuality: sourceQualityFor(document.sourceId) ?? "secondary",
       sourceId: document.sourceId,
       url: document.url,

@@ -306,8 +306,9 @@ async function collectVotes(
 ): Promise<ClaimVote[]> {
   const conflicted = (claim.conflictsWith?.length ?? 0) > 0;
   const screenedVotes = claim.status === "screened" ? claim.votes : null;
+  const preRoutedToPanel = claim.kind === "empirical" && opts.panelAffordable;
 
-  if (!opts.lensesExplicit && !conflicted) {
+  if (!opts.lensesExplicit && !conflicted && !preRoutedToPanel) {
     const screen: ScreenResult = screenedVotes
       ? { votes: screenedVotes, escalate: false }
       : await screenClaim(rctx, args.grant, claim);
