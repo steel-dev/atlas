@@ -20,6 +20,7 @@ import {
   loadReplayCache,
   memoryStore,
 } from "./providers/store.js";
+import { BudgetExceededError } from "./errors.js";
 
 const RESULT: LanguageModelV3GenerateResult = {
   content: [{ type: "text", text: "hello" }],
@@ -90,6 +91,26 @@ describe("engineModel", () => {
     await pending;
     expect(meter.remainingUSD()).toBeCloseTo(7);
     expect(meter.totalSpentUSD()).toBeCloseTo(3);
+  });
+
+  it("hard-stops a model call once the run budget is exhausted", async () => {
+    const inner = mock();
+    let exhausted = false;
+    const model = engineModel(inner as unknown as ResolvedModel, {
+      role: "verify",
+      grant: createBudgetMeter(10),
+      pricing: {},
+      gate: createConcurrencyGate(2),
+      usage: createRunUsage(),
+      budgetExhausted: () => exhausted,
+    });
+    await generateText({ model: model as LanguageModelV3, prompt: "first" });
+    expect(inner.doGenerateCalls).toHaveLength(1);
+    exhausted = true;
+    await expect(
+      generateText({ model: model as LanguageModelV3, prompt: "second" }),
+    ).rejects.toThrow(BudgetExceededError);
+    expect(inner.doGenerateCalls).toHaveLength(1);
   });
 
   it("tracks usage per role", async () => {
@@ -429,6 +450,35 @@ describe("engineModel streaming", () => {
     const spent = meter.totalSpentUSD();
     expect(spent).toBeGreaterThan(0);
     expect(meter.remainingUSD()).toBeCloseTo(10 - spent);
+  });
+
+  it("holds the concurrency slot for the whole stream, not just setup", async () => {
+    const gate = createConcurrencyGate(1);
+    const inner = streamingMock();
+    const model = engineModel(inner as unknown as ResolvedModel, {
+      role: "write",
+      grant: createBudgetMeter(10),
+      pricing: PRICING,
+      gate,
+      usage: createRunUsage(),
+    });
+    const { stream } = await model.doStream({
+      prompt: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+    } as Parameters<LanguageModelV3["doStream"]>[0]);
+
+    let competitorRan = false;
+    const competitor = gate.run(async () => {
+      competitorRan = true;
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(competitorRan).toBe(false);
+
+    const reader = stream.getReader();
+    while (!(await reader.read()).done) {
+    }
+    await competitor;
+    expect(competitorRan).toBe(true);
   });
 });
 

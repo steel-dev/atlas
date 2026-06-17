@@ -22,7 +22,7 @@ import {
   type TokenUsage,
 } from "./budget.js";
 import { ECONOMY } from "./economy.js";
-import { errorMessage } from "./errors.js";
+import { BudgetExceededError, errorMessage } from "./errors.js";
 import { currentFrame, type SpanStatus, type TraceRecorder } from "./trace.js";
 import type { JournalWriter, ReplayCache } from "./providers/store.js";
 
@@ -85,6 +85,7 @@ export interface EngineModelHooks {
   onCost?: ((usd: number) => void) | undefined;
   onUnknownModel?: ((modelId: string) => void) | undefined;
   onRateLimit?: ((notice: RateLimitNotice) => void) | undefined;
+  budgetExhausted?: (() => boolean) | undefined;
 }
 
 const VOLATILE_BUDGET_PATTERNS: ReadonlyArray<RegExp> = [
@@ -575,6 +576,11 @@ export function engineModel(
           warnings: [],
         };
       }
+      if (hooks.budgetExhausted?.()) {
+        throw new BudgetExceededError(
+          "budget exhausted: total run budget reached",
+        );
+      }
       const reservation = reserveFor(params);
       const timing = {
         tEnqueue: recorder ? recorder.now() : 0,
@@ -584,9 +590,9 @@ export function engineModel(
       let acquired = false;
       let result: LanguageModelV3GenerateResult;
       try {
-        result = await callWithRetry(
-          () =>
-            hooks.gate.run(() => {
+        result = await hooks.gate.run(() =>
+          callWithRetry(
+            () => {
               if (!recorder) return Promise.resolve(doGenerate());
               const s = recorder.now();
               if (!acquired) {
@@ -603,9 +609,10 @@ export function engineModel(
                   throw e;
                 },
               );
-            }),
-          params.abortSignal,
-          hooks.onRateLimit,
+            },
+            params.abortSignal,
+            hooks.onRateLimit,
+          ),
         );
       } catch (err) {
         settleFailure(reservation, err, params.abortSignal);
@@ -640,21 +647,27 @@ export function engineModel(
         recordReplayStep(key, params, cached);
         return { stream: streamFromJournaledCall(cached) };
       }
+      if (hooks.budgetExhausted?.()) {
+        throw new BudgetExceededError(
+          "budget exhausted: total run budget reached",
+        );
+      }
       const reservation = reserveFor(params);
       const tEnqueue = recorder ? recorder.now() : 0;
       let firstWork = tEnqueue;
+      const releaseSlot = await hooks.gate.acquire();
       let result: Awaited<ReturnType<typeof doStream>>;
       try {
         result = await callWithRetry(
-          () =>
-            hooks.gate.run(() => {
-              if (recorder) firstWork = recorder.now();
-              return Promise.resolve(doStream());
-            }),
+          () => {
+            if (recorder) firstWork = recorder.now();
+            return Promise.resolve(doStream());
+          },
           params.abortSignal,
           hooks.onRateLimit,
         );
       } catch (err) {
+        releaseSlot();
         settleFailure(reservation, err, params.abortSignal);
         if (recorder) {
           recordCall(
@@ -720,6 +733,7 @@ export function engineModel(
             collectStreamPart(state, part);
             if (part.type === "finish") {
               lastCost = settle(part.usage, reservation?.hold ?? null);
+              releaseSlot();
             }
             controller.enqueue(part);
           },
@@ -728,6 +742,7 @@ export function engineModel(
               reservation.hold.settle(reservation.estimateUSD);
             }
             reservation?.hold.release();
+            releaseSlot();
             recordStream("aborted");
           },
           flush() {
@@ -735,6 +750,7 @@ export function engineModel(
               reservation.hold.settle(reservation.estimateUSD);
             }
             reservation?.hold.release();
+            releaseSlot();
             if (state.finish && hooks.journal) {
               const record = serializeResult({
                 content: state.content,

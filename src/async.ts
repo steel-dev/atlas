@@ -46,6 +46,7 @@ export async function withTimeout<T>(
 
 export interface ConcurrencyGate {
   run<T>(fn: () => Promise<T>): Promise<T>;
+  acquire(): Promise<() => void>;
 }
 
 class Semaphore implements ConcurrencyGate {
@@ -55,15 +56,25 @@ class Semaphore implements ConcurrencyGate {
   constructor(private readonly limit: number) {}
 
   async run<T>(fn: () => Promise<T>): Promise<T> {
-    await this.acquire();
+    const release = await this.acquire();
     try {
       return await fn();
     } finally {
-      this.release();
+      release();
     }
   }
 
-  private async acquire(): Promise<void> {
+  async acquire(): Promise<() => void> {
+    await this.acquireSlot();
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.releaseSlot();
+    };
+  }
+
+  private async acquireSlot(): Promise<void> {
     if (this.active < this.limit) {
       this.active++;
       return;
@@ -76,7 +87,7 @@ class Semaphore implements ConcurrencyGate {
     );
   }
 
-  private release(): void {
+  private releaseSlot(): void {
     this.active--;
     this.waiting.shift()?.();
   }

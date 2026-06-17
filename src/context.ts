@@ -72,7 +72,6 @@ export async function assembleRun(args: AssembleRunArgs): Promise<RunAssembly> {
   const pricing: PricingTable = { ...DEFAULT_PRICING, ...resolved.pricing };
   const modelGate = createConcurrencyGate(resolved.maxConcurrentModelCalls);
   const ioGate = createConcurrencyGate(resolved.maxConcurrentIo);
-  const searchGate = createConcurrencyGate(resolved.maxConcurrentIo);
   const counters = createRunCounters();
   const warnedUnknownModels = new Set<string>();
   const warnedFractions = new Set<number>();
@@ -146,6 +145,7 @@ export async function assembleRun(args: AssembleRunArgs): Promise<RunAssembly> {
       onCost,
       onUnknownModel,
       onRateLimit,
+      budgetExhausted: () => grant.spentUSD() >= grant.limitUSD,
     });
   const bindModel = (role: ModelRole, grant: BudgetGrant) =>
     bindModelWithGate(role, grant, modelGate);
@@ -154,7 +154,7 @@ export async function assembleRun(args: AssembleRunArgs): Promise<RunAssembly> {
     ? args.config.search
     : args.config.search
       ? [args.config.search]
-      : defaultSearchProviders(bindModelWithGate("research", meter, searchGate));
+      : defaultSearchProviders(bindModelWithGate("research", meter, modelGate));
   const fetchChain = Array.isArray(args.config.fetch)
     ? args.config.fetch
     : args.config.fetch
@@ -175,6 +175,9 @@ export async function assembleRun(args: AssembleRunArgs): Promise<RunAssembly> {
     }) ?? meter;
 
   const eagerVerifications = new Set<Promise<void>>();
+  const eagerVerifyGate = createConcurrencyGate(
+    ECONOMY.verify.eagerConcurrency,
+  );
   let eagerVerifyStarted = 0;
   const ledger = createLedger({
     emit,
@@ -237,13 +240,15 @@ export async function assembleRun(args: AssembleRunArgs): Promise<RunAssembly> {
     if (eagerVerifyStarted >= ECONOMY.verify.eagerMaxClaims) return;
     if (rctx.stopReason() || verifyReserve.floored()) return;
     eagerVerifyStarted++;
-    const task = rctx
-      .verify({
-        claimIds: [claim.id],
-        reserve: verifyReserve,
-        perClaimFraction: ECONOMY.verify.perClaimFraction,
-        concurrency: 1,
-      })
+    const task = eagerVerifyGate
+      .run(() =>
+        rctx.verify({
+          claimIds: [claim.id],
+          reserve: verifyReserve,
+          perClaimFraction: ECONOMY.verify.perClaimFraction,
+          concurrency: 1,
+        }),
+      )
       .then(
         () => undefined,
         () => undefined,

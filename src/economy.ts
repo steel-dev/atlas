@@ -8,6 +8,7 @@ export const ECONOMY = {
     concurrency: 4,
     sweepMaxClaims: 64,
     eagerMaxClaims: 16,
+    eagerConcurrency: 3,
   },
   synthesis: { fraction: 0.15, minUSD: 0.05 },
   conflicts: { fraction: 0.15, minUSD: 0.02 },
