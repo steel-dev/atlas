@@ -137,7 +137,7 @@ function liveSearch(
   query: string,
   limit: number,
 ): Promise<SearchCacheEntry> {
-  const key = `${limit}:${canonicalQuery(query)}`;
+  const key = canonicalQuery(query);
   const existing = rctx.sources.searchCache.get(key);
   if (existing) {
     rctx.counters.searchCacheHits++;

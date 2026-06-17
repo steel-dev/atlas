@@ -232,6 +232,15 @@ describe("execSearchTool live cache", () => {
     expect(rctx.counters.searches).toBe(2);
   });
 
+  it("serves the same query across different result limits from the cache", async () => {
+    const calls = { count: 0 };
+    const rctx = searchRctx(calls);
+    await execSearchTool(rctx, ["cold start lambda"], 8);
+    await execSearchTool(rctx, ["cold start lambda"], 15);
+    expect(calls.count).toBe(1);
+    expect(rctx.counters.searchCacheHits).toBe(1);
+  });
+
   it("issues distinct network calls for genuinely different queries", async () => {
     const calls = { count: 0 };
     const rctx = searchRctx(calls);
