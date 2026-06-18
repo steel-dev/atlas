@@ -69,16 +69,16 @@ import { Atlas, tavily } from "@steel-dev/atlas";
 
 const zai = createOpenAI({
   apiKey: process.env.ZAI_API_KEY!,
-  baseURL: "https://api.z.ai/api/coding/paas/v4",
+  baseURL: "https://api.z.ai/api/paas/v4",
 });
 
 const atlas = new Atlas({
-  model: zai("GLM-5.2"),
+  model: zai.chat("glm-5.2"),
   search: tavily(),
 });
 ```
 
-The examples also accept `--provider zai` with `ZAI_API_KEY` / `ATLAS_ZAI_API_KEY`. GLM lead models derive `GLM-4.5-Air` for extraction and verification when a Z.ai key is present. Configure `tavily()`, `exa()`, or `brave()` for search; Atlas does not map Z.ai's web-search API to an AI SDK native search tool.
+The examples also accept `--provider zai` with `ZAI_API_KEY` / `ATLAS_ZAI_API_KEY`. GLM lead models derive `glm-4.5-air` for extraction and verification when a Z.ai key is present. Configure `tavily()`, `exa()`, or `brave()` for search; Atlas does not map Z.ai's web-search API to an AI SDK native search tool.
 
 **Concurrency:** `concurrency: { models: 8, io: 10 }` or `ATLAS_MODEL_CONCURRENCY` / `ATLAS_IO_CONCURRENCY`.
 

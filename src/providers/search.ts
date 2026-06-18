@@ -1,6 +1,7 @@
 import { generateText, type LanguageModel, type ToolSet } from "ai";
 import { errorMessage } from "../errors.js";
 import { readEnv } from "../env.js";
+import { isZaiModelId } from "../defaults.js";
 import { normalizeUrlForSource } from "../url.js";
 
 export interface SearchResult {
@@ -300,6 +301,11 @@ async function nativeSearchTools(
   model: Exclude<LanguageModel, string>,
 ): Promise<ToolSet> {
   const provider = model.provider.toLowerCase();
+  if (isZaiModelId(model.modelId)) {
+    throw new Error(
+      `nativeModelSearch: provider "${model.provider}" has no known server-side search tool; configure a search adapter (tavily(), exa(), brave())`,
+    );
+  }
   if (provider.includes("anthropic")) {
     const { anthropic } = await import("@ai-sdk/anthropic");
     return {
