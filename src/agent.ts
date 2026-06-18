@@ -38,6 +38,7 @@ const TASK_PREVIEW_CHARS = 300;
 const NOTE_PREVIEW_CHARS = 600;
 const SPAWN_DIGEST_MAX_CLAIMS = 12;
 const SPAWN_TRAIL_FRACTION = 0.25;
+const FINAL_TOOL_VERDICT_RESERVE_USD = 0.01;
 
 export const CONTEXT_BUDGET_STOP = "context budget reached";
 
@@ -191,8 +192,19 @@ export async function runAgent(
         return false;
       },
     ],
-    prepareStep: () => {
+    prepareStep: ({ stepNumber }) => {
       actx.spawnsThisStep.count = 0;
+      if (spec.finalTool && stepNumber >= 1) {
+        const maxTurns = spec.maxTurns ?? rctx.config.envelope.maxTurns;
+        const reserveVerdict =
+          spec.grant.remainingUSD() <
+          ECONOMY.grantFloorUSD + FINAL_TOOL_VERDICT_RESERVE_USD;
+        if (stepNumber >= maxTurns - 1 || reserveVerdict) {
+          return {
+            toolChoice: { type: "tool", toolName: spec.finalTool.name },
+          };
+        }
+      }
       return {};
     },
     onStepFinish: (step) => {
