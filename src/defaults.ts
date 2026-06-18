@@ -6,11 +6,11 @@ import type { ResolvedModel } from "./model.js";
 
 export const DEFAULT_ANTHROPIC_MODEL = "claude-opus-4-8";
 export const DEFAULT_OPENAI_MODEL = "gpt-5.5";
-export const DEFAULT_ZAI_MODEL = "GLM-5.2";
+export const DEFAULT_ZAI_MODEL = "glm-5.2";
 export const DEFAULT_ANTHROPIC_SMALL_MODEL = "claude-haiku-4-5";
 export const DEFAULT_OPENAI_SMALL_MODEL = "gpt-5-mini";
-export const DEFAULT_ZAI_SMALL_MODEL = "GLM-4.5-Air";
-export const DEFAULT_ZAI_BASE_URL = "https://api.z.ai/api/coding/paas/v4";
+export const DEFAULT_ZAI_SMALL_MODEL = "glm-4.5-air";
+export const DEFAULT_ZAI_BASE_URL = "https://api.z.ai/api/paas/v4";
 
 const SMALL_MODEL_ID_PATTERN = /haiku|mini|nano|flash|lite/i;
 const ZAI_MODEL_ID_PATTERN = /^glm-/i;
@@ -40,7 +40,7 @@ export function deriveSmallModel(
       if (!apiKey) return undefined;
       const baseURL =
         readEnv("ATLAS_ZAI_BASE_URL", "ZAI_BASE_URL") ?? DEFAULT_ZAI_BASE_URL;
-      return createOpenAI({ apiKey, baseURL })(DEFAULT_ZAI_SMALL_MODEL);
+      return createOpenAI({ apiKey, baseURL }).chat(DEFAULT_ZAI_SMALL_MODEL);
     }
     if (provider.includes("anthropic")) {
       const apiKey = readEnv("ATLAS_ANTHROPIC_API_KEY", "ANTHROPIC_API_KEY");

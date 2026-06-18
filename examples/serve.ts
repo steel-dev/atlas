@@ -76,7 +76,7 @@ function resolveModel(
     if (!apiKey) fail("ZAI_API_KEY is required for provider=zai");
     const baseURL =
       readEnv("ATLAS_ZAI_BASE_URL", "ZAI_BASE_URL") ?? DEFAULT_ZAI_BASE_URL;
-    return createOpenAI({ apiKey, baseURL })(modelId);
+    return createOpenAI({ apiKey, baseURL }).chat(modelId);
   }
   const apiKey = readEnv("ATLAS_OPENAI_API_KEY", "OPENAI_API_KEY");
   if (!apiKey) fail("OPENAI_API_KEY is required for provider=openai");
