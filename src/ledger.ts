@@ -121,13 +121,13 @@ function extractionPrompt(
     truncationNote +
     "\n\n## Task\n" +
     '1. Assess source quality: primary research/official/institutional data → "primary"; reputable secondary reporting → "secondary"; personal blog or opinion → "blog"; forum or user-generated content → "forum"; spam, ads, or pages irrelevant to the goal → "unreliable". A paywalled stub or preview keeps the publisher\'s quality grade — just extract only what the visible text supports.\n' +
-    `2. Extract 2-${maxClaims} falsifiable claims that bear on the research goal. Each claim must:\n` +
+    `2. Extract 1-${maxClaims} falsifiable claims that bear on the research goal — a single claim is worth extracting when the page carries one crucial fact (a retirement or end-of-support date, a price, a version, a region or availability fact, or a migration or replacement path), including a fact stated only in a table, list, or short notice. Each claim must:\n` +
     "   - be a concrete, checkable statement that preserves exact values, dates, and named entities\n" +
     "   - include a supporting quote copied VERBATIM from the source text above — it is string-matched against the stored text, so never paraphrase, correct, reorder, or splice\n" +
     "   - be rated central, supporting, or tangential to the research goal\n" +
     '   - be classified by kind: "empirical" when it asserts a contestable measurement — a benchmark, performance figure, statistic, or quantitative comparison whose accuracy a single source cannot settle; "definitional" when it states a documented constant, definition, specification value, flag, range, or mechanism from an authoritative source\n' +
     "3. Record the publish date if the text states one.\n\n" +
-    "If the source is irrelevant, empty, or low-value, return claims: [] with the appropriate sourceQuality."
+    "Return claims: [] only when the source is genuinely irrelevant or empty — spam, ads, navigation, or off-topic — not merely because it is short, terse, or table-formatted. An official status, lifecycle, pricing, or specification page is authoritative even when it states just one fact, and that fact — a retirement date, an end-of-support notice with its migration target, a per-unit price — is exactly what to capture."
   );
 }
 
