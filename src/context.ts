@@ -252,6 +252,7 @@ export async function assembleRun(args: AssembleRunArgs): Promise<RunAssembly> {
     usage,
     pricing,
     ledger,
+    checklist: null,
     trail: createTrail(),
     sources: createSourceStore(),
     search: combineSearchProviders(searchProviders),

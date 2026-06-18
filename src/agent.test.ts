@@ -55,7 +55,10 @@ function leadModel(): MockLanguageModelV3 {
   return new MockLanguageModelV3({
     provider: "mock-provider",
     modelId: "lead-model",
-    doGenerate: async () => {
+    doGenerate: async (options: LanguageModelV3CallOptions) => {
+      if (options.responseFormat?.type === "json") {
+        return textResult(JSON.stringify({ items: [] }));
+      }
       step++;
       if (step === 1) {
         return toolCallResult(
@@ -86,7 +89,10 @@ function leadModelNoVerify(): MockLanguageModelV3 {
   return new MockLanguageModelV3({
     provider: "mock-provider",
     modelId: "lead-model",
-    doGenerate: async () => {
+    doGenerate: async (options: LanguageModelV3CallOptions) => {
+      if (options.responseFormat?.type === "json") {
+        return textResult(JSON.stringify({ items: [] }));
+      }
       step++;
       if (step === 1) {
         return toolCallResult(
@@ -109,6 +115,9 @@ function inlineLeadModel(): MockLanguageModelV3 {
     provider: "mock-provider",
     modelId: "lead-model",
     doGenerate: async (options: LanguageModelV3CallOptions) => {
+      if (options.responseFormat?.type === "json") {
+        return textResult(JSON.stringify({ items: [] }));
+      }
       step++;
       if (step === 1) {
         return toolCallResult(

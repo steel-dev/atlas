@@ -1,5 +1,6 @@
 import { CONTEXT_BUDGET_STOP, runAgent, type AgentResult } from "./agent.js";
 import type { BudgetGrant } from "./budget.js";
+import { renderChecklistContract } from "./checklist.js";
 import {
   orchestratorAnchor,
   orchestratorContinuationAnchor,
@@ -60,6 +61,9 @@ export async function runOrchestrator(
           depthCap: rctx.config.envelope.depthCap,
           breadthCap: rctx.config.envelope.breadthCap,
           minFacets: rctx.config.envelope.minFacets,
+          coverageContract: rctx.checklist
+            ? renderChecklistContract(rctx.checklist)
+            : undefined,
         });
 
   const claimsAdded: string[] = [];

@@ -100,6 +100,7 @@ export type EvalTraceEventName =
   | "research_started"
   | "plan_updated"
   | "lead_recontexted"
+  | "checklist_built"
   | "coverage_assessed"
   | "agent_spawned"
   | "agent_returned"
@@ -173,6 +174,15 @@ export function traceEvent(
       return { ...base("plan_updated"), reason: event.rationale };
     case "lead.recontexted":
       return base("lead_recontexted");
+    case "checklist.built":
+      return {
+        ...base("checklist_built"),
+        data: {
+          items: event.items,
+          central: event.central,
+          volatile: event.volatile,
+        },
+      };
     case "coverage.assessed":
       return {
         ...base("coverage_assessed"),

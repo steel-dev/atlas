@@ -53,6 +53,12 @@ export type ResearchEvent =
   | { type: "plan.updated"; rationale: string }
   | { type: "lead.recontexted"; session: number }
   | {
+      type: "checklist.built";
+      items: number;
+      central: number;
+      volatile: number;
+    }
+  | {
       type: "coverage.assessed";
       round: number;
       answered: boolean;

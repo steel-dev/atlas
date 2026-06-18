@@ -180,6 +180,7 @@ export const SITE_SOURCE: Record<string, string> = {
   bind: "src/bind.ts:bindCitations",
   structured: "src/structured.ts:synthesizeStructured",
   adjudicate: "src/adjudicate.ts:adjudicateCoverage",
+  checklist: "src/checklist.ts:buildChecklist",
   conflicts: "src/conflicts.ts:conflictPass",
   "open-questions": "src/run.ts:deriveOpenQuestions",
   extract: "src/ledger.ts:extraction",

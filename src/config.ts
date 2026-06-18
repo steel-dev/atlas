@@ -89,7 +89,7 @@ export const EFFORT_ENVELOPES: Record<Effort, EffortEnvelope> = {
     maxReportClaims: 60,
     maxClaimsPerSource: 6,
     maxExtractionChars: 60_000,
-    maxAdjudicationRounds: 1,
+    maxAdjudicationRounds: 2,
     verifyReserveFraction: 0.2,
     verifierFetch: false,
     verifierMaxTurns: 6,

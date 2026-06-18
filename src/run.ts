@@ -5,6 +5,7 @@ import { adjudicateCoverage } from "./adjudicate.js";
 import type { AgentResult } from "./agent.js";
 import { bindCitations, renderCitedReport, type Citation } from "./bind.js";
 import { withGrant, type BudgetGrant, type BudgetMeter } from "./budget.js";
+import { buildChecklist } from "./checklist.js";
 import {
   resolveRunConfig,
   type AtlasConfig,
@@ -421,6 +422,7 @@ async function runResearchPhase(
   args: ExecuteRunArgs,
   drain: () => Promise<void>,
 ): Promise<AgentResult> {
+  await planCoverageChecklist(rctx, meter);
   const researchGrant = meter.grant({ fraction: 1 }) ?? meter;
   let orchestrator: AgentResult;
   try {
@@ -453,6 +455,28 @@ async function runResearchPhase(
   return orchestrator;
 }
 
+async function planCoverageChecklist(
+  rctx: RunCtx,
+  meter: BudgetMeter,
+): Promise<void> {
+  const checklist = await withGrant(
+    meter,
+    { fraction: ECONOMY.checklist.fraction, minUSD: ECONOMY.checklist.minUSD },
+    (grant) => buildChecklist(rctx, grant),
+  );
+  rctx.checklist = checklist;
+  if (checklist) {
+    rctx.emit({
+      type: "checklist.built",
+      items: checklist.items.length,
+      central: checklist.items.filter((item) => item.importance === "central")
+        .length,
+      volatile: checklist.items.filter((item) => item.volatility === "volatile")
+        .length,
+    });
+  }
+}
+
 async function adjudicatedFollowUps(
   rctx: RunCtx,
   grant: BudgetGrant,
@@ -477,6 +501,12 @@ async function adjudicatedFollowUps(
       gaps: verdict.gaps,
     });
     if (verdict.answered || verdict.gaps.length === 0) break;
+    if (
+      rctx.verifyReserve.remainingUSD() <
+      ECONOMY.adjudication.verifyHeadroomFraction * rctx.verifyReserve.limitUSD
+    ) {
+      break;
+    }
     try {
       orchestrator = await runOrchestrator(rctx, grant, {
         gaps: verdict.gaps,

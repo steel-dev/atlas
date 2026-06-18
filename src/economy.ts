@@ -13,6 +13,11 @@ export const ECONOMY = {
   },
   synthesis: { fraction: 0.15, minUSD: 0.05 },
   conflicts: { fraction: 0.15, minUSD: 0.02 },
-  adjudication: { remainingFraction: 0.1, minRemainingUSD: 0.15 },
+  checklist: { fraction: 0.04, minUSD: 0.03 },
+  adjudication: {
+    remainingFraction: 0.1,
+    minRemainingUSD: 0.15,
+    verifyHeadroomFraction: 0.3,
+  },
   callReserve: { promptCharsPerToken: 4, assumedOutputTokens: 2_000 },
 } as const;

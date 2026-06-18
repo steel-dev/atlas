@@ -1,6 +1,7 @@
 import type { LanguageModelV3 } from "@ai-sdk/provider";
 import type { ConcurrencyGate } from "./async.js";
 import type { BudgetGrant, BudgetMeter, PricingTable } from "./budget.js";
+import type { Checklist } from "./checklist.js";
 import type { ResolvedRunConfig } from "./config.js";
 import type { ResearchEvent } from "./events.js";
 import type { Ledger } from "./ledger.js";
@@ -116,6 +117,7 @@ export interface RunCtx {
   usage: RunUsage;
   pricing: PricingTable;
   ledger: Ledger;
+  checklist: Checklist | null;
   trail: Trail;
   sources: SourceStore;
   search: ResolvedSearch;

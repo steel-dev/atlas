@@ -176,7 +176,11 @@ describe("resume replay fidelity", () => {
       options: { runId: "run_dated" },
       now: () => startedAt,
     }).result();
-    expect(systemText(firstModel.doGenerateCalls[0])).toContain("2026-01-15");
+    const orchestratorCall = firstModel.doGenerateCalls.find((call) =>
+      systemText(call).includes("lead agent of a deep-research run"),
+    );
+    expect(orchestratorCall).toBeDefined();
+    expect(systemText(orchestratorCall!)).toContain("2026-01-15");
 
     const replayModel = heavySpendModel();
     const resumed = await resumeRun(
