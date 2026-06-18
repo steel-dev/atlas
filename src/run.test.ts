@@ -5,7 +5,11 @@ import type {
 } from "@ai-sdk/provider";
 import { describe, expect, it } from "vitest";
 import { Atlas } from "./atlas.js";
-import { acceptsRepair, deriveStopReason } from "./run.js";
+import {
+  acceptsRepair,
+  deriveStopReason,
+  draftHasCitationMarkers,
+} from "./run.js";
 import type { StopReasonInputs } from "./run.js";
 import type { ResolvedModel } from "./model.js";
 import { loadRunMeta, loadTrace, memoryStore } from "./providers/store.js";
@@ -542,6 +546,28 @@ describe("acceptsRepair", () => {
         { citationsUnsupported: 2, citationsBound: 7 },
       ),
     ).toBe(false);
+  });
+});
+
+describe("draftHasCitationMarkers", () => {
+  it("accepts a draft that carries claim markers", () => {
+    expect(
+      draftHasCitationMarkers(
+        "AWS HealthOmics is HIPAA-eligible. {{claim_3}} It stores petabytes. {{claim_7,claim_9}}",
+      ),
+    ).toBe(true);
+  });
+
+  it("rejects a truncated synthesis fragment with no markers", () => {
+    expect(
+      draftHasCitationMarkers(
+        "I have enough to compute and write. Let me do a quick cost computation for the 100,000-genome scenario.",
+      ),
+    ).toBe(false);
+  });
+
+  it("rejects an empty draft", () => {
+    expect(draftHasCitationMarkers("")).toBe(false);
   });
 });
 

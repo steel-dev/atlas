@@ -562,7 +562,8 @@ async function draftReport(
         closingNote,
       }),
     );
-    if (draft) return draft;
+    if (draft && draftHasCitationMarkers(draft)) return draft;
+    if (draft) rctx.emit({ type: "report.reset" });
   } catch (err) {
     if (args.hardSignal.aborted) throw err;
     rctx.emit({ type: "report.reset" });
@@ -578,6 +579,10 @@ async function draftReport(
 interface RepairBalance {
   citationsUnsupported: number;
   citationsBound: number;
+}
+
+export function draftHasCitationMarkers(draft: string): boolean {
+  return /\{\{\s*claim_\w+/.test(draft);
 }
 
 export function acceptsRepair(
