@@ -21,10 +21,12 @@ const USAGE = {
   outputTokens: { total: 100, text: 100, reasoning: 0 },
 };
 
-function repairModel(text: string): MockLanguageModelV3 {
+function repairModel(
+  fixes: Array<{ index: number; replacement: string }>,
+): MockLanguageModelV3 {
   return new MockLanguageModelV3({
     doGenerate: async () => ({
-      content: [{ type: "text", text }],
+      content: [{ type: "text", text: JSON.stringify({ fixes }) }],
       finishReason: { unified: "stop", raw: undefined },
       usage: USAGE,
       warnings: [],
@@ -169,9 +171,9 @@ describe("synthesizeReport with tools", () => {
 });
 
 describe("repairReport", () => {
-  it("rewrites the draft when a citation fails entailment", async () => {
+  it("splices in a corrected sentence when a citation fails entailment", async () => {
     const corrected = "The tower is 330 meters tall. {{claim_1}}";
-    const rctx = fakeRctx(repairModel(corrected));
+    const rctx = fakeRctx(repairModel([{ index: 0, replacement: corrected }]));
     const report = "The tower is 999 meters tall and made of gold.";
     const repaired = await repairReport(rctx, createBudgetMeter(1), {
       draft: "The tower is 999 meters tall and made of gold. {{claim_1}}",
@@ -183,9 +185,39 @@ describe("repairReport", () => {
     expect(repaired).toBe(corrected);
   });
 
-  it("repairs uncited factual sentences", async () => {
-    const corrected = "Only the supported part remains. {{claim_1}}";
-    const rctx = fakeRctx(repairModel(corrected));
+  it("patches only the flagged sentence and leaves the rest verbatim", async () => {
+    const draft =
+      "Caching cuts load. {{claim_1}} The tower is 999 meters tall. {{claim_1}} Pools matter. {{claim_1}}";
+    const report =
+      "Caching cuts load. The tower is 999 meters tall. Pools matter.";
+    const flagged = "The tower is 999 meters tall.";
+    const rctx = fakeRctx(
+      repairModel([
+        { index: 0, replacement: "The tower is 330 meters tall. {{claim_1}}" },
+      ]),
+    );
+    const repaired = await repairReport(rctx, createBudgetMeter(1), {
+      draft,
+      bound: boundWith({
+        report,
+        unverified: [
+          {
+            claimId: "claim_1",
+            span: [
+              report.indexOf(flagged),
+              report.indexOf(flagged) + flagged.length,
+            ],
+          },
+        ],
+      }),
+    });
+    expect(repaired).toBe(
+      "Caching cuts load. {{claim_1}} The tower is 330 meters tall. {{claim_1}} Pools matter. {{claim_1}}",
+    );
+  });
+
+  it("deletes an uncited factual sentence", async () => {
+    const rctx = fakeRctx(repairModel([{ index: 0, replacement: "" }]));
     const repaired = await repairReport(rctx, createBudgetMeter(1), {
       draft: "Only the supported part remains. {{claim_1}} The moon is cheese.",
       bound: boundWith({
@@ -193,11 +225,11 @@ describe("repairReport", () => {
         unsupportedSentences: ["The moon is cheese."],
       }),
     });
-    expect(repaired).toBe(corrected);
+    expect(repaired).toBe("Only the supported part remains. {{claim_1}}");
   });
 
   it("returns undefined when there is nothing to repair", async () => {
-    const rctx = fakeRctx(repairModel("unused"));
+    const rctx = fakeRctx(repairModel([]));
     const repaired = await repairReport(rctx, createBudgetMeter(1), {
       draft: "All good. {{claim_1}}",
       bound: boundWith({ report: "All good." }),
@@ -206,7 +238,7 @@ describe("repairReport", () => {
   });
 
   it("returns undefined when the grant is floored", async () => {
-    const rctx = fakeRctx(repairModel("unused"));
+    const rctx = fakeRctx(repairModel([]));
     const meter = createBudgetMeter(1);
     meter.charge(0.999);
     const report = "Bad sentence.";
