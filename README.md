@@ -59,7 +59,26 @@ const atlas = new Atlas({
 });
 ```
 
-**Models per role:** override `models.extract` / `models.verify` (defaults to a small sibling for Anthropic/OpenAI when keys are present). Screening and entailment checks always run on `models.verify`; at `deep`/`max` the adversarial panel escalates to the lead model with more turns per verifier.
+**Models per role:** override `models.extract` / `models.verify` (defaults to a small sibling for Anthropic/OpenAI/Z.ai when keys are present). Screening and entailment checks always run on `models.verify`; at `deep`/`max` the adversarial panel escalates to the lead model with more turns per verifier.
+
+**Z.ai / GLM:** use Z.ai through its OpenAI-compatible endpoint:
+
+```ts
+import { createOpenAI } from "@ai-sdk/openai";
+import { Atlas, tavily } from "@steel-dev/atlas";
+
+const zai = createOpenAI({
+  apiKey: process.env.ZAI_API_KEY!,
+  baseURL: "https://api.z.ai/api/coding/paas/v4",
+});
+
+const atlas = new Atlas({
+  model: zai("GLM-5.2"),
+  search: tavily(),
+});
+```
+
+The examples also accept `--provider zai` with `ZAI_API_KEY` / `ATLAS_ZAI_API_KEY`. GLM lead models derive `GLM-4.5-Air` for extraction and verification when a Z.ai key is present. Configure `tavily()`, `exa()`, or `brave()` for search; Atlas does not map Z.ai's web-search API to an AI SDK native search tool.
 
 **Concurrency:** `concurrency: { models: 8, io: 10 }` or `ATLAS_MODEL_CONCURRENCY` / `ATLAS_IO_CONCURRENCY`.
 

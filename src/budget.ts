@@ -29,6 +29,78 @@ export const DEFAULT_PRICING: PricingTable = {
   "o4-mini-deep-research": { inputPerMTok: 2, outputPerMTok: 8 },
   "gemini-2.5-pro": { inputPerMTok: 1.25, outputPerMTok: 10 },
   "gemini-2.5-flash": { inputPerMTok: 0.3, outputPerMTok: 2.5 },
+  "GLM-5.2": {
+    inputPerMTok: 1.4,
+    cacheReadPerMTok: 0.26,
+    cacheWritePerMTok: 0,
+    outputPerMTok: 4.4,
+  },
+  "GLM-5.1": {
+    inputPerMTok: 1.4,
+    cacheReadPerMTok: 0.26,
+    cacheWritePerMTok: 0,
+    outputPerMTok: 4.4,
+  },
+  "GLM-5": {
+    inputPerMTok: 1,
+    cacheReadPerMTok: 0.2,
+    cacheWritePerMTok: 0,
+    outputPerMTok: 3.2,
+  },
+  "GLM-5-Turbo": {
+    inputPerMTok: 1.2,
+    cacheReadPerMTok: 0.24,
+    cacheWritePerMTok: 0,
+    outputPerMTok: 4,
+  },
+  "GLM-4.7": {
+    inputPerMTok: 0.6,
+    cacheReadPerMTok: 0.11,
+    cacheWritePerMTok: 0,
+    outputPerMTok: 2.2,
+  },
+  "GLM-4.7-FlashX": {
+    inputPerMTok: 0.07,
+    cacheReadPerMTok: 0.01,
+    cacheWritePerMTok: 0,
+    outputPerMTok: 0.4,
+  },
+  "GLM-4.6": {
+    inputPerMTok: 0.6,
+    cacheReadPerMTok: 0.11,
+    cacheWritePerMTok: 0,
+    outputPerMTok: 2.2,
+  },
+  "GLM-4.5": {
+    inputPerMTok: 0.6,
+    cacheReadPerMTok: 0.11,
+    cacheWritePerMTok: 0,
+    outputPerMTok: 2.2,
+  },
+  "GLM-4.5-X": {
+    inputPerMTok: 2.2,
+    cacheReadPerMTok: 0.45,
+    cacheWritePerMTok: 0,
+    outputPerMTok: 8.9,
+  },
+  "GLM-4.5-Air": {
+    inputPerMTok: 0.2,
+    cacheReadPerMTok: 0.03,
+    cacheWritePerMTok: 0,
+    outputPerMTok: 1.1,
+  },
+  "GLM-4.5-AirX": {
+    inputPerMTok: 1.1,
+    cacheReadPerMTok: 0.22,
+    cacheWritePerMTok: 0,
+    outputPerMTok: 4.5,
+  },
+  "GLM-4-32B-0414-128K": {
+    inputPerMTok: 0.1,
+    outputPerMTok: 0.1,
+  },
+  "GLM-4.7-Flash": { inputPerMTok: 0, outputPerMTok: 0 },
+  "GLM-4.5-Flash": { inputPerMTok: 0, outputPerMTok: 0 },
 };
 for (const pricing of Object.values(DEFAULT_PRICING)) {
   Object.freeze(pricing);
@@ -66,17 +138,28 @@ export function resolvePricing(
   table: PricingTable,
 ): { pricing: ModelPricing; known: boolean } {
   if (!modelId) return { pricing: UNKNOWN_MODEL_PRICING, known: false };
-  const direct = table[modelId];
+  const lookup = (candidate: string): ModelPricing | undefined => {
+    const direct = table[candidate];
+    if (direct) return direct;
+    const caseInsensitiveKey = Object.keys(table).find(
+      (key) => key.toLowerCase() === candidate.toLowerCase(),
+    );
+    return caseInsensitiveKey ? table[caseInsensitiveKey] : undefined;
+  };
+  const direct = lookup(modelId);
   if (direct) return { pricing: direct, known: true };
   const undated = modelId.replace(/-\d{8}$/, "");
-  if (table[undated]) return { pricing: table[undated], known: true };
+  const undatedPricing = lookup(undated);
+  if (undatedPricing) return { pricing: undatedPricing, known: true };
   const parts = undated.split(".");
   for (let i = 1; i < parts.length; i++) {
-    const candidate = table[parts.slice(i).join(".")];
+    const candidate = lookup(parts.slice(i).join("."));
     if (candidate) return { pricing: candidate, known: true };
   }
   for (const key of Object.keys(table)) {
-    if (undated.startsWith(`${key}-`) || undated.endsWith(`.${key}`)) {
+    const haystack = undated.toLowerCase();
+    const needle = key.toLowerCase();
+    if (haystack.startsWith(`${needle}-`) || haystack.endsWith(`.${needle}`)) {
       return { pricing: table[key], known: true };
     }
   }

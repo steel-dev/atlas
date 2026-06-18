@@ -12,6 +12,8 @@ import { Atlas, type AtlasConfig, type Effort } from "../src/index.js";
 import {
   DEFAULT_ANTHROPIC_MODEL,
   DEFAULT_OPENAI_MODEL,
+  DEFAULT_ZAI_BASE_URL,
+  DEFAULT_ZAI_MODEL,
 } from "../src/defaults.js";
 import { readEnv } from "../src/env.js";
 
@@ -23,7 +25,7 @@ Usage:
 Options:
       --port N          Port to listen on (default: 4317)
       --host HOST       Host to bind (default: 127.0.0.1)
-      --provider NAME   anthropic | openai (default: ATLAS_PROVIDER or anthropic)
+      --provider NAME   anthropic | openai | zai (default: ATLAS_PROVIDER or anthropic)
       --model ID        Model id (default: ATLAS_MODEL or provider default)
   -h, --help            Show this help
 
@@ -41,22 +43,40 @@ function messageOf(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+function normalizeProvider(provider: string): "anthropic" | "openai" | "zai" {
+  if (provider === "anthropic" || provider === "openai") return provider;
+  if (provider === "zai" || provider === "z.ai" || provider === "zhipu") {
+    return "zai";
+  }
+  fail(`provider must be one of: anthropic, openai, zai (got "${provider}")`);
+}
+
 function resolveModel(
   providerFlag: string | undefined,
   modelFlag: string | undefined,
 ): AtlasConfig["model"] {
-  const provider = providerFlag ?? readEnv("ATLAS_PROVIDER") ?? "anthropic";
-  if (provider !== "anthropic" && provider !== "openai") {
-    fail(`provider must be one of: anthropic, openai (got "${provider}")`);
-  }
+  const provider = normalizeProvider(
+    providerFlag ?? readEnv("ATLAS_PROVIDER") ?? "anthropic",
+  );
   const modelId =
     modelFlag ??
     readEnv("ATLAS_MODEL") ??
-    (provider === "anthropic" ? DEFAULT_ANTHROPIC_MODEL : DEFAULT_OPENAI_MODEL);
+    (provider === "anthropic"
+      ? DEFAULT_ANTHROPIC_MODEL
+      : provider === "openai"
+        ? DEFAULT_OPENAI_MODEL
+        : DEFAULT_ZAI_MODEL);
   if (provider === "anthropic") {
     const apiKey = readEnv("ATLAS_ANTHROPIC_API_KEY", "ANTHROPIC_API_KEY");
     if (!apiKey) fail("ANTHROPIC_API_KEY is required for provider=anthropic");
     return createAnthropic({ apiKey })(modelId);
+  }
+  if (provider === "zai") {
+    const apiKey = readEnv("ATLAS_ZAI_API_KEY", "ZAI_API_KEY");
+    if (!apiKey) fail("ZAI_API_KEY is required for provider=zai");
+    const baseURL =
+      readEnv("ATLAS_ZAI_BASE_URL", "ZAI_BASE_URL") ?? DEFAULT_ZAI_BASE_URL;
+    return createOpenAI({ apiKey, baseURL })(modelId);
   }
   const apiKey = readEnv("ATLAS_OPENAI_API_KEY", "OPENAI_API_KEY");
   if (!apiKey) fail("OPENAI_API_KEY is required for provider=openai");
