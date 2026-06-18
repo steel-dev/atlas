@@ -276,6 +276,25 @@ function isAnthropicModel(model: LanguageModelV3): boolean {
   return model.provider.toLowerCase().includes("anthropic");
 }
 
+function isOpenAIModel(model: LanguageModelV3): boolean {
+  return model.provider.toLowerCase().includes("openai");
+}
+
+function withOpenAINonStrict(
+  params: LanguageModelV3CallOptions,
+): LanguageModelV3CallOptions {
+  return {
+    ...params,
+    providerOptions: {
+      ...params.providerOptions,
+      openai: {
+        ...params.providerOptions?.openai,
+        strictJsonSchema: false,
+      },
+    },
+  };
+}
+
 function withCacheBreakpoint(
   params: LanguageModelV3CallOptions,
 ): LanguageModelV3CallOptions {
@@ -591,8 +610,11 @@ export function engineModel(
 
   const middleware: LanguageModelV3Middleware = {
     specificationVersion: "v3",
-    transformParams: async ({ params }) =>
-      isAnthropicModel(inner) ? withCacheBreakpoint(params) : params,
+    transformParams: async ({ params }) => {
+      if (isAnthropicModel(inner)) return withCacheBreakpoint(params);
+      if (isOpenAIModel(inner)) return withOpenAINonStrict(params);
+      return params;
+    },
     wrapGenerate: async ({ doGenerate, params }) => {
       const key = callKey(inner, params, hooks.role);
       const cached = hooks.replay?.take(key) as JournaledCall | undefined;
