@@ -184,7 +184,8 @@ const SCREEN_SYSTEM =
   "Treat marketing copy, press releases, vendor self-description, cherry-picked benchmarks, and forum speculation as weak evidence: source_is_evidence stays true only if the page is genuinely informative, but drop to low confidence for such material. " +
   "When the question is time-sensitive and the source is visibly stale, lower confidence — a screening pass cannot confirm an outdated figure is still current. " +
   "Be calibrated: report low confidence whenever the context is too thin to be sure. " +
-  "Set needs_adversarial_check true when the claim asserts a contestable empirical measurement — a benchmark, performance figure, statistic, or quantitative comparison whose accuracy a single source cannot settle and that warrants an adversarial panel; set it false for a documented constant, definition, specification value, flag, range, or mechanism stated by an authoritative source, which a screen can settle on its own.\n\n" +
+  "Set needs_adversarial_check true when an empirical figure genuinely needs an adversarial panel: it is surprising or cuts against the expected direction, the source's own product comes out ahead in a head-to-head, the source only relays a measurement made elsewhere, the methodology or conditions behind it are thin or missing, or it is a fast-moving figure that may now be stale. " +
+  "Set it false when the source itself ran or published the measurement and the quote reports it plainly with no sign of overreach or cherry-picking — or for a documented constant, definition, specification value, flag, range, or mechanism from an authoritative source — which a screen can settle on its own.\n\n" +
   QUARANTINE_NOTE +
   " " +
   LEDGER_DATA_NOTE;
@@ -306,7 +307,10 @@ async function collectVotes(
 ): Promise<ClaimVote[]> {
   const conflicted = (claim.conflictsWith?.length ?? 0) > 0;
   const screenedVotes = claim.status === "screened" ? claim.votes : null;
-  const preRoutedToPanel = claim.kind === "empirical" && opts.panelAffordable;
+  const preRoutedToPanel =
+    claim.kind === "empirical" &&
+    opts.panelAffordable &&
+    claim.sourceQuality !== "primary";
 
   if (!opts.lensesExplicit && !conflicted && !preRoutedToPanel) {
     const screen: ScreenResult = screenedVotes
