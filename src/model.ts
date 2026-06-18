@@ -280,18 +280,19 @@ function isOpenAIModel(model: LanguageModelV3): boolean {
   return model.provider.toLowerCase().includes("openai");
 }
 
-function withOpenAINonStrict(
+function withOpenAIDefaults(
   params: LanguageModelV3CallOptions,
 ): LanguageModelV3CallOptions {
+  const openai = {
+    ...params.providerOptions?.openai,
+    strictJsonSchema: false,
+    ...(params.responseFormat?.type === "json"
+      ? { reasoningEffort: "minimal" as const }
+      : {}),
+  };
   return {
     ...params,
-    providerOptions: {
-      ...params.providerOptions,
-      openai: {
-        ...params.providerOptions?.openai,
-        strictJsonSchema: false,
-      },
-    },
+    providerOptions: { ...params.providerOptions, openai },
   };
 }
 
@@ -612,7 +613,7 @@ export function engineModel(
     specificationVersion: "v3",
     transformParams: async ({ params }) => {
       if (isAnthropicModel(inner)) return withCacheBreakpoint(params);
-      if (isOpenAIModel(inner)) return withOpenAINonStrict(params);
+      if (isOpenAIModel(inner)) return withOpenAIDefaults(params);
       return params;
     },
     wrapGenerate: async ({ doGenerate, params }) => {
