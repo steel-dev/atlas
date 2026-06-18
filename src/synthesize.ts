@@ -1,5 +1,4 @@
-import { generateObject, stepCountIs, streamText } from "ai";
-import { z } from "zod";
+import { generateText, stepCountIs, streamText } from "ai";
 import { withTraceFrame } from "./trace.js";
 import { createMarkerStripper, type BindOutcome } from "./bind.js";
 import type { BudgetGrant } from "./budget.js";
@@ -438,42 +437,15 @@ export async function synthesizeReport(
 }
 
 const REPAIR_MAX_PROBLEMS = 24;
-const REPAIR_MAX_OUTPUT_TOKENS = 4_000;
 
 const REPAIR_SYSTEM_PROMPT =
-  "You repair a research report draft so every flagged sentence is supported by the claims it cites. " +
-  "You receive a numbered list of problem sentences, each with the issues found in it, plus the claim ledger digest. " +
-  "For each numbered sentence, return a replacement: the single corrected sentence with its {{claim_id}} markers attached. " +
-  "Prefer the least destructive fix, in this order: (1) re-cite — attach the {{claim_id}} markers that do support the sentence, citing several jointly as {{claim_3,claim_7}} when it composes them; (2) trim — narrow the sentence to exactly what its cited claims support together; (3) delete — only when no ledger claim supports any part of the sentence, and then return an empty string for that index. " +
-  "Keep a composed sentence composed — never split it into one fact per sentence. " +
-  "Return one replacement per listed index; never reference sentences that are not listed; never invent claims, sources, ids, or facts.";
-
-const repairSchema = z.object({
-  fixes: z.array(
-    z.object({
-      index: z.number().int(),
-      replacement: z.string(),
-    }),
-  ),
-});
-
-function applyRepairPatches(
-  draft: string,
-  patches: Array<{ find: string; replace: string }>,
-): string {
-  let result = draft;
-  for (const { find, replace } of patches) {
-    if (!find) continue;
-    let at = result.indexOf(find);
-    if (at < 0) continue;
-    let end = at + find.length;
-    const trailing = /^(?:[ \t]*\{\{[^{}]*\}\})+/.exec(result.slice(end));
-    if (trailing) end += trailing[0].length;
-    if (replace === "" && result[at - 1] === " ") at -= 1;
-    result = result.slice(0, at) + replace + result.slice(end);
-  }
-  return result;
-}
+  "You repair a research report draft so every factual sentence is supported by the claims it cites. " +
+  "You receive the draft with {{claim_id}} markers, a list of problem sentences, and the claim ledger digest. " +
+  "Fix ONLY the listed problem sentences; leave every other sentence and its markers exactly as they are. " +
+  "Prefer the least destructive fix, in this order: (1) re-cite — attach or add the {{claim_id}} markers that do support the sentence, citing several jointly as {{claim_3,claim_7}} when it composes them; (2) trim — narrow the sentence to exactly what its cited claims support together; (3) delete — only when no ledger claim supports any part of the sentence. " +
+  "Keep a composed sentence composed — never split it into one fact per sentence — and never drop a sentence that is already supported just to shorten the draft. " +
+  "Never invent claims, sources, ids, or facts. " +
+  "Return the full corrected draft and nothing else.";
 
 export async function repairReport(
   rctx: RunCtx,
@@ -481,84 +453,57 @@ export async function repairReport(
   opts: { draft: string; bound: BindOutcome },
 ): Promise<string | undefined> {
   if (grant.floored()) return undefined;
-  const issues = new Map<string, string[]>();
-  const order: string[] = [];
+  const problems: string[] = [];
   const seen = new Set<string>();
-  const pushIssue = (sentence: string, key: string, issue: string): void => {
-    if (seen.has(key)) return;
-    seen.add(key);
-    let list = issues.get(sentence);
-    if (!list) {
-      list = [];
-      issues.set(sentence, list);
-      order.push(sentence);
-    }
-    list.push(issue);
-  };
   for (const citation of opts.bound.citations) {
     if (citation.verified) continue;
     const sentence = opts.bound.report
       .slice(citation.sentenceSpan[0], citation.sentenceSpan[1])
       .trim();
+    const key = `${sentence}|${citation.claimId}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
     const claim = rctx.ledger.byId(citation.claimId);
-    const issue =
+    const problem =
       claim === undefined
-        ? `the marker cites ${citation.claimId}, which does not exist in the ledger; attach a real claim that supports the sentence or delete it.`
+        ? "the marker cites a claim id that does not exist in the ledger; attach a real claim that supports the sentence or delete it."
         : citation.status === "refuted"
-          ? `the cited claim ${citation.claimId} ("${claim.text}") was refuted during verification; state that it was ruled out or delete the sentence.`
-          : `the sentence asserts more than its cited claim ${citation.claimId} ("${claim.text}", quote "${claim.quote}") supports; trim it to what the claim establishes, or cite an additional ledger claim that covers the rest.`;
-    pushIssue(sentence, `${sentence}|${citation.claimId}`, issue);
-  }
-  for (const sentence of opts.bound.unsupportedSentences) {
-    pushIssue(
-      sentence,
-      `${sentence}|unmarked`,
-      "factual sentence with no claim marker; attach the {{claim_id}} markers that support it, or delete it.",
+          ? "the cited claim was refuted during verification; either state that it was ruled out or delete the sentence."
+          : "the sentence asserts more than its cited claims support together; trim it to what they jointly establish, or cite an additional ledger claim that covers the rest.";
+    problems.push(
+      `- Sentence: "${sentence}"\n` +
+        `  Cited claim ${citation.claimId}: "${claim?.text ?? "unknown claim"}"\n` +
+        `  Claim quote: "${claim?.quote ?? ""}"\n` +
+        `  Problem: ${problem}`,
     );
   }
-  if (order.length === 0) return undefined;
-  const numbered = order.slice(0, REPAIR_MAX_PROBLEMS);
-  const problemText = numbered
-    .map(
-      (sentence, index) =>
-        `[${index}] Sentence: "${sentence}"\n` +
-        issues
-          .get(sentence)!
-          .map((issue) => `  - ${issue}`)
-          .join("\n"),
-    )
-    .join("\n\n");
-  const result = await withTraceFrame(rctx.recorder, { site: "repair" }, () =>
-    generateObject({
-      model: rctx.bindModel("write", grant),
-      system: REPAIR_SYSTEM_PROMPT,
-      prompt:
-        `Research question: ${rctx.question}\n\n` +
-        "## Problem sentences\n" +
-        problemText +
-        "\n\n## Claim ledger digest\n" +
-        (rctx.ledger.digest() || "(empty)") +
-        "\n\nReturn one corrected replacement per listed sentence index.",
-      schema: repairSchema,
-      maxOutputTokens: REPAIR_MAX_OUTPUT_TOKENS,
-      maxRetries: MODEL_CALL_MAX_RETRIES,
-      abortSignal: rctx.signal,
-    }),
-  );
-  const patches: Array<{ find: string; replace: string }> = [];
-  const applied = new Set<number>();
-  for (const fix of result.object.fixes) {
-    if (fix.index < 0 || fix.index >= numbered.length) continue;
-    if (applied.has(fix.index)) continue;
-    applied.add(fix.index);
-    patches.push({
-      find: numbered[fix.index],
-      replace: fix.replacement.trim(),
-    });
+  for (const sentence of opts.bound.unsupportedSentences) {
+    problems.push(
+      `- Sentence: "${sentence}"\n` +
+        "  Problem: factual sentence with no claim marker.",
+    );
   }
-  if (patches.length === 0) return undefined;
-  const repaired = applyRepairPatches(opts.draft, patches).trim();
-  return repaired && repaired !== opts.draft ? repaired : undefined;
+  if (problems.length === 0) return undefined;
+  const result = await withTraceFrame(rctx.recorder, { site: "repair" }, () =>
+    generateText({
+    model: rctx.bindModel("write", grant),
+    system: REPAIR_SYSTEM_PROMPT,
+    prompt:
+      `Research question: ${rctx.question}\n\n` +
+      "## Draft (with claim markers)\n" +
+      opts.draft +
+      "\n\n## Problem sentences\n" +
+      problems.slice(0, REPAIR_MAX_PROBLEMS).join("\n") +
+      "\n\n## Claim ledger digest\n" +
+      (rctx.ledger.digest() || "(empty)") +
+      "\n\nReturn the corrected draft.",
+    maxOutputTokens: rctx.config.envelope.maxReportTokens,
+    maxRetries: MODEL_CALL_MAX_RETRIES,
+    abortSignal: rctx.signal,
+  }),
+  );
+  const repaired = stripReportPreamble(result.text.trim());
+  return repaired || undefined;
 }
 
 export function fallbackReportFromClaims(opts: {
