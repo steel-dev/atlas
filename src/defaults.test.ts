@@ -3,6 +3,7 @@ import type { LanguageModelV3 } from "@ai-sdk/provider";
 import {
   DEFAULT_ANTHROPIC_SMALL_MODEL,
   DEFAULT_OPENAI_SMALL_MODEL,
+  DEFAULT_ZAI_SMALL_MODEL,
   deriveSmallModel,
 } from "./defaults.js";
 import { resolveRunConfig } from "./config.js";
@@ -13,6 +14,10 @@ const ENV_KEYS = [
   "ANTHROPIC_API_KEY",
   "ATLAS_OPENAI_API_KEY",
   "OPENAI_API_KEY",
+  "ATLAS_ZAI_API_KEY",
+  "ZAI_API_KEY",
+  "ATLAS_ZAI_BASE_URL",
+  "ZAI_BASE_URL",
 ];
 
 function fakeModel(provider: string, modelId: string): ResolvedModel {
@@ -63,12 +68,30 @@ describe("deriveSmallModel", () => {
     expect(modelId(derived!)).toBe(DEFAULT_OPENAI_SMALL_MODEL);
   });
 
+  it("derives a GLM Air sibling for Z.ai leads when a key is present", () => {
+    process.env.ZAI_API_KEY = "test-key";
+    const derived = deriveSmallModel(fakeModel("openai.responses", "GLM-5.2"));
+    expect(derived).toBeDefined();
+    expect(modelId(derived!)).toBe(DEFAULT_ZAI_SMALL_MODEL);
+  });
+
+  it("prefers Z.ai derivation for GLM model ids even when using the OpenAI-compatible provider", () => {
+    process.env.ZAI_API_KEY = "test-key";
+    process.env.OPENAI_API_KEY = "test-openai-key";
+    const derived = deriveSmallModel(fakeModel("openai.responses", "GLM-4.5"));
+    expect(derived).toBeDefined();
+    expect(modelId(derived!)).toBe(DEFAULT_ZAI_SMALL_MODEL);
+  });
+
   it("returns undefined without a provider key in the environment", () => {
     expect(
       deriveSmallModel(fakeModel("anthropic.messages", "claude-opus-4-8")),
     ).toBeUndefined();
     expect(
       deriveSmallModel(fakeModel("openai.responses", "gpt-5.5")),
+    ).toBeUndefined();
+    expect(
+      deriveSmallModel(fakeModel("openai.responses", "GLM-5.2")),
     ).toBeUndefined();
   });
 
@@ -81,8 +104,12 @@ describe("deriveSmallModel", () => {
 
   it("returns undefined when the lead is already a small model", () => {
     process.env.ANTHROPIC_API_KEY = "test-key";
+    process.env.ZAI_API_KEY = "test-key";
     expect(
       deriveSmallModel(fakeModel("anthropic.messages", "claude-haiku-4-5")),
+    ).toBeUndefined();
+    expect(
+      deriveSmallModel(fakeModel("openai.responses", "GLM-4.5-Air")),
     ).toBeUndefined();
   });
 });
