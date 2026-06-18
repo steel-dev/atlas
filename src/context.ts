@@ -1,7 +1,9 @@
+import type { LanguageModelV3 } from "@ai-sdk/provider";
 import {
   createConcurrencyGate,
   createDynamicConcurrencyGate,
   createAdaptiveLimit,
+  type AdaptiveLimit,
   type ConcurrencyGate,
 } from "./async.js";
 import {
@@ -23,7 +25,9 @@ import {
   engineModel,
   totalFreshTokens,
   type ModelRole,
+  type RateLimitNotice,
 } from "./model.js";
+import { isSmallModelId } from "./defaults.js";
 import { defaultFetchProviders } from "./providers/fetch.js";
 import {
   combineSearchProviders,
@@ -47,6 +51,12 @@ const UNJOURNALED_EVENTS = new Set<ResearchEvent["type"]>([
   "report.delta",
   "report.reset",
 ]);
+
+interface ModelTier {
+  gate: ConcurrencyGate;
+  onCost: () => void;
+  onRateLimit: (notice: RateLimitNotice) => void;
+}
 
 export interface AssembleRunArgs {
   runId: string;
@@ -76,12 +86,14 @@ export async function assembleRun(args: AssembleRunArgs): Promise<RunAssembly> {
   const meter = createBudgetMeter(resolved.budgetUSD);
   const usage = createRunUsage();
   const pricing: PricingTable = { ...DEFAULT_PRICING, ...resolved.pricing };
-  const modelLimit = createAdaptiveLimit({
-    start: resolved.maxConcurrentModelCalls,
-    min: Math.min(2, resolved.maxConcurrentModelCalls),
-    max: resolved.maxConcurrentModelCalls * 2,
-  });
-  const modelGate = createDynamicConcurrencyGate(() => modelLimit.value());
+  const makeModelLimit = (): AdaptiveLimit =>
+    createAdaptiveLimit({
+      start: resolved.maxConcurrentModelCalls,
+      min: Math.min(2, resolved.maxConcurrentModelCalls),
+      max: resolved.maxConcurrentModelCalls * 2,
+    });
+  const heavyLimit = makeModelLimit();
+  const smallLimit = makeModelLimit();
   const ioGate = createConcurrencyGate(resolved.maxConcurrentIo);
   const modelCache = createModelCallCache();
   const counters = createRunCounters();
@@ -111,12 +123,13 @@ export async function assembleRun(args: AssembleRunArgs): Promise<RunAssembly> {
     }
   };
 
-  const onCost = (): void => {
-    modelLimit.onSuccess();
+  const trackGateWidth = (): void => {
     counters.modelGatePeakWidth = Math.max(
       counters.modelGatePeakWidth,
-      modelLimit.value(),
+      heavyLimit.value() + smallLimit.value(),
     );
+  };
+  const emitBudgetWarnings = (): void => {
     const fraction = meter.totalSpentUSD() / meter.totalUSD;
     for (const threshold of BUDGET_WARNING_FRACTIONS) {
       if (fraction >= threshold && !warnedFractions.has(threshold)) {
@@ -130,6 +143,27 @@ export async function assembleRun(args: AssembleRunArgs): Promise<RunAssembly> {
       }
     }
   };
+  const makeTier = (limit: AdaptiveLimit): ModelTier => ({
+    gate: createDynamicConcurrencyGate(() => limit.value()),
+    onCost: () => {
+      limit.onSuccess();
+      trackGateWidth();
+      emitBudgetWarnings();
+    },
+    onRateLimit: ({ delayMs }: RateLimitNotice) => {
+      limit.onThrottle();
+      emit({
+        type: "rate.limited",
+        retryAfterSeconds: Math.max(1, Math.round(delayMs / 1000)),
+      });
+    },
+  });
+  const heavyTier = makeTier(heavyLimit);
+  const smallTier = makeTier(smallLimit);
+  const tierForRole = (role: ModelRole): ModelTier =>
+    isSmallModelId((resolved.models[role] as LanguageModelV3).modelId ?? "")
+      ? smallTier
+      : heavyTier;
 
   const onUnknownModel = (modelId: string): void => {
     if (warnedUnknownModels.has(modelId)) return;
@@ -140,44 +174,39 @@ export async function assembleRun(args: AssembleRunArgs): Promise<RunAssembly> {
       detail: `no pricing entry for model "${modelId}"; charging conservative default rates`,
     });
   };
-  const onRateLimit = ({ delayMs }: { delayMs: number }): void => {
-    modelLimit.onThrottle();
-    emit({
-      type: "rate.limited",
-      retryAfterSeconds: Math.max(1, Math.round(delayMs / 1000)),
-    });
-  };
-  const bindModelWithGate = (
+  const bindModelWithTier = (
     role: ModelRole,
     grant: BudgetGrant,
-    gate: ConcurrencyGate,
+    tier: ModelTier,
   ) =>
     engineModel(resolved.models[role], {
       role,
       grant,
       pricing,
-      gate,
+      gate: tier.gate,
       usage,
       journal: args.journal,
       replay: args.replay,
       modelCache,
       recorder,
-      onCost,
+      onCost: tier.onCost,
       onUnknownModel,
-      onRateLimit,
+      onRateLimit: tier.onRateLimit,
       onCacheHit: () => {
         counters.modelCacheHits++;
       },
       budgetExhausted: () => grant.spentUSD() >= grant.limitUSD,
     });
   const bindModel = (role: ModelRole, grant: BudgetGrant) =>
-    bindModelWithGate(role, grant, modelGate);
+    bindModelWithTier(role, grant, tierForRole(role));
 
   const searchProviders = Array.isArray(args.config.search)
     ? args.config.search
     : args.config.search
       ? [args.config.search]
-      : defaultSearchProviders(bindModelWithGate("research", meter, modelGate));
+      : defaultSearchProviders(
+          bindModelWithTier("research", meter, tierForRole("research")),
+        );
   const fetchChain = Array.isArray(args.config.fetch)
     ? args.config.fetch
     : args.config.fetch
@@ -237,7 +266,7 @@ export async function assembleRun(args: AssembleRunArgs): Promise<RunAssembly> {
     stopSignal: args.stopSignal,
     deadlineAt,
     now: args.now,
-    modelGate,
+    modelGate: heavyTier.gate,
     ioGate,
     seenDomains: new Set(),
     verifyInFlight: new Map(),
