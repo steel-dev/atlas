@@ -8,6 +8,7 @@ import {
   type ClaimStatus,
 } from "./ledger.js";
 import { MODEL_CALL_MAX_RETRIES } from "./model.js";
+import type { SourceDocument } from "./sources.js";
 import type { RunCtx } from "./state.js";
 import { quoteContext } from "./synthesize.js";
 
@@ -61,6 +62,57 @@ export function stripMarkers(draft: string): {
   }
   stripped += draft.slice(lastIndex);
   return { report: stripped, markers };
+}
+
+export function renderCitedReport(
+  report: string,
+  citations: Citation[],
+  sourcesById: Map<string, SourceDocument>,
+): string {
+  const verified = citations.filter((citation) => citation.verified);
+  if (verified.length === 0) return report;
+
+  const sourceNumber = new Map<string, number>();
+  const orderedSourceIds: string[] = [];
+  for (const citation of [...verified].sort(
+    (a, b) => a.sentenceSpan[1] - b.sentenceSpan[1],
+  )) {
+    if (sourceNumber.has(citation.sourceId)) continue;
+    sourceNumber.set(citation.sourceId, orderedSourceIds.length + 1);
+    orderedSourceIds.push(citation.sourceId);
+  }
+
+  const numbersByPos = new Map<number, Set<number>>();
+  for (const citation of verified) {
+    const number = sourceNumber.get(citation.sourceId);
+    if (number === undefined) continue;
+    const pos = citation.sentenceSpan[1];
+    const set = numbersByPos.get(pos) ?? new Set<number>();
+    set.add(number);
+    numbersByPos.set(pos, set);
+  }
+
+  let body = report;
+  for (const pos of [...numbersByPos.keys()].sort((a, b) => b - a)) {
+    const marker = [...(numbersByPos.get(pos) ?? [])]
+      .sort((a, b) => a - b)
+      .map((number) => `[${number}]`)
+      .join("");
+    const at = Math.max(0, Math.min(body.length, pos));
+    body = body.slice(0, at) + marker + body.slice(at);
+  }
+
+  const references = orderedSourceIds.map((sourceId, index) => {
+    const document = sourcesById.get(sourceId);
+    const url = document?.metadata.finalUrl ?? document?.url ?? "";
+    const title = (document?.title ?? "").trim();
+    const label = title || url || sourceId;
+    return url && url !== label
+      ? `${index + 1}. ${label} — ${url}`
+      : `${index + 1}. ${label}`;
+  });
+
+  return `${body}\n\n## Sources\n\n${references.join("\n")}\n`;
 }
 
 const STREAM_MARKER_REGEX = /[ \t]*\{\{[^{}]*\}\}/g;

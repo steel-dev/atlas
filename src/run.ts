@@ -3,7 +3,7 @@ import { generateObject } from "ai";
 import { z } from "zod";
 import { adjudicateCoverage } from "./adjudicate.js";
 import type { AgentResult } from "./agent.js";
-import { bindCitations, type Citation } from "./bind.js";
+import { bindCitations, renderCitedReport, type Citation } from "./bind.js";
 import { withGrant, type BudgetGrant, type BudgetMeter } from "./budget.js";
 import {
   resolveRunConfig,
@@ -615,7 +615,10 @@ async function bindAndRepair(
       });
     }
   }
-  return bound;
+  return {
+    ...bound,
+    report: renderCitedReport(bound.report, bound.citations, rctx.sources.byId),
+  };
 }
 
 async function composeOutputs(

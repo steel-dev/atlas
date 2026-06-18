@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { MockLanguageModelV3 } from "ai/test";
-import { bindCitations, createMarkerStripper, stripMarkers } from "./bind.js";
+import {
+  bindCitations,
+  createMarkerStripper,
+  renderCitedReport,
+  stripMarkers,
+  type Citation,
+} from "./bind.js";
 import { EFFORT_ENVELOPES } from "./config.js";
 import type { ResearchClaim } from "./ledger.js";
 import { createSourceDocument } from "./source-documents.js";
@@ -26,6 +32,67 @@ describe("stripMarkers", () => {
     const { report, markers } = stripMarkers("Fact. {{not a marker}}");
     expect(markers).toHaveLength(0);
     expect(report).toBe("Fact.");
+  });
+});
+
+describe("renderCitedReport", () => {
+  function sourcesMap(entries: Array<[string, string, string]>) {
+    return new Map(
+      entries.map(([id, title, url]) => [
+        id,
+        createSourceDocument(
+          url,
+          title,
+          "text",
+          { markdownChars: 4, extractionNotes: [] },
+          4,
+          id,
+        ),
+      ]),
+    );
+  }
+
+  function cite(
+    span: [number, number],
+    sourceId: string,
+    verified: boolean,
+  ): Citation {
+    return {
+      sentenceSpan: span,
+      claimId: `c_${sourceId}`,
+      sourceId,
+      quote: "q",
+      verified,
+    };
+  }
+
+  it("numbers sources by appearance, groups markers per sentence, and lists references", () => {
+    const out = renderCitedReport(
+      "Alpha is true. Beta is false.",
+      [
+        cite([0, 14], "source_1", true),
+        cite([0, 14], "source_2", true),
+        cite([15, 29], "source_1", true),
+        cite([15, 29], "source_3", false),
+      ],
+      sourcesMap([
+        ["source_1", "Source One", "https://one.example.com/a"],
+        ["source_2", "Source Two", "https://two.example.com/b"],
+        ["source_3", "Source Three", "https://three.example.com/c"],
+      ]),
+    );
+    expect(out).toBe(
+      "Alpha is true.[1][2] Beta is false.[1]\n\n## Sources\n\n1. Source One — https://one.example.com/a\n2. Source Two — https://two.example.com/b\n",
+    );
+  });
+
+  it("returns the report unchanged when no citation is verified", () => {
+    const out = renderCitedReport(
+      "Nothing is cited here.",
+      [cite([0, 22], "source_1", false)],
+      sourcesMap([["source_1", "Source One", "https://one.example.com/a"]]),
+    );
+    expect(out).toBe("Nothing is cited here.");
   });
 });
 

@@ -272,7 +272,9 @@ describe("emergent multi-agent run", () => {
     expect(result.claims.confirmed[0].votes).toHaveLength(2);
     expect(result.claims.confirmed[0].status).toBe("confirmed");
 
-    expect(result.report).toBe("The tower is 330 meters tall.");
+    expect(result.report).toBe(
+      "The tower is 330 meters tall.[1]\n\n## Sources\n\n1. Official tower register — https://data.example.com/tower\n",
+    );
     expect(result.citations).toHaveLength(1);
     expect(result.citations[0].verified).toBe(true);
     expect(result.citations[0].claimId).toBe("claim_1");
@@ -540,7 +542,9 @@ describe("durable resume", () => {
       .result();
     expect(liveFetches).toBe(1);
     expect(original.claims.confirmed).toHaveLength(1);
-    expect(original.report).toBe("The tower is 330 meters tall.");
+    expect(original.report).toBe(
+      "The tower is 330 meters tall.[1]\n\n## Sources\n\n1. Official tower register — https://data.example.com/tower\n",
+    );
 
     const lead2 = resumeLead();
     const extract2 = resumeExtract();
