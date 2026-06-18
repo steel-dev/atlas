@@ -329,11 +329,27 @@ async function collectVotes(
           conflicted ||
           WEB_CONTRADICTION_QUALITIES.has(claim.sourceQuality),
       );
-  const panel = (
-    await Promise.all(
-      panelLenses.map((lens) => castVote(rctx, args, claim, lens)),
-    )
-  ).filter((vote): vote is ClaimVote => vote !== null);
+  const cast = async (subset: VerifierLens[]): Promise<ClaimVote[]> =>
+    (
+      await Promise.all(subset.map((lens) => castVote(rctx, args, claim, lens)))
+    ).filter((vote): vote is ClaimVote => vote !== null);
+
+  let panel: ClaimVote[];
+  if (opts.lensesExplicit || panelLenses.length <= MIN_VOTES_TO_SETTLE) {
+    panel = await cast(panelLenses);
+  } else {
+    panel = await cast(panelLenses.slice(0, MIN_VOTES_TO_SETTLE));
+    const refuted = panel.filter((vote) => vote.refuted).length;
+    const decisive =
+      panel.length >= MIN_VOTES_TO_SETTLE &&
+      (refuted === 0 || refuted === panel.length);
+    if (!decisive) {
+      panel = [
+        ...panel,
+        ...(await cast(panelLenses.slice(MIN_VOTES_TO_SETTLE))),
+      ];
+    }
+  }
   return panel.length > 0 ? panel : (screenedVotes ?? []);
 }
 

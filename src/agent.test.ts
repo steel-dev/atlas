@@ -269,7 +269,7 @@ describe("emergent multi-agent run", () => {
 
     expect(result.claims.confirmed).toHaveLength(1);
     expect(result.claims.confirmed[0].id).toBe("claim_1");
-    expect(result.claims.confirmed[0].votes).toHaveLength(3);
+    expect(result.claims.confirmed[0].votes).toHaveLength(2);
     expect(result.claims.confirmed[0].status).toBe("confirmed");
 
     expect(result.report).toBe("The tower is 330 meters tall.");
@@ -278,7 +278,7 @@ describe("emergent multi-agent run", () => {
     expect(result.citations[0].claimId).toBe("claim_1");
 
     expect(result.stats.singleAgent).toBe(false);
-    expect(result.stats.agentsSpawned).toBe(4);
+    expect(result.stats.agentsSpawned).toBe(3);
     expect(result.stats.maxDepth).toBe(1);
     expect(result.stats.sourcesFetched).toBe(1);
     expect(result.stats.claimsVerified).toBe(1);
@@ -303,7 +303,7 @@ describe("emergent multi-agent run", () => {
     expect(spawned.filter((event) => event.role === "research")).toHaveLength(
       1,
     );
-    expect(spawned.filter((event) => event.role === "verify")).toHaveLength(3);
+    expect(spawned.filter((event) => event.role === "verify")).toHaveLength(2);
   });
 
   it("lets an inline lead read the ledger and verify its own claims", async () => {
@@ -341,7 +341,7 @@ describe("emergent multi-agent run", () => {
     expect(spawned.filter((event) => event.role === "research")).toHaveLength(
       0,
     );
-    expect(spawned.filter((event) => event.role === "verify")).toHaveLength(3);
+    expect(spawned.filter((event) => event.role === "verify")).toHaveLength(2);
   });
 
   it("force-verifies claims the lead never checked, from the reserve", async () => {
@@ -381,7 +381,7 @@ describe("emergent multi-agent run", () => {
     expect(spawned.filter((event) => event.role === "research")).toHaveLength(
       1,
     );
-    expect(spawned.filter((event) => event.role === "verify")).toHaveLength(3);
+    expect(spawned.filter((event) => event.role === "verify")).toHaveLength(2);
   });
 });
 

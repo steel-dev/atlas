@@ -301,7 +301,8 @@ describe("verifyClaims staged verification", () => {
     });
     expect(outcome.verdicts).toHaveLength(1);
     expect(outcome.verdicts[0].status).toBe("confirmed");
-    expect(central.votes).toHaveLength(3);
+    expect(central.votes).toHaveLength(2);
+    expect(central.votes.map((v) => v.lens)).not.toContain("source-strength");
     expect(boundRoles).toContain("lead");
     expect(boundRoles.filter((r) => r === "verify")).toHaveLength(1);
   });
@@ -465,6 +466,56 @@ describe("verifyClaims staged verification", () => {
     expect(outcome.verdicts[0].status).toBe("confirmed");
     expect(boundRoles.filter((r) => r === "verify")).toHaveLength(0);
     expect(central.votes.map((v) => v.lens)).not.toContain("screening");
+  });
+
+  it("casts the third lens only when the first two split", async () => {
+    const central = claim();
+    central.sourceQuality = "blog";
+    const screen = screenModel({
+      quote_supports_claim: true,
+      source_is_evidence: true,
+      needs_adversarial_check: true,
+      confidence: "high",
+      note: "benchmark figure worth a panel",
+    });
+    const verdictModel = new MockLanguageModelV3({
+      doGenerate: async ({ prompt }) => ({
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({
+              refuted: JSON.stringify(prompt).includes("Your lens: contradiction"),
+              evidence: "checked",
+              confidence: "high",
+            }),
+          },
+        ],
+        finishReason: { unified: "stop", raw: undefined },
+        usage: {
+          inputTokens: { total: 100, noCache: 100, cacheRead: 0, cacheWrite: 0 },
+          outputTokens: { total: 50, text: 50, reasoning: 0 },
+        },
+        warnings: [],
+      }),
+    });
+    const rctx = screeningRctx([central], screen, EFFORT_ENVELOPES.max);
+    Object.assign(rctx as unknown as Record<string, unknown>, {
+      ledger: {
+        byId: (id: string) => (id === "claim_1" ? central : undefined),
+        claims: [],
+      },
+      counters: { claimsVerified: 0, agentsSpawned: 0, maxDepth: 0 },
+      agentSequence: { next: 1 },
+      bindModel: (role: string) => (role === "verify" ? screen : verdictModel),
+    });
+    const outcome = await schedule(rctx, {
+      claimIds: ["claim_1"],
+      budgetUSD: 2,
+      parentId: "agent_1",
+    });
+    expect(outcome.verdicts[0].status).toBe("contested");
+    expect(central.votes).toHaveLength(3);
+    expect(central.votes.map((v) => v.lens)).toContain("source-strength");
   });
 });
 
