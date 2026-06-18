@@ -314,7 +314,7 @@ describe("verifyClaims staged verification", () => {
       agentSequence: { next: 1 },
       bindModel: (role: string) => {
         boundRoles.push(role);
-        return role === "verify" ? model : verdictModel;
+        return role === "screen" ? model : verdictModel;
       },
     });
     const outcome = await schedule(rctx, {
@@ -327,7 +327,7 @@ describe("verifyClaims staged verification", () => {
     expect(central.votes).toHaveLength(2);
     expect(central.votes.map((v) => v.lens)).not.toContain("source-strength");
     expect(boundRoles).toContain("lead");
-    expect(boundRoles.filter((r) => r === "verify")).toHaveLength(1);
+    expect(boundRoles.filter((r) => r === "screen")).toHaveLength(1);
   });
 
   it("skips the web-search contradiction lens for strong uncontested sources", async () => {
@@ -368,7 +368,7 @@ describe("verifyClaims staged verification", () => {
       },
       counters: { claimsVerified: 0, agentsSpawned: 0, maxDepth: 0 },
       agentSequence: { next: 1 },
-      bindModel: (role: string) => (role === "verify" ? screen : verdictModel),
+      bindModel: (role: string) => (role === "screen" ? screen : verdictModel),
     });
     const outcome = await schedule(rctx, {
       claimIds: ["claim_1"],
@@ -460,7 +460,7 @@ describe("verifyClaims staged verification", () => {
       agentSequence: { next: 1 },
       bindModel: (role: string) => {
         boundRoles.push(role);
-        return role === "verify" ? screen : verdict;
+        return role === "screen" ? screen : verdict;
       },
     });
     const outcome = await schedule(rctx, {
@@ -469,7 +469,7 @@ describe("verifyClaims staged verification", () => {
       parentId: "agent_1",
     });
     expect(outcome.verdicts[0].status).toBe("confirmed");
-    expect(boundRoles.filter((r) => r === "verify")).toHaveLength(1);
+    expect(boundRoles.filter((r) => r === "screen")).toHaveLength(1);
     expect(boundRoles).not.toContain("lead");
     expect(central.votes.map((v) => v.lens)).toContain("screening");
   });
@@ -497,7 +497,7 @@ describe("verifyClaims staged verification", () => {
       agentSequence: { next: 1 },
       bindModel: (role: string) => {
         boundRoles.push(role);
-        return role === "verify" ? screen : verdict;
+        return role === "screen" ? screen : verdict;
       },
     });
     const outcome = await schedule(rctx, {
@@ -506,7 +506,7 @@ describe("verifyClaims staged verification", () => {
       parentId: "agent_1",
     });
     expect(outcome.verdicts[0].status).toBe("confirmed");
-    expect(boundRoles.filter((r) => r === "verify")).toHaveLength(0);
+    expect(boundRoles.filter((r) => r === "screen")).toHaveLength(0);
     expect(central.votes.map((v) => v.lens)).not.toContain("screening");
   });
 
@@ -533,7 +533,7 @@ describe("verifyClaims staged verification", () => {
       agentSequence: { next: 1 },
       bindModel: (role: string) => {
         boundRoles.push(role);
-        return role === "verify" ? screen : verdict;
+        return role === "screen" ? screen : verdict;
       },
     });
     const outcome = await schedule(rctx, {
@@ -542,7 +542,7 @@ describe("verifyClaims staged verification", () => {
       parentId: "agent_1",
     });
     expect(outcome.verdicts[0].status).toBe("confirmed");
-    expect(boundRoles.filter((r) => r === "verify")).toHaveLength(1);
+    expect(boundRoles.filter((r) => r === "screen")).toHaveLength(1);
     expect(boundRoles).toContain("lead");
     expect(central.votes.map((v) => v.lens)).not.toContain("screening");
   });
@@ -585,7 +585,7 @@ describe("verifyClaims staged verification", () => {
       },
       counters: { claimsVerified: 0, agentsSpawned: 0, maxDepth: 0 },
       agentSequence: { next: 1 },
-      bindModel: (role: string) => (role === "verify" ? screen : verdictModel),
+      bindModel: (role: string) => (role === "screen" ? screen : verdictModel),
     });
     const outcome = await schedule(rctx, {
       claimIds: ["claim_1"],

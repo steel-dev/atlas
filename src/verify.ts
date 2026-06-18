@@ -250,7 +250,7 @@ export async function screenClaim(
   try {
     const result = await withTraceFrame(rctx.recorder, { site: "screen" }, () =>
       generateObject({
-      model: rctx.bindModel("verify", grant),
+      model: rctx.bindModel("screen", grant),
       system: SCREEN_SYSTEM,
       prompt: screenPrompt(
         rctx.question,

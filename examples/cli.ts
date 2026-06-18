@@ -49,6 +49,7 @@ Options:
 
 Environment:
   ATLAS_PROVIDER / ATLAS_MODEL                  default provider and model
+  ATLAS_CHEAP_PROVIDER / ATLAS_CHEAP_MODEL      cross-provider cheap tier for screen/entail/extract
   ANTHROPIC_API_KEY or ATLAS_ANTHROPIC_API_KEY  for provider=anthropic
   OPENAI_API_KEY    or ATLAS_OPENAI_API_KEY     for provider=openai
   TAVILY_API_KEY / EXA_API_KEY / BRAVE_API_KEY  optional search providers
@@ -135,6 +136,35 @@ function resolveModel(
   const apiKey = readEnv("ATLAS_OPENAI_API_KEY", "OPENAI_API_KEY");
   if (!apiKey) fail("OPENAI_API_KEY is required for provider=openai");
   return createOpenAI({ apiKey })(modelId);
+}
+
+function resolveCheapModels(): AtlasConfig["models"] | undefined {
+  const provider = readEnv("ATLAS_CHEAP_PROVIDER");
+  const modelId = readEnv("ATLAS_CHEAP_MODEL");
+  if (!provider && !modelId) return undefined;
+  if (provider !== "anthropic" && provider !== "openai") {
+    fail(
+      `ATLAS_CHEAP_PROVIDER must be one of: anthropic, openai (got "${provider}")`,
+    );
+  }
+  if (!modelId) {
+    fail("ATLAS_CHEAP_MODEL is required when ATLAS_CHEAP_PROVIDER is set");
+  }
+  let model: AtlasConfig["model"];
+  if (provider === "anthropic") {
+    const apiKey = readEnv("ATLAS_ANTHROPIC_API_KEY", "ANTHROPIC_API_KEY");
+    if (!apiKey) {
+      fail("ANTHROPIC_API_KEY is required for ATLAS_CHEAP_PROVIDER=anthropic");
+    }
+    model = createAnthropic({ apiKey })(modelId);
+  } else {
+    const apiKey = readEnv("ATLAS_OPENAI_API_KEY", "OPENAI_API_KEY");
+    if (!apiKey) {
+      fail("OPENAI_API_KEY is required for ATLAS_CHEAP_PROVIDER=openai");
+    }
+    model = createOpenAI({ apiKey })(modelId);
+  }
+  return { screen: model, entail: model, extract: model };
 }
 
 function formatEvent(e: ResearchEvent): string | null {
@@ -346,8 +376,10 @@ async function main(): Promise<void> {
     budget.maxDurationMs = Math.floor(timeoutSeconds * 1000);
   }
 
+  const cheapModels = resolveCheapModels();
   const config: AtlasConfig = {
     model: resolveModel(values.provider, values.model),
+    ...(cheapModels ? { models: cheapModels } : {}),
     ...(values.store ? { store: fileStore(values.store) } : {}),
     ...(traceMode && traceMode !== "off" ? { trace: traceMode } : {}),
   };

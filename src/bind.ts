@@ -202,7 +202,7 @@ async function runEntailmentChecks(
 ): Promise<Map<number, boolean>> {
   const supported = new Map<number, boolean>();
   if (items.length === 0) return supported;
-  const model = rctx.bindModel("verify", grant);
+  const model = rctx.bindModel("entail", grant);
   const batches: EntailmentItem[][] = [];
   for (
     let offset = 0;
@@ -263,7 +263,7 @@ async function classifyUnmarkedSentences(
   sentences: string[],
 ): Promise<Set<number>> {
   if (sentences.length === 0 || grant.floored()) return new Set();
-  const model = rctx.bindModel("verify", grant);
+  const model = rctx.bindModel("entail", grant);
   const prompt =
     "These sentences from a research report carry no citation. List the indices of sentences that assert a checkable factual claim about the world (numbers, dates, named entities, events, study results). Skip headings, transitions, opinions, summaries of cited material, and meta statements.\n\n" +
     sentences.map((sentence, index) => `[${index}] ${sentence}`).join("\n") +

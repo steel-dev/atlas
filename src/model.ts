@@ -26,7 +26,14 @@ import { BudgetExceededError, errorMessage } from "./errors.js";
 import { currentFrame, type SpanStatus, type TraceRecorder } from "./trace.js";
 import type { JournalWriter, ReplayCache } from "./providers/store.js";
 
-export type ModelRole = "lead" | "research" | "verify" | "extract" | "write";
+export type ModelRole =
+  | "lead"
+  | "research"
+  | "verify"
+  | "extract"
+  | "write"
+  | "screen"
+  | "entail";
 
 export type ResolvedModel = Exclude<LanguageModel, string>;
 

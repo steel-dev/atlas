@@ -291,12 +291,18 @@ export function resolveRunConfig(
     verify: config.models?.verify ?? derived ?? lead,
     extract: config.models?.extract ?? derived ?? lead,
     write: config.models?.write ?? config.models?.lead ?? lead,
+    screen: config.models?.screen ?? config.models?.verify ?? derived ?? lead,
+    entail: config.models?.entail ?? config.models?.verify ?? derived ?? lead,
   };
   const leadModelId = (lead as LanguageModelV3).modelId ?? "";
   const modelFallbackRoles: ModelRole[] = [];
   if (!derived && !isSmallModelId(leadModelId)) {
     if (!config.models?.extract) modelFallbackRoles.push("extract");
     if (!config.models?.verify) modelFallbackRoles.push("verify");
+    if (!config.models?.screen && !config.models?.verify)
+      modelFallbackRoles.push("screen");
+    if (!config.models?.entail && !config.models?.verify)
+      modelFallbackRoles.push("entail");
   }
   return {
     effort,
