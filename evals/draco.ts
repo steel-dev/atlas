@@ -1,5 +1,7 @@
+import { execSync } from "node:child_process";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   generateObject,
@@ -20,6 +22,8 @@ import {
   type Effort,
   type ResearchOptions,
   type ResearchResult,
+  type ResearchRun,
+  type TraceMode,
 } from "../src/index.js";
 import {
   buildDiagnostics,
@@ -88,6 +92,7 @@ export interface EvalOptions {
   retries: number;
   regrade?: string;
   dryRun: boolean;
+  traceMode: TraceMode;
 }
 
 export interface JudgeSpec {
@@ -397,6 +402,7 @@ Options:
       --out <file>            Write manifest/results/summary JSONL
       --timeout N             Per-task research timeout in seconds (default: ${DEFAULT_TIMEOUT_MS / 1000}; 0 = unlimited, like DRACO)
       --budget N              Per-task research budget in USD (default: effort envelope)
+      --trace MODE            off | spans | full — per-case trace to eval-runs/traces/<commit>/
       --effort LEVEL          Research effort: fast, balanced, deep, max (default: ${DEFAULT_EFFORT})
       --provider NAME         Research model provider: anthropic, openai
       --model NAME            Research (lead) model name — orchestration & synthesis
@@ -489,6 +495,13 @@ function readEffort(raw: string): Effort {
   fail(`--effort must be one of: fast, balanced, deep, max (got "${raw}")`);
 }
 
+function readTrace(raw: string): TraceMode {
+  if (raw === "off" || raw === "spans" || raw === "full") {
+    return raw;
+  }
+  fail(`--trace must be one of: off, spans, full (got "${raw}")`);
+}
+
 export function buildEvalOptions(
   overrides: Partial<EvalOptions> = {},
 ): EvalOptions {
@@ -507,6 +520,7 @@ export function buildEvalOptions(
     concurrency: 1,
     retries: 1,
     dryRun: false,
+    traceMode: "off",
     ...overrides,
   };
 }
@@ -638,6 +652,11 @@ function parseArgs(argv: string[]): EvalOptions {
     }
     if (arg === "--regrade") {
       opts.regrade = readValue(argv, i, arg);
+      i++;
+      continue;
+    }
+    if (arg === "--trace") {
+      opts.traceMode = readTrace(readValue(argv, i, arg));
       i++;
       continue;
     }
@@ -1280,7 +1299,47 @@ export function buildResearchRunOptions(opts: EvalOptions): ResearchOptions {
   return {
     effort: opts.effort,
     ...(Object.keys(budget).length > 0 ? { budget } : {}),
+    ...(opts.traceMode !== "off" ? { trace: opts.traceMode } : {}),
   };
+}
+
+function currentCommit(): string {
+  try {
+    return (
+      execSync("git rev-parse --short HEAD", {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+      }).trim() || "nocommit"
+    );
+  } catch {
+    return "nocommit";
+  }
+}
+
+function writeEvalTrace(run: ResearchRun, entry: DracoCase): void {
+  const trace = run.trace();
+  if (!trace) return;
+  const commit = currentCommit();
+  const dir = join("eval-runs", "traces", commit);
+  mkdirSync(dir, { recursive: true });
+  const meta = {
+    runId: run.id,
+    commit,
+    caseId: entry.id,
+    domain: entry.domain,
+    problem: entry.problem,
+  };
+  writeFileSync(
+    join(dir, `${entry.id}.trace.json`),
+    JSON.stringify({ ...meta, spans: trace.spans, steps: trace.steps }),
+  );
+  writeFileSync(
+    join(dir, `${entry.id}.digest.json`),
+    JSON.stringify({ ...meta, digest: trace.digest ?? null }, null, 2),
+  );
+  process.stderr.write(
+    `eval:draco: ${entry.id}: trace ${trace.mode} → ${join(dir, `${entry.id}.trace.json`)}\n`,
+  );
 }
 
 async function runResearch(
@@ -1301,7 +1360,9 @@ async function runResearch(
         const line = progressLine(entry.id, event);
         if (line) process.stderr.write(`eval:draco: ${line}\n`);
       }
-      return await run.result();
+      const result = await run.result();
+      if (opts.traceMode !== "off") writeEvalTrace(run, entry);
+      return result;
     } catch (err) {
       lastError = err;
       const message = err instanceof Error ? err.message : String(err);
