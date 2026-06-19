@@ -324,9 +324,10 @@ export function synthesisPrompt(opts: {
     "\n## Write the report\n" +
     "Consult the stored sources first (search_sources, read_source, run_code) when exact wording, figures, or context matter; then write. " +
     "Merge claims that say the same thing and combine their sources. " +
-    "Lead with the direct answer in the first sentence, then the supporting detail. " +
+    "Lead with the direct answer in the first sentence. For a broad or comparison question, open with a short labeled summary block — a heading such as `## Bottom line` followed by 2-4 sentences that state the recommendation or key findings up front — before the detailed sections (a single-fact question needs no summary). " +
     "Prefer confirmed claims, then screened; if nothing stronger answers, you may answer from the single best-supported candidate and flag it low confidence, never from a refuted claim, never invented. " +
     "Scale length to the question — a single fact is 1-3 sentences with no headings; a broad question gets more, never padded. " +
+    "Use lists or tables to organize multi-item comparisons rather than flattening them into prose. " +
     "Cite facts inline as Markdown links using only the source URLs above, and append {{claim_id}} markers after every factual sentence. " +
     "Render the report as Markdown for the user."
   );
