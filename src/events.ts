@@ -1,7 +1,12 @@
 import type { Effort } from "./config.js";
 import type { ClaimImportance, ClaimStatus } from "./ledger.js";
 
-export type AgentRole = "orchestrator" | "research" | "verify" | "write";
+export type AgentRole =
+  | "orchestrator"
+  | "research"
+  | "gather"
+  | "verify"
+  | "write";
 
 export type StopReason =
   | "answered"

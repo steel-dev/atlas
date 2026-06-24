@@ -382,6 +382,51 @@ export class Store {
     }
   }
 
+  updateGrade(
+    runId: string,
+    score: PersistableResult["score"],
+    report: unknown[],
+    judgeErrors: number,
+    judge: { provider: string | null; model: string | null; grader: string | null },
+  ): void {
+    this.db.exec("BEGIN");
+    try {
+      this.db
+        .prepare(
+          `UPDATE runs SET status = :status, normalized = :normalized, pass_rate = :pass_rate,
+             criteria = :criteria, graded_criteria = :graded_criteria, score_sd = :score_sd,
+             judge_errors = :judge_errors, judge_provider = :judge_provider,
+             judge_model = :judge_model, grader = :grader
+           WHERE run_id = :run_id`,
+        )
+        .run({
+          run_id: runId,
+          status: score ? "scored" : "ungraded",
+          normalized: score?.normalizedScore ?? null,
+          pass_rate: score?.passRate ?? null,
+          criteria:
+            score?.criteria ?? (Array.isArray(report) ? report.length : null),
+          graded_criteria: score?.gradedCriteria ?? null,
+          score_sd: score?.normalizedScoreSD ?? null,
+          judge_errors: judgeErrors,
+          judge_provider: judge.provider,
+          judge_model: judge.model,
+          grader: judge.grader,
+        });
+      const insertBlob = this.db.prepare(INSERT_BLOB);
+      if (score) {
+        const s = JSON.stringify(score);
+        insertBlob.run(runId, "score", gz(s), s.length);
+      }
+      const rep = JSON.stringify(report);
+      insertBlob.run(runId, "report", gz(rep), rep.length);
+      this.db.exec("COMMIT");
+    } catch (err) {
+      this.db.exec("ROLLBACK");
+      throw err;
+    }
+  }
+
   upsertCase(c: CaseInput): void {
     this.db.prepare(INSERT_CASE).run({
       case_id: c.caseId,

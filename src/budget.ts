@@ -29,6 +29,9 @@ export const DEFAULT_PRICING: PricingTable = {
   "o4-mini-deep-research": { inputPerMTok: 2, outputPerMTok: 8 },
   "gemini-2.5-pro": { inputPerMTok: 1.25, outputPerMTok: 10 },
   "gemini-2.5-flash": { inputPerMTok: 0.3, outputPerMTok: 2.5 },
+  "gemini-3-flash-preview": { inputPerMTok: 0.5, outputPerMTok: 3 },
+  "gemini-3.1-flash-lite": { inputPerMTok: 0.25, outputPerMTok: 1.5 },
+  "gemini-3.5-flash": { inputPerMTok: 1.5, outputPerMTok: 9 },
 };
 for (const pricing of Object.values(DEFAULT_PRICING)) {
   Object.freeze(pricing);

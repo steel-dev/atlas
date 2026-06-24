@@ -1,6 +1,7 @@
 import { generateText, type LanguageModel, type ToolSet } from "ai";
 import { errorMessage } from "../errors.js";
 import { readEnv } from "../env.js";
+import { sleep } from "../async.js";
 import { normalizeUrlForSource } from "../url.js";
 
 export interface SearchResult {
@@ -9,6 +10,7 @@ export interface SearchResult {
   url: string;
   snippet: string;
   domain: string;
+  meta?: Record<string, unknown>;
 }
 
 export interface SearchQuery {
@@ -55,6 +57,109 @@ async function readErrorBody(resp: Response): Promise<string> {
   }
 }
 
+class SearchProviderError extends Error {
+  readonly statusCode: number;
+  readonly retryAfterMs?: number;
+  constructor(message: string, statusCode: number, retryAfterMs?: number) {
+    super(message);
+    this.name = "SearchProviderError";
+    this.statusCode = statusCode;
+    if (retryAfterMs !== undefined) this.retryAfterMs = retryAfterMs;
+  }
+}
+
+function parseRetryAfterMs(headers: Headers): number | undefined {
+  const raw = headers.get("retry-after");
+  if (!raw) return undefined;
+  const seconds = Number(raw);
+  if (Number.isFinite(seconds)) return Math.max(0, seconds * 1_000);
+  const at = Date.parse(raw);
+  if (Number.isFinite(at)) return Math.max(0, at - Date.now());
+  return undefined;
+}
+
+async function searchHttpError(
+  label: string,
+  resp: Response,
+): Promise<SearchProviderError> {
+  const body = await readErrorBody(resp);
+  return new SearchProviderError(
+    `${label}: HTTP ${resp.status}: ${body}`,
+    resp.status,
+    parseRetryAfterMs(resp.headers),
+  );
+}
+
+const SEARCH_RETRY_MAX_ATTEMPTS = 5;
+const SEARCH_RETRY_BASE_DELAY_MS = 500;
+const SEARCH_RETRY_MAX_DELAY_MS = 15_000;
+
+function classifySearchRetry(err: unknown): {
+  retryable: boolean;
+  retryAfterMs?: number;
+} {
+  if (
+    err instanceof Error &&
+    (err.name === "AbortError" || err.name === "TimeoutError")
+  ) {
+    return { retryable: false };
+  }
+  if (err instanceof SearchProviderError) {
+    const status = err.statusCode;
+    const retryable =
+      status === 408 || status === 409 || status === 429 || status >= 500;
+    if (!retryable) return { retryable: false };
+    return {
+      retryable: true,
+      ...(err.retryAfterMs !== undefined
+        ? { retryAfterMs: err.retryAfterMs }
+        : {}),
+    };
+  }
+  const message = (
+    err instanceof Error ? err.message : String(err)
+  ).toLowerCase();
+  return /rate limit|too many requests|overloaded|concurrent connections|timeout|timed out|econnreset|etimedout|eai_again|socket hang up|fetch failed|network error/.test(
+    message,
+  )
+    ? { retryable: true }
+    : { retryable: false };
+}
+
+function searchBackoffDelayMs(
+  attempt: number,
+  retryAfterMs: number | undefined,
+): number {
+  const exponential = Math.min(
+    SEARCH_RETRY_MAX_DELAY_MS,
+    SEARCH_RETRY_BASE_DELAY_MS * 2 ** (attempt - 1),
+  );
+  const jittered = exponential / 2 + Math.random() * (exponential / 2);
+  return Math.min(
+    SEARCH_RETRY_MAX_DELAY_MS,
+    Math.max(retryAfterMs ?? 0, jittered),
+  );
+}
+
+async function searchWithRetry(
+  provider: SearchProvider,
+  q: SearchQuery,
+): Promise<SearchResult[]> {
+  let tries = 0;
+  for (;;) {
+    tries++;
+    try {
+      return await provider.search(q);
+    } catch (err) {
+      const { retryable, retryAfterMs } = classifySearchRetry(err);
+      if (!retryable || tries >= SEARCH_RETRY_MAX_ATTEMPTS || q.signal?.aborted) {
+        throw err;
+      }
+      await sleep(searchBackoffDelayMs(tries, retryAfterMs), q.signal);
+    }
+  }
+}
+
 function clampLimit(limit: number | undefined, max: number): number {
   return Math.min(Math.max(1, Math.floor(limit ?? 8)), max);
 }
@@ -89,7 +194,7 @@ export function tavily(opts: TavilyOptions = {}): SearchProvider {
         }),
       });
       if (!resp.ok) {
-        throw new Error(`tavily: HTTP ${resp.status}: ${await readErrorBody(resp)}`);
+        throw await searchHttpError("tavily", resp);
       }
       const data = (await resp.json()) as { results?: unknown[] };
       const rows = Array.isArray(data.results) ? data.results : [];
@@ -146,7 +251,7 @@ export function exa(opts: ExaOptions = {}): SearchProvider {
         }),
       });
       if (!resp.ok) {
-        throw new Error(`exa: HTTP ${resp.status}: ${await readErrorBody(resp)}`);
+        throw await searchHttpError("exa", resp);
       }
       const data = (await resp.json()) as { results?: unknown[] };
       const rows = Array.isArray(data.results) ? data.results : [];
@@ -209,9 +314,7 @@ export function brave(opts: BraveOptions = {}): SearchProvider {
         },
       });
       if (!resp.ok) {
-        throw new Error(
-          `brave: HTTP ${resp.status}: ${await readErrorBody(resp)}`,
-        );
+        throw await searchHttpError("brave", resp);
       }
       const data = (await resp.json()) as { web?: { results?: unknown[] } };
       const rows = Array.isArray(data.web?.results) ? data.web.results : [];
@@ -327,9 +430,33 @@ export interface MergedSearchResult {
   providerRank: number;
   providers: string[];
   score: number;
+  meta?: Record<string, unknown>;
 }
 
 const RRF_K = 60;
+
+export function openUrlsOf(meta: Record<string, unknown> | undefined): string[] {
+  const raw = meta?.openUrls;
+  if (!Array.isArray(raw)) return [];
+  const out: string[] = [];
+  for (const url of raw) {
+    if (typeof url === "string" && /^https?:\/\//i.test(url)) out.push(url);
+  }
+  return out;
+}
+
+function mergeMeta(
+  existing: Record<string, unknown> | undefined,
+  incoming: Record<string, unknown> | undefined,
+  preferIncoming: boolean,
+): Record<string, unknown> | undefined {
+  const openUrls = [...new Set([...openUrlsOf(existing), ...openUrlsOf(incoming)])];
+  const base = preferIncoming ? { ...existing, ...incoming } : { ...incoming, ...existing };
+  if (openUrls.length === 0) {
+    return Object.keys(base).length > 0 ? base : undefined;
+  }
+  return { ...base, openUrls };
+}
 
 export function mergeSearchResults(
   lists: Array<{ provider: string; results: SearchResult[] }>,
@@ -350,6 +477,7 @@ export function mergeSearchResults(
           providerRank: result.position,
           providers: [list.provider],
           score,
+          ...(result.meta ? { meta: result.meta } : {}),
         });
         continue;
       }
@@ -357,13 +485,16 @@ export function mergeSearchResults(
       if (!existing.providers.includes(list.provider)) {
         existing.providers.push(list.provider);
       }
-      if (result.position < existing.providerRank) {
+      const betterRank = result.position < existing.providerRank;
+      if (betterRank) {
         existing.title = result.title;
         existing.url = result.url;
         existing.snippet = result.snippet || existing.snippet;
         existing.provider = list.provider;
         existing.providerRank = result.position;
       }
+      const meta = mergeMeta(existing.meta, result.meta, betterRank);
+      if (meta) existing.meta = meta;
     }
   }
   return [...byUrl.values()]
@@ -391,7 +522,10 @@ export function combineSearchProviders(
       const lists = await Promise.all(
         providers.map(async (provider) => {
           try {
-            return { provider: provider.id, results: await provider.search(q) };
+            return {
+              provider: provider.id,
+              results: await searchWithRetry(provider, q),
+            };
           } catch (err) {
             warnings.push(`${provider.id}: ${errorMessage(err)}`);
             return { provider: provider.id, results: [] };

@@ -1,18 +1,11 @@
 import * as cheerio from "cheerio";
-import { jsonSchema } from "ai";
-import {
-  researchTool,
-  type ResearchTool,
-  type ToolContext,
-} from "../../src/custom-tools.js";
 import { errorMessage } from "../../src/errors.js";
 import {
-  buildContent,
-  clampLimit,
-  collapse,
-  fetchText,
-  manifest,
-} from "./shared.js";
+  safeDomain,
+  type SearchProvider,
+  type SearchResult,
+} from "../../src/providers/search.js";
+import { buildContent, clampLimit, collapse, fetchText } from "./shared.js";
 
 export interface ArxivOptions {
   defaultLimit?: number;
@@ -26,25 +19,18 @@ const SORT: Record<string, string> = {
   submitted: "submittedDate",
 };
 
-export function arxiv(opts: ArxivOptions = {}): ResearchTool {
+export function arxiv(opts: ArxivOptions = {}): SearchProvider {
   const defaultLimit = clampLimit(opts.defaultLimit ?? 5);
   const sortBy = SORT[opts.sort ?? "relevance"] ?? "relevance";
-  return researchTool({
-    description:
-      "Search arXiv for preprints in physics, mathematics, computer science, quantitative biology, statistics, economics and related fields. Returns paper abstracts as cited sources.",
-    inputSchema: jsonSchema<{ query: string }>({
-      type: "object",
-      properties: { query: { type: "string", description: "Search query" } },
-      required: ["query"],
-      additionalProperties: false,
-    }),
-    async execute(input, ctx) {
-      const query = String(input.query ?? "").trim();
-      if (!query) return "arxiv: empty query";
+  return {
+    id: "arxiv",
+    async search({ query, maxResults, signal }) {
+      const q = query.trim();
+      if (!q) return [];
       const params = new URLSearchParams({
-        search_query: `all:${query}`,
+        search_query: `all:${q}`,
         start: "0",
-        max_results: String(defaultLimit),
+        max_results: String(clampLimit(maxResults ?? defaultLimit)),
         sortBy,
         sortOrder: "descending",
       });
@@ -52,20 +38,20 @@ export function arxiv(opts: ArxivOptions = {}): ResearchTool {
       try {
         xml = await fetchText(
           `${ENDPOINT}?${params.toString()}`,
-          ctx.signal,
+          signal,
           "application/atom+xml",
         );
       } catch (err) {
-        return `arxiv: request failed: ${errorMessage(err)}`;
+        throw new Error(`arxiv: request failed: ${errorMessage(err)}`);
       }
-      return manifest("arxiv", query, ingest(xml, ctx));
+      return toResults(xml);
     },
-  });
+  };
 }
 
-function ingest(xml: string, ctx: ToolContext): string[] {
+function toResults(xml: string): SearchResult[] {
   const $ = cheerio.load(xml, { xml: true });
-  const titles: string[] = [];
+  const out: SearchResult[] = [];
   $("entry").each((_, el) => {
     const entry = $(el);
     const title = collapse(entry.children("title").first().text());
@@ -88,17 +74,24 @@ function ingest(xml: string, ctx: ToolContext): string[] {
       .text()
       .trim()
       .slice(0, 10);
-    ctx.addSource({
-      url,
+    const meta = published ? [`Published: ${published}`] : [];
+    out.push({
+      position: out.length + 1,
       title,
-      content: buildContent({
-        title,
-        authors,
-        meta: published ? [`Published: ${published}`] : [],
-        abstract,
-      }),
+      url,
+      snippet: abstract,
+      domain: safeDomain(url),
+      meta: {
+        openUrls: pdfUrls(url),
+        fallbackText: buildContent({ title, authors, meta, abstract }),
+      },
     });
-    titles.push(title);
   });
-  return titles;
+  return out;
+}
+
+function pdfUrls(absUrl: string): string[] {
+  return absUrl.includes("/abs/")
+    ? [absUrl.replace("/abs/", "/pdf/"), absUrl]
+    : [absUrl];
 }

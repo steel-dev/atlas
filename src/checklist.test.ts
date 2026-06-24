@@ -3,6 +3,7 @@ import {
   applyCoverageUpdate,
   isAnswered,
   openItems,
+  renderAnalyticalDemands,
   renderChecklistAudit,
   renderChecklistContract,
   type Checklist,
@@ -11,10 +12,12 @@ import {
 function fixture(): Checklist {
   return {
     nextId: 3,
+    scope: "broad",
     items: [
       {
         id: "item_1",
         fact: "Q1 2026 revenue figure",
+        kind: "fact",
         importance: "central",
         volatility: "volatile",
         status: "open",
@@ -22,6 +25,7 @@ function fixture(): Checklist {
       {
         id: "item_2",
         fact: "definition of the metric",
+        kind: "fact",
         importance: "central",
         volatility: "stable",
         status: "open",
@@ -46,8 +50,8 @@ describe("applyCoverageUpdate", () => {
     applyCoverageUpdate(checklist, {
       closedIds: [],
       newItems: [
-        { fact: "competitor pricing", importance: "peripheral", volatility: "volatile" },
-        { fact: "Q1 2026 revenue figure", importance: "central", volatility: "volatile" },
+        { fact: "competitor pricing", kind: "fact", importance: "peripheral", volatility: "volatile" },
+        { fact: "Q1 2026 revenue figure", kind: "fact", importance: "central", volatility: "volatile" },
       ],
     });
     expect(checklist.items).toHaveLength(3);
@@ -68,23 +72,64 @@ describe("applyCoverageUpdate", () => {
 });
 
 describe("isAnswered", () => {
-  it("is false while a central volatile item is open", () => {
+  it("is false while any central item is open", () => {
     expect(isAnswered(fixture())).toBe(false);
   });
 
-  it("is true once every central volatile item is closed", () => {
+  it("is true once every central item is closed", () => {
     const checklist = fixture();
-    applyCoverageUpdate(checklist, { closedIds: ["item_1"], newItems: [] });
+    applyCoverageUpdate(checklist, {
+      closedIds: ["item_1", "item_2"],
+      newItems: [],
+    });
     expect(isAnswered(checklist)).toBe(true);
   });
 
-  it("does not block on an open central stable item", () => {
+  it("blocks on an open central stable fact", () => {
     const checklist: Checklist = {
       nextId: 2,
+      scope: "broad",
       items: [
         {
           id: "item_1",
           fact: "settled definition",
+          kind: "fact",
+          importance: "central",
+          volatility: "stable",
+          status: "open",
+        },
+      ],
+    };
+    expect(isAnswered(checklist)).toBe(false);
+  });
+
+  it("does not block on an open peripheral item", () => {
+    const checklist: Checklist = {
+      nextId: 2,
+      scope: "broad",
+      items: [
+        {
+          id: "item_1",
+          fact: "useful context",
+          kind: "fact",
+          importance: "peripheral",
+          volatility: "volatile",
+          status: "open",
+        },
+      ],
+    };
+    expect(isAnswered(checklist)).toBe(true);
+  });
+
+  it("does not block on an open central analysis item", () => {
+    const checklist: Checklist = {
+      nextId: 2,
+      scope: "broad",
+      items: [
+        {
+          id: "item_1",
+          fact: "compare how each tradition structures reform",
+          kind: "analysis",
           importance: "central",
           volatility: "stable",
           status: "open",
@@ -110,5 +155,37 @@ describe("rendering", () => {
     const checklist = fixture();
     checklist.items[0].status = "grounded";
     expect(openItems(checklist).map((item) => item.id)).toEqual(["item_2"]);
+  });
+
+  it("contract lists facts only; analytical demands list analysis items only", () => {
+    const checklist: Checklist = {
+      nextId: 3,
+      scope: "broad",
+      items: [
+        {
+          id: "item_1",
+          fact: "the 1950 Marriage Law abolished arranged marriage",
+          kind: "fact",
+          importance: "central",
+          volatility: "stable",
+          status: "open",
+        },
+        {
+          id: "item_2",
+          fact: "compare reform authority across secular and religious traditions",
+          kind: "analysis",
+          importance: "central",
+          volatility: "stable",
+          status: "open",
+        },
+      ],
+    };
+    const contract = renderChecklistContract(checklist);
+    expect(contract).toContain("1950 Marriage Law");
+    expect(contract).not.toContain("compare reform authority");
+
+    const demands = renderAnalyticalDemands(checklist);
+    expect(demands).toContain("compare reform authority");
+    expect(demands).not.toContain("1950 Marriage Law");
   });
 });

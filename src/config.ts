@@ -30,14 +30,12 @@ export interface EffortEnvelope {
   maxReportCandidates: number;
   maxReportClaims: number;
   maxClaimsPerSource: number;
-  maxExtractionChars: number;
   maxAdjudicationRounds: number;
   verifyReserveFraction: number;
   verifierFetch: boolean;
   verifierMaxTurns: number;
   panelModelRole: ModelRole;
   panelGrantUSD: number;
-  leadContextTokens: number;
   maxLeadSessions: number;
   digestClaims: number;
   maxConflictClaims: number;
@@ -60,14 +58,12 @@ export const EFFORT_ENVELOPES: Record<Effort, EffortEnvelope> = {
     maxReportCandidates: 12,
     maxReportClaims: 30,
     maxClaimsPerSource: 5,
-    maxExtractionChars: 40_000,
     maxAdjudicationRounds: 1,
     verifyReserveFraction: 0.2,
     verifierFetch: false,
     verifierMaxTurns: 6,
     panelModelRole: "verify",
     panelGrantUSD: 0.04,
-    leadContextTokens: 80_000,
     maxLeadSessions: 4,
     digestClaims: 30,
     maxConflictClaims: 150,
@@ -84,18 +80,16 @@ export const EFFORT_ENVELOPES: Record<Effort, EffortEnvelope> = {
     maxTurns: 60,
     maxSubagentTurns: 30,
     maxEntailmentChecks: 60,
-    maxReportTokens: 8_192,
+    maxReportTokens: 12_288,
     maxReportCandidates: 20,
-    maxReportClaims: 60,
-    maxClaimsPerSource: 6,
-    maxExtractionChars: 60_000,
+    maxReportClaims: 100,
+    maxClaimsPerSource: 10,
     maxAdjudicationRounds: 2,
     verifyReserveFraction: 0.2,
     verifierFetch: false,
     verifierMaxTurns: 6,
     panelModelRole: "verify",
     panelGrantUSD: 0.04,
-    leadContextTokens: 80_000,
     maxLeadSessions: 6,
     digestClaims: 60,
     maxConflictClaims: 400,
@@ -115,15 +109,13 @@ export const EFFORT_ENVELOPES: Record<Effort, EffortEnvelope> = {
     maxReportTokens: 16_384,
     maxReportCandidates: 40,
     maxReportClaims: 120,
-    maxClaimsPerSource: 8,
-    maxExtractionChars: 100_000,
+    maxClaimsPerSource: 14,
     maxAdjudicationRounds: 2,
     verifyReserveFraction: 0.25,
     verifierFetch: false,
     verifierMaxTurns: 8,
     panelModelRole: "lead",
     panelGrantUSD: 0.35,
-    leadContextTokens: 120_000,
     maxLeadSessions: 8,
     digestClaims: 90,
     maxConflictClaims: 800,
@@ -143,15 +135,13 @@ export const EFFORT_ENVELOPES: Record<Effort, EffortEnvelope> = {
     maxReportTokens: 24_576,
     maxReportCandidates: 60,
     maxReportClaims: 160,
-    maxClaimsPerSource: 10,
-    maxExtractionChars: 150_000,
+    maxClaimsPerSource: 18,
     maxAdjudicationRounds: 3,
     verifyReserveFraction: 0.3,
     verifierFetch: true,
     verifierMaxTurns: 12,
     panelModelRole: "lead",
     panelGrantUSD: 0.8,
-    leadContextTokens: 160_000,
     maxLeadSessions: 12,
     digestClaims: 120,
     maxConflictClaims: 1_500,
@@ -185,10 +175,15 @@ export interface ConcurrencyConfig {
   io?: number;
 }
 
+export type SearchConfig =
+  | SearchProvider
+  | SearchProvider[]
+  | Record<string, SearchProvider | SearchProvider[]>;
+
 export interface AtlasConfig {
   model: ResolvedModel;
   models?: Partial<Record<ModelRole, ResolvedModel>>;
-  search?: SearchProvider | SearchProvider[];
+  search?: SearchConfig;
   fetch?: FetchProvider | FetchProvider[];
   effort?: Effort;
   budget?: Budget;
@@ -199,6 +194,7 @@ export interface AtlasConfig {
   tools?: Record<string, ResearchTool>;
   concurrency?: ConcurrencyConfig;
   trace?: TraceMode;
+  verify?: boolean;
 }
 
 export interface ResearchOptions {
@@ -209,6 +205,7 @@ export interface ResearchOptions {
   signal?: AbortSignal;
   runId?: string;
   trace?: TraceMode;
+  verify?: boolean;
 }
 
 export interface ResolvedRunConfig {
@@ -230,6 +227,7 @@ export interface ResolvedRunConfig {
   maxConcurrentModelCalls: number;
   maxConcurrentIo: number;
   trace: TraceMode;
+  verify: boolean;
 }
 
 const DEFAULT_MODEL_CONCURRENCY = 4;
@@ -331,5 +329,6 @@ export function resolveRunConfig(
       "ATLAS_IO_CONCURRENCY",
     ),
     trace: options.trace ?? config.trace ?? "off",
+    verify: options.verify ?? config.verify ?? false,
   };
 }

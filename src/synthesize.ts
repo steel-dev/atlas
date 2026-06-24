@@ -6,6 +6,7 @@ import { MODEL_CALL_MAX_RETRIES } from "./model.js";
 import { todayLine } from "./prompts.js";
 import type { RunCtx } from "./state.js";
 import { buildAgentTools, type AgentCtx, type ToolName } from "./tools.js";
+import { renderAnalyticalDemands } from "./checklist.js";
 import { voteSplit } from "./verify.js";
 import { isTimeSensitive, recencyScore } from "./recency.js";
 import type { ResearchClaim } from "./ledger.js";
@@ -280,6 +281,8 @@ const SYNTHESIS_SYSTEM_PROMPT =
   "Lead with the direct answer in the very first sentence. " +
   "Match length to the question: a single fact deserves 1-3 sentences with no headings; a broad question earns proportionally more, but never pad or fill sections. " +
   "Calibrate certainty to the evidence: state a well-confirmed answer plainly; lightly qualify a thin one; for an answer resting on unconfirmed or weak sources, still lead with the best candidate but explicitly flag that it is unverified and why. " +
+  "Use the evidence you were given: every confirmed or screened claim that bears on the question belongs in the report — do not answer from a subset and leave grounded, on-topic claims uncited. " +
+  "When the question asks you to choose — a recommendation, a ranking, a single best option — commit to one answer and defend it from the claims rather than retreating to a balanced summary that lists options without choosing. " +
   "Cite each factual statement inline as a Markdown link to its source URL, using only URLs present in the claims. " +
   "ADDITIONALLY, after every sentence that asserts a fact drawn from a claim, append a claim marker of the form {{claim_3}} (or {{claim_3,claim_7}} when a sentence rests on several claims), using the bracketed ids shown with each claim. The markers are machine-checked and stripped before the user sees the report — never omit them, never invent ids. " +
   "A confirmed claim may include a 'Source context' excerpt from its page; use it for precise wording and detail, but still cite the claim's source URL. " +
@@ -294,6 +297,7 @@ export function synthesisPrompt(opts: {
   question: string;
   partition: ClaimPartition;
   closingNote?: string | undefined;
+  analyticalDemands?: string | undefined;
   context?: ((claim: ResearchClaim) => string | undefined) | undefined;
   omitted?: number | undefined;
 }): string {
@@ -321,6 +325,10 @@ export function synthesisPrompt(opts: {
     renderCandidateClaims(candidates) +
     renderRefutedClaims(refuted) +
     (opts.closingNote ? `\n## Lead agent's closing note\n${opts.closingNote}\n` : "") +
+    (opts.analyticalDemands
+      ? `\n## Comparative & analytical points the answer must develop\n${opts.analyticalDemands}\n` +
+        "These are reasoning moves over the grounded facts above — make each one explicit in the report (a comparison across cases, a tension that drives the topic, a cross-case synthesis, a causal explanation), not left implicit behind a list of facts. They rest on the cited facts and need no citations of their own. Develop them in addition to the facts, not instead of them.\n"
+      : "") +
     "\n## Write the report\n" +
     "Consult the stored sources first (search_sources, read_source, run_code) when exact wording, figures, or context matter; then write. " +
     "Merge claims that say the same thing and combine their sources. " +
@@ -328,6 +336,9 @@ export function synthesisPrompt(opts: {
     "Prefer confirmed claims, then screened; if nothing stronger answers, you may answer from the single best-supported candidate and flag it low confidence, never from a refuted claim, never invented. " +
     "Scale length to the question — a single fact is 1-3 sentences with no headings; a broad question gets more, never padded. " +
     "Use lists or tables to organize multi-item comparisons rather than flattening them into prose. " +
+    "Specific named facts are the answer, not minor detail: keep each grounded fact's exact name, date, figure, case, or statute rather than collapsing it into a generic category, and do not drop a grounded specific to save space — a broad question should carry every grounded specific it has, and a table cell must name the specific value, not a generic label. " +
+    "Cover the evidence, not a sample: incorporate every confirmed or screened claim above that bears on the question — an on-topic grounded claim left uncited is lost coverage, not concision. " +
+    "When the question asks you to choose, name one answer and justify it from the claims; do not hedge into a balanced comparison that withholds the choice. " +
     "Cite facts inline as Markdown links using only the source URLs above, and append {{claim_id}} markers after every factual sentence. " +
     "Render the report as Markdown for the user."
   );
@@ -395,6 +406,9 @@ export async function synthesizeReport(
       question: rctx.question,
       partition: capped.partition,
       closingNote: opts.closingNote,
+      analyticalDemands: rctx.checklist
+        ? renderAnalyticalDemands(rctx.checklist) || undefined
+        : undefined,
       context: (claim) => quoteContext(rctx, claim),
       omitted: capped.omitted,
     }),
@@ -434,7 +448,50 @@ export async function synthesizeReport(
     }
   }
   rctx.signal?.throwIfAborted();
-  return stripReportPreamble(lastText.trim());
+  const draft = stripReportPreamble(lastText.trim());
+  emitSynthesisDiagnostics(rctx, capped, draft);
+  return draft;
+}
+
+function emitSynthesisDiagnostics(
+  rctx: RunCtx,
+  capped: { partition: ClaimPartition; omitted: number },
+  draft: string,
+): void {
+  const kept =
+    capped.partition.confirmed.length +
+    capped.partition.screened.length +
+    capped.partition.contested.length;
+  rctx.emit({
+    type: "tool.event",
+    tool: "synthesis.capped",
+    data: { total: kept + capped.omitted, kept, omitted: capped.omitted },
+  });
+  const provided = [
+    ...capped.partition.confirmed,
+    ...capped.partition.screened,
+    ...capped.partition.contested,
+    ...capped.partition.candidates,
+  ];
+  const providedIds = new Set(provided.map((claim) => claim.id));
+  const cited = new Set<string>();
+  for (const match of draft.matchAll(/\{\{\s*([^{}]+?)\s*\}\}/g)) {
+    for (const raw of match[1].split(",")) {
+      const id = raw.trim();
+      if (providedIds.has(id)) cited.add(id);
+    }
+  }
+  const unusedClaimIds = [...providedIds].filter((id) => !cited.has(id));
+  rctx.emit({
+    type: "tool.event",
+    tool: "synthesis.utilization",
+    data: {
+      provided: providedIds.size,
+      cited: cited.size,
+      unused: unusedClaimIds.length,
+      unusedClaimIds: unusedClaimIds.slice(0, 80),
+    },
+  });
 }
 
 const REPAIR_MAX_PROBLEMS = 24;

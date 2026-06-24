@@ -1,6 +1,7 @@
 import { CONTEXT_BUDGET_STOP, runAgent, type AgentResult } from "./agent.js";
 import type { BudgetGrant } from "./budget.js";
 import { renderChecklistContract } from "./checklist.js";
+import { leadContextTokensFor } from "./defaults.js";
 import {
   orchestratorAnchor,
   orchestratorContinuationAnchor,
@@ -41,7 +42,7 @@ export async function runOrchestrator(
     grant,
     depth: 0,
     maxTurns: envelope.maxTurns,
-    maxContextTokens: envelope.leadContextTokens,
+    maxContextTokens: leadContextTokensFor(rctx.config.models.lead),
   });
   const anchor =
     opts.gaps && opts.gaps.length > 0

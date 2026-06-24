@@ -108,6 +108,7 @@ export type EvalTraceEventName =
   | "search_failed"
   | "source_fetched"
   | "source_error"
+  | "claim_extracted"
   | "claims_extracted"
   | "claim_verified"
   | "report_drafting"
@@ -238,6 +239,13 @@ export function traceEvent(
         unsupported: event.unsupported,
         ...(event.error ? { error: event.error } : {}),
       };
+    case "claim.extracted":
+      return {
+        ...base("claim_extracted"),
+        id: event.claimId,
+        sourceId: event.sourceId,
+        data: { text: event.text, importance: event.importance },
+      };
     case "claim.verified":
       return {
         ...base("claim_verified"),
@@ -290,7 +298,6 @@ export function traceEvent(
         id: event.modelId,
         detail: event.detail,
       };
-    case "claim.extracted":
     case "report.delta":
     case "report.reset":
     case "report.completed":

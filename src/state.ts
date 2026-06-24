@@ -19,6 +19,18 @@ export interface SearchCacheEntry {
   warnings: string[];
 }
 
+export interface OaCandidate {
+  openUrls: string[];
+  title?: string;
+  fallbackText?: string;
+}
+
+export interface SurfacedCandidate {
+  url: string;
+  title: string;
+  snippet: string;
+}
+
 export interface SourceStore {
   fetchedSources: FetchedSource[];
   byUrl: Map<string, SourceDocument>;
@@ -119,8 +131,13 @@ export interface RunCtx {
   ledger: Ledger;
   checklist: Checklist | null;
   trail: Trail;
+  notes: string[];
+  readCounts: Map<string, number>;
   sources: SourceStore;
   search: ResolvedSearch;
+  searchBySource: Map<string, ResolvedSearch>;
+  oaCandidates: Map<string, OaCandidate>;
+  surfacedCandidates: Map<string, SurfacedCandidate>;
   fetchChain: FetchProvider[];
   customTools: ReadonlyMap<string, ResolvedCustomTool>;
   runCodeEnabled: boolean;

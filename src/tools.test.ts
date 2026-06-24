@@ -145,7 +145,7 @@ describe("fetch extraction by role", () => {
           queued.count++;
         },
       },
-      trail: { recordDeadEnd: () => {} },
+      trail: { recordDeadEnd: () => {}, isDeadEnd: () => undefined },
       counters: { sourcesFetched: 0, sourcesFailed: 0 },
       emit: () => {},
       signal: undefined,
@@ -196,7 +196,8 @@ describe("execSearchTool live cache", () => {
       recorder: undefined,
       config: {},
       counters: { searches: 0, searchCacheHits: 0 },
-      sources: { searchCache: new Map() },
+      sources: { searchCache: new Map(), byUrl: new Map() },
+      surfacedCandidates: new Map(),
       trail: { recordSearch: () => {} },
       emit: () => {},
       search: {

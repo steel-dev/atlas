@@ -118,14 +118,16 @@ const grep = (pattern, opts) => {
     let found;
     while (matches.length < max && (found = regex.exec(doc.text)) !== null) {
       const text = found[0];
+      const ctxStr = contextChars > 0
+        ? doc.text.slice(Math.max(0, found.index - contextChars), Math.min(doc.text.length, found.index + text.length + contextChars))
+        : "";
       matches.push({
         source_id: doc.source_id,
         url: doc.url,
         offset: found.index,
         match: text,
-        context: contextChars > 0
-          ? doc.text.slice(Math.max(0, found.index - contextChars), Math.min(doc.text.length, found.index + text.length + contextChars))
-          : "",
+        text: ctxStr || text,
+        context: ctxStr,
       });
       if (text === "") regex.lastIndex++;
     }

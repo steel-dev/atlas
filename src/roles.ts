@@ -23,6 +23,13 @@ export const ROLE_CAPABILITIES: Record<AgentRole, RoleCapabilities> = {
     ledgerExtract: true,
     ledgerFlushOnReturn: true,
   },
+  gather: {
+    spawn: false,
+    budgetLine: true,
+    customTools: true,
+    ledgerExtract: false,
+    ledgerFlushOnReturn: false,
+  },
   verify: {
     spawn: false,
     budgetLine: false,

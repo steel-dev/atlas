@@ -5,6 +5,7 @@ import { execSync } from "node:child_process";
 import { parseArgs } from "node:util";
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { createOpenAI } from "@ai-sdk/openai";
+import { createGoogleGenerativeAI } from "@ai-sdk/google";
 import {
   Atlas,
   fileStore,
@@ -22,6 +23,8 @@ import {
   DEFAULT_OPENAI_MODEL,
 } from "../src/defaults.js";
 import { readEnv } from "../src/env.js";
+import { defaultSearchProviders } from "../src/providers/search.js";
+import { arxiv, edgar, openalex, pubmed } from "./domain-tools/index.js";
 
 const USAGE = `atlas — deep research from your terminal
 
@@ -121,17 +124,30 @@ function resolveModel(
   modelFlag: string | undefined,
 ): AtlasConfig["model"] {
   const provider = providerFlag ?? readEnv("ATLAS_PROVIDER") ?? "anthropic";
-  if (provider !== "anthropic" && provider !== "openai") {
-    fail(`provider must be one of: anthropic, openai (got "${provider}")`);
+  if (provider !== "anthropic" && provider !== "openai" && provider !== "google") {
+    fail(`provider must be one of: anthropic, openai, google (got "${provider}")`);
   }
   const modelId =
     modelFlag ??
     readEnv("ATLAS_MODEL") ??
-    (provider === "anthropic" ? DEFAULT_ANTHROPIC_MODEL : DEFAULT_OPENAI_MODEL);
+    (provider === "anthropic"
+      ? DEFAULT_ANTHROPIC_MODEL
+      : provider === "google"
+        ? "gemini-3.5-flash"
+        : DEFAULT_OPENAI_MODEL);
   if (provider === "anthropic") {
     const apiKey = readEnv("ATLAS_ANTHROPIC_API_KEY", "ANTHROPIC_API_KEY");
     if (!apiKey) fail("ANTHROPIC_API_KEY is required for provider=anthropic");
     return createAnthropic({ apiKey })(modelId);
+  }
+  if (provider === "google") {
+    const apiKey = readEnv(
+      "ATLAS_GOOGLE_API_KEY",
+      "GEMINI_API_KEY",
+      "GOOGLE_GENERATIVE_AI_API_KEY",
+    );
+    if (!apiKey) fail("GEMINI_API_KEY is required for provider=google");
+    return createGoogleGenerativeAI({ apiKey })(modelId);
   }
   const apiKey = readEnv("ATLAS_OPENAI_API_KEY", "OPENAI_API_KEY");
   if (!apiKey) fail("OPENAI_API_KEY is required for provider=openai");
@@ -377,8 +393,15 @@ async function main(): Promise<void> {
   }
 
   const cheapModels = resolveCheapModels();
+  const model = resolveModel(values.provider, values.model);
   const config: AtlasConfig = {
-    model: resolveModel(values.provider, values.model),
+    model,
+    search: {
+      web: defaultSearchProviders(model),
+      academic: [openalex(), arxiv()],
+      finance: [edgar()],
+      medical: [pubmed()],
+    },
     ...(cheapModels ? { models: cheapModels } : {}),
     ...(values.store ? { store: fileStore(values.store) } : {}),
     ...(traceMode && traceMode !== "off" ? { trace: traceMode } : {}),

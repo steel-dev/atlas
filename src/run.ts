@@ -3,7 +3,13 @@ import { generateObject } from "ai";
 import { z } from "zod";
 import { adjudicateCoverage } from "./adjudicate.js";
 import type { AgentResult } from "./agent.js";
-import { bindCitations, renderCitedReport, type Citation } from "./bind.js";
+import {
+  bindCitations,
+  renderCitedReport,
+  splitSentences,
+  stripMarkers,
+  type Citation,
+} from "./bind.js";
 import { withGrant, type BudgetGrant, type BudgetMeter } from "./budget.js";
 import { buildChecklist } from "./checklist.js";
 import {
@@ -43,6 +49,7 @@ import {
 } from "./synthesize.js";
 import { synthesizeStructured, type FieldBasis } from "./structured.js";
 import type { RunCtx } from "./state.js";
+import { runSpine } from "./spine.js";
 import {
   withTraceFrame,
   type RunTrace,
@@ -327,36 +334,70 @@ async function executeRun(args: ExecuteRunArgs): Promise<ResearchResult> {
     });
   }
 
-  const orchestrator = await runResearchPhase(
-    rctx,
-    meter,
-    args,
-    drainEagerVerifications,
-  );
+  let report: string;
+  let note: string;
+  let citations: Citation[];
+  let unsupportedSentences: string[];
+  let structured: unknown;
+  let structuredBasis: Record<string, FieldBasis> | undefined;
+  let openQuestions: string[];
+  let partition: ClaimPartition;
+  let citationsBound: number;
+  let citationsUnsupported: number;
 
-  await consolidateClaims(rctx, meter, verifyReserve, args);
-  await rctx.ledger.settle();
-
-  const partition = partitionClaims(
-    ledger.claims,
-    resolved.envelope.maxReportCandidates,
-    recencyContext(rctx),
-  );
-  const outputs = await composeOutputs(rctx, synthesisGrant, args, {
-    partition,
-    closingNote: orchestrator.note,
-  });
-  const { bound, structured, structuredBasis, openQuestions } = outputs;
-  emit({ type: "report.completed", report: bound.report });
+  if (resolved.verify) {
+    const orchestrator = await runResearchPhase(
+      rctx,
+      meter,
+      args,
+      drainEagerVerifications,
+    );
+    await consolidateClaims(rctx, meter, verifyReserve, args);
+    await rctx.ledger.settle();
+    partition = partitionClaims(
+      ledger.claims,
+      resolved.envelope.maxReportCandidates,
+      recencyContext(rctx),
+    );
+    const outputs = await composeOutputs(rctx, synthesisGrant, args, {
+      partition,
+      closingNote: orchestrator.note,
+    });
+    report = outputs.bound.report;
+    note = orchestrator.note;
+    citations = outputs.bound.citations;
+    unsupportedSentences = outputs.bound.unsupportedSentences;
+    structured = outputs.structured;
+    structuredBasis = outputs.structuredBasis;
+    openQuestions = outputs.openQuestions;
+    citationsBound = outputs.bound.citationsBound;
+    citationsUnsupported = outputs.bound.citationsUnsupported;
+  } else {
+    verifyReserve.release();
+    synthesisGrant.release();
+    const spine = await runSpine(rctx, { meter });
+    partition = partitionClaims(
+      ledger.claims,
+      resolved.envelope.maxReportCandidates,
+      recencyContext(rctx),
+    );
+    report = spine.report;
+    note = spine.note;
+    citations = spine.citations;
+    unsupportedSentences = spine.unsupportedSentences;
+    structured = undefined;
+    structuredBasis = undefined;
+    openQuestions = [];
+    citationsBound = spine.citations.length;
+    citationsUnsupported = spine.unsupportedSentences.length;
+  }
+  emit({ type: "report.completed", report });
 
   const durationMs = args.now() - startedAt;
   const stats = buildStats({
     rctx,
     partition,
-    bound: {
-      citationsBound: bound.citationsBound,
-      citationsUnsupported: bound.citationsUnsupported,
-    },
+    bound: { citationsBound, citationsUnsupported },
     durationMs,
     stopped: args.stopSignal.aborted,
   });
@@ -376,8 +417,8 @@ async function executeRun(args: ExecuteRunArgs): Promise<ResearchResult> {
   const result: ResearchResult = {
     runId,
     question,
-    report: bound.report,
-    note: orchestrator.note,
+    report,
+    note,
     ...(structured !== undefined ? { structured } : {}),
     ...(structuredBasis ? { structuredBasis } : {}),
     claims: {
@@ -406,8 +447,8 @@ async function executeRun(args: ExecuteRunArgs): Promise<ResearchResult> {
           : {}),
       };
     }),
-    citations: bound.citations,
-    unsupportedSentences: bound.unsupportedSentences,
+    citations,
+    unsupportedSentences,
     stats,
     traceVersion: EVENT_SCHEMA_VERSION,
   };
@@ -473,6 +514,18 @@ async function planCoverageChecklist(
         .length,
       volatile: checklist.items.filter((item) => item.volatility === "volatile")
         .length,
+    });
+    rctx.emit({
+      type: "tool.event",
+      tool: "checklist.items",
+      data: {
+        items: checklist.items.map((item) => ({
+          fact: item.fact,
+          kind: item.kind,
+          importance: item.importance,
+          status: item.status,
+        })),
+      },
     });
   }
 }
@@ -625,6 +678,39 @@ export function acceptsRepair(
   );
 }
 
+function normalizeSentence(text: string): string {
+  return text.replace(/\s+/g, " ").trim();
+}
+
+function emitRepairDiff(
+  rctx: RunCtx,
+  draft: string,
+  repaired: string,
+  accepted: boolean,
+): void {
+  const before = new Set(
+    splitSentences(stripMarkers(draft).report)
+      .map(normalizeSentence)
+      .filter(Boolean),
+  );
+  const after = new Set(
+    splitSentences(stripMarkers(repaired).report)
+      .map(normalizeSentence)
+      .filter(Boolean),
+  );
+  const removed = [...before].filter((sentence) => !after.has(sentence));
+  rctx.emit({
+    type: "tool.event",
+    tool: "repair.diff",
+    data: {
+      accepted,
+      draftSentences: before.size,
+      repairedSentences: after.size,
+      removed: removed.slice(0, 40),
+    },
+  });
+}
+
 async function bindAndRepair(
   rctx: RunCtx,
   grant: BudgetGrant,
@@ -637,7 +723,9 @@ async function bindAndRepair(
       const repaired = await repairReport(rctx, grant, { draft, bound });
       if (repaired && repaired !== draft) {
         const rebound = await bindCitations(rctx, grant, repaired);
-        if (acceptsRepair(bound, rebound)) {
+        const accepted = acceptsRepair(bound, rebound);
+        emitRepairDiff(rctx, draft, repaired, accepted);
+        if (accepted) {
           bound = rebound;
         }
       }

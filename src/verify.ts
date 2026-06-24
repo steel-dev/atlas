@@ -44,6 +44,8 @@ const MAX_CLAIMS_PER_SPAWN = 8;
 const VOTER_STEP_MAX_TOKENS = 1_200;
 const VERDICT_MAX_TOKENS = 600;
 
+const PANEL_SKIP_MIN_CORROBORATION = 3;
+
 const WEB_CONTRADICTION_QUALITIES = new Set<ClaimSourceQuality>([
   "blog",
   "forum",
@@ -307,17 +309,32 @@ async function collectVotes(
 ): Promise<ClaimVote[]> {
   const conflicted = (claim.conflictsWith?.length ?? 0) > 0;
   const screenedVotes = claim.status === "screened" ? claim.votes : null;
+  // The report-level entailment gate (active at balanced effort and up) already
+  // grounds every cited sentence to a claim's quote, making the adversarial panel
+  // a redundant second precision layer. For a claim several independent sources
+  // corroborate from a non-weak source, let the screen settle it instead of paying
+  // for a panel. When entailment is off (fast) or the source is weak, keep the
+  // panel — there it is the only precision backstop beyond the verbatim quote check.
+  const entailmentBackstop = rctx.config.envelope.maxEntailmentChecks > 0;
+  const screenCanSettle =
+    entailmentBackstop &&
+    (claim.corroboration ?? 1) >= PANEL_SKIP_MIN_CORROBORATION &&
+    !WEB_CONTRADICTION_QUALITIES.has(claim.sourceQuality);
   const preRoutedToPanel =
     claim.kind === "empirical" &&
     opts.panelAffordable &&
-    claim.sourceQuality !== "primary";
+    claim.sourceQuality !== "primary" &&
+    !screenCanSettle;
 
   if (!opts.lensesExplicit && !conflicted && !preRoutedToPanel) {
     const screen: ScreenResult = screenedVotes
       ? { votes: screenedVotes, escalate: false }
       : await screenClaim(rctx, args.grant, claim);
     const passed = (screen.votes?.length ?? 0) > 0;
-    if (passed && !(screen.escalate && opts.panelAffordable)) {
+    if (
+      passed &&
+      !(screen.escalate && opts.panelAffordable && !screenCanSettle)
+    ) {
       return screen.votes ?? [];
     }
     if (!passed && !opts.panelAffordable) {

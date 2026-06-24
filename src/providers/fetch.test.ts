@@ -1,7 +1,12 @@
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { basicFetch, looksBlockedPage } from "./fetch.js";
+import {
+  basicFetch,
+  looksBlockedPage,
+  steelAttemptFromResponse,
+  type SteelScrapeResponse,
+} from "./fetch.js";
 
 const PAGE_BODY =
   "<html><head><title>Tower</title></head><body><p>" +
@@ -39,6 +44,11 @@ describe("basicFetch redirect handling", () => {
       if (req.url === "/target") {
         res.writeHead(200, { "content-type": "text/html" });
         res.end(PAGE_BODY);
+        return;
+      }
+      if (req.url === "/badpdf") {
+        res.writeHead(200, { "content-type": "application/pdf" });
+        res.end("%PDF-1.4 this is not a parseable pdf body");
         return;
       }
       res.writeHead(404);
@@ -105,6 +115,84 @@ describe("basicFetch redirect handling", () => {
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.attempt.note).toContain("too_many_redirects");
+    }
+  });
+
+  it("escalates a PDF that fails to parse so the chain can fall back", async () => {
+    const provider = basicFetch();
+    const result = await provider.fetch({
+      url: `${base}/badpdf`,
+      guardRedirect: async () => ({ ok: true }),
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.attempt.note).toMatch(/pdf_(no_text|parse_error)/);
+      expect(result.escalate).toBe(true);
+    }
+  });
+});
+
+describe("steelAttemptFromResponse", () => {
+  const article = "Land reform reshaped tenure across the region. ".repeat(8);
+
+  it("uses scraped html when it is substantive", () => {
+    const response: SteelScrapeResponse = {
+      content: { html: `<html><body><p>${article}</p></body></html>` },
+    };
+    const result = steelAttemptFromResponse(response, "https://x.com/a");
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.page.renderedWith).toBe("steel_scrape");
+      expect(result.page.markdown).toContain("Land reform");
+    }
+  });
+
+  it("falls through to markdown when the html is a thin pdf viewer shell", () => {
+    const response: SteelScrapeResponse = {
+      content: {
+        html: "<html><body><div id=viewer></div></body></html>",
+        markdown: `# Report\n\n${article}`,
+      },
+    };
+    const result = steelAttemptFromResponse(response, "https://x.com/a.pdf");
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.page.renderedWith).toBe("steel_scrape");
+      expect(result.page.markdown).toContain("Land reform");
+    }
+  });
+
+  it("falls through to markdown when the html looks blocked", () => {
+    const response: SteelScrapeResponse = {
+      content: {
+        html: "<html><body><h1>Just a moment...</h1><p>Enable JavaScript and cookies to continue.</p></body></html>",
+        markdown: article,
+      },
+    };
+    const result = steelAttemptFromResponse(response, "https://x.com/a.pdf");
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.page.markdown).toContain("Land reform");
+  });
+
+  it("fails when neither html nor markdown is usable", () => {
+    const response: SteelScrapeResponse = {
+      content: { html: "<html><body><p>hi</p></body></html>" },
+    };
+    const result = steelAttemptFromResponse(response, "https://x.com/a.pdf");
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.attempt.note).toContain("empty_content");
+  });
+
+  it("fails on an http error status", () => {
+    const response: SteelScrapeResponse = {
+      content: { markdown: article },
+      metadata: { statusCode: 403 },
+    };
+    const result = steelAttemptFromResponse(response, "https://x.com/a.pdf");
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.attempt.note).toContain("http_error");
+      expect(result.escalate).toBe(false);
     }
   });
 });

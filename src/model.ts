@@ -286,9 +286,6 @@ function withOpenAIDefaults(
   const openai = {
     ...params.providerOptions?.openai,
     strictJsonSchema: false,
-    ...(params.responseFormat?.type === "json"
-      ? { reasoningEffort: "minimal" as const }
-      : {}),
   };
   return {
     ...params,

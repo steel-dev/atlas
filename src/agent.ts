@@ -10,6 +10,7 @@ import { ECONOMY } from "./economy.js";
 import { errorMessage } from "./errors.js";
 import type { AgentRole } from "./events.js";
 import { renderLedgerDigest } from "./ledger.js";
+import { stubToolResultWindow } from "./memory.js";
 import { MODEL_CALL_MAX_RETRIES, type ModelRole } from "./model.js";
 import { researchAgentSystem } from "./prompts.js";
 import { ROLE_CAPABILITIES } from "./roles.js";
@@ -56,6 +57,8 @@ export interface AgentSpec {
   maxContextTokens?: number | undefined;
   captureMessages?: boolean | undefined;
   finalTool?: { name: string; inputSchema: FlexibleSchema } | undefined;
+  memoryCursor?: number | undefined;
+  forceFirstTool?: ToolName | undefined;
 }
 
 export interface AgentResult {
@@ -192,8 +195,18 @@ export async function runAgent(
         return false;
       },
     ],
-    prepareStep: ({ stepNumber }) => {
+    prepareStep: ({ stepNumber, messages }) => {
       actx.spawnsThisStep.count = 0;
+      const memory =
+        spec.memoryCursor !== undefined
+          ? { messages: stubToolResultWindow(messages as ModelMessage[], spec.memoryCursor) }
+          : {};
+      if (spec.forceFirstTool && stepNumber === 0) {
+        return {
+          toolChoice: { type: "tool" as const, toolName: spec.forceFirstTool },
+          ...memory,
+        };
+      }
       if (spec.finalTool && stepNumber >= 1) {
         const maxTurns = spec.maxTurns ?? rctx.config.envelope.maxTurns;
         const reserveVerdict =
@@ -201,11 +214,12 @@ export async function runAgent(
           ECONOMY.grantFloorUSD + FINAL_TOOL_VERDICT_RESERVE_USD;
         if (stepNumber >= maxTurns - 1 || reserveVerdict) {
           return {
-            toolChoice: { type: "tool", toolName: spec.finalTool.name },
+            toolChoice: { type: "tool" as const, toolName: spec.finalTool.name },
+            ...memory,
           };
         }
       }
-      return {};
+      return memory;
     },
     onStepFinish: (step) => {
       if (step.text?.trim()) lastText = step.text.trim();

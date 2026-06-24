@@ -155,7 +155,9 @@ describe("synthesizeReport with tools", () => {
     expect(step).toBe(2);
     const types = events.map((event) => event.type);
     expect(types[0]).toBe("report.drafting");
-    expect(types.slice(1).every((type) => type === "report.delta")).toBe(true);
+    const firstTool = types.indexOf("tool.event");
+    const streamEnd = firstTool === -1 ? types.length : firstTool;
+    expect(types.slice(1, streamEnd).every((type) => type === "report.delta")).toBe(true);
     expect(types.filter((type) => type === "report.delta").length).toBeGreaterThan(0);
     const streamed = events
       .filter(
@@ -165,6 +167,14 @@ describe("synthesizeReport with tools", () => {
       .map((event) => event.text)
       .join("");
     expect(streamed).toBe("The tower is 330 meters tall.");
+    const tools = events
+      .filter(
+        (event): event is Extract<ResearchEvent, { type: "tool.event" }> =>
+          event.type === "tool.event",
+      )
+      .map((event) => event.tool);
+    expect(tools).toContain("synthesis.capped");
+    expect(tools).toContain("synthesis.utilization");
   });
 });
 

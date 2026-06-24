@@ -596,6 +596,81 @@ describe("verifyClaims staged verification", () => {
     expect(central.votes).toHaveLength(3);
     expect(central.votes.map((v) => v.lens)).toContain("source-strength");
   });
+
+  it("settles a well-corroborated claim from the screen under the entailment backstop (verify diet)", async () => {
+    const c = claim();
+    c.kind = "empirical";
+    c.sourceQuality = "secondary";
+    c.corroboration = 3;
+    const boundRoles: string[] = [];
+    const screen = screenModel({
+      quote_supports_claim: true,
+      source_is_evidence: true,
+      needs_adversarial_check: true,
+      confidence: "high",
+      note: "three independent sources corroborate this figure",
+    });
+    const verdict = verdictModel();
+    const rctx = screeningRctx([c], screen, EFFORT_ENVELOPES.balanced);
+    Object.assign(rctx as unknown as Record<string, unknown>, {
+      ledger: {
+        byId: (id: string) => (id === "claim_1" ? c : undefined),
+        claims: [],
+      },
+      counters: { claimsVerified: 0, agentsSpawned: 0, maxDepth: 0 },
+      agentSequence: { next: 1 },
+      bindModel: (role: string) => {
+        boundRoles.push(role);
+        return role === "screen" ? screen : verdict;
+      },
+    });
+    const outcome = await schedule(rctx, {
+      claimIds: ["claim_1"],
+      budgetUSD: 2,
+      parentId: "agent_1",
+    });
+    expect(outcome.verdicts[0].status).toBe("screened");
+    expect(c.votes).toHaveLength(1);
+    expect(c.votes[0].lens).toBe("screening");
+    expect(boundRoles.filter((r) => r === "screen")).toHaveLength(1);
+  });
+
+  it("keeps the panel for a corroborated claim from a weak source (diet gated by source quality)", async () => {
+    const c = claim();
+    c.kind = "empirical";
+    c.sourceQuality = "blog";
+    c.corroboration = 5;
+    const boundRoles: string[] = [];
+    const screen = screenModel({
+      quote_supports_claim: true,
+      source_is_evidence: true,
+      needs_adversarial_check: false,
+      confidence: "high",
+      note: "corroborated but blog-quality",
+    });
+    const verdict = verdictModel();
+    const rctx = screeningRctx([c], screen, EFFORT_ENVELOPES.balanced);
+    Object.assign(rctx as unknown as Record<string, unknown>, {
+      ledger: {
+        byId: (id: string) => (id === "claim_1" ? c : undefined),
+        claims: [],
+      },
+      counters: { claimsVerified: 0, agentsSpawned: 0, maxDepth: 0 },
+      agentSequence: { next: 1 },
+      bindModel: (role: string) => {
+        boundRoles.push(role);
+        return role === "screen" ? screen : verdict;
+      },
+    });
+    const outcome = await schedule(rctx, {
+      claimIds: ["claim_1"],
+      budgetUSD: 2,
+      parentId: "agent_1",
+    });
+    expect(outcome.verdicts[0].status).toBe("confirmed");
+    expect(boundRoles.filter((r) => r === "screen")).toHaveLength(0);
+    expect(c.votes.map((v) => v.lens)).not.toContain("screening");
+  });
 });
 
 describe("verifyClaims dedup", () => {

@@ -7,6 +7,7 @@ const TOOL_NAME_PATTERN = /^[A-Za-z][\w-]{0,63}$/;
 
 export interface ToolContext {
   addSource(source: { url: string; title?: string; content: string }): void;
+  fetchText(url: string): Promise<string | null>;
   readonly signal?: AbortSignal | undefined;
   log(message: string): void;
 }

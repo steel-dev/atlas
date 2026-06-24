@@ -13,7 +13,7 @@ import {
   type BudgetMeter,
   type PricingTable,
 } from "./budget.js";
-import type { AtlasConfig, ResolvedRunConfig } from "./config.js";
+import type { AtlasConfig, ResolvedRunConfig, SearchConfig } from "./config.js";
 import { resolveCustomTools } from "./custom-tools.js";
 import { ECONOMY } from "./economy.js";
 import type { EventHub } from "./event-hub.js";
@@ -27,11 +27,13 @@ import {
   type ModelRole,
   type RateLimitNotice,
 } from "./model.js";
-import { isSmallModelId } from "./defaults.js";
+import { extractionCharsFor, isSmallModelId } from "./defaults.js";
 import { defaultFetchProviders } from "./providers/fetch.js";
 import {
   combineSearchProviders,
   defaultSearchProviders,
+  type ResolvedSearch,
+  type SearchProvider,
 } from "./providers/search.js";
 import type { JournalWriter, ReplayCache } from "./providers/store.js";
 import {
@@ -200,13 +202,11 @@ export async function assembleRun(args: AssembleRunArgs): Promise<RunAssembly> {
   const bindModel = (role: ModelRole, grant: BudgetGrant) =>
     bindModelWithTier(role, grant, tierForRole(role));
 
-  const searchProviders = Array.isArray(args.config.search)
-    ? args.config.search
-    : args.config.search
-      ? [args.config.search]
-      : defaultSearchProviders(
-          bindModelWithTier("research", meter, tierForRole("research")),
-        );
+  const { search, searchBySource } = resolveSearchConfig(args.config.search, () =>
+    defaultSearchProviders(
+      bindModelWithTier("research", meter, tierForRole("research")),
+    ),
+  );
   const fetchChain = Array.isArray(args.config.fetch)
     ? args.config.fetch
     : args.config.fetch
@@ -238,7 +238,7 @@ export async function assembleRun(args: AssembleRunArgs): Promise<RunAssembly> {
     signal: args.hardSignal,
     shouldExtract: () => !budgetExhausted(),
     claimsPerSource: resolved.envelope.maxClaimsPerSource,
-    extractionChars: resolved.envelope.maxExtractionChars,
+    extractionChars: extractionCharsFor(resolved.models.extract),
     onClaim: (claim) => eagerVerify(claim),
   });
 
@@ -254,8 +254,13 @@ export async function assembleRun(args: AssembleRunArgs): Promise<RunAssembly> {
     ledger,
     checklist: null,
     trail: createTrail(),
+    notes: [],
+    readCounts: new Map(),
     sources: createSourceStore(),
-    search: combineSearchProviders(searchProviders),
+    search,
+    searchBySource,
+    oaCandidates: new Map(),
+    surfacedCandidates: new Map(),
     fetchChain,
     customTools,
     runCodeEnabled,
@@ -325,6 +330,43 @@ export async function assembleRun(args: AssembleRunArgs): Promise<RunAssembly> {
       }
     },
   };
+}
+
+function isSearchProvider(value: unknown): value is SearchProvider {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    typeof (value as { id?: unknown }).id === "string" &&
+    typeof (value as { search?: unknown }).search === "function"
+  );
+}
+
+function resolveSearchConfig(
+  raw: SearchConfig | undefined,
+  webFallback: () => SearchProvider[],
+): { search: ResolvedSearch; searchBySource: Map<string, ResolvedSearch> } {
+  const flat = (
+    providers: SearchProvider[],
+  ): { search: ResolvedSearch; searchBySource: Map<string, ResolvedSearch> } => {
+    const web = combineSearchProviders(
+      providers.length > 0 ? providers : webFallback(),
+    );
+    return { search: web, searchBySource: new Map([["web", web]]) };
+  };
+  if (raw === undefined) return flat([]);
+  if (isSearchProvider(raw)) return flat([raw]);
+  if (Array.isArray(raw)) return flat(raw);
+  const searchBySource = new Map<string, ResolvedSearch>();
+  for (const [source, value] of Object.entries(raw)) {
+    const providers = Array.isArray(value) ? value : [value];
+    if (providers.length > 0) {
+      searchBySource.set(source, combineSearchProviders(providers));
+    }
+  }
+  if (!searchBySource.has("web")) {
+    searchBySource.set("web", combineSearchProviders(webFallback()));
+  }
+  return { search: searchBySource.get("web")!, searchBySource };
 }
 
 function primeSourceNumbers(sources: SourceStore, replay: ReplayCache): void {

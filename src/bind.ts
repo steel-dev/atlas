@@ -201,7 +201,7 @@ function sentenceSpanEndingAt(
   return [start, end];
 }
 
-function splitSentences(segment: string): string[] {
+export function splitSentences(segment: string): string[] {
   const pieces: string[] = [];
   let start = 0;
   for (let i = 0; i < segment.length; i++) {
