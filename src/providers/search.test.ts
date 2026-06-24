@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   combineSearchProviders,
   mergeSearchResults,
+  nativeModelSearch,
   type SearchProvider,
   type SearchResult,
 } from "./search.js";
@@ -123,5 +124,21 @@ describe("combineSearchProviders", () => {
     });
     expect(attempts).toBe(1);
     expect(warnings).toHaveLength(1);
+  });
+});
+
+describe("nativeModelSearch", () => {
+  it("does not map Z.ai GLM models to OpenAI native web search", async () => {
+    const provider = nativeModelSearch({
+      model: {
+        specificationVersion: "v3",
+        provider: "openai.chat",
+        modelId: "glm-5.2",
+      } as Parameters<typeof nativeModelSearch>[0]["model"],
+    });
+
+    await expect(provider.search({ query: "z.ai" })).rejects.toThrow(
+      /configure a search adapter/,
+    );
   });
 });
