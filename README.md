@@ -21,23 +21,42 @@ npm install @steel-dev/atlas ai @ai-sdk/anthropic
 # or @ai-sdk/openai / @ai-sdk/google
 ```
 
-**Search:** `tavily()` / `exa()` / `brave()` (auto from env keys) or provider-native search.
+**Search:** `tavily.search()` / `exa.search()` / `brave.search()` (auto from env keys) or provider-native search.
 
-**Fetch:** `basicFetch()` by default; `steel()` for JS-rendered pages when `STEEL_API_KEY` is set.
+**Fetch:** `basicFetch()` by default; `steel.fetch()` for JS-rendered pages when `STEEL_API_KEY` is set.
 
 ```ts
 import { Atlas, exa, steel, basicFetch } from "@steel-dev/atlas";
 
 const atlas = new Atlas({
   model,
-  search: exa(),
-  fetch: [basicFetch(), steel({ proxy: true })],
+  search: exa.search(),
+  fetch: [basicFetch(), steel.fetch({ proxy: true })],
 });
 ```
 
+## Orchestrate researchers
+
+Register other research agents — including Atlas itself — as a fleet. Atlas decomposes the question, routes each sub-task to the best-fit researcher (`query → report`), runs them in isolation, then synthesizes one cited report. With no `researchers` set it stays a single spine run.
+
+```ts
+import { Atlas, exa } from "@steel-dev/atlas";
+
+const atlas = new Atlas({
+  model,
+  researchers: {
+    exa: exa.agent(), // Exa's deep-research agent, via exa-js
+  },
+});
+
+await atlas.research("Compare X across academic and shopping angles");
+```
+
+Any `query → report` worker plugs in via `researcher({ describe, research })` — `describe` drives routing. `atlas.asResearcher(describe)` exposes an Atlas instance as a worker, so fan-out can recurse.
+
 ## Extend it
 
-Plug in domain sources with `researchTool`: anything via `ctx.addSource` flows through the same ledger and verification:
+Plug in domain sources with `researchTool`: anything via `ctx.addSource` flows through the same source store:
 
 ```ts
 import { Atlas, researchTool } from "@steel-dev/atlas";
@@ -59,7 +78,7 @@ const atlas = new Atlas({
 });
 ```
 
-**Models per role:** override `models.extract` / `models.verify` (defaults to a small sibling for Anthropic/OpenAI/Z.ai when keys are present). Screening and entailment checks always run on `models.verify`; at `deep`/`max` the adversarial panel escalates to the lead model with more turns per verifier.
+**Models per role:** override `models.extract` (claim extraction) or any stage model (`models.research`, `models.write`); each defaults to a small sibling for Anthropic/OpenAI/Z.ai when keys are present, else the lead model.
 
 **Z.ai / GLM:** use Z.ai through its OpenAI-compatible endpoint:
 
@@ -74,11 +93,11 @@ const zai = createOpenAI({
 
 const atlas = new Atlas({
   model: zai.chat("glm-5.2"),
-  search: tavily(),
+  search: tavily.search(),
 });
 ```
 
-The examples also accept `--provider zai` with `ZAI_API_KEY` / `ATLAS_ZAI_API_KEY`. GLM lead models derive `glm-4.5-air` for extraction and verification when a Z.ai key is present. Configure `tavily()`, `exa()`, or `brave()` for search; Atlas does not map Z.ai's web-search API to an AI SDK native search tool.
+The examples also accept `--provider zai` with `ZAI_API_KEY` / `ATLAS_ZAI_API_KEY`. GLM lead models derive `glm-4.5-air` for extraction when a Z.ai key is present. Configure `tavily.search()`, `exa.search()`, or `brave.search()` for search; Atlas does not map Z.ai's web-search API to an AI SDK native search tool.
 
 **Concurrency:** `concurrency: { models: 8, io: 10 }` or `ATLAS_MODEL_CONCURRENCY` / `ATLAS_IO_CONCURRENCY`.
 
@@ -89,13 +108,13 @@ const run = atlas.start(question, { effort: "balanced" });
 
 for await (const e of run.events()) {
   if (e.type === "report.delta") process.stdout.write(e.text);
-  if (e.type === "claim.verified") console.error(e.status, e.claimId);
+  if (e.type === "source.fetched") console.error(e.url);
 }
 
 const result = await run.result();
 ```
 
-`report.delta` streams a live preview; `report.completed` is canonical after binding. `run.stop()` synthesizes from whatever's in the ledger; `run.cancel()` aborts. Late subscribers get full event history.
+`report.delta` streams a live preview; `report.completed` is canonical after binding. `run.stop()` synthesizes from whatever's gathered so far; `run.cancel()` aborts. Late subscribers get full event history.
 
 ## Resume & providers
 
@@ -115,26 +134,21 @@ await new Atlas({ model, store }).resume("run_42");
 
 ```ts
 result.report; // cited markdown
-result.citations; // spans + quotes + verification
-result.claims.confirmed; // passed full panel
-result.claims.screened; // cheap check only
-result.claims.contested; // sources disagree, surfaced
-result.structured; // typed output (optional)
-result.stats; // cost, tokens, agents spawned, …
+result.citations; // source citations
+result.sources; // fetched sources, tagged by researcher
+result.stats; // cost, tokens, duration, …
 ```
-
-Structured output: pass a Zod schema via `output: { kind: "structured", schema }`. Per-field citations land in `result.structuredBasis`.
 
 ## Budget
 
 One meter for everything. Pick an effort, or override any cap with `budget`.
 
-| effort     | ~budget | depth | spawns/turn | sources | agents | tokens |
-| ---------- | ------- | ----- | ----------- | ------- | ------ | ------ |
-| `fast`     | $0.50   | 1     | 1           | 15      | 20     | 5M     |
-| `balanced` | $2.50   | 2     | 4           | 40      | 80     | 20M    |
-| `deep`     | $10     | 3     | 8           | 100     | 250    | 80M    |
-| `max`      | $40     | 4     | 12          | 250     | 800    | 250M   |
+| effort     | ~budget | depth | sources | agents | tokens |
+| ---------- | ------- | ----- | ------- | ------ | ------ |
+| `fast`     | $0.50   | 1     | 15      | 20     | 5M     |
+| `balanced` | $2.50   | 2     | 40      | 80     | 20M    |
+| `deep`     | $10     | 3     | 100     | 250    | 80M    |
+| `max`      | $40     | 4     | 250     | 800    | 250M   |
 
 ```ts
 await atlas.research(question, {
@@ -148,7 +162,7 @@ await atlas.research(question, {
 The real backstops are **price-independent** — each defaults to the effort row above and is enforced regardless of prices:
 
 - `budget.maxTokens` — input + output tokens run-wide (cache reads excluded). Checked between turns like `maxUSD`, but never drifts with prices.
-- `budget.maxAgents` — research subagents spawned run-wide (the fan-out that otherwise grows as breadth^depth). Enforced synchronously with no overshoot: once reached, `spawn` is refused and the lead finishes inline. Verifier agents are bounded separately.
+- `budget.maxAgents` — run-wide cap on the research agents a run may use.
 - `budget.maxSources`, `budget.maxDurationMs` — fetched-source and wall-clock caps.
 
 `result.stats` reports `budgetExhausted`, `tokensExhausted`, and `agentCapReached` so you can see which limit bound the run. Leave headroom on `maxUSD`, or set a provider-side spend limit, when the cap is truly hard.
