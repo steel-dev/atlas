@@ -89,43 +89,12 @@ export function createRunCounters(): RunCounters {
   };
 }
 
-export interface VerifySpawnArgs {
-  claimIds: string[];
-  lenses?: string[] | undefined;
-  grant: BudgetGrant;
-  parentId?: string | undefined;
-  depth: number;
-}
-
-export interface VerifyScheduleArgs {
-  claimIds: string[];
-  reserve: BudgetGrant;
-  perClaimFraction: number;
-  concurrency: number;
-  cap?: number | undefined;
-  lenses?: string[] | undefined;
-  parentId?: string | undefined;
-  depth?: number | undefined;
-}
-
-export interface VerifySpawnVerdict {
-  claimId: string;
-  status: string;
-  votes: string;
-}
-
-export interface VerifySpawnOutcome {
-  verdicts: VerifySpawnVerdict[];
-  note: string;
-}
-
 export interface RunCtx {
   runId: string;
   question: string;
   todayISO: string;
   config: ResolvedRunConfig;
   meter: BudgetMeter;
-  verifyReserve: BudgetGrant;
   usage: RunUsage;
   pricing: PricingTable;
   ledger: Ledger;
@@ -152,12 +121,10 @@ export interface RunCtx {
   modelGate: ConcurrencyGate;
   ioGate: ConcurrencyGate;
   seenDomains: Set<string>;
-  verifyInFlight: Map<string, Promise<void>>;
   counters: RunCounters;
   agentSequence: { next: number };
   bindModel(role: ModelRole, grant: BudgetGrant): LanguageModelV3;
   rawModel(role: ModelRole): ResolvedModel;
-  verify(args: VerifyScheduleArgs): Promise<VerifySpawnOutcome>;
   stopReason(): string | null;
 }
 

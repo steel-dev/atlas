@@ -40,6 +40,7 @@
     "@ai-sdk/openai": "^3.0.67",
     "@ai-sdk/provider": "^3.0.0",
     "cheerio": "^1.0.0",
+    "exa-js": "^2.14.0",
     "pdf-parse": "^2.4.5",
     "steel-sdk": "^0.18.0",
     "zod": "^4.1.8"

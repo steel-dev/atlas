@@ -1,5 +1,12 @@
+import {
+  exa as exaSearch,
+  brave as braveSearch,
+  tavily as tavilySearch,
+} from "./providers/search.js";
+import { exaContents, steel as steelFetch } from "./providers/fetch.js";
+import { exaAgent } from "./providers/exa-agent.js";
+
 export { Atlas } from "./atlas.js";
-export type { StructuredResearchResult } from "./atlas.js";
 export type {
   AtlasConfig,
   Budget,
@@ -54,18 +61,28 @@ export { DEFAULT_PRICING } from "./budget.js";
 export type { SafetyPolicy } from "./safety.js";
 export { researchTool } from "./custom-tools.js";
 export type { ResearchTool, ToolContext } from "./custom-tools.js";
-export {
-  brave,
-  exa,
-  nativeModelSearch,
-  tavily,
-} from "./providers/search.js";
+export { researcher } from "./researcher.js";
+export type {
+  Researcher,
+  ResearchReport,
+  ResearcherContext,
+} from "./researcher.js";
+export { nativeModelSearch } from "./providers/search.js";
+export const exa = {
+  search: exaSearch,
+  contents: exaContents,
+  agent: exaAgent,
+};
+export const brave = { search: braveSearch };
+export const tavily = { search: tavilySearch };
+export const steel = { fetch: steelFetch };
+export type { ExaAgentOptions } from "./providers/exa-agent.js";
 export type {
   SearchProvider,
   SearchQuery,
   SearchResult,
 } from "./providers/search.js";
-export { basicFetch, steel } from "./providers/fetch.js";
+export { basicFetch } from "./providers/fetch.js";
 export type {
   FetchAttempt,
   FetchProvider,
@@ -74,7 +91,6 @@ export type {
 } from "./providers/fetch.js";
 export { fileStore, loadTrace, memoryStore } from "./providers/store.js";
 export type { JournalEntry, RunStore, RunSummary } from "./providers/store.js";
-export type { FieldBasis, BasisCitation } from "./structured.js";
 export type {
   CitedSource,
   FetchedSource,

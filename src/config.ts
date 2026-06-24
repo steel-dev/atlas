@@ -1,4 +1,3 @@
-import type { FlexibleSchema } from "ai";
 import type { LanguageModelV3 } from "@ai-sdk/provider";
 import { ConfigError } from "./errors.js";
 import { deriveSmallModel, isSmallModelId } from "./defaults.js";
@@ -10,6 +9,7 @@ import type { RunStore } from "./providers/store.js";
 import type { SearchProvider } from "./providers/search.js";
 import type { FetchProvider } from "./providers/fetch.js";
 import type { ResearchTool } from "./custom-tools.js";
+import type { Researcher } from "./researcher.js";
 
 export type Effort = "fast" | "balanced" | "deep" | "max";
 
@@ -167,8 +167,7 @@ export interface SourceFilter {
 }
 
 export type OutputSpec =
-  | { kind: "report" }
-  | { kind: "structured"; schema: FlexibleSchema };
+  | { kind: "report" };
 
 export interface ConcurrencyConfig {
   models?: number;
@@ -192,9 +191,9 @@ export interface AtlasConfig {
   safety?: SafetyPolicy;
   instructions?: string;
   tools?: Record<string, ResearchTool>;
+  researchers?: Record<string, Researcher>;
   concurrency?: ConcurrencyConfig;
   trace?: TraceMode;
-  verify?: boolean;
 }
 
 export interface ResearchOptions {
@@ -205,7 +204,6 @@ export interface ResearchOptions {
   signal?: AbortSignal;
   runId?: string;
   trace?: TraceMode;
-  verify?: boolean;
 }
 
 export interface ResolvedRunConfig {
@@ -227,7 +225,7 @@ export interface ResolvedRunConfig {
   maxConcurrentModelCalls: number;
   maxConcurrentIo: number;
   trace: TraceMode;
-  verify: boolean;
+  researchers: Record<string, Researcher>;
 }
 
 const DEFAULT_MODEL_CONCURRENCY = 4;
@@ -329,6 +327,6 @@ export function resolveRunConfig(
       "ATLAS_IO_CONCURRENCY",
     ),
     trace: options.trace ?? config.trace ?? "off",
-    verify: options.verify ?? config.verify ?? false,
+    researchers: config.researchers ?? {},
   };
 }

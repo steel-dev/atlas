@@ -7,7 +7,7 @@ import { todayLine } from "./prompts.js";
 import type { RunCtx } from "./state.js";
 import { buildAgentTools, type AgentCtx, type ToolName } from "./tools.js";
 import { renderAnalyticalDemands } from "./checklist.js";
-import { voteSplit } from "./verify.js";
+import { voteSplit } from "./claim-status.js";
 import { isTimeSensitive, recencyScore } from "./recency.js";
 import type { ResearchClaim } from "./ledger.js";
 
@@ -394,9 +394,7 @@ export async function synthesizeReport(
     role: "write",
     grant,
     depth: 0,
-    spawnsThisStep: { count: 0 },
     extractModel: model,
-    spawn: async () => "Spawning is unavailable during synthesis.",
   };
   const tools = buildAgentTools(rctx, actx, WRITER_TOOLS);
   const result = streamText({

@@ -18,6 +18,7 @@ import type { RunCtx } from "./state.js";
 import {
   applyCoverageUpdate,
   buildChecklist,
+  checklistFromSubQuestions,
   draftCoverageSchema,
   renderAnalyticalDemands,
   renderChecklistAudit,
@@ -272,9 +273,7 @@ function ioActx(
     role,
     grant,
     depth: 0,
-    spawnsThisStep: { count: 0 },
     extractModel: rctx.bindModel("extract", grant),
-    spawn: async () => "Delegation is not available here.",
   };
 }
 
@@ -738,17 +737,51 @@ function renumberAndGround(
   return { report, citations, unsupportedSentences };
 }
 
+const HEADING_RE = /^(#{1,6})\s/;
+
+function headingLevel(line: string): number {
+  const m = line.trim().match(HEADING_RE);
+  return m ? m[1].length : 0;
+}
+
+function tightenPresentation(text: string): string {
+  const seenBullet = new Set<string>();
+  const kept: string[] = [];
+  for (const line of text.split("\n")) {
+    const bullet = line.trim().match(/^[-*]\s+(.*)$/);
+    if (bullet) {
+      const body = bullet[1].trim().toLowerCase();
+      if (body.length >= 40) {
+        if (seenBullet.has(body)) continue;
+        seenBullet.add(body);
+      }
+    }
+    kept.push(line);
+  }
+  const pruned: string[] = [];
+  for (let i = 0; i < kept.length; i++) {
+    const level = headingLevel(kept[i]);
+    if (level > 0) {
+      let j = i + 1;
+      while (j < kept.length && kept[j].trim() === "") j++;
+      const nextLevel = j < kept.length ? headingLevel(kept[j]) : 0;
+      if (j >= kept.length || (nextLevel > 0 && nextLevel <= level)) continue;
+    }
+    pruned.push(kept[i]);
+  }
+  return pruned.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+}
+
 export async function runSpine(
   rctx: RunCtx,
   opts: { meter: BudgetMeter },
 ): Promise<SpineOutput> {
   const meter = opts.meter;
-  const checklist = await withGrant(
+  let checklist = await withGrant(
     meter,
     { fraction: PLAN_FRACTION, minUSD: PLAN_MIN_USD },
     (grant) => buildChecklist(rctx, grant),
   );
-  rctx.checklist = checklist;
   let task: string;
   if (checklist) {
     task = buildGatherTaskFromChecklist(rctx.question, checklist);
@@ -759,8 +792,10 @@ export async function runSpine(
         { fraction: PLAN_FRACTION, minUSD: PLAN_MIN_USD },
         (grant) => planResearch(rctx, grant, rctx.question),
       )) ?? { rationale: "", subQuestions: [rctx.question] };
+    checklist = checklistFromSubQuestions(plan.subQuestions);
     task = buildGatherTask(rctx.question, plan.subQuestions);
   }
+  rctx.checklist = checklist;
   const synthGrant = meter.grant({ fraction: SYNTH_FRACTION, minUSD: SYNTH_MIN_USD }) ?? meter;
   const coverageGrant = checklist
     ? (meter.grant({ fraction: COVERAGE_FRACTION, minUSD: COVERAGE_MIN_USD }) ?? meter)
@@ -843,20 +878,24 @@ export async function runSpine(
   }
   try {
     if (checklist && checklist.scope !== "single_fact") {
-      for (let round = 0; round < COVERAGE_MAX_ROUNDS; round++) {
-        if (!draft.text.trim() || coverageGrant.floored()) break;
-        const gaps = prioritizeGaps(
-          await coverDraftAgainstChecklist(
-            rctx,
-            coverageGrant,
+      try {
+        for (let round = 0; round < COVERAGE_MAX_ROUNDS; round++) {
+          if (!draft.text.trim() || coverageGrant.floored()) break;
+          const gaps = prioritizeGaps(
+            await coverDraftAgainstChecklist(
+              rctx,
+              coverageGrant,
+              checklist,
+              draft.text,
+            ),
             checklist,
-            draft.text,
-          ),
-          checklist,
-        );
-        if (gaps.length === 0) break;
-        await patchDraftForGaps(rctx, patchGrant, draft, gaps);
-        await reconcileDraft(rctx, reconcileGrant, draft, gaps);
+          );
+          if (gaps.length === 0) break;
+          await patchDraftForGaps(rctx, patchGrant, draft, gaps);
+          await reconcileDraft(rctx, reconcileGrant, draft, gaps);
+        }
+      } catch (err) {
+        if (rctx.signal?.aborted) throw err;
       }
     }
     await flushDroppedNotes(rctx, reconcileGrant, draft);
@@ -876,7 +915,10 @@ export async function runSpine(
       unsupportedSentences: [],
     };
   }
-  const grounded = renumberAndGround(rctx, stripProcessCaveats(draft.text));
+  const grounded = renumberAndGround(
+    rctx,
+    tightenPresentation(stripProcessCaveats(draft.text)),
+  );
   return {
     report: grounded.report,
     note,

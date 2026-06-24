@@ -1,17 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { generateObject } from "ai";
-import { z } from "zod";
-import { adjudicateCoverage } from "./adjudicate.js";
-import type { AgentResult } from "./agent.js";
-import {
-  bindCitations,
-  renderCitedReport,
-  splitSentences,
-  stripMarkers,
-  type Citation,
-} from "./bind.js";
-import { withGrant, type BudgetGrant, type BudgetMeter } from "./budget.js";
-import { buildChecklist } from "./checklist.js";
+import type { Citation } from "./bind.js";
 import {
   resolveRunConfig,
   type AtlasConfig,
@@ -21,14 +9,11 @@ import {
   type SourceFilter,
 } from "./config.js";
 import { assembleRun } from "./context.js";
-import { conflictPass } from "./conflicts.js";
-import { ECONOMY } from "./economy.js";
 import { AtlasError, errorMessage, ResumeError } from "./errors.js";
 import { EventHub } from "./event-hub.js";
 import type { ResearchEvent, RunStats, StopReason } from "./events.js";
 import type { ResearchClaim } from "./ledger.js";
-import { MODEL_CALL_MAX_RETRIES, totalFreshTokens } from "./model.js";
-import { runOrchestrator } from "./orchestrator.js";
+import { totalFreshTokens } from "./model.js";
 import { isoDate } from "./prompts.js";
 import {
   JournalWriter,
@@ -39,22 +24,13 @@ import {
   type RunStore,
 } from "./providers/store.js";
 import {
-  capPartitionForReport,
-  fallbackReportFromClaims,
   partitionClaims,
   recencyContext,
-  repairReport,
-  synthesizeReport,
   type ClaimPartition,
 } from "./synthesize.js";
-import { synthesizeStructured, type FieldBasis } from "./structured.js";
 import type { RunCtx } from "./state.js";
 import { runSpine } from "./spine.js";
-import {
-  withTraceFrame,
-  type RunTrace,
-  type TraceRecorder,
-} from "./trace.js";
+import type { RunTrace, TraceRecorder } from "./trace.js";
 import { computeDigest } from "./trace-digest.js";
 import { EVENT_SCHEMA_VERSION } from "./events.js";
 
@@ -88,8 +64,6 @@ export interface ResearchResult {
   question: string;
   report: string;
   note: string;
-  structured?: unknown;
-  structuredBasis?: Record<string, FieldBasis>;
   claims: ResearchClaims;
   openQuestions: string[];
   sources: SourceRecord[];
@@ -108,39 +82,6 @@ export interface ResearchRun {
   stop(): Promise<void>;
   status(): RunStatus;
   trace(): RunTrace | undefined;
-}
-
-const IMPORTANCE_RANK: Record<string, number> = {
-  central: 0,
-  supporting: 1,
-  tangential: 2,
-};
-
-async function sweepVerification(
-  rctx: RunCtx,
-  reserve: BudgetGrant,
-): Promise<void> {
-  if (reserve.floored()) return;
-  const pending = rctx.ledger.claims
-    .filter((claim) => !claim.duplicateOf && claim.votes.length === 0)
-    .sort(
-      (a, b) =>
-        (IMPORTANCE_RANK[a.importance] ?? 3) -
-        (IMPORTANCE_RANK[b.importance] ?? 3),
-    )
-    .map((claim) => claim.id);
-  if (pending.length === 0) return;
-  try {
-    await rctx.verify({
-      claimIds: pending,
-      reserve,
-      perClaimFraction: ECONOMY.verify.perClaimFraction,
-      concurrency: ECONOMY.verify.concurrency,
-      cap: ECONOMY.verify.sweepMaxClaims,
-    });
-  } catch (err) {
-    if (rctx.signal?.aborted) throw err;
-  }
 }
 
 export interface StartRunOptions {
@@ -272,7 +213,7 @@ interface ExecuteRunArgs {
 async function executeRun(args: ExecuteRunArgs): Promise<ResearchResult> {
   const { resolved, question, runId } = args;
   const startedAt = args.now();
-  const { rctx, meter, synthesisGrant, verifyReserve, drainEagerVerifications } =
+  const { rctx, meter, synthesisGrant } =
     await assembleRun({
       runId,
       question,
@@ -338,59 +279,25 @@ async function executeRun(args: ExecuteRunArgs): Promise<ResearchResult> {
   let note: string;
   let citations: Citation[];
   let unsupportedSentences: string[];
-  let structured: unknown;
-  let structuredBasis: Record<string, FieldBasis> | undefined;
   let openQuestions: string[];
   let partition: ClaimPartition;
   let citationsBound: number;
   let citationsUnsupported: number;
 
-  if (resolved.verify) {
-    const orchestrator = await runResearchPhase(
-      rctx,
-      meter,
-      args,
-      drainEagerVerifications,
-    );
-    await consolidateClaims(rctx, meter, verifyReserve, args);
-    await rctx.ledger.settle();
-    partition = partitionClaims(
-      ledger.claims,
-      resolved.envelope.maxReportCandidates,
-      recencyContext(rctx),
-    );
-    const outputs = await composeOutputs(rctx, synthesisGrant, args, {
-      partition,
-      closingNote: orchestrator.note,
-    });
-    report = outputs.bound.report;
-    note = orchestrator.note;
-    citations = outputs.bound.citations;
-    unsupportedSentences = outputs.bound.unsupportedSentences;
-    structured = outputs.structured;
-    structuredBasis = outputs.structuredBasis;
-    openQuestions = outputs.openQuestions;
-    citationsBound = outputs.bound.citationsBound;
-    citationsUnsupported = outputs.bound.citationsUnsupported;
-  } else {
-    verifyReserve.release();
-    synthesisGrant.release();
-    const spine = await runSpine(rctx, { meter });
-    partition = partitionClaims(
-      ledger.claims,
-      resolved.envelope.maxReportCandidates,
-      recencyContext(rctx),
-    );
-    report = spine.report;
-    note = spine.note;
-    citations = spine.citations;
-    unsupportedSentences = spine.unsupportedSentences;
-    structured = undefined;
-    structuredBasis = undefined;
-    openQuestions = [];
-    citationsBound = spine.citations.length;
-    citationsUnsupported = spine.unsupportedSentences.length;
-  }
+  synthesisGrant.release();
+  const spine = await runSpine(rctx, { meter });
+  partition = partitionClaims(
+    ledger.claims,
+    resolved.envelope.maxReportCandidates,
+    recencyContext(rctx),
+  );
+  report = spine.report;
+  note = spine.note;
+  citations = spine.citations;
+  unsupportedSentences = spine.unsupportedSentences;
+  openQuestions = [];
+  citationsBound = spine.citations.length;
+  citationsUnsupported = spine.unsupportedSentences.length;
   emit({ type: "report.completed", report });
 
   const durationMs = args.now() - startedAt;
@@ -419,8 +326,6 @@ async function executeRun(args: ExecuteRunArgs): Promise<ResearchResult> {
     question,
     report,
     note,
-    ...(structured !== undefined ? { structured } : {}),
-    ...(structuredBasis ? { structuredBasis } : {}),
     claims: {
       confirmed: partition.confirmed,
       screened: partition.screened,
@@ -457,208 +362,6 @@ async function executeRun(args: ExecuteRunArgs): Promise<ResearchResult> {
   return result;
 }
 
-async function runResearchPhase(
-  rctx: RunCtx,
-  meter: BudgetMeter,
-  args: ExecuteRunArgs,
-  drain: () => Promise<void>,
-): Promise<AgentResult> {
-  await planCoverageChecklist(rctx, meter);
-  const researchGrant = meter.grant({ fraction: 1 }) ?? meter;
-  let orchestrator: AgentResult;
-  try {
-    orchestrator = await runOrchestrator(rctx, researchGrant);
-    await rctx.ledger.settle();
-    orchestrator = await adjudicatedFollowUps(rctx, researchGrant, orchestrator);
-  } catch (err) {
-    if (args.hardSignal.aborted || args.isPaused()) throw err;
-    rctx.emit({
-      type: "run.error",
-      message: `lead agent failed: ${errorMessage(err)}`,
-      recoverable: true,
-    });
-    orchestrator = {
-      agentId: "agent_1",
-      note: `The lead agent terminated early (${errorMessage(err)}). This report is synthesized from the evidence gathered before that point.`,
-      claimsAdded: [],
-      spentUSD: researchGrant.spentUSD(),
-      stopReason: "error",
-    };
-  } finally {
-    if (researchGrant !== meter) researchGrant.release();
-  }
-  await rctx.ledger.settle();
-  await drain();
-  args.hardSignal.throwIfAborted();
-  if (args.isPaused()) {
-    throw new AtlasError("run paused", "paused");
-  }
-  return orchestrator;
-}
-
-async function planCoverageChecklist(
-  rctx: RunCtx,
-  meter: BudgetMeter,
-): Promise<void> {
-  const checklist = await withGrant(
-    meter,
-    { fraction: ECONOMY.checklist.fraction, minUSD: ECONOMY.checklist.minUSD },
-    (grant) => buildChecklist(rctx, grant),
-  );
-  rctx.checklist = checklist;
-  if (checklist) {
-    rctx.emit({
-      type: "checklist.built",
-      items: checklist.items.length,
-      central: checklist.items.filter((item) => item.importance === "central")
-        .length,
-      volatile: checklist.items.filter((item) => item.volatility === "volatile")
-        .length,
-    });
-    rctx.emit({
-      type: "tool.event",
-      tool: "checklist.items",
-      data: {
-        items: checklist.items.map((item) => ({
-          fact: item.fact,
-          kind: item.kind,
-          importance: item.importance,
-          status: item.status,
-        })),
-      },
-    });
-  }
-}
-
-async function adjudicatedFollowUps(
-  rctx: RunCtx,
-  grant: BudgetGrant,
-  first: AgentResult,
-): Promise<AgentResult> {
-  let orchestrator = first;
-  const threshold = Math.max(
-    ECONOMY.adjudication.minRemainingUSD,
-    ECONOMY.adjudication.remainingFraction * rctx.config.budgetUSD,
-  );
-  const maxRounds = rctx.config.envelope.maxAdjudicationRounds;
-  for (let round = 1; round <= maxRounds; round++) {
-    if (rctx.stopReason()) break;
-    if (grant.remainingUSD() < threshold) break;
-    const verdict = await adjudicateCoverage(rctx, grant, orchestrator.note);
-    if (!verdict) break;
-    rctx.counters.coverageAnswered = verdict.answered;
-    rctx.emit({
-      type: "coverage.assessed",
-      round,
-      answered: verdict.answered,
-      gaps: verdict.gaps,
-    });
-    if (verdict.answered || verdict.gaps.length === 0) break;
-    if (
-      rctx.verifyReserve.remainingUSD() <
-      ECONOMY.adjudication.verifyHeadroomFraction * rctx.verifyReserve.limitUSD
-    ) {
-      break;
-    }
-    try {
-      orchestrator = await runOrchestrator(rctx, grant, {
-        gaps: verdict.gaps,
-        previousNote: orchestrator.note,
-      });
-    } catch (err) {
-      if (rctx.signal?.aborted) throw err;
-      rctx.emit({
-        type: "run.error",
-        message: `coverage follow-up failed: ${errorMessage(err)}`,
-        recoverable: true,
-      });
-      break;
-    }
-    await rctx.ledger.settle();
-  }
-  return orchestrator;
-}
-
-async function consolidateClaims(
-  rctx: RunCtx,
-  meter: BudgetMeter,
-  verifyReserve: BudgetGrant,
-  args: ExecuteRunArgs,
-): Promise<void> {
-  if (!args.stopSignal.aborted) {
-    await withGrant(
-      verifyReserve,
-      { fraction: ECONOMY.conflicts.fraction, minUSD: ECONOMY.conflicts.minUSD },
-      async (grant) => {
-        try {
-          await conflictPass(rctx, grant);
-        } catch (err) {
-          if (args.hardSignal.aborted) throw err;
-        }
-      },
-    );
-  }
-  try {
-    if (!args.stopSignal.aborted) {
-      await sweepVerification(rctx, verifyReserve);
-    }
-  } finally {
-    if (verifyReserve !== meter) verifyReserve.release();
-  }
-}
-
-interface ComposeInputs {
-  partition: ClaimPartition;
-  closingNote: string;
-}
-
-interface ComposedOutputs {
-  bound: Awaited<ReturnType<typeof bindCitations>>;
-  structured: unknown;
-  structuredBasis: Record<string, FieldBasis> | undefined;
-  openQuestions: string[];
-}
-
-async function draftReport(
-  rctx: RunCtx,
-  grant: BudgetGrant,
-  args: ExecuteRunArgs,
-  inputs: ComposeInputs,
-): Promise<string> {
-  const { partition, closingNote } = inputs;
-  const fallback = (): string =>
-    fallbackReportFromClaims({
-      question: rctx.question,
-      partition,
-      closingNote,
-    });
-  const empty =
-    partition.confirmed.length === 0 &&
-    partition.screened.length === 0 &&
-    partition.candidates.length === 0 &&
-    partition.contested.length === 0;
-  if (empty) return fallback();
-  try {
-    const draft = await withTraceFrame(rctx.recorder, { site: "synthesize" }, () =>
-      synthesizeReport(rctx, grant, {
-        partition,
-        closingNote,
-      }),
-    );
-    if (draft && draftHasCitationMarkers(draft)) return draft;
-    if (draft) rctx.emit({ type: "report.reset" });
-  } catch (err) {
-    if (args.hardSignal.aborted) throw err;
-    rctx.emit({ type: "report.reset" });
-    rctx.emit({
-      type: "run.error",
-      message: `synthesis failed: ${errorMessage(err)}`,
-      recoverable: true,
-    });
-  }
-  return fallback();
-}
-
 interface RepairBalance {
   citationsUnsupported: number;
   citationsBound: number;
@@ -676,166 +379,6 @@ export function acceptsRepair(
     after.citationsUnsupported < before.citationsUnsupported &&
     after.citationsBound >= before.citationsBound
   );
-}
-
-function normalizeSentence(text: string): string {
-  return text.replace(/\s+/g, " ").trim();
-}
-
-function emitRepairDiff(
-  rctx: RunCtx,
-  draft: string,
-  repaired: string,
-  accepted: boolean,
-): void {
-  const before = new Set(
-    splitSentences(stripMarkers(draft).report)
-      .map(normalizeSentence)
-      .filter(Boolean),
-  );
-  const after = new Set(
-    splitSentences(stripMarkers(repaired).report)
-      .map(normalizeSentence)
-      .filter(Boolean),
-  );
-  const removed = [...before].filter((sentence) => !after.has(sentence));
-  rctx.emit({
-    type: "tool.event",
-    tool: "repair.diff",
-    data: {
-      accepted,
-      draftSentences: before.size,
-      repairedSentences: after.size,
-      removed: removed.slice(0, 40),
-    },
-  });
-}
-
-async function bindAndRepair(
-  rctx: RunCtx,
-  grant: BudgetGrant,
-  args: ExecuteRunArgs,
-  draft: string,
-): Promise<Awaited<ReturnType<typeof bindCitations>>> {
-  let bound = await bindCitations(rctx, grant, draft);
-  if (bound.citationsUnsupported > 0 && !grant.floored()) {
-    try {
-      const repaired = await repairReport(rctx, grant, { draft, bound });
-      if (repaired && repaired !== draft) {
-        const rebound = await bindCitations(rctx, grant, repaired);
-        const accepted = acceptsRepair(bound, rebound);
-        emitRepairDiff(rctx, draft, repaired, accepted);
-        if (accepted) {
-          bound = rebound;
-        }
-      }
-    } catch (err) {
-      if (args.hardSignal.aborted) throw err;
-      rctx.emit({
-        type: "run.error",
-        message: `report repair failed: ${errorMessage(err)}`,
-        recoverable: true,
-      });
-    }
-  }
-  return {
-    ...bound,
-    report: renderCitedReport(bound.report, bound.citations, rctx.sources.byId),
-  };
-}
-
-async function composeOutputs(
-  rctx: RunCtx,
-  grant: BudgetGrant,
-  args: ExecuteRunArgs,
-  inputs: ComposeInputs,
-): Promise<ComposedOutputs> {
-  const { partition, closingNote } = inputs;
-  const draft = await draftReport(rctx, grant, args, inputs);
-
-  const bindTask = bindAndRepair(rctx, grant, args, draft);
-  const structuredTask = (async () => {
-    if (rctx.config.output.kind !== "structured") return undefined;
-    try {
-      const capped = capPartitionForReport(
-        partition,
-        rctx.config.envelope.maxReportClaims,
-        recencyContext(rctx),
-      ).partition;
-      return await synthesizeStructured(rctx, grant, {
-        schema: rctx.config.output.schema,
-        confirmed: [
-          ...capped.confirmed,
-          ...capped.screened,
-          ...capped.contested,
-        ],
-        candidates: capped.candidates,
-      });
-    } catch (err) {
-      if (args.hardSignal.aborted) throw err;
-      throw new AtlasError(
-        `structured output failed: ${errorMessage(err)}`,
-        "output",
-      );
-    }
-  })();
-  const openQuestionsTask = deriveOpenQuestions(
-    rctx,
-    grant,
-    closingNote,
-    partition,
-  );
-
-  const [bindSettled, structuredSettled, openSettled] =
-    await Promise.allSettled([bindTask, structuredTask, openQuestionsTask]);
-  if (bindSettled.status === "rejected") throw bindSettled.reason;
-  if (structuredSettled.status === "rejected") throw structuredSettled.reason;
-  return {
-    bound: bindSettled.value,
-    structured: structuredSettled.value?.data,
-    structuredBasis: structuredSettled.value?.basis,
-    openQuestions:
-      openSettled.status === "fulfilled" ? openSettled.value : [],
-  };
-}
-
-const openQuestionsSchema = z.object({
-  openQuestions: z.array(z.string()).max(8),
-});
-
-async function deriveOpenQuestions(
-  rctx: RunCtx,
-  grant: BudgetGrant,
-  note: string,
-  partition: ClaimPartition,
-): Promise<string[]> {
-  if (!note.trim() && partition.contested.length === 0) return [];
-  if (grant.floored()) return [];
-  try {
-    const result = await withTraceFrame(rctx.recorder, { site: "open-questions" }, () =>
-      generateObject({
-      model: rctx.bindModel("verify", grant),
-      system:
-        "You distill the open questions a research run left unanswered. Structured output only.",
-      prompt:
-        `Research question: ${rctx.question}\n\n` +
-        `Lead agent's closing note:\n${note || "(none)"}\n\n` +
-        (partition.contested.length > 0
-          ? `Contested claims:\n${partition.contested
-              .map((claim) => `- ${claim.text}`)
-              .join("\n")}\n\n`
-          : "") +
-        "List up to 5 concrete open questions that remain (empty list if none).",
-      schema: openQuestionsSchema,
-      maxOutputTokens: 500,
-      maxRetries: MODEL_CALL_MAX_RETRIES,
-      abortSignal: rctx.signal,
-    }),
-    );
-    return result.object.openQuestions;
-  } catch {
-    return [];
-  }
 }
 
 export interface StopReasonInputs {
@@ -947,12 +490,6 @@ export async function resumeRun(
   const meta = await loadRunMeta(store, runId);
   if (!meta || typeof meta.question !== "string") {
     throw new ResumeError(`no journaled run found for "${runId}"`);
-  }
-  if (meta.outputKind === "structured" && resume.output?.kind !== "structured") {
-    throw new ResumeError(
-      `run "${runId}" was started with structured output; schemas are not journaled — ` +
-        "pass the original schema to resume: atlas.resume(runId, { output: { kind: \"structured\", schema } })",
-    );
   }
   const replay = await loadReplayCache(store, runId);
   const budget: Budget = {

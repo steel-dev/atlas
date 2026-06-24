@@ -6,8 +6,9 @@ import { todayLine } from "./prompts.js";
 import type { RunCtx } from "./state.js";
 import { withTraceFrame } from "./trace.js";
 
-const CHECKLIST_MAX_TOKENS = 3072;
-const CHECKLIST_MAX_ITEMS = 16;
+const CHECKLIST_MAX_TOKENS = 4096;
+const CHECKLIST_MAX_ITEMS = 20;
+const CHECKLIST_RETRY_MAX_ITEMS = 12;
 const EXPANSION_MAX_ITEMS = 8;
 
 export type ChecklistImportance = "central" | "peripheral";
@@ -99,6 +100,9 @@ const CHECKLIST_SYSTEM =
   "Wherever an item would name only a CATEGORY (a kind of program, a class of metric, a type of partnership, 'the relevant statute'), name instead the specific INSTANCE a domain expert expects — the actual program name, the named organization or case, the headline figure, the exact section. A line that names the category but not the instance has not done its job; commit the concrete name now even though no source has been read yet, and let the run confirm or correct it. When the question spans several domains or entities, give each its own specific items rather than one bucket line. " +
   "Tag each item three ways. kind: fact or analysis. Importance: central when the answer fails without it, peripheral when it is useful context. Volatility: volatile when it is a figure, price, date, version, status, or ranking that drifts over time and must be pinned to a current source; stable otherwise — definitions, mechanisms, settled facts, and all analysis items are stable. " +
   "Enumerate the STANDARD deliverable a domain expert would demand even when the question foregrounds something narrower: for a clinical question, the standard-of-care safety actions and the red-flag thresholds that trigger escalation; for a financial question, the full-period figures and the standard tables, not only the one line asked about; for an academic or comparative question, the expected sections, the count of authorities or recommendations, and a formatted bibliography. The question names the entry point; a complete answer is what the field expects around it. When in doubt, list a required item the question only implies rather than omitting it. " +
+  "Decompose to the leaf, not the bucket. When a complete answer is a SET — a top-N list, the options to a decision, the members of a category or standard the question names, the steps of a process — emit ONE item per expected member, never a single 'list the X' line; name the members you can already and let the run confirm or correct them. When the question asks HOW something works or WHY an outcome follows, break the mechanism into its causal sub-steps as separate items rather than one 'explain the mechanism' line. " +
+  "When the question weighs options, asks which / whether / best, or what to do, add analysis items for the decision MOVES a sound answer makes: one that RANKS the options on the question's own criteria; one for CHOOSE-WHEN — the condition under which each option is the right pick; one separating what is REQUIRED from what is OPTIONAL; and one for IN-WINDOW vs OUT — which options fall inside the constraints the question fixes (budget, timeframe, jurisdiction, compatibility) and which are excluded. " +
+  "Keep every item to one tight line — the named entity plus the exact value, operation, or period it pins, with no explanatory prose; terse items are cheaper, so list MORE of them rather than fewer longer ones. " +
   "Bind each fact as a tuple — the named entity, the exact operation, dimension, or period it applies to, and the exact value with its unit — never a loose description: a spec attached to the wrong operation, the wrong period, or the wrong year scores as absent, so pin the period and basis the question grades on. When a fact is keyed to a date or fiscal period, name the specific period (the completed year the question grades, not merely the current one). " +
   "Keep separate the facts the question GIVES you and your own GUESS at the answer. When you name a specific instance the question does not provide — your best guess at who, what, or which — frame that item as one to CONFIRM OR CORRECT from sources, never a premise the report must defend; do not build several items around a single unconfirmed guess, and never let a guessed entity justify citing sources outside the question's time window or scope. " +
   "Phrase any safety-critical directive — stopping or holding a medication or exposure, restricting an activity, an emergency threshold — as a categorical imperative stating what to do now and on whose authority, never as a hedged 'reduce if appropriate' option. " +
@@ -109,27 +113,37 @@ export async function buildChecklist(
   grant: BudgetGrant,
 ): Promise<Checklist | null> {
   if (grant.floored()) return null;
-  try {
-    const result = await withTraceFrame(
-      rctx.recorder,
-      { site: "checklist" },
-      () =>
-        generateObject({
-          model: rctx.bindModel("lead", grant),
-          system: CHECKLIST_SYSTEM,
-          prompt:
-            `${todayLine(rctx.todayISO)}\n\n` +
-            `Research question: ${rctx.question}\n\n` +
-            "Enumerate the sub-facts a complete answer must ground with sources, plus the analytical moves it must make. " +
-            "Cover every facet the question explicitly asks for, and for each item name the exact value, date, entity, statute section, program, or comparison it must pin down — the concrete instance, never just the category. " +
-            "When the question spans several domains or entities, give each its own specific items rather than one bucket line. " +
-            `Classify the scope, then list at most ${CHECKLIST_MAX_ITEMS} items, ordered most central first.`,
-          schema: checklistSchema,
-          maxOutputTokens: CHECKLIST_MAX_TOKENS,
-          maxRetries: MODEL_CALL_MAX_RETRIES,
-          abortSignal: rctx.signal,
-        }),
+  const basePrompt =
+    `${todayLine(rctx.todayISO)}\n\n` +
+    `Research question: ${rctx.question}\n\n` +
+    "Enumerate the sub-facts a complete answer must ground with sources, plus the analytical moves it must make. " +
+    "Cover every facet the question explicitly asks for, and for each item name the exact value, date, entity, statute section, program, or comparison it must pin down — the concrete instance, never just the category. " +
+    "When the question spans several domains or entities, give each its own specific items rather than one bucket line. ";
+  const attempt = (maxItems: number, terse: boolean) =>
+    withTraceFrame(rctx.recorder, { site: "checklist" }, () =>
+      generateObject({
+        model: rctx.bindModel("lead", grant),
+        system: CHECKLIST_SYSTEM,
+        prompt:
+          basePrompt +
+          (terse
+            ? "Keep each item to a single tight line so the whole list fits in one response. "
+            : "") +
+          `Classify the scope, then list at most ${maxItems} items, ordered most central first.`,
+        schema: checklistSchema,
+        maxOutputTokens: CHECKLIST_MAX_TOKENS,
+        maxRetries: MODEL_CALL_MAX_RETRIES,
+        abortSignal: rctx.signal,
+      }),
     );
+  try {
+    let result: Awaited<ReturnType<typeof attempt>>;
+    try {
+      result = await attempt(CHECKLIST_MAX_ITEMS, false);
+    } catch (err) {
+      if (rctx.signal?.aborted) throw err;
+      result = await attempt(CHECKLIST_RETRY_MAX_ITEMS, true);
+    }
     const items: ChecklistItem[] = result.object.items
       .map((item, index) => ({
         id: `item_${index + 1}`,
@@ -146,6 +160,25 @@ export async function buildChecklist(
     if (rctx.signal?.aborted) throw err;
     return null;
   }
+}
+
+export function checklistFromSubQuestions(
+  subQuestions: string[],
+): Checklist | null {
+  const items: ChecklistItem[] = subQuestions
+    .map((q) => q.trim())
+    .filter((q) => q.length > 0)
+    .slice(0, CHECKLIST_MAX_ITEMS)
+    .map((fact, index) => ({
+      id: `item_${index + 1}`,
+      fact,
+      kind: "fact" as ChecklistKind,
+      importance: "central" as ChecklistImportance,
+      volatility: "volatile" as ChecklistVolatility,
+      status: "open" as ChecklistStatus,
+    }));
+  if (items.length === 0) return null;
+  return { items, nextId: items.length + 1, scope: "broad" };
 }
 
 export function applyCoverageUpdate(

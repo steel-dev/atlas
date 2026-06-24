@@ -5,40 +5,22 @@ import {
   type FlexibleSchema,
   type ModelMessage,
 } from "ai";
-import { withGrant, type BudgetGrant } from "./budget.js";
+import type { BudgetGrant } from "./budget.js";
 import { ECONOMY } from "./economy.js";
-import { errorMessage } from "./errors.js";
 import type { AgentRole } from "./events.js";
-import { renderLedgerDigest } from "./ledger.js";
 import { stubToolResultWindow } from "./memory.js";
 import { MODEL_CALL_MAX_RETRIES, type ModelRole } from "./model.js";
-import { researchAgentSystem } from "./prompts.js";
 import { ROLE_CAPABILITIES } from "./roles.js";
 import { currentFrame, withTraceFrame } from "./trace.js";
 import { budgetStatusLine, type RunCtx } from "./state.js";
-import { trailCapsFor } from "./trail.js";
 import {
   buildAgentTools,
   type AgentCtx,
-  type SpawnInput,
   type ToolName,
 } from "./tools.js";
 
-const RESEARCH_TOOLS: ToolName[] = [
-  "spawn",
-  "search",
-  "fetch",
-  "read_source",
-  "search_sources",
-  "run_code",
-  "ledger",
-  "add_claim",
-];
-
 const TASK_PREVIEW_CHARS = 300;
 const NOTE_PREVIEW_CHARS = 600;
-const SPAWN_DIGEST_MAX_CLAIMS = 12;
-const SPAWN_TRAIL_FRACTION = 0.25;
 const FINAL_TOOL_VERDICT_RESERVE_USD = 0.01;
 
 export const CONTEXT_BUDGET_STOP = "context budget reached";
@@ -111,17 +93,9 @@ export async function runAgent(
     role: spec.role,
     grant: spec.grant,
     depth: spec.depth,
-    spawnsThisStep: { count: 0 },
     extractModel: rctx.bindModel("extract", spec.grant),
-    spawn: (input) => executeSpawn(rctx, spec, actx, input, childClaims),
   };
-  const allowSpawn =
-    spec.tools.includes("spawn") &&
-    spec.depth < rctx.config.envelope.depthCap &&
-    ROLE_CAPABILITIES[spec.role].spawn;
-  const toolNames = allowSpawn
-    ? spec.tools
-    : spec.tools.filter((name) => name !== "spawn");
+  const toolNames = spec.tools;
   let finalValue: unknown;
   const tools = spec.finalTool
     ? {
@@ -196,7 +170,6 @@ export async function runAgent(
       },
     ],
     prepareStep: ({ stepNumber, messages }) => {
-      actx.spawnsThisStep.count = 0;
       const memory =
         spec.memoryCursor !== undefined
           ? { messages: stubToolResultWindow(messages as ModelMessage[], spec.memoryCursor) }
@@ -289,155 +262,6 @@ export async function runAgent(
     ...(spec.captureMessages ? { messages: result.response.messages } : {}),
     ...(finalValue !== undefined ? { final: finalValue } : {}),
   };
-}
-
-async function executeSpawn(
-  rctx: RunCtx,
-  parentSpec: AgentSpec,
-  parentActx: AgentCtx,
-  input: SpawnInput,
-  childClaims: string[],
-): Promise<string> {
-  const runReason = rctx.stopReason();
-  if (runReason) {
-    return `Spawn refused: ${runReason}. Stop calling tools and write your closing note.`;
-  }
-  const breadthCap = rctx.config.envelope.breadthCap;
-  if (parentActx.spawnsThisStep.count >= breadthCap) {
-    return `Spawn refused: per-turn spawn cap (${breadthCap}) reached. Integrate the results you have before spawning more.`;
-  }
-  if (
-    input.role !== "verify" &&
-    rctx.counters.researchSpawned >= rctx.config.maxAgents
-  ) {
-    rctx.counters.researchSpawnsBlocked++;
-    return `Spawn refused: run-wide research-agent cap (${rctx.config.maxAgents}) reached. Do the remaining work inline and finish.`;
-  }
-  parentActx.spawnsThisStep.count++;
-
-  const task = input.task?.trim();
-  if (!task) {
-    return "Spawn refused: `task` must be a self-contained brief.";
-  }
-  const childDepth = parentSpec.depth + 1;
-  if (childDepth > rctx.config.envelope.depthCap) {
-    return `Spawn refused: depth cap (${rctx.config.envelope.depthCap}) reached. Do the work inline.`;
-  }
-
-  if (input.role === "verify") {
-    return executeVerifySpawn(rctx, parentActx, input, childDepth);
-  }
-
-  const result = await withGrant(
-    parentActx.grant,
-    { fraction: input.budget_fraction ?? ECONOMY.researchSpawnFraction },
-    async (grant) => {
-      const trail = rctx.trail.render(
-        trailCapsFor(rctx.config.maxSources, SPAWN_TRAIL_FRACTION),
-      );
-      const childTask = trail
-        ? `${task}\n\nTrail so far — searches already run and fetches that dead-ended across the whole run. Do not repeat them; vary the terms or angle instead:\n${trail}`
-        : task;
-      try {
-        const child = await runAgent(rctx, {
-          role: "research",
-          modelRole: "research",
-          task: childTask,
-          system: researchAgentSystem(rctx.todayISO),
-          tools: RESEARCH_TOOLS,
-          grant,
-          depth: childDepth,
-          parentId: parentActx.agentId,
-          maxTurns: rctx.config.envelope.maxSubagentTurns,
-        });
-        childClaims.push(...child.claimsAdded);
-        const newClaims = child.claimsAdded
-          .map((id) => rctx.ledger.byId(id))
-          .filter(
-            (claim): claim is NonNullable<typeof claim> =>
-              claim !== undefined && !claim.duplicateOf,
-          );
-        return JSON.stringify(
-          {
-            note: child.note,
-            stop_reason: child.stopReason,
-            claims_added: child.claimsAdded.length,
-            new_claims_digest: renderLedgerDigest(
-              newClaims,
-              SPAWN_DIGEST_MAX_CLAIMS,
-            ),
-            spent_usd: round2(child.spentUSD),
-          },
-          null,
-          2,
-        );
-      } catch (err) {
-        if (rctx.signal?.aborted) throw err;
-        return `Spawn failed: ${errorMessage(err)}`;
-      }
-    },
-  );
-  return (
-    result ??
-    "Spawn refused: insufficient budget remaining — do the work inline or finish."
-  );
-}
-
-async function executeVerifySpawn(
-  rctx: RunCtx,
-  parentActx: AgentCtx,
-  input: SpawnInput,
-  childDepth: number,
-): Promise<string> {
-  const claimIds = [
-    ...new Set(
-      (input.claim_ids ?? [])
-        .map((id) => String(id ?? "").trim())
-        .filter(Boolean),
-    ),
-  ];
-  if (claimIds.length === 0) {
-    return "Spawn refused: verify spawns require `claim_ids` from the ledger.";
-  }
-  const unknown = claimIds.filter((id) => !rctx.ledger.byId(id));
-  if (unknown.length > 0) {
-    return `Spawn refused: unknown claim ids: ${unknown.join(", ")}.`;
-  }
-  if (rctx.verifyReserve.floored()) {
-    return "Spawn refused: verification budget reserve is exhausted — finish and report.";
-  }
-  const before = rctx.verifyReserve.spentUSD();
-  try {
-    const outcome = await rctx.verify({
-      claimIds,
-      reserve: rctx.verifyReserve,
-      perClaimFraction: input.budget_fraction ?? ECONOMY.verify.perClaimFraction,
-      concurrency: ECONOMY.verify.concurrency,
-      lenses: input.lenses,
-      parentId: parentActx.agentId,
-      depth: childDepth,
-    });
-    return JSON.stringify(
-      {
-        note: outcome.note,
-        verdicts: outcome.verdicts.map((verdict) => ({
-          claim_id: verdict.claimId,
-          status: verdict.status,
-          votes: verdict.votes,
-        })),
-        spent_usd: round2(rctx.verifyReserve.spentUSD() - before),
-      },
-      null,
-      2,
-    );
-  } catch (err) {
-    if (rctx.signal?.aborted) throw err;
-    return `Spawn failed: ${errorMessage(err)}`;
-  }
-}
-
-function round2(value: number): number {
-  return Math.round(value * 100) / 100;
 }
 
 export function describeBudget(rctx: RunCtx): string {

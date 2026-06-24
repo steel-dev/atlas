@@ -178,7 +178,6 @@ export const SITE_SOURCE: Record<string, string> = {
   synthesize: "src/synthesize.ts:synthesizeReport",
   repair: "src/synthesize.ts:repairReport",
   bind: "src/bind.ts:bindCitations",
-  structured: "src/structured.ts:synthesizeStructured",
   adjudicate: "src/adjudicate.ts:adjudicateCoverage",
   checklist: "src/checklist.ts:buildChecklist",
   conflicts: "src/conflicts.ts:conflictPass",

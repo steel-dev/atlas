@@ -43,7 +43,6 @@ import { trailCapsFor } from "./trail.js";
 import { normalizeUrlForSource } from "./url.js";
 
 export const BUILTIN_TOOL_NAMES = [
-  "spawn",
   "search",
   "fetch",
   "read_source",
@@ -56,22 +55,12 @@ export const BUILTIN_TOOL_NAMES = [
 
 export type ToolName = (typeof BUILTIN_TOOL_NAMES)[number];
 
-export interface SpawnInput {
-  role: "research" | "verify";
-  task: string;
-  budget_fraction?: number | undefined;
-  claim_ids?: string[] | undefined;
-  lenses?: string[] | undefined;
-}
-
 export interface AgentCtx {
   agentId: string;
   role: AgentRole;
   grant: BudgetGrant;
   depth: number;
-  spawnsThisStep: { count: number };
   extractModel: LanguageModelV3;
-  spawn(input: SpawnInput): Promise<string>;
 }
 
 const SEARCH_TIMEOUT_MS = 60_000;
@@ -964,48 +953,6 @@ export function buildAgentTools(
 ): ToolSet {
   const tools: ToolSet = {};
   const enabled = new Set(names);
-
-  if (enabled.has("spawn")) {
-    tools.spawn = tool({
-      description:
-        "Delegate a self-contained unit of work to a subagent with its own private context and budget slice. " +
-        'role "research": the subagent searches, fetches, and extracts verbatim-quoted claims into the shared ledger, then returns a short note. ' +
-        'role "verify": independent verifiers adversarially check the given claim_ids and write verdicts to the ledger; claims already settled or currently being verified return their existing verdict instead of spending again. ' +
-        "Write `task` as a complete, standalone brief: the objective, what evidence or claims to produce, scope boundaries, and the original research question verbatim. The subagent sees nothing else of your context. " +
-        "Multiple spawn calls in one turn run in parallel.",
-      inputSchema: z.object({
-        role: z.enum(["research", "verify"]),
-        task: z
-          .string()
-          .describe(
-            "Self-contained brief for the subagent: objective, expected output, boundaries, and the original question.",
-          ),
-        budget_fraction: z
-          .number()
-          .min(0.01)
-          .max(1)
-          .optional()
-          .describe(
-            "Fraction of your remaining budget to grant (default 0.15 research, 0.08 verify).",
-          ),
-        claim_ids: z
-          .array(z.string())
-          .max(8)
-          .optional()
-          .describe("For verify spawns: the ledger claim ids to check (max 8)."),
-        lenses: z
-          .array(
-            z.enum(["quote-fidelity", "contradiction", "source-strength"]),
-          )
-          .optional()
-          .describe(
-            "For verify spawns: which lenses to apply. Default is staged: non-central claims get a cheap screening check that escalates to the full panel only when flagged; central claims get all three lenses while the grant can fund a panel, and fall back to the screening check when it cannot. A screening pass marks the claim `screened` — only the full panel confirms. Pass lenses explicitly to force the panel; re-verifying a screened claim escalates it to the panel.",
-          ),
-      }),
-      execute: async (input) =>
-        withBudgetLine(rctx, actx, await actx.spawn(input as SpawnInput)),
-    });
-  }
 
   if (enabled.has("note")) {
     tools.note = tool({

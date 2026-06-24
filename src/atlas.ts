@@ -1,4 +1,3 @@
-import type { FlexibleSchema, InferSchema } from "ai";
 import type { AtlasConfig, ResearchOptions } from "./config.js";
 import {
   resumeRun,
@@ -9,10 +8,11 @@ import {
 } from "./run.js";
 
 export type { AtlasConfig, ResearchOptions } from "./config.js";
+import type { Researcher } from "./researcher.js";
+import { runOrchestrated } from "./orchestrate.js";
 
-export interface StructuredResearchResult<T> extends ResearchResult {
-  structured: T;
-}
+const DEFAULT_ATLAS_DESCRIBE =
+  "Atlas's own deep-research spine: plans, searches, fetches, and synthesizes a grounded, citation-backed report. Strong on academic, finance, and multi-source synthesis. Default for any sub-task without a more specialized fit.";
 
 export class Atlas {
   readonly #config: AtlasConfig;
@@ -25,18 +25,15 @@ export class Atlas {
 
   research(
     question: string,
-    options?: ResearchOptions,
-  ): Promise<ResearchResult>;
-  research<SCHEMA extends FlexibleSchema>(
-    question: string,
-    options: ResearchOptions & {
-      output: { kind: "structured"; schema: SCHEMA };
-    },
-  ): Promise<StructuredResearchResult<InferSchema<SCHEMA>>>;
-  research(
-    question: string,
     options: ResearchOptions = {},
   ): Promise<ResearchResult> {
+    const researchers = this.#config.researchers;
+    if (researchers && Object.keys(researchers).length > 0) {
+      return runOrchestrated(this.#config, question, options, {
+        atlas: this.asResearcher(DEFAULT_ATLAS_DESCRIBE),
+        ...researchers,
+      });
+    }
     return this.start(question, options).result();
   }
 
@@ -45,6 +42,26 @@ export class Atlas {
     const run = startRun({ config: this.#config, question, options });
     this.#track(run);
     return run;
+  }
+
+  asResearcher(describe: string): Researcher {
+    return {
+      describe,
+      research: async (query, ctx) => {
+        const result = await this
+          .start(query, {
+            budget: { maxUSD: ctx.budget.maxUSD },
+            ...(ctx.signal ? { signal: ctx.signal } : {}),
+          })
+          .result();
+        return {
+          report: result.report,
+          sources: result.sources.map((s) => ({ url: s.url, title: s.title })),
+          cost: result.stats.costUSD,
+          confidence: 1,
+        };
+      },
+    };
   }
 
   async resume(runId: string, options?: ResumeOptions): Promise<ResearchRun> {

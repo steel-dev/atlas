@@ -18,7 +18,7 @@ import { resolveCustomTools } from "./custom-tools.js";
 import { ECONOMY } from "./economy.js";
 import type { EventHub } from "./event-hub.js";
 import type { ResearchEvent } from "./events.js";
-import { createLedger, type ResearchClaim } from "./ledger.js";
+import { createLedger } from "./ledger.js";
 import {
   createModelCallCache,
   createRunUsage,
@@ -45,7 +45,6 @@ import {
 import { isRunCodeAvailable } from "./sandbox.js";
 import { createTrail } from "./trail.js";
 import { createTraceRecorder } from "./trace.js";
-import { verifyClaims } from "./verify.js";
 
 const TIMEOUT_SYNTHESIS_RESERVE_MS = 120_000;
 const BUDGET_WARNING_FRACTIONS = [0.5, 0.8, 0.95];
@@ -79,8 +78,6 @@ export interface RunAssembly {
   rctx: RunCtx;
   meter: BudgetMeter;
   synthesisGrant: BudgetGrant;
-  verifyReserve: BudgetGrant;
-  drainEagerVerifications(): Promise<void>;
 }
 
 export async function assembleRun(args: AssembleRunArgs): Promise<RunAssembly> {
@@ -220,26 +217,12 @@ export async function assembleRun(args: AssembleRunArgs): Promise<RunAssembly> {
       fraction: ECONOMY.synthesis.fraction,
       minUSD: ECONOMY.synthesis.minUSD,
     }) ?? meter;
-  const verifyReserve =
-    meter.grant({
-      fraction: resolved.envelope.verifyReserveFraction,
-      minUSD: ECONOMY.verifyReserve.minUSD,
-    }) ?? meter;
-
-  const eagerVerifications = new Set<Promise<void>>();
-  const eagerVerifyGate = createDynamicConcurrencyGate(() =>
-    counters.researchInFlight > 0
-      ? ECONOMY.verify.eagerConcurrencyDuringResearch
-      : ECONOMY.verify.eagerConcurrency,
-  );
-  let eagerVerifyStarted = 0;
   const ledger = createLedger({
     emit,
     signal: args.hardSignal,
     shouldExtract: () => !budgetExhausted(),
     claimsPerSource: resolved.envelope.maxClaimsPerSource,
     extractionChars: extractionCharsFor(resolved.models.extract),
-    onClaim: (claim) => eagerVerify(claim),
   });
 
   const rctx: RunCtx = {
@@ -248,7 +231,6 @@ export async function assembleRun(args: AssembleRunArgs): Promise<RunAssembly> {
     todayISO: args.todayISO,
     config: resolved,
     meter,
-    verifyReserve,
     usage,
     pricing,
     ledger,
@@ -275,12 +257,10 @@ export async function assembleRun(args: AssembleRunArgs): Promise<RunAssembly> {
     modelGate: heavyTier.gate,
     ioGate,
     seenDomains: new Set(),
-    verifyInFlight: new Map(),
     counters,
     agentSequence: { next: 1 },
     bindModel,
     rawModel: (role: ModelRole) => resolved.models[role],
-    verify: (spawnArgs) => verifyClaims(rctx, spawnArgs),
     stopReason: () => {
       if (args.stopSignal.aborted) return "stop requested";
       if (
@@ -295,27 +275,6 @@ export async function assembleRun(args: AssembleRunArgs): Promise<RunAssembly> {
     },
   };
 
-  function eagerVerify(claim: ResearchClaim): void {
-    if (claim.importance !== "central") return;
-    if (eagerVerifyStarted >= ECONOMY.verify.eagerMaxClaims) return;
-    if (rctx.stopReason() || verifyReserve.floored()) return;
-    eagerVerifyStarted++;
-    const task = eagerVerifyGate
-      .run(() =>
-        rctx.verify({
-          claimIds: [claim.id],
-          reserve: verifyReserve,
-          perClaimFraction: ECONOMY.verify.perClaimFraction,
-          concurrency: 1,
-        }),
-      )
-      .then(
-        () => undefined,
-        () => undefined,
-      );
-    eagerVerifications.add(task);
-    void task.finally(() => eagerVerifications.delete(task));
-  }
 
   if (args.replay) primeSourceNumbers(rctx.sources, args.replay);
 
@@ -323,12 +282,6 @@ export async function assembleRun(args: AssembleRunArgs): Promise<RunAssembly> {
     rctx,
     meter,
     synthesisGrant,
-    verifyReserve,
-    drainEagerVerifications: async () => {
-      while (eagerVerifications.size > 0) {
-        await Promise.all([...eagerVerifications]);
-      }
-    },
   };
 }
 
