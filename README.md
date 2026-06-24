@@ -143,25 +143,25 @@ await atlas.research(question, {
 });
 ```
 
-`maxUSD` is a **best-effort target, not a hard ceiling.** Cost is metered per model call against a built-in pricing table, and the budget is checked between agent turns: a run stops *starting* new work once the meter is spent, but can still overshoot. In-flight calls (up to `concurrency.models` at a time) are billed at their actual cost only after they return, so the dollar figure is a typical total, not a guarantee. The table also goes stale when a provider changes prices, and unknown models are costed conservatively — pass `pricing` to correct a model's rate when the dollar cap must be accurate.
+`maxUSD` is a **best-effort target, not a hard ceiling.** The meter checks between agent turns, so a run stops *starting* work once spent, but in-flight calls (up to `concurrency.models`) can overshoot. Pricing comes from a built-in table that can lag provider changes — pass `pricing` to correct a rate when the cap must be accurate.
 
-Because the dollar cap rides on those prices, the real backstops are **price-independent.** Each defaults to the effort row above and is enforced regardless of what prices say:
+The real backstops are **price-independent** — each defaults to the effort row above and is enforced regardless of prices:
 
-- `budget.maxTokens` — input + output tokens run-wide (cache reads excluded, since they re-read already-counted text). Like `maxUSD` it is checked between agent turns, so in-flight calls can push the total slightly past the cap; unlike `maxUSD` it never drifts with provider prices.
-- `budget.maxAgents` — research subagents spawned run-wide (the recursive fan-out that can otherwise grow as breadth^depth). Enforced synchronously, with no overshoot: once it is reached, further `spawn` calls are refused and the lead finishes inline. Verifier agents are bounded separately and count toward `maxTokens`, not this cap.
+- `budget.maxTokens` — input + output tokens run-wide (cache reads excluded). Checked between turns like `maxUSD`, but never drifts with prices.
+- `budget.maxAgents` — research subagents spawned run-wide (the fan-out that otherwise grows as breadth^depth). Enforced synchronously with no overshoot: once reached, `spawn` is refused and the lead finishes inline. Verifier agents are bounded separately.
 - `budget.maxSources`, `budget.maxDurationMs` — fetched-source and wall-clock caps.
 
-`result.stats` reports `budgetExhausted`, `tokensExhausted`, and `agentCapReached` so you can see which limit, if any, bound the run — `agentCapReached` is set only when the cap actually refused a spawn, not merely when the count was reached. Leave headroom on `maxUSD`, or set a provider-side spend limit, when the cap is truly hard.
+`result.stats` reports `budgetExhausted`, `tokensExhausted`, and `agentCapReached` so you can see which limit bound the run. Leave headroom on `maxUSD`, or set a provider-side spend limit, when the cap is truly hard.
 
-`result.stats.stopReason` folds those signals into one normalized value — `"answered"` (coverage judged the question answered), `"completed"` (ran to a natural end without a positive answered signal), `"stopped"` (`run.stop()`), or a binding cap: `"budget"`, `"tokens"`, `"timeout"`, `"agent-cap"`. When several apply, the most proximate cause wins (an explicit `stop()` over a cap, a cap over `answered`), so it is a single headline reason rather than a replacement for the booleans above.
+`result.stats.stopReason` folds those into one value — `"answered"`, `"completed"`, `"stopped"` (`run.stop()`), or a binding cap (`"budget"`, `"tokens"`, `"timeout"`, `"agent-cap"`). When several apply, the most proximate wins.
 
 ## Safety
 
 Untrusted web content is quarantined (data, not instructions). Fetches pass SSRF guards hop-by-hop; `run_code` runs in a memory-capped V8 isolate with no network, filesystem, or host access. Direct fetch honors robots.txt.
 
-The isolate is provided by the optional `isolated-vm` dependency. If it isn't installed (or failed to build on your platform), `run_code` is omitted from the agents' toolset and the run proceeds without it — Atlas never falls back to an unsandboxed evaluator.
+The isolate needs the optional `isolated-vm` dependency; without it, `run_code` is dropped from the toolset and the run proceeds without it — Atlas never falls back to an unsandboxed evaluator.
 
-The SSRF guard validates each hostname's DNS resolution at check time but cannot pin the subsequent connection to the validated address, so an attacker controlling DNS can defeat it via rebinding. Treat it as defense-in-depth: when researching potentially hostile targets, run Atlas behind network-level egress controls that block private ranges.
+The SSRF guard validates DNS at check time but can't pin the connection, so an attacker controlling DNS can defeat it via rebinding. Treat it as defense-in-depth — for hostile targets, run behind network-level egress controls that block private ranges.
 
 ## Dev
 
