@@ -102,6 +102,6 @@
     "url": "git+https://github.com/steel-dev/atlas.git"
   },
   "optionalDependencies": {
-    "isolated-vm": "^6.1.2"
+    "isolated-vm": "^7.0.0"
   }
 }
