@@ -45,7 +45,7 @@ export interface SpineOutput {
   note: string;
   citations: Citation[];
   unboundCitations: string[];
-  sources?: { url: string; title: string; via: string }[];
+  sources?: { url: string; title: string; via: string; chars?: number }[];
   warnings?: string[];
 }
 
@@ -852,12 +852,12 @@ export async function runSpine(
   try {
     await synthesizeHolistic(rctx, meter, priorMessages, draft);
   } catch (err) {
-    if (rctx.signal?.aborted) throw err;
+    if (rctx.signal?.aborted && !draft.text.trim()) throw err;
   }
   try {
-    if (ledger && ledger.scope !== "single_fact") {
+    if (ledger && ledger.scope !== "single_fact" && !rctx.signal?.aborted) {
       for (let round = 0; round < COVERAGE_MAX_ROUNDS; round++) {
-        if (!draft.text.trim() || meter.floored()) break;
+        if (!draft.text.trim() || meter.floored() || rctx.signal?.aborted) break;
         const gaps = prioritizeGaps(
           await auditDraftAgainstLedger(rctx, meter, ledger, draft.text),
           ledger,
@@ -867,9 +867,9 @@ export async function runSpine(
         await reconcileDraft(rctx, meter, draft, gaps);
       }
     }
-    await flushDroppedNotes(rctx, meter, draft);
+    if (!rctx.signal?.aborted) await flushDroppedNotes(rctx, meter, draft);
   } catch (err) {
-    if (rctx.signal?.aborted) throw err;
+    if (rctx.signal?.aborted && !draft.text.trim()) throw err;
   }
 
   if (!draft.text.trim()) {
