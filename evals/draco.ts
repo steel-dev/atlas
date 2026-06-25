@@ -32,7 +32,7 @@ import {
   edgar,
   openalex,
   pubmed,
-} from "../examples/domain-tools/index.js";
+} from "../src/providers/domain/index.js";
 import {
   buildDiagnostics,
   formatCountMap,

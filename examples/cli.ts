@@ -26,13 +26,15 @@ import {
 } from "../src/defaults.js";
 import { readEnv } from "../src/env.js";
 import { defaultSearchProviders } from "../src/providers/search.js";
-import { arxiv, edgar, openalex, pubmed } from "./domain-tools/index.js";
+import { arxiv, edgar, openalex, pubmed } from "../src/providers/domain/index.js";
 
 const USAGE = `atlas — deep research from your terminal
 
 Usage:
-  tsx examples/cli.ts "<question>" [options]
-  tsx examples/cli.ts --resume <runId> --store <dir>
+  atlas "<question>" [options]
+  atlas --resume <runId> --store <dir>
+
+  Run without installing: npx @steel-dev/atlas "<question>"
 
 Streams progress to stderr and the report to stdout.
 
@@ -45,8 +47,7 @@ Options:
       --store DIR         Journal the run to DIR (enables --resume)
       --resume RUNID      Resume a parked or failed run from --store
       --trace MODE        off | spans | full — capture a timing/cost trace +
-                          bottleneck digest to eval-runs/traces/<commit>/
-                          (inspect with: tsx examples/trace.ts)
+                          bottleneck digest as JSON under eval-runs/traces/<commit>/
   -o, --out FILE          Write the report markdown to FILE instead of stdout
       --json              Print the full ResearchResult as JSON on stdout
   -q, --quiet             Suppress progress events on stderr
@@ -63,12 +64,12 @@ Environment:
   STEEL_API_KEY                                 optional fetch escalation
 
 Examples:
-  tsx examples/cli.ts "What changed when Cloudflare DO added SQLite?"
-  tsx examples/cli.ts "..." --effort deep --budget 5 -o report.md
-  tsx examples/cli.ts "..." --json > result.json
-  tsx examples/cli.ts "..." --store .atlas-runs
-  tsx examples/cli.ts "..." --trace full --effort balanced
-  tsx examples/cli.ts --resume run_ab12cd34ef56 --store .atlas-runs
+  atlas "What changed when Cloudflare DO added SQLite?"
+  atlas "..." --effort deep --budget 5 -o report.md
+  atlas "..." --json > result.json
+  atlas "..." --store .atlas-runs
+  atlas "..." --trace full --effort balanced
+  atlas --resume run_ab12cd34ef56 --store .atlas-runs
 `;
 
 const DIM = "\x1b[2m";
@@ -435,8 +436,8 @@ async function main(): Promise<void> {
       );
       void run.pause();
     } else {
-      process.stderr.write("\natlas: cancelling — Ctrl-C again to force quit\n");
-      void run.cancel();
+      process.stderr.write("\natlas: aborting — Ctrl-C again to force quit\n");
+      void run.abort();
     }
   };
   process.on("SIGINT", onSigint);
@@ -499,7 +500,7 @@ async function main(): Promise<void> {
       process.stderr.write(`atlas: ${messageOf(err)}\n`);
       process.exit(130);
     }
-    if (run.status() === "cancelled") process.exit(130);
+    if (run.status() === "aborted") process.exit(130);
     fail(messageOf(err));
   } finally {
     process.off("SIGINT", onSigint);

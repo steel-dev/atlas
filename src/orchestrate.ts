@@ -3,6 +3,7 @@ import { z } from "zod";
 import { minViableSubtaskUSD, resolvePricing } from "./budget.js";
 import { deriveChildCtx } from "./context.js";
 import { errorMessage } from "./errors.js";
+import type { Citation } from "./events.js";
 import { MODEL_CALL_MAX_RETRIES } from "./model.js";
 import type { Researcher, ResearcherContext } from "./researcher.js";
 import { runSpine, type SpineOutput } from "./spine.js";
@@ -11,7 +12,7 @@ import { withTraceFrame } from "./trace.js";
 
 export const ATLAS_KEY = "atlas";
 
-const DEFAULT_ATLAS_DESCRIBE =
+const DEFAULT_ATLAS_DESCRIPTION =
   "Atlas's own deep-research spine: plans, searches, fetches, and synthesizes a grounded, citation-backed report. Strong on academic, finance, and multi-source synthesis. Default for any sub-task without a more specialized fit.";
 
 const DECOMPOSE_SYSTEM =
@@ -23,7 +24,7 @@ const DECOMPOSE_SYSTEM =
 const SYNTH_SYSTEM =
   "You synthesize ONE cited research report from several independent sub-reports. " +
   "Merge overlapping findings, surface and resolve contradictions, and write an integrated answer to the question — not a list of the sub-reports. " +
-  "Preserve every concrete specific (figures, names, dates) and cite sources inline by URL. Open with a brief bottom-line answer.";
+  "Preserve every concrete specific (figures, names, dates). Cite sources inline as [N] using ONLY the numbers in the provided source roster; never invent a number and never write your own Sources list — one is appended for you. Open with a brief bottom-line answer.";
 
 const decomposeSchema = z.object({
   strategy: z.string(),
@@ -50,12 +51,21 @@ interface Subtask {
   researcher: string;
 }
 
+interface OrchestratedSource {
+  url: string;
+  title: string;
+  via: string;
+  chars?: number;
+}
+
 interface Dispatched {
   subtask: Subtask;
   report: string;
-  sources: { url: string; title?: string }[];
+  sources: OrchestratedSource[];
   ok: boolean;
   error?: string;
+  // Present when the child already produced a complete grounded report.
+  spine?: SpineOutput;
 }
 
 export async function runOrchestrated(
@@ -76,11 +86,14 @@ export async function runOrchestrated(
       fraction: SYNTH_MERGE_FRACTION,
       minUSD: SYNTH_MERGE_MIN_USD,
     }) ?? meter;
+  const releaseSynth = (): void => {
+    if (synthGrant !== meter) synthGrant.release();
+  };
 
   const roster = [ATLAS_KEY, ...Object.keys(researchers)]
     .map(
       (key) =>
-        `- ${key}: ${key === ATLAS_KEY ? DEFAULT_ATLAS_DESCRIBE : researchers[key]!.describe}`,
+        `- ${key}: ${key === ATLAS_KEY ? DEFAULT_ATLAS_DESCRIPTION : researchers[key]!.description}`,
     )
     .join("\n");
 
@@ -89,7 +102,10 @@ export async function runOrchestrated(
     minViable > 0
       ? Math.max(
           1,
-          Math.min(MAX_SUBTASKS, Math.floor((acquisitionBefore * 0.95) / minViable)),
+          Math.min(
+            MAX_SUBTASKS,
+            Math.floor((acquisitionBefore * 0.95) / minViable),
+          ),
         )
       : MAX_SUBTASKS;
 
@@ -145,11 +161,20 @@ export async function runOrchestrated(
             { site: `researcher:${ATLAS_KEY}` },
             () => runSpine(child, { meter: grant }),
           );
-          const sources = child.sources.fetchedSources.map((s) => ({
-            url: s.url,
-            title: s.title,
-          }));
-          return { subtask, report: out.report, sources, ok: true };
+          const sources = child.sources.fetchedSources.map(
+            (s): OrchestratedSource => {
+              const doc = s.sourceId
+                ? child.sources.byId.get(s.sourceId)
+                : undefined;
+              return {
+                url: s.url,
+                title: s.title,
+                via: doc?.metadata.method ?? "unknown",
+                chars: doc?.storedChars ?? 0,
+              };
+            },
+          );
+          return { subtask, report: out.report, sources, ok: true, spine: out };
         }
         const researcher = researchers[subtask.researcher]!;
         const ctx: ResearcherContext = {
@@ -162,7 +187,13 @@ export async function runOrchestrated(
         return {
           subtask,
           report: report.report,
-          sources: report.sources,
+          sources: report.sources.map(
+            (s): OrchestratedSource => ({
+              url: s.url,
+              title: s.title ?? s.url,
+              via: subtask.researcher,
+            }),
+          ),
           ok: true,
         };
       } catch (err) {
@@ -182,23 +213,55 @@ export async function runOrchestrated(
 
   const ok = dispatched.filter((d) => d.ok && d.report.trim());
   const failed = dispatched.filter((d) => !d.ok || !d.report.trim());
+  const warnings = failed.map(
+    (d) =>
+      `Researcher "${d.subtask.researcher}" returned no report for "${d.subtask.query}"` +
+      (d.error ? `: ${d.error}` : "."),
+  );
 
-  let report: string;
   if (ok.length === 0) {
-    report = "No researcher returned a usable report for this question.";
-  } else if (ok.length === 1) {
-    report = ok[0]!.report;
+    releaseSynth();
+    return {
+      report: "No researcher returned a usable report for this question.",
+      note: strategy,
+      citations: [],
+      unboundCitations: [],
+      sources: [],
+      warnings,
+    };
+  }
+
+  // A single complete child report can pass through without a merge pass.
+  const soleAtlas = ok.length === 1 ? ok[0]!.spine : undefined;
+  if (soleAtlas) {
+    releaseSynth();
+    return {
+      report: soleAtlas.report,
+      note: soleAtlas.note,
+      citations: soleAtlas.citations,
+      unboundCitations: soleAtlas.unboundCitations,
+      sources: ok[0]!.sources,
+      warnings,
+    };
+  }
+
+  const sources = dedupeSources(ok);
+
+  let merged: string;
+  if (ok.length === 1) {
+    merged = ok[0]!.report;
   } else {
+    const rosterList = sources
+      .map((s, i) => `[${i + 1}] ${s.title} — ${s.url}`)
+      .join("\n");
     const blocks = ok
-      .map((d, i) => {
-        const urls = d.sources.map((s) => s.url).join(", ");
-        return (
+      .map(
+        (d, i) =>
           `## Sub-report ${i + 1} — via "${d.subtask.researcher}"\n` +
-          `Query: ${d.subtask.query}\n\n${d.report}\n\nSources: ${urls || "(none)"}`
-        );
-      })
+          `Query: ${d.subtask.query}\n\n${stripSourcesSection(d.report)}`,
+      )
       .join("\n\n---\n\n");
-    let merged = "";
+    let text = "";
     try {
       const synth = await withTraceFrame(
         rctx.recorder,
@@ -207,47 +270,109 @@ export async function runOrchestrated(
           generateText({
             model: rctx.bindModel("write", synthGrant),
             system: SYNTH_SYSTEM,
-            prompt: `Question:\n${rctx.question}\n\n${blocks}\n\nWrite the integrated final report.`,
+            prompt:
+              `Question:\n${rctx.question}\n\n` +
+              `Source roster (cite inline as [N], using only these numbers):\n${rosterList || "(none)"}\n\n` +
+              `Sub-reports to merge:\n${blocks}\n\n` +
+              "Write the integrated final report.",
             maxOutputTokens: rctx.config.envelope.maxReportTokens,
             maxRetries: MODEL_CALL_MAX_RETRIES,
             abortSignal: rctx.signal,
           }),
       );
-      merged = synth.text;
+      text = synth.text;
     } catch (err) {
       if (rctx.signal?.aborted) throw err;
     }
-    report = merged.trim() || ok.map((d) => d.report).join("\n\n---\n\n");
+    merged = text.trim() || ok.map((d) => d.report).join("\n\n---\n\n");
   }
-  if (synthGrant !== meter) synthGrant.release();
+  releaseSynth();
 
+  const bound = bindRosterCitations(stripSourcesSection(merged), sources);
+  return {
+    report: bound.report,
+    note: strategy,
+    citations: bound.citations,
+    unboundCitations: bound.unboundCitations,
+    sources,
+    warnings,
+  };
+}
+
+function dedupeSources(ok: Dispatched[]): OrchestratedSource[] {
   const seen = new Set<string>();
-  const sources: { url: string; title: string; via: string }[] = [];
+  const out: OrchestratedSource[] = [];
   for (const d of ok) {
     for (const s of d.sources) {
       if (s.url && !seen.has(s.url)) {
         seen.add(s.url);
-        sources.push({
-          url: s.url,
-          title: s.title ?? s.url,
-          via: d.subtask.researcher,
-        });
+        out.push(s);
       }
     }
   }
+  return out;
+}
 
-  const warnings = failed.map(
-    (d) =>
-      `Researcher "${d.subtask.researcher}" returned no report for "${d.subtask.query}"` +
-      (d.error ? `: ${d.error}` : "."),
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+// Remove local source lists before renumbering against the merged source roster.
+function stripSourcesSection(text: string): string {
+  return text
+    .replace(/\n#{1,6}\s*(?:sources|references)\b[\s\S]*$/i, "")
+    .trimEnd();
+}
+
+// Bind the merged report to a compact, report-wide source list.
+function bindRosterCitations(
+  text: string,
+  roster: OrchestratedSource[],
+): { report: string; citations: Citation[]; unboundCitations: string[] } {
+  let bound = text;
+  roster.forEach((source, i) => {
+    const marker = i + 1;
+    bound = bound.replace(
+      new RegExp(`\\[([^\\]]+)\\]\\(${escapeRegExp(source.url)}\\)`, "g"),
+      `$1 [${marker}]`,
+    );
+  });
+
+  const order: number[] = [];
+  const display = new Map<number, number>();
+  const unbound = new Set<string>();
+  let renumbered = bound.replace(
+    /\[(\d+)\](?!\()/g,
+    (_match, digits: string) => {
+      const n = Number(digits);
+      if (n < 1 || n > roster.length) {
+        unbound.add(`source_${n}`);
+        return "";
+      }
+      if (!display.has(n)) {
+        order.push(n);
+        display.set(n, order.length);
+      }
+      return `[${display.get(n)}]`;
+    },
   );
+  renumbered = renumbered
+    .replace(/ {2,}/g, " ")
+    .replace(/ +([.,;:)])/g, "$1")
+    .trim();
 
-  return {
-    report,
-    note: strategy,
-    citations: [],
-    unsupportedSentences: [],
-    sources,
-    warnings,
-  };
+  const citations: Citation[] = order.map((rosterN, idx) => ({
+    sourceId: `source_${rosterN}`,
+    marker: idx + 1,
+  }));
+  const references = order
+    .map((rosterN, idx) => {
+      const source = roster[rosterN - 1]!;
+      return `${idx + 1}. [${source.title}](${source.url})`;
+    })
+    .join("\n");
+  const report = references
+    ? `${renumbered}\n\n## Sources\n\n${references}`
+    : renumbered;
+  return { report, citations, unboundCitations: [...unbound] };
 }

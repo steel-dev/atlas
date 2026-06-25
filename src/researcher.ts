@@ -8,11 +8,10 @@ export interface ResearchReport {
   report: string;
   sources: { url: string; title?: string }[];
   cost?: number;
-  confidence?: number;
 }
 
 export interface Researcher {
-  describe: string;
+  description: string;
   research(query: string, ctx: ResearcherContext): Promise<ResearchReport>;
 }
 

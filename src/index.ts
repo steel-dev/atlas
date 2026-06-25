@@ -77,6 +77,24 @@ export const steel = { fetch: steelFetch };
 export const basic = { fetch: basicFetch };
 export const perplexity = { agent: perplexityAgent };
 export const parallel = { agent: parallelAgent };
+export {
+  arxiv,
+  pubmed,
+  wikipedia,
+  openalex,
+  edgar,
+  clinicaltrials,
+  semanticScholar,
+} from "./providers/domain/index.js";
+export type {
+  ArxivOptions,
+  PubmedOptions,
+  WikipediaOptions,
+  OpenAlexOptions,
+  EdgarOptions,
+  ClinicalTrialsOptions,
+  SemanticScholarOptions,
+} from "./providers/domain/index.js";
 export type { ExaAgentOptions } from "./providers/exa-agent.js";
 export type { PerplexityAgentOptions } from "./providers/perplexity-agent.js";
 export type { ParallelAgentOptions } from "./providers/parallel-agent.js";
@@ -103,9 +121,5 @@ export type {
   SourceExtractionAttempt,
   SourceExtractionMetadata,
 } from "./sources.js";
-export {
-  AtlasError,
-  BudgetExceededError,
-  ConfigError,
-  ResumeError,
-} from "./errors.js";
+export { AtlasError } from "./errors.js";
+export type { AtlasErrorCode } from "./errors.js";

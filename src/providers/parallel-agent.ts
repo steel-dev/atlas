@@ -1,4 +1,4 @@
-import { sleep } from "../async.js";
+import { sleep, withTimeout } from "../async.js";
 import { readEnv } from "../env.js";
 import type { Researcher } from "../researcher.js";
 
@@ -6,7 +6,7 @@ export interface ParallelAgentOptions {
   apiKey?: string;
   baseUrl?: string;
   processor?: string;
-  describe?: string;
+  description?: string;
   timeoutMs?: number;
   pollIntervalMs?: number;
   costPerRunUSD?: number;
@@ -34,7 +34,7 @@ const TERMINAL_STATUSES = new Set([
   "error",
 ]);
 
-const DEFAULT_DESCRIBE =
+const DEFAULT_DESCRIPTION =
   "Parallel.ai task research: autonomous web research returning a citation-backed result. Strong on enrichment, structured/entity extraction, and broad gathering.";
 
 interface ParallelResult {
@@ -49,7 +49,7 @@ export function parallelAgent(opts: ParallelAgentOptions = {}): Researcher {
     opts.apiKey ?? readEnv("ATLAS_PARALLEL_API_KEY", "PARALLEL_API_KEY");
   const base = (opts.baseUrl ?? "https://api.parallel.ai").replace(/\/+$/, "");
   return {
-    describe: opts.describe ?? DEFAULT_DESCRIBE,
+    description: opts.description ?? DEFAULT_DESCRIPTION,
     async research(query, ctx) {
       if (!apiKey) {
         throw new Error(
@@ -58,52 +58,56 @@ export function parallelAgent(opts: ParallelAgentOptions = {}): Researcher {
       }
       const headers = { "content-type": "application/json", "x-api-key": apiKey };
       const processor = opts.processor ?? "core";
-      const created = await fetch(`${base}/v1/tasks/runs`, {
-        method: "POST",
-        signal: ctx.signal ?? null,
-        headers,
-        body: JSON.stringify({
-          input: query,
-          processor,
-        }),
-      });
-      if (!created.ok) {
-        throw new Error(`parallel.agent: create HTTP ${created.status}`);
-      }
-      const run = (await created.json()) as {
-        run_id?: string;
-        status?: string;
-      };
-      if (!run.run_id) {
-        throw new Error("parallel.agent: no run_id in create response");
-      }
-      const deadline = Date.now() + (opts.timeoutMs ?? DEFAULT_TIMEOUT_MS);
-      let status = run.status ?? "queued";
-      while (!TERMINAL_STATUSES.has(status)) {
-        if (Date.now() > deadline) {
-          throw new Error("parallel.agent: timed out waiting for the task run");
-        }
-        await sleep(opts.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS, ctx.signal);
-        const polled = await fetch(`${base}/v1/tasks/runs/${run.run_id}`, {
-          signal: ctx.signal ?? null,
-          headers,
-        });
-        if (!polled.ok) {
-          throw new Error(`parallel.agent: poll HTTP ${polled.status}`);
-        }
-        status = ((await polled.json()) as { status?: string }).status ?? status;
-      }
-      if (status !== "completed") {
-        throw new Error(`parallel.agent: task run ${status}`);
-      }
-      const resultResp = await fetch(
-        `${base}/v1/tasks/runs/${run.run_id}/result`,
-        { signal: ctx.signal ?? null, headers },
+      const data = await withTimeout(
+        opts.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+        ctx.signal,
+        "parallel.agent",
+        async (signal): Promise<ParallelResult> => {
+          const created = await fetch(`${base}/v1/tasks/runs`, {
+            method: "POST",
+            signal,
+            headers,
+            body: JSON.stringify({
+              input: query,
+              processor,
+            }),
+          });
+          if (!created.ok) {
+            throw new Error(`parallel.agent: create HTTP ${created.status}`);
+          }
+          const run = (await created.json()) as {
+            run_id?: string;
+            status?: string;
+          };
+          if (!run.run_id) {
+            throw new Error("parallel.agent: no run_id in create response");
+          }
+          let status = run.status ?? "queued";
+          while (!TERMINAL_STATUSES.has(status)) {
+            await sleep(opts.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS, signal);
+            const polled = await fetch(`${base}/v1/tasks/runs/${run.run_id}`, {
+              signal,
+              headers,
+            });
+            if (!polled.ok) {
+              throw new Error(`parallel.agent: poll HTTP ${polled.status}`);
+            }
+            status =
+              ((await polled.json()) as { status?: string }).status ?? status;
+          }
+          if (status !== "completed") {
+            throw new Error(`parallel.agent: task run ${status}`);
+          }
+          const resultResp = await fetch(
+            `${base}/v1/tasks/runs/${run.run_id}/result`,
+            { signal, headers },
+          );
+          if (!resultResp.ok) {
+            throw new Error(`parallel.agent: result HTTP ${resultResp.status}`);
+          }
+          return (await resultResp.json()) as ParallelResult;
+        },
       );
-      if (!resultResp.ok) {
-        throw new Error(`parallel.agent: result HTTP ${resultResp.status}`);
-      }
-      const data = (await resultResp.json()) as ParallelResult;
       const content = data.output?.content;
       const report = (
         typeof content === "string" ? content : JSON.stringify(content ?? "")

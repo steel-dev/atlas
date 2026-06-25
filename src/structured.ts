@@ -1,6 +1,5 @@
 import { generateObject, type FlexibleSchema } from "ai";
-import type { AtlasConfig, ResearchOptions } from "./config.js";
-import { resolveRunConfig } from "./config.js";
+import type { LanguageModelV3 } from "@ai-sdk/provider";
 import { MODEL_CALL_MAX_RETRIES } from "./model.js";
 import type { ResearchResult } from "./run.js";
 
@@ -14,22 +13,22 @@ const EXTRACT_SYSTEM =
   "When the report leaves a field undetermined, use the schema's allowance — null, empty, or omission — rather than guessing.";
 
 export async function extractStructured<T>(
-  config: AtlasConfig,
-  options: ResearchOptions,
-  result: ResearchResult,
+  model: LanguageModelV3,
+  question: string,
+  report: string,
   schema: FlexibleSchema<T>,
+  signal?: AbortSignal,
 ): Promise<T> {
-  const resolved = resolveRunConfig(config, options);
   const { object } = await generateObject({
-    model: resolved.models.write,
+    model,
     schema,
     system: EXTRACT_SYSTEM,
     prompt:
-      `Question:\n${result.question}\n\n` +
-      `Research report:\n${result.report}\n\n` +
+      `Question:\n${question}\n\n` +
+      `Research report:\n${report}\n\n` +
       "Return the object the schema defines, grounded only in the report above.",
     maxRetries: MODEL_CALL_MAX_RETRIES,
-    ...(options.signal ? { abortSignal: options.signal } : {}),
+    ...(signal ? { abortSignal: signal } : {}),
   });
   return object;
 }

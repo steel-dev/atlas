@@ -28,6 +28,7 @@ import {
 } from "./model.js";
 import { isSmallModelId } from "./defaults.js";
 import { defaultFetchProviders } from "./providers/fetch.js";
+import { createSafeDispatcher } from "./safe-dispatcher.js";
 import {
   combineSearchProviders,
   defaultSearchProviders,
@@ -170,7 +171,7 @@ export async function assembleRun(args: AssembleRunArgs): Promise<RunAssembly> {
     emit({
       type: "pricing.missing",
       modelId,
-      detail: `no pricing entry for model "${modelId}"; charging conservative default rates`,
+      detail: `no pricing entry for model "${modelId}"; charging neutral mid-tier default rates — set config.pricing for accurate cost`,
     });
   };
   const bindModelWithTier = (
@@ -210,6 +211,7 @@ export async function assembleRun(args: AssembleRunArgs): Promise<RunAssembly> {
     : args.config.fetch
       ? [args.config.fetch]
       : defaultFetchProviders();
+  const safeDispatcher = createSafeDispatcher(resolved.safety);
   const customTools = await resolveCustomTools(args.config.tools);
   const runCodeEnabled = await isRunCodeAvailable();
 
@@ -236,6 +238,7 @@ export async function assembleRun(args: AssembleRunArgs): Promise<RunAssembly> {
     oaCandidates: new Map(),
     surfacedCandidates: new Map(),
     fetchChain,
+    safeDispatcher,
     customTools,
     runCodeEnabled,
     emit,

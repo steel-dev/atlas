@@ -6,6 +6,6 @@ export interface RoleCapabilities {
 }
 
 export const ROLE_CAPABILITIES: Record<AgentRole, RoleCapabilities> = {
-  gather: { budgetLine: true, customTools: true },
+  research: { budgetLine: true, customTools: true },
   write: { budgetLine: false, customTools: false },
 };

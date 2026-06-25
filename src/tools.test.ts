@@ -10,7 +10,7 @@ import {
 
 
 describe("run_code tool gating", () => {
-  const actx = { agentId: "agent_1", role: "gather" } as AgentCtx;
+  const actx = { agentId: "agent_1", role: "research" } as AgentCtx;
   const gateRctx = (runCodeEnabled: boolean) =>
     ({ customTools: new Map(), runCodeEnabled }) as unknown as RunCtx;
 

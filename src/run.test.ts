@@ -46,7 +46,7 @@ describe("acceptsRepair", () => {
 
 describe("deriveStopReason", () => {
   const base: StopReasonInputs = {
-    stopped: false,
+    finished: false,
     budgetExhausted: false,
     tokensExhausted: false,
     timedOut: false,
@@ -62,10 +62,10 @@ describe("deriveStopReason", () => {
     expect(deriveStopReason({ ...base, timedOut: true })).toBe("timeout");
   });
 
-  it("prefers an explicit stop over any cap", () => {
+  it("prefers an explicit finish over any cap", () => {
     expect(
-      deriveStopReason({ ...base, stopped: true, budgetExhausted: true }),
-    ).toBe("stopped");
+      deriveStopReason({ ...base, finished: true, budgetExhausted: true }),
+    ).toBe("finished");
   });
 
   it("ranks budget over tokens and timeout when several apply", () => {

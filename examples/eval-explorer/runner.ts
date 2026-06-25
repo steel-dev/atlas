@@ -201,7 +201,7 @@ export class DracoRunHost {
       return true;
     }
     if (entry.run && entry.phase === "researching") {
-      void entry.run.cancel();
+      void entry.run.abort();
       return true;
     }
     return false;
@@ -414,7 +414,7 @@ export class DracoRunHost {
         diagnostics: {
           stats: result.stats,
           openQuestions: result.openQuestions,
-          unsupportedSentences: result.unsupportedSentences,
+          unboundCitations: result.unboundCitations,
         },
         trace,
         claims: result.claims,

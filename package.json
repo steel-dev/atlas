@@ -11,6 +11,9 @@
       "default": "./dist/index.js"
     }
   },
+  "bin": {
+    "atlas": "./dist/cli.js"
+  },
   "files": [
     "dist",
     "README.md",
@@ -28,8 +31,8 @@
     "draco:q": "tsx examples/eval-explorer/query.ts",
     "trace": "tsx examples/trace.ts",
     "eval:typecheck": "tsc -p evals/tsconfig.json && tsc -p examples/eval-explorer/tsconfig.client.json",
-    "build": "rm -rf dist && tsc -p tsconfig.build.json",
-    "typecheck": "tsc -p tsconfig.json",
+    "build": "rm -rf dist && tsc -p tsconfig.build.json && node scripts/bundle-cli.mjs",
+    "typecheck": "tsc -p tsconfig.json && tsc -p examples/tsconfig.cli.json",
     "test": "vitest",
     "test:run": "vitest run",
     "prepublishOnly": "npm run build"
@@ -43,18 +46,25 @@
     "exa-js": "^2.14.0",
     "pdf-parse": "^2.4.5",
     "steel-sdk": "^0.18.0",
+    "undici": "^7.25.0",
     "zod": "^4.1.8"
   },
   "peerDependencies": {
-    "ai": "^6.0.0",
     "@ai-sdk/anthropic": "^3.0.0",
+    "@ai-sdk/google": "^3.0.0",
     "@ai-sdk/openai": "^3.0.0",
-    "@ai-sdk/google": "^3.0.0"
+    "ai": "^6.0.0"
   },
   "peerDependenciesMeta": {
-    "@ai-sdk/anthropic": { "optional": true },
-    "@ai-sdk/openai": { "optional": true },
-    "@ai-sdk/google": { "optional": true }
+    "@ai-sdk/anthropic": {
+      "optional": true
+    },
+    "@ai-sdk/openai": {
+      "optional": true
+    },
+    "@ai-sdk/google": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "@ai-sdk/anthropic": "^3.0.81",
@@ -62,6 +72,7 @@
     "@ai-sdk/openai": "^3.0.67",
     "@types/node": "^22.0.0",
     "ai": "^6.0.194",
+    "esbuild": "^0.25.12",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2",
     "vitest": "^2.1.8"

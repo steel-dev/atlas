@@ -12,7 +12,8 @@ export function quarantine(
   source: { sourceId?: string; url?: string },
 ): string {
   const tag = [source.sourceId, source.url].filter(Boolean).join(" ");
-  return `<<<untrusted-source ${tag}>>>\n${text}\n<<<end-untrusted-source>>>`;
+  const neutralized = text.replaceAll("<<<", "‹‹‹");
+  return `<<<untrusted-source ${tag}>>>\n${neutralized}\n<<<end-untrusted-source>>>`;
 }
 
 const MAX_URL_LENGTH = 2048;

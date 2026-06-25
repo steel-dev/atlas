@@ -111,8 +111,8 @@ for (const pricing of Object.values(DEFAULT_PRICING)) {
 Object.freeze(DEFAULT_PRICING);
 
 const UNKNOWN_MODEL_PRICING: ModelPricing = {
-  inputPerMTok: 10,
-  outputPerMTok: 50,
+  inputPerMTok: 3,
+  outputPerMTok: 15,
 };
 
 const CACHE_READ_FACTOR = 0.1;

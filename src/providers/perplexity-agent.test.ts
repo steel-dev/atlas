@@ -47,4 +47,16 @@ describe("perplexityAgent cost", () => {
     });
     expect(result.cost).toBeUndefined();
   });
+
+  it("rejects an HTTP 200 error body (no choices) instead of returning an empty report", async () => {
+    vi.stubGlobal("fetch", async () =>
+      new Response(JSON.stringify({ error: { message: "bad request" } }), {
+        status: 200,
+      }),
+    );
+    const agent = perplexityAgent({ apiKey: "k" });
+    await expect(
+      agent.research("q", { budget: { maxUSD: 1 }, log: () => {} }),
+    ).rejects.toThrow(/no choices/);
+  });
 });

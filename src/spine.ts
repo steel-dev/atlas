@@ -330,8 +330,7 @@ function renderFetchedSources(rctx: RunCtx): string {
   return lines.join("\n");
 }
 
-// Distinctive numeric tokens — money, decimals, percentages, comma-grouped
-// thousands. Deliberately NOT bare small ints or years (too common to anchor on).
+// Numeric anchors that are distinctive enough to track through drafting.
 const STRONG_ANCHOR_RE =
   /\$\s?\d[\d,]*(?:\.\d+)?|\d{1,3}(?:,\d{3})+(?:\.\d+)?|\b\d+\.\d+%?|\b\d[\d,]*%/g;
 
@@ -346,10 +345,7 @@ function strongAnchors(text: string): string[] {
   return [...out];
 }
 
-// Pinned notes whose distinctive figures are wholly absent from the draft —
-// facts the run gathered and confirmed but the writer never wrote (the
-// confirmed-then-dropped failure). Deterministic, conservative (only flags a
-// note when it carries a strong numeric anchor and none of its anchors appear).
+// Confirmed numeric notes that never made it into the draft.
 function droppedFactNotes(rctx: RunCtx, draftText: string): string[] {
   const draftNorm = stripNumFmt(draftText);
   const dropped: string[] = [];
@@ -624,12 +620,7 @@ async function reconcileDraft(
   );
 }
 
-// Finish-safe note flush: the run paid to gather and confirm facts that the
-// writer/patch/reconcile loop then failed to write before budget ran out
-// (the highest-frequency, highest-weight loss). Deterministically find pinned
-// figures absent from the draft, insert them with a focused writer pass when
-// budget allows, and — critically — append any still-missing figure with ZERO
-// budget so a confirmed fact is never silently dropped even when fully floored.
+// Last chance to carry confirmed numeric notes into the final report.
 async function flushDroppedNotes(
   rctx: RunCtx,
   grant: BudgetGrant,
@@ -731,10 +722,7 @@ function renumberAndGround(
       hallucinated.add(sourceId);
       return "";
     }
-    // Cite-from-fetched-body: a citation may only bind to a real evidence
-    // body. Drop cites to bot-walls / challenge pages / thin stubs / error or
-    // search-listing pages — opus cited a "Making sure you're not a bot!" wall
-    // as authority; snippet-only sources were cited without a fetched body.
+    // Only bind citations to fetched pages with usable evidence text.
     const warnings = doc.metadata?.qualityWarnings ?? [];
     if (warnings.some((w) => NON_EVIDENCE_WARNINGS.test(w))) {
       return "";

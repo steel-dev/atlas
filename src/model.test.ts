@@ -21,7 +21,7 @@ import {
   loadReplayCache,
   memoryStore,
 } from "./providers/store.js";
-import { BudgetExceededError } from "./errors.js";
+import { AtlasError } from "./errors.js";
 
 const RESULT: LanguageModelV3GenerateResult = {
   content: [{ type: "text", text: "hello" }],
@@ -110,7 +110,7 @@ describe("engineModel", () => {
     exhausted = true;
     await expect(
       generateText({ model: model as LanguageModelV3, prompt: "second" }),
-    ).rejects.toThrow(BudgetExceededError);
+    ).rejects.toThrow(AtlasError);
     expect(inner.doGenerateCalls).toHaveLength(1);
   });
 

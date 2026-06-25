@@ -45,7 +45,7 @@ function fakeResearcher(
   } = {},
 ): Researcher {
   return researcher({
-    describe: `researcher for ${report}`,
+    description: `researcher for ${report}`,
     research: async (query, ctx) => {
       opts.calls?.push(query);
       opts.budgets?.push(ctx.budget.maxUSD);
@@ -54,7 +54,6 @@ function fakeResearcher(
         report,
         sources: opts.sources ?? [{ url: `https://x/${report}`, title: report }],
         cost: 0.1,
-        confidence: 0.9,
       };
     },
   });
@@ -99,6 +98,40 @@ describe("orchestrated research (via Atlas)", () => {
     expect(result.stats.costUSD).toBeGreaterThan(0);
     expect(result.stats.stopReason).toBe("completed");
     expect(budgets.every((b) => b > 0)).toBe(true);
+  });
+
+  it("unifies the merged report to the single-spine [N]+Sources citation contract", async () => {
+    const atlas = new Atlas({
+      model: leadModel(
+        {
+          strategy: "split into two",
+          subtasks: [
+            { query: "a", researcher: "exa" },
+            { query: "b", researcher: "web" },
+          ],
+        },
+        "Finding A [1] and finding B [2].",
+      ),
+      researchers: {
+        exa: fakeResearcher("EXA", {
+          sources: [{ url: "https://e", title: "E" }],
+        }),
+        web: fakeResearcher("WEB", {
+          sources: [{ url: "https://w", title: "W" }],
+        }),
+      },
+      pricing: PRICING,
+    });
+    const result = await atlas.research("Q");
+    expect(result.citations).toEqual([
+      { sourceId: "source_1", marker: 1 },
+      { sourceId: "source_2", marker: 2 },
+    ]);
+    expect(result.unboundCitations).toEqual([]);
+    expect(result.report).toContain("Finding A [1]");
+    expect(result.report).toContain("## Sources");
+    expect(result.report).toContain("1. [E](https://e)");
+    expect(result.report).toContain("2. [W](https://w)");
   });
 
   it("returns the sub-report verbatim for a single sub-task (skips synth)", async () => {

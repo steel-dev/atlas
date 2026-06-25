@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { FlexibleSchema } from "ai";
 import {
   resolveRunConfig,
   type AtlasConfig,
@@ -8,10 +9,11 @@ import {
   type SourceFilter,
 } from "./config.js";
 import { assembleRun } from "./context.js";
-import { AtlasError, ConfigError, errorMessage, ResumeError } from "./errors.js";
+import { AtlasError, errorMessage } from "./errors.js";
 import { EventHub } from "./event-hub.js";
 import type { Citation, ResearchEvent, RunStats, StopReason } from "./events.js";
-import { totalFreshTokens } from "./model.js";
+import { totalFreshTokens, type ModelRole } from "./model.js";
+import { extractStructured } from "./structured.js";
 import { isoDate } from "./prompts.js";
 import {
   JournalWriter,
@@ -28,11 +30,14 @@ import type { RunTrace, TraceRecorder } from "./trace.js";
 import { computeDigest } from "./trace-digest.js";
 import { EVENT_SCHEMA_VERSION } from "./events.js";
 
+const EXTRACTION_FRACTION = 0.1;
+const EXTRACTION_MIN_USD = 0.02;
+
 export type RunStatus =
   | "running"
   | "completed"
   | "failed"
-  | "cancelled"
+  | "aborted"
   | "paused";
 
 export interface SourceRecord {
@@ -52,7 +57,7 @@ export interface ResearchResult {
   note: string;
   sources: SourceRecord[];
   citations: Citation[];
-  unsupportedSentences: string[];
+  unboundCitations: string[];
   warnings: string[];
   stats: RunStats;
   trace?: RunTrace;
@@ -63,9 +68,9 @@ export interface ResearchRun {
   readonly id: string;
   events(): AsyncIterable<ResearchEvent>;
   result(): Promise<ResearchResult>;
-  cancel(): Promise<void>;
+  abort(): Promise<void>;
   pause(): Promise<void>;
-  stop(): Promise<void>;
+  finish(): Promise<void>;
   status(): RunStatus;
   trace(): RunTrace | undefined;
 }
@@ -74,6 +79,7 @@ export interface StartRunOptions {
   config: AtlasConfig;
   question: string;
   options: ResearchOptions;
+  schema?: FlexibleSchema<unknown> | undefined;
   replay?: ReplayCache | undefined;
   anchorStartedAt?: number | undefined;
   now?: (() => number) | undefined;
@@ -82,7 +88,7 @@ export interface StartRunOptions {
 export function startRun(start: StartRunOptions): ResearchRun {
   const question = start.question?.trim();
   if (!question) {
-    throw new ConfigError("research question is required");
+    throw new AtlasError("research question is required", "config");
   }
   const resolved = resolveRunConfig(start.config, start.options);
   const runId =
@@ -124,6 +130,7 @@ export function startRun(start: StartRunOptions): ResearchRun {
         question,
         resolved,
         config: start.config,
+        schema: start.schema,
         journal,
         replay: start.replay,
         hub,
@@ -158,8 +165,8 @@ export function startRun(start: StartRunOptions): ResearchRun {
         throw new AtlasError("run exceeded maxDurationMs", "timeout");
       }
       if (hardController.signal.aborted) {
-        statusValue = "cancelled";
-        throw new AtlasError("run cancelled", "cancelled");
+        statusValue = "aborted";
+        throw new AtlasError("run aborted", "aborted");
       }
       statusValue = "failed";
       const event: ResearchEvent = {
@@ -185,7 +192,7 @@ export function startRun(start: StartRunOptions): ResearchRun {
     result: () => resultPromise,
     status: () => statusValue,
     trace: () => recorder?.snapshot(),
-    cancel: async () => {
+    abort: async () => {
       hardController.abort();
       await resultPromise.catch(() => {});
     },
@@ -194,7 +201,7 @@ export function startRun(start: StartRunOptions): ResearchRun {
       hardController.abort();
       await resultPromise.catch(() => {});
     },
-    stop: async () => {
+    finish: async () => {
       stopController.abort();
       await resultPromise.catch(() => {});
     },
@@ -206,6 +213,7 @@ interface ExecuteRunArgs {
   question: string;
   resolved: ResolvedRunConfig;
   config: AtlasConfig;
+  schema?: FlexibleSchema<unknown> | undefined;
   journal: JournalWriter;
   replay?: ReplayCache | undefined;
   hub: EventHub;
@@ -269,21 +277,42 @@ async function executeRun(args: ExecuteRunArgs): Promise<ResearchResult> {
   }
 
   synthesisGrant.release();
+  const extractionGrant = args.schema
+    ? meter.grant({
+        fraction: EXTRACTION_FRACTION,
+        minUSD: EXTRACTION_MIN_USD,
+      })
+    : null;
   const out =
     Object.keys(resolved.researchers).length > 0
       ? await runOrchestrated(rctx, resolved.researchers)
       : await runSpine(rctx, { meter });
   emit({ type: "report.completed", report: out.report });
 
+  let structured: unknown;
+  if (args.schema) {
+    try {
+      structured = await extractStructured(
+        rctx.bindModel("write", extractionGrant ?? meter),
+        question,
+        out.report,
+        args.schema,
+        args.hardSignal,
+      );
+    } finally {
+      extractionGrant?.release();
+    }
+  }
+
   const durationMs = args.now() - startedAt;
   const stats = buildStats({
     rctx,
     bound: {
       citationsBound: out.citations.length,
-      citationsUnsupported: out.unsupportedSentences.length,
+      citationsUnsupported: out.unboundCitations.length,
     },
     durationMs,
-    stopped: args.stopSignal.aborted,
+    finished: args.stopSignal.aborted,
   });
   if (rctx.recorder) {
     rctx.recorder.finalize(
@@ -310,7 +339,7 @@ async function executeRun(args: ExecuteRunArgs): Promise<ResearchResult> {
           finalUrl: source.url,
           title: source.title,
           via: source.via,
-          chars: 0,
+          chars: source.chars ?? 0,
         }))
       : rctx.sources.fetchedSources.map((source) => {
           const document = source.sourceId
@@ -329,12 +358,15 @@ async function executeRun(args: ExecuteRunArgs): Promise<ResearchResult> {
           };
         }),
     citations: out.citations,
-    unsupportedSentences: out.unsupportedSentences,
+    unboundCitations: out.unboundCitations,
     warnings: out.warnings ?? [],
     stats,
     ...(rctx.recorder ? { trace: rctx.recorder.snapshot() } : {}),
     eventVersion: EVENT_SCHEMA_VERSION,
   };
+  if (args.schema) {
+    (result as { object?: unknown }).object = structured;
+  }
 
   emit({ type: "run.completed", stats });
   return result;
@@ -356,14 +388,14 @@ export function acceptsRepair(
 }
 
 export interface StopReasonInputs {
-  stopped: boolean;
+  finished: boolean;
   budgetExhausted: boolean;
   tokensExhausted: boolean;
   timedOut: boolean;
 }
 
 export function deriveStopReason(inputs: StopReasonInputs): StopReason {
-  if (inputs.stopped) return "stopped";
+  if (inputs.finished) return "finished";
   if (inputs.budgetExhausted) return "budget";
   if (inputs.tokensExhausted) return "tokens";
   if (inputs.timedOut) return "timeout";
@@ -374,12 +406,13 @@ function buildStats(opts: {
   rctx: RunCtx;
   bound: { citationsBound: number; citationsUnsupported: number };
   durationMs: number;
-  stopped: boolean;
+  finished: boolean;
 }): RunStats {
   const { rctx } = opts;
-  const tokens: Record<string, { input: number; output: number }> = {};
+  const tokens: Partial<Record<ModelRole, { input: number; output: number }>> =
+    {};
   for (const [role, roleUsage] of rctx.usage.byRole) {
-    tokens[role] = {
+    tokens[role as ModelRole] = {
       input: roleUsage.input + roleUsage.cacheRead + roleUsage.cacheWrite,
       output: roleUsage.output,
     };
@@ -408,7 +441,7 @@ function buildStats(opts: {
     budgetExhausted,
     tokensExhausted,
     stopReason: deriveStopReason({
-      stopped: opts.stopped,
+      finished: opts.finished,
       budgetExhausted,
       tokensExhausted,
       timedOut,
@@ -437,13 +470,14 @@ export async function resumeRun(
 ): Promise<ResearchRun> {
   const store = config.store;
   if (!store) {
-    throw new ResumeError(
+    throw new AtlasError(
       "resume requires config.store (the store the original run journaled to)",
+      "resume",
     );
   }
   const meta = await loadRunMeta(store, runId);
   if (!meta || typeof meta.question !== "string") {
-    throw new ResumeError(`no journaled run found for "${runId}"`);
+    throw new AtlasError(`no journaled run found for "${runId}"`, "resume");
   }
   const replay = await loadReplayCache(store, runId);
   const budget: Budget = {

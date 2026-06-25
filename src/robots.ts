@@ -1,3 +1,5 @@
+import type { Dispatcher } from "undici";
+
 const ROBOTS_FETCH_TIMEOUT_MS = 5_000;
 const ROBOTS_MAX_CHARS = 512_000;
 
@@ -101,7 +103,11 @@ export function robotsAllows(rules: RobotsRule[], path: string): boolean {
 }
 
 export interface RobotsCache {
-  allows(url: string, signal?: AbortSignal): Promise<boolean>;
+  allows(
+    url: string,
+    signal?: AbortSignal,
+    dispatcher?: Dispatcher,
+  ): Promise<boolean>;
 }
 
 export interface RobotsCacheOptions {
@@ -114,7 +120,11 @@ export function createRobotsCache(opts: RobotsCacheOptions): RobotsCache {
   const fetchImpl = opts.fetchImpl ?? fetch;
   const byOrigin = new Map<string, Promise<RobotsRule[] | null>>();
 
-  function load(origin: string, signal?: AbortSignal): Promise<RobotsRule[] | null> {
+  function load(
+    origin: string,
+    signal?: AbortSignal,
+    dispatcher?: Dispatcher,
+  ): Promise<RobotsRule[] | null> {
     let pending = byOrigin.get(origin);
     if (!pending) {
       pending = (async () => {
@@ -123,7 +133,8 @@ export function createRobotsCache(opts: RobotsCacheOptions): RobotsCache {
           const response = await fetchImpl(`${origin}/robots.txt`, {
             signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
             headers: { "user-agent": opts.userAgent },
-          });
+            ...(dispatcher ? { dispatcher } : {}),
+          } as RequestInit);
           if (!response.ok) return null;
           const text = await response.text();
           return parseRobots(text, opts.agentToken);
@@ -137,14 +148,14 @@ export function createRobotsCache(opts: RobotsCacheOptions): RobotsCache {
   }
 
   return {
-    async allows(url, signal) {
+    async allows(url, signal, dispatcher) {
       let parsed: URL;
       try {
         parsed = new URL(url);
       } catch {
         return true;
       }
-      const rules = await load(parsed.origin, signal);
+      const rules = await load(parsed.origin, signal, dispatcher);
       if (!rules || rules.length === 0) return true;
       return robotsAllows(rules, parsed.pathname + parsed.search);
     },

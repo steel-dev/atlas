@@ -1,11 +1,11 @@
 import * as cheerio from "cheerio";
-import { errorMessage } from "../../src/errors.js";
-import { readEnv } from "../../src/env.js";
+import { errorMessage } from "../../errors.js";
+import { readEnv } from "../../env.js";
 import {
   safeDomain,
   type SearchProvider,
   type SearchResult,
-} from "../../src/providers/search.js";
+} from "../search.js";
 import { buildContent, clampLimit, collapse, fetchJson, fetchText } from "./shared.js";
 
 export interface PubmedOptions {

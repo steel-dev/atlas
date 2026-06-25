@@ -122,7 +122,7 @@ function withBudgetLine(rctx: RunCtx, actx: AgentCtx, content: string): string {
 const OPEN_SLOTS_FOOTER_MAX = 6;
 
 function withOpenSlots(rctx: RunCtx, actx: AgentCtx, content: string): string {
-  if (actx.role !== "gather") return content;
+  if (actx.role !== "research") return content;
   const ledger = rctx.ledger;
   if (!ledger) return content;
   const open = ledger.slots.filter((slot) => !slot.fill);
@@ -587,6 +587,7 @@ async function fetchSourceDocument(
     fetchThroughChain(rctx.fetchChain, {
       url,
       ...(rctx.signal ? { signal: rctx.signal } : {}),
+      dispatcher: rctx.safeDispatcher,
       onRateLimit: (retryAfterSeconds) =>
         rctx.emit({ type: "rate.limited", retryAfterSeconds }),
       guardRedirect: async (target) => {
@@ -682,6 +683,7 @@ async function fetchMarkdown(
     fetchThroughChain(rctx.fetchChain, {
       url: trimmed,
       ...(signal ? { signal } : {}),
+      dispatcher: rctx.safeDispatcher,
       onRateLimit: (retryAfterSeconds) =>
         rctx.emit({ type: "rate.limited", retryAfterSeconds }),
       guardRedirect: async (target) => {
@@ -1261,8 +1263,12 @@ export function buildAgentTools(
           targets.length === 1
             ? "error" in outcomes[0]
               ? String(outcomes[0].error)
-              : JSON.stringify(outcomes[0].result, null, 2)
-            : JSON.stringify({ sources: outcomes }, null, 2);
+              : quarantine(JSON.stringify(outcomes[0].result, null, 2), {
+                  url: targets[0],
+                })
+            : quarantine(JSON.stringify({ sources: outcomes }, null, 2), {
+                sourceId: "fetched-sources",
+              });
         return withOpenSlots(rctx, actx, withBudgetLine(rctx, actx, body));
       },
     });
@@ -1289,7 +1295,8 @@ export function buildAgentTools(
         return withOpenSlots(
           rctx,
           actx,
-          body + scopeMissingNote(missing, fellBackToAll),
+          quarantine(body, { sourceId: "stored-sources" }) +
+            scopeMissingNote(missing, fellBackToAll),
         );
       },
     });
@@ -1315,17 +1322,20 @@ export function buildAgentTools(
           reads >= 3
             ? `\n\n[note: you have read ${id} ${reads} times — its text is stable; pin what you need with note() and rely on that instead of re-reading]`
             : "";
+        const tag = { sourceId: id, url: document.url };
         if (start !== undefined || end !== undefined) {
           return withOpenSlots(
             rctx,
             actx,
-            quoteSource(document, start ?? 0, end ?? 0) + repeat,
+            quarantine(quoteSource(document, start ?? 0, end ?? 0), tag) +
+              repeat,
           );
         }
         return withOpenSlots(
           rctx,
           actx,
-          formatSourceChunk(document, chunk_index ?? 0) + repeat,
+          quarantine(formatSourceChunk(document, chunk_index ?? 0), tag) +
+            repeat,
         );
       },
     });
@@ -1363,7 +1373,9 @@ export function buildAgentTools(
         const content = withOpenSlots(
           rctx,
           actx,
-          shapeSandboxOutput(output) + scopeMissingNote(missing, fellBackToAll),
+          quarantine(shapeSandboxOutput(output), {
+            sourceId: "run_code-output",
+          }) + scopeMissingNote(missing, fellBackToAll),
         );
         recordToolSpan(
           rctx,
@@ -1422,7 +1434,7 @@ export function buildAgentTools(
                     rctx.emit({
                       type: "tool.event",
                       tool: custom.name,
-                      data: String(message),
+                      data: { message: String(message) },
                     }),
                 };
                 return Promise.resolve(custom.execute(input, toolCtx));

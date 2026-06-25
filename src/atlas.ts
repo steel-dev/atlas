@@ -10,13 +10,13 @@ import {
 
 export type { AtlasConfig, ResearchOptions } from "./config.js";
 import type { Researcher } from "./researcher.js";
-import { extractStructured, type StructuredResult } from "./structured.js";
-import { ConfigError } from "./errors.js";
+import type { StructuredResult } from "./structured.js";
+import { AtlasError } from "./errors.js";
 
 export class Atlas {
   readonly #config: AtlasConfig;
   #closed = false;
-  readonly #inflight = new Set<Promise<unknown>>();
+  readonly #runs = new Set<ResearchRun>();
 
   constructor(config: AtlasConfig) {
     this.#config = config;
@@ -34,35 +34,41 @@ export class Atlas {
     question: string,
     options: ResearchOptions & { schema?: FlexibleSchema<T> } = {},
   ): Promise<ResearchResult | StructuredResult<T>> {
+    if (this.#closed)
+      throw new AtlasError("Atlas is closed; create a new instance", "config");
     const { schema, ...rest } = options;
-    const result = await this.#researchReport(question, rest);
-    if (!schema) return result;
-    const object = await extractStructured<T>(this.#config, rest, result, schema);
-    return { ...result, object };
-  }
-
-  #researchReport(
-    question: string,
-    options: ResearchOptions,
-  ): Promise<ResearchResult> {
-    return this.#startRun(question, options).result();
+    const result = await this.#startRun(
+      question,
+      rest,
+      schema as FlexibleSchema<unknown> | undefined,
+    ).result();
+    return schema ? (result as StructuredResult<T>) : result;
   }
 
   start(question: string, options: ResearchOptions = {}): ResearchRun {
     if (this.#closed)
-      throw new ConfigError("Atlas is closed; create a new instance");
+      throw new AtlasError("Atlas is closed; create a new instance", "config");
     return this.#startRun(question, options);
   }
 
-  #startRun(question: string, options: ResearchOptions): ResearchRun {
-    const run = startRun({ config: this.#config, question, options });
+  #startRun(
+    question: string,
+    options: ResearchOptions,
+    schema?: FlexibleSchema<unknown> | undefined,
+  ): ResearchRun {
+    const run = startRun({
+      config: this.#config,
+      question,
+      options,
+      ...(schema ? { schema } : {}),
+    });
     this.#track(run);
     return run;
   }
 
-  asResearcher(describe: string): Researcher {
+  asResearcher(description: string): Researcher {
     return {
-      describe,
+      description,
       research: async (query, ctx) => {
         const result = await this
           .#startRun(query, {
@@ -74,14 +80,14 @@ export class Atlas {
           report: result.report,
           sources: result.sources.map((s) => ({ url: s.url, title: s.title })),
           cost: result.stats.costUSD,
-          confidence: 1,
         };
       },
     };
   }
 
   async resume(runId: string, options?: ResumeOptions): Promise<ResearchRun> {
-    if (this.#closed) throw new ConfigError("Atlas is closed; create a new instance");
+    if (this.#closed)
+      throw new AtlasError("Atlas is closed; create a new instance", "config");
     const run = await resumeRun(runId, this.#config, options);
     this.#track(run);
     return run;
@@ -89,7 +95,7 @@ export class Atlas {
 
   async close(): Promise<void> {
     this.#closed = true;
-    await Promise.allSettled([...this.#inflight]);
+    await Promise.allSettled([...this.#runs].map((run) => run.abort()));
   }
 
   [Symbol.asyncDispose](): Promise<void> {
@@ -97,11 +103,13 @@ export class Atlas {
   }
 
   #track(run: ResearchRun): void {
-    const tracked = run.result().then(
-      () => undefined,
-      () => undefined,
-    );
-    this.#inflight.add(tracked);
-    void tracked.finally(() => this.#inflight.delete(tracked));
+    this.#runs.add(run);
+    void run
+      .result()
+      .then(
+        () => undefined,
+        () => undefined,
+      )
+      .finally(() => this.#runs.delete(run));
   }
 }

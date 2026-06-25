@@ -1,5 +1,5 @@
 import type { LanguageModelV3 } from "@ai-sdk/provider";
-import { ConfigError } from "./errors.js";
+import { AtlasError } from "./errors.js";
 import { readEnv } from "./env.js";
 import type { ModelRole, ResolvedModel } from "./model.js";
 import type { PricingTable } from "./budget.js";
@@ -20,36 +20,41 @@ export interface EffortEnvelope {
   maxTokens: number;
   maxTurns: number;
   maxReportTokens: number;
+  maxDurationMs: number;
 }
 
 export const EFFORT_ENVELOPES: Record<Effort, EffortEnvelope> = {
   fast: {
     budgetUSD: 0.5,
     maxSources: 15,
-    maxTokens: 5_000_000,
+    maxTokens: 200_000,
     maxTurns: 30,
     maxReportTokens: 4_096,
+    maxDurationMs: 600_000,
   },
   balanced: {
     budgetUSD: 2.5,
     maxSources: 40,
-    maxTokens: 20_000_000,
+    maxTokens: 1_000_000,
     maxTurns: 60,
     maxReportTokens: 12_288,
+    maxDurationMs: 1_200_000,
   },
   deep: {
     budgetUSD: 10,
     maxSources: 100,
-    maxTokens: 80_000_000,
+    maxTokens: 4_000_000,
     maxTurns: 100,
     maxReportTokens: 16_384,
+    maxDurationMs: 2_400_000,
   },
   max: {
     budgetUSD: 40,
     maxSources: 250,
-    maxTokens: 250_000_000,
+    maxTokens: 16_000_000,
     maxTurns: 150,
     maxReportTokens: 24_576,
+    maxDurationMs: 3_600_000,
   },
 };
 for (const envelope of Object.values(EFFORT_ENVELOPES)) {
@@ -81,7 +86,7 @@ export type SearchConfig =
 
 export interface AtlasConfig {
   model: ResolvedModel;
-  models?: Partial<Record<Exclude<ModelRole, "lead">, ResolvedModel>>;
+  models?: { research?: ResolvedModel; write?: ResolvedModel };
   search?: SearchConfig;
   fetch?: FetchProvider | FetchProvider[];
   effort?: Effort;
@@ -147,25 +152,41 @@ export function resolveRunConfig(
   options: ResearchOptions,
 ): ResolvedRunConfig {
   if (!config.model || typeof config.model === "string") {
-    throw new ConfigError(
+    throw new AtlasError(
       'Atlas requires a model instance (e.g. anthropic("claude-fable-5")); model id strings are not accepted',
+      "config",
     );
   }
   const effort = options.effort ?? config.effort ?? "balanced";
   const envelope = EFFORT_ENVELOPES[effort];
   if (!envelope) {
-    throw new ConfigError(
+    throw new AtlasError(
       `unknown effort "${effort}" (expected fast | balanced | deep | max)`,
+      "config",
     );
   }
   const budget = { ...config.budget, ...options.budget };
   const budgetUSD = budget.maxUSD ?? envelope.budgetUSD;
   if (!Number.isFinite(budgetUSD) || budgetUSD <= 0) {
-    throw new ConfigError(`budget.maxUSD must be > 0 (got ${budgetUSD})`);
+    throw new AtlasError(`budget.maxUSD must be > 0 (got ${budgetUSD})`, "config");
   }
   const maxTokens = budget.maxTokens ?? envelope.maxTokens;
   if (!Number.isFinite(maxTokens) || maxTokens <= 0) {
-    throw new ConfigError(`budget.maxTokens must be > 0 (got ${maxTokens})`);
+    throw new AtlasError(`budget.maxTokens must be > 0 (got ${maxTokens})`, "config");
+  }
+  const maxSources = budget.maxSources ?? envelope.maxSources;
+  if (!Number.isFinite(maxSources) || maxSources <= 0) {
+    throw new AtlasError(
+      `budget.maxSources must be > 0 (got ${maxSources})`,
+      "config",
+    );
+  }
+  const maxDurationMs = budget.maxDurationMs ?? envelope.maxDurationMs;
+  if (maxDurationMs !== undefined && (!Number.isFinite(maxDurationMs) || maxDurationMs <= 0)) {
+    throw new AtlasError(
+      `budget.maxDurationMs must be > 0 (got ${maxDurationMs})`,
+      "config",
+    );
   }
   const lead = config.model;
   const models: Record<ModelRole, ResolvedModel> = {
@@ -179,8 +200,8 @@ export function resolveRunConfig(
     envelope,
     budgetUSD,
     maxTokens,
-    maxDurationMs: budget.maxDurationMs,
-    maxSources: budget.maxSources ?? envelope.maxSources,
+    maxDurationMs,
+    maxSources,
     models,
     leadModelId,
     pricing: config.pricing ?? {},

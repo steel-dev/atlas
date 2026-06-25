@@ -1,5 +1,5 @@
 import { asSchema, type FlexibleSchema } from "ai";
-import { ConfigError } from "./errors.js";
+import { AtlasError } from "./errors.js";
 import { BUILTIN_TOOL_NAMES, LEDGER_TOOL_NAMES } from "./tools.js";
 
 const RESERVED_TOOL_NAMES = new Set<string>([
@@ -15,7 +15,7 @@ export interface ToolContext {
   log(message: string): void;
 }
 
-export interface ResearchTool<I = any> {
+export interface ResearchTool<I = unknown> {
   description: string;
   inputSchema: FlexibleSchema<I>;
   timeoutMs?: number;
@@ -41,13 +41,15 @@ export async function resolveCustomTools(
   if (!tools) return resolved;
   for (const [name, tool] of Object.entries(tools)) {
     if (RESERVED_TOOL_NAMES.has(name)) {
-      throw new ConfigError(
+      throw new AtlasError(
         `custom tool "${name}" would shadow the builtin ${name} tool; pick another name`,
+        "config",
       );
     }
     if (!TOOL_NAME_PATTERN.test(name)) {
-      throw new ConfigError(
+      throw new AtlasError(
         `custom tool name "${name}" is invalid: use 1-64 letters, digits, _ or -, starting with a letter`,
+        "config",
       );
     }
     const jsonSchemaObject = await Promise.resolve(

@@ -1,10 +1,10 @@
 import * as cheerio from "cheerio";
-import { errorMessage } from "../../src/errors.js";
+import { errorMessage } from "../../errors.js";
 import {
   safeDomain,
   type SearchProvider,
   type SearchResult,
-} from "../../src/providers/search.js";
+} from "../search.js";
 import { buildContent, clampLimit, collapse, fetchText } from "./shared.js";
 
 export interface ArxivOptions {

@@ -1,11 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { semanticScholar } from "./semantic-scholar.js";
-import type { ToolContext } from "../../src/custom-tools.js";
+import type { ToolContext } from "../../custom-tools.js";
 
 function makeCtx(signal?: AbortSignal) {
   const sources: { url: string; title?: string; content: string }[] = [];
   const ctx: ToolContext = {
     addSource: (s) => sources.push(s),
+    fetchText: async () => null,
     signal,
     log: () => {},
   };

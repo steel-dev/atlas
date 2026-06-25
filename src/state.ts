@@ -6,6 +6,7 @@ import type { ResolvedRunConfig } from "./config.js";
 import type { ResearchEvent } from "./events.js";
 import type { ModelRole, ResolvedModel, RunUsage } from "./model.js";
 import type { FetchProvider } from "./providers/fetch.js";
+import type { SafeDispatcher } from "./safe-dispatcher.js";
 import type { MergedSearchResult, ResolvedSearch } from "./providers/search.js";
 import type { JournalWriter, ReplayCache } from "./providers/store.js";
 import type { ResolvedCustomTool } from "./custom-tools.js";
@@ -92,6 +93,7 @@ export interface RunCtx {
   oaCandidates: Map<string, OaCandidate>;
   surfacedCandidates: Map<string, SurfacedCandidate>;
   fetchChain: FetchProvider[];
+  safeDispatcher: SafeDispatcher;
   customTools: ReadonlyMap<string, ResolvedCustomTool>;
   runCodeEnabled: boolean;
   emit(event: ResearchEvent): void;

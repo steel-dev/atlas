@@ -6,15 +6,14 @@ import type {
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { extractStructured } from "./structured.js";
-import type { AtlasConfig } from "./config.js";
-import type { ResearchResult } from "./run.js";
+import type { LanguageModelV3 } from "@ai-sdk/provider";
 
 const USAGE = {
   inputTokens: { total: 1_000, noCache: 1_000, cacheRead: 0, cacheWrite: 0 },
   outputTokens: { total: 100, text: 100, reasoning: 0 },
 };
 
-function jsonModel(obj: unknown): MockLanguageModelV3 {
+function jsonModel(obj: unknown): LanguageModelV3 {
   return new MockLanguageModelV3({
     provider: "mock-provider",
     modelId: "claude-sonnet-4-6",
@@ -26,32 +25,16 @@ function jsonModel(obj: unknown): MockLanguageModelV3 {
       usage: USAGE,
       warnings: [],
     }),
-  });
-}
-
-function reportResult(report: string): ResearchResult {
-  return {
-    runId: "r1",
-    question: "What were revenue and CEO?",
-    report,
-    note: "",
-    sources: [],
-    citations: [],
-    unsupportedSentences: [],
-    warnings: [],
-    stats: {} as ResearchResult["stats"],
-    eventVersion: "x",
-  };
+  }) as unknown as LanguageModelV3;
 }
 
 describe("extractStructured", () => {
   it("extracts a schema-conforming object from the report", async () => {
-    const cfg: AtlasConfig = { model: jsonModel({ revenue: 12.3, ceo: "Jane" }) };
     const schema = z.object({ revenue: z.number(), ceo: z.string() });
     const object = await extractStructured(
-      cfg,
-      {},
-      reportResult("Revenue was $12.3B; the CEO is Jane."),
+      jsonModel({ revenue: 12.3, ceo: "Jane" }),
+      "What were revenue and CEO?",
+      "Revenue was $12.3B; the CEO is Jane.",
       schema,
     );
     expect(object).toEqual({ revenue: 12.3, ceo: "Jane" });
@@ -73,11 +56,11 @@ describe("extractStructured", () => {
           warnings: [],
         };
       },
-    });
+    }) as unknown as LanguageModelV3;
     await extractStructured(
-      { model },
-      {},
-      reportResult("UNIQUE_REPORT_BODY"),
+      model,
+      "What were revenue and CEO?",
+      "UNIQUE_REPORT_BODY",
       z.object({ answer: z.string() }),
     );
     expect(seenPrompt).toContain("UNIQUE_REPORT_BODY");

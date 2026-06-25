@@ -21,11 +21,7 @@ export interface TokenCounts {
   cacheWrite: number;
 }
 
-/**
- * Ambient attribution carried through AsyncLocalStorage so the model middleware
- * and tool executes can tag every span with the agent + code site that produced
- * it, without threading parameters through every signature.
- */
+/** Ambient attribution used to tag spans without threading parameters through calls. */
 export interface TraceFrame {
   agentId?: string;
   logicalAgentId?: string;
@@ -55,11 +51,7 @@ export interface Span {
   attrs?: Record<string, unknown>;
 }
 
-/**
- * Verbatim per model-call record. Shaped to satisfy the eval-explorer
- * `query.ts` TranscriptStep consumer (already built): seq/atMs/role/adapter/
- * durationMs/system/messages/toolNames/maxTokens/outputSchema/output/inputTokens.
- */
+/** Verbatim per-model-call record used for trace replay and inspection. */
 export interface TraceStep {
   seq: number;
   atMs: number;
@@ -169,9 +161,9 @@ export interface RunTrace {
   degraded: boolean;
 }
 
-/** site -> source location, so a hot span maps back to code an agent can change. */
+/** Maps trace sites back to their source locations. */
 export const SITE_SOURCE: Record<string, string> = {
-  gather: "src/agent.ts:runAgent",
+  research: "src/agent.ts:runAgent",
   write: "src/agent.ts:runAgent",
   synthesize: "src/spine.ts:synthesizeHolistic",
   seed: "src/checklist.ts:seedLedger",
@@ -186,11 +178,7 @@ export function currentFrame(): TraceFrame | undefined {
   return als.getStore();
 }
 
-/**
- * Run `fn` under a trace frame merged onto the current one. When tracing is off
- * (recorder undefined) this is a plain `fn()` — no ALS, no allocation, so there
- * is zero overhead on untraced runs.
- */
+/** Run `fn` under a trace frame merged onto the current one. */
 export function withTraceFrame<T>(
   recorder: TraceRecorder | undefined,
   patch: TraceFrame,
@@ -229,11 +217,7 @@ function systemFromPrompt(prompt: LanguageModelV3Prompt): string {
   return clampText(parts.join("\n\n")).text;
 }
 
-/**
- * Translate AI-SDK content blocks (`reasoning`/`text`/`tool-call`) into the
- * Anthropic-Messages vocabulary (`thinking`/`text`/`tool_call`) the existing
- * `query.ts` renderBlock consumer expects.
- */
+/** Normalize model content blocks into the trace viewer's block vocabulary. */
 export function toAnthropicBlocks(
   content: readonly LanguageModelV3Content[] | undefined,
 ): Array<Record<string, unknown>> {

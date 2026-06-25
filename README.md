@@ -1,4 +1,4 @@
-![Atlas — Research Agent for the Open Web](cover.png)
+![Atlas — Research Agent for the Open Web](https://raw.githubusercontent.com/steel-dev/atlas/main/cover.png)
 
 # Atlas
 
@@ -37,7 +37,7 @@ const atlas = new Atlas({
 
 ## Orchestrate researchers
 
-Register other research agents — including Atlas itself — as a fleet. Atlas decomposes the question, routes each sub-task to the best-fit researcher (`query → report`), runs them in isolation, then synthesizes one cited report. With no `researchers` set it stays a single spine run.
+Register other research agents — including Atlas itself — as a fleet. Atlas decomposes the question, routes each sub-task to the best-fit researcher (`query → report`), runs them in isolation, then synthesizes one report. With no `researchers` set it stays a single spine run.
 
 ```ts
 import { Atlas, exa, perplexity, parallel } from "@steel-dev/atlas";
@@ -54,7 +54,7 @@ const atlas = new Atlas({
 await atlas.research("Compare X across academic and shopping angles");
 ```
 
-Any `query → report` worker plugs in via `researcher({ describe, research })` — `describe` drives routing. `atlas.asResearcher(describe)` exposes an Atlas instance as a worker, so fan-out can recurse. A worker returns `{ report, sources }` and may add `cost` (USD) and `confidence` (0–1, a soft hint surfaced to synthesis).
+Any `query → report` worker plugs in via `researcher({ description, research })` — `description` drives routing. `atlas.asResearcher(description)` exposes an Atlas instance as a worker, so fan-out can recurse. A worker returns `{ report, sources }` and may add `cost` (USD).
 
 ## Extend it
 
@@ -103,7 +103,7 @@ const atlas = new Atlas({
 
 The examples also accept `--provider zai` with `ZAI_API_KEY` / `ATLAS_ZAI_API_KEY`. Configure `tavily.search()`, `exa.search()`, or `brave.search()` for search; Atlas does not map Z.ai's web-search API to an AI SDK native search tool.
 
-**Concurrency:** `concurrency: { models: 8, io: 10 }` or `ATLAS_MODEL_CONCURRENCY` / `ATLAS_IO_CONCURRENCY`.
+**Concurrency:** `concurrency: { models: 4, io: 10 }` or `ATLAS_MODEL_CONCURRENCY` / `ATLAS_IO_CONCURRENCY`.
 
 ## Stream it
 
@@ -120,11 +120,11 @@ for await (const e of run.events()) {
 const result = await run.result();
 ```
 
-`report.delta` carries the working draft as it is written and revised; `report.reset` precedes each rewrite, so clear your preview buffer on it. `report.completed` (and `result.report`) is canonical after citation binding. `run.stop()` synthesizes from whatever's gathered so far; `run.cancel()` aborts. Late subscribers get full event history.
+`report.delta` carries the working draft as it is written and revised; `report.reset` precedes each rewrite, so clear your preview buffer on it. `report.completed` (and `result.report`) is canonical after citation binding. `run.finish()` synthesizes from whatever's gathered so far; `run.abort()` discards it. Late subscribers get full event history.
 
 ## Resume & providers
 
-Journaled runs replay completed model/search/fetch calls at zero cost after crash or deploy:
+Journaled runs replay completed model/search/fetch calls without new provider charges after a crash or deploy:
 
 ```ts
 import { Atlas, fileStore } from "@steel-dev/atlas";
@@ -136,22 +136,24 @@ atlas.start(question, { runId: "run_42" });
 await new Atlas({ model, store }).resume("run_42");
 ```
 
+Replay issues no new provider calls, but it re-charges the run's original budget and token caps as it restores progress — so a resumed run continues within the headroom left when it stopped, and `resume()` keeps those original caps (it doesn't take a higher budget). `result.stats.costUSD` reports only the new spend, excluding replayed calls.
+
 ## Results
 
 ```ts
 result.report; // cited markdown
 result.note; // short note on how the research was approached
-result.citations; // sentence-bound citations (single-spine runs; empty for orchestrated runs)
-result.unsupportedSentences; // report sentences that failed citation binding
+result.citations; // { sourceId, marker } per cited source — marker is its [N] in the report (same contract on single-spine and orchestrated runs)
+result.unboundCitations; // source ids cited in the draft that didn't resolve to a fetched source
 result.warnings; // non-fatal issues (e.g. a researcher that returned nothing)
-result.sources; // sources, tagged by researcher
+result.sources; // sources backing the report (via = fetch method, or the researcher that returned it on a fleet run)
 result.stats; // cost, tokens, duration, …
-result.trace; // timing/cost trace + bottleneck digest when trace !== "off" (single-spine runs)
+result.trace; // timing/cost trace + bottleneck digest when trace !== "off"
 ```
 
 ## Structured output
 
-Pass a `schema` to get a typed object extracted from the finished report, returned alongside the full result. It runs as a final pass over the report, so it works on any path — single spine run, orchestrated fleet, or an outsourced researcher.
+Pass a `schema` to get a typed object extracted from the finished report, returned alongside the full result. It runs as a final pass over the report, so it works on any path — single spine run, orchestrated fleet, or an outsourced researcher — and its cost is charged to the same budget and counted in `result.stats.costUSD`.
 
 ```ts
 import { z } from "zod";
@@ -170,10 +172,10 @@ One meter for everything. Pick an effort, or override any cap with `budget`.
 
 | effort     | ~budget | sources | tokens |
 | ---------- | ------- | ------- | ------ |
-| `fast`     | $0.50   | 15      | 5M     |
-| `balanced` | $2.50   | 40      | 20M    |
-| `deep`     | $10     | 100     | 80M    |
-| `max`      | $40     | 250     | 250M   |
+| `fast`     | $0.50   | 15      | 200K   |
+| `balanced` | $2.50   | 40      | 1M     |
+| `deep`     | $10     | 100     | 4M     |
+| `max`      | $40     | 250     | 16M    |
 
 ```ts
 await atlas.research(question, {
@@ -191,7 +193,7 @@ The real backstops are **price-independent** — each defaults to the effort row
 
 `result.stats` reports `budgetExhausted` and `tokensExhausted` so you can see which limit bound the run. Leave headroom on `maxUSD`, or set a provider-side spend limit, when the cap is truly hard.
 
-`result.stats.stopReason` folds those into one value — `"completed"`, `"stopped"` (`run.stop()`), or a binding cap (`"budget"`, `"tokens"`, `"timeout"`). When several apply, the most proximate wins.
+`result.stats.stopReason` folds those into one value — `"completed"`, `"finished"` (`run.finish()`), or a binding cap (`"budget"`, `"tokens"`, `"timeout"`). When several apply, the most proximate wins.
 
 ## Safety
 
@@ -204,7 +206,7 @@ The SSRF guard validates DNS at check time but can't pin the connection, so an a
 ## Dev
 
 ```bash
-git clone https://github.com/steel-experiments/atlas.git && cd atlas
+git clone https://github.com/steel-dev/atlas.git && cd atlas
 npm install && npm run dev -- "your question"
 ```
 

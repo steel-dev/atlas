@@ -1,14 +1,16 @@
 import type { Effort } from "./config.js";
+import type { ModelRole } from "./model.js";
 
-export type AgentRole = "gather" | "write";
+export type AgentRole = "research" | "write";
 
 export interface Citation {
   sourceId: string;
+  marker: number;
 }
 
 export type StopReason =
   | "completed"
-  | "stopped"
+  | "finished"
   | "budget"
   | "tokens"
   | "timeout";
@@ -23,7 +25,7 @@ export interface RunStats {
   sourcesFailed: number;
   citationsBound: number;
   citationsUnsupported: number;
-  tokens: Record<string, { input: number; output: number }>;
+  tokens: Partial<Record<ModelRole, { input: number; output: number }>>;
   costUSD: number;
   durationMs: number;
   budgetExhausted: boolean;
@@ -76,7 +78,7 @@ export type ResearchEvent =
   | { type: "pricing.missing"; modelId: string; detail: string }
   | { type: "run_code.unavailable"; detail: string }
   | { type: "rate.limited"; retryAfterSeconds: number }
-  | { type: "tool.event"; tool: string; data: unknown }
+  | { type: "tool.event"; tool: string; data: Record<string, unknown> }
   | { type: "run.completed"; stats: RunStats }
   | { type: "run.error"; message: string; recoverable: boolean };
 
@@ -86,4 +88,4 @@ export type ResearchEventMap = {
   [E in ResearchEvent as E["type"]]: E;
 };
 
-export const EVENT_SCHEMA_VERSION = "3.3";
+export const EVENT_SCHEMA_VERSION = "1.0";

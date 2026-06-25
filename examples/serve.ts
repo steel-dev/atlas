@@ -141,7 +141,7 @@ async function handleResearch(
   const run = atlas.start(question, effort ? { effort } : {});
   let finished = false;
   res.on("close", () => {
-    if (!finished) void run.cancel();
+    if (!finished) void run.abort();
   });
 
   const send = (payload: unknown) =>

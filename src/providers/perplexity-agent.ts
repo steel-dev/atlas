@@ -1,3 +1,4 @@
+import { withTimeout } from "../async.js";
 import { readEnv } from "../env.js";
 import type { Researcher } from "../researcher.js";
 
@@ -13,11 +14,14 @@ export interface PerplexityAgentOptions {
   apiKey?: string;
   baseUrl?: string;
   model?: string;
-  describe?: string;
+  description?: string;
   pricing?: Partial<PerplexityPricing>;
+  timeoutMs?: number;
 }
 
-const DEFAULT_DESCRIBE =
+const DEFAULT_TIMEOUT_MS = 10 * 60_000;
+
+const DEFAULT_DESCRIPTION =
   "Perplexity Sonar deep-research: fast web-grounded research with inline citations. Strong on current events, quick fact-checks, and broad Q&A.";
 
 const PERPLEXITY_RATES: Record<string, PerplexityPricing> = {
@@ -82,7 +86,7 @@ export function perplexityAgent(opts: PerplexityAgentOptions = {}): Researcher {
     opts.apiKey ?? readEnv("ATLAS_PERPLEXITY_API_KEY", "PERPLEXITY_API_KEY");
   const endpoint = `${(opts.baseUrl ?? "https://api.perplexity.ai").replace(/\/+$/, "")}/chat/completions`;
   return {
-    describe: opts.describe ?? DEFAULT_DESCRIBE,
+    description: opts.description ?? DEFAULT_DESCRIPTION,
     async research(query, ctx) {
       if (!apiKey) {
         throw new Error(
@@ -90,23 +94,35 @@ export function perplexityAgent(opts: PerplexityAgentOptions = {}): Researcher {
         );
       }
       const model = opts.model ?? "sonar-deep-research";
-      const resp = await fetch(endpoint, {
-        method: "POST",
-        signal: ctx.signal ?? null,
-        headers: {
-          "content-type": "application/json",
-          authorization: `Bearer ${apiKey}`,
+      const data = await withTimeout(
+        opts.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+        ctx.signal,
+        "perplexity.agent",
+        async (signal) => {
+          const resp = await fetch(endpoint, {
+            method: "POST",
+            signal,
+            headers: {
+              "content-type": "application/json",
+              authorization: `Bearer ${apiKey}`,
+            },
+            body: JSON.stringify({
+              model,
+              messages: [{ role: "user", content: query }],
+            }),
+          });
+          if (!resp.ok) {
+            throw new Error(`perplexity.agent: HTTP ${resp.status}`);
+          }
+          return (await resp.json()) as PerplexityResponse;
         },
-        body: JSON.stringify({
-          model,
-          messages: [{ role: "user", content: query }],
-        }),
-      });
-      if (!resp.ok) {
-        throw new Error(`perplexity.agent: HTTP ${resp.status}`);
+      );
+      if (!data.choices || data.choices.length === 0) {
+        throw new Error(
+          "perplexity.agent: response had no choices (HTTP 200 with an error body?)",
+        );
       }
-      const data = (await resp.json()) as PerplexityResponse;
-      const report = (data.choices?.[0]?.message?.content ?? "").trim();
+      const report = (data.choices[0]?.message?.content ?? "").trim();
       const fromResults = (data.search_results ?? [])
         .filter((r): r is { url: string; title?: string } => Boolean(r.url))
         .map((r) => ({ url: r.url, ...(r.title ? { title: r.title } : {}) }));

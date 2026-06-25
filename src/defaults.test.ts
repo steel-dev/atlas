@@ -35,9 +35,9 @@ describe("resolveRunConfig hard caps", () => {
   it("defaults the token cap to the effort envelope", () => {
     const lead = fakeModel("anthropic.messages", "claude-opus-4-8");
     const balanced = resolveRunConfig({ model: lead }, { effort: "balanced" });
-    expect(balanced.maxTokens).toBe(20_000_000);
+    expect(balanced.maxTokens).toBe(1_000_000);
     const max = resolveRunConfig({ model: lead }, { effort: "max" });
-    expect(max.maxTokens).toBe(250_000_000);
+    expect(max.maxTokens).toBe(16_000_000);
   });
 
   it("lets budget overrides replace the envelope caps", () => {

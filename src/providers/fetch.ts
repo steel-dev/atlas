@@ -1,3 +1,4 @@
+import type { Dispatcher } from "undici";
 import { sleep, withTimeout } from "../async.js";
 import { errorMessage } from "../errors.js";
 import { readEnv } from "../env.js";
@@ -71,6 +72,7 @@ export interface FetchRequest {
   guardRedirect?:
     | ((url: string) => Promise<{ ok: true } | { ok: false; reason: string }>)
     | undefined;
+  dispatcher?: Dispatcher | undefined;
 }
 
 export interface FetchProvider {
@@ -265,7 +267,7 @@ async function readCappedBytes(
 const MAX_REDIRECT_HOPS = 5;
 
 async function directFetch(
-  { url, signal, guardRedirect }: FetchRequest,
+  { url, signal, guardRedirect, dispatcher }: FetchRequest,
   robots: RobotsCache,
 ): Promise<FetchAttempt> {
   if (!guardRedirect) {
@@ -281,7 +283,7 @@ async function directFetch(
   let currentUrl = url;
   let response: Response;
   for (let hop = 0; ; hop++) {
-    if (!(await robots.allows(currentUrl, signal))) {
+    if (!(await robots.allows(currentUrl, signal, dispatcher))) {
       return failed(
         "direct_http",
         "robots_disallowed: robots.txt disallows direct fetching of this URL",
@@ -296,7 +298,8 @@ async function directFetch(
           accept: "application/pdf,*/*;q=0.8",
           "user-agent": FETCH_USER_AGENT,
         },
-      });
+        ...(dispatcher ? { dispatcher } : {}),
+      } as RequestInit);
     } catch (err) {
       if (signal?.aborted) throw err;
       return failed(
@@ -765,7 +768,8 @@ export function exaContents(
             text: true,
             livecrawl: "fallback",
           }),
-        });
+          ...(req.dispatcher ? { dispatcher: req.dispatcher } : {}),
+        } as RequestInit);
       } catch (err) {
         if (req.signal?.aborted) throw err;
         return failed("exa_contents", `exa_contents: ${errorMessage(err)}`, true);

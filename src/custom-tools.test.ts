@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { researchTool, resolveCustomTools } from "./custom-tools.js";
-import { ConfigError } from "./errors.js";
+import { AtlasError } from "./errors.js";
 
 const tool = researchTool({
   description: "test tool",
@@ -17,7 +17,7 @@ describe("resolveCustomTools", () => {
 
   it("rejects names that shadow builtin tools", async () => {
     await expect(resolveCustomTools({ fetch: tool })).rejects.toThrow(
-      ConfigError,
+      AtlasError,
     );
     await expect(resolveCustomTools({ note: tool })).rejects.toThrow(
       /shadow/,

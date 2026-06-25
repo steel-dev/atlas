@@ -22,7 +22,7 @@ import {
   type TokenUsage,
 } from "./budget.js";
 import { ECONOMY } from "./economy.js";
-import { BudgetExceededError, errorMessage } from "./errors.js";
+import { AtlasError, errorMessage } from "./errors.js";
 import { currentFrame, type SpanStatus, type TraceRecorder } from "./trace.js";
 import type { JournalWriter, ReplayCache } from "./providers/store.js";
 
@@ -647,8 +647,9 @@ export function engineModel(
         };
       }
       if (hooks.budgetExhausted?.()) {
-        throw new BudgetExceededError(
+        throw new AtlasError(
           "budget exhausted: total run budget reached",
+          "budget",
         );
       }
       const reservation = reserveFor(params);
@@ -722,8 +723,9 @@ export function engineModel(
         return { stream: streamFromJournaledCall(cached) };
       }
       if (hooks.budgetExhausted?.()) {
-        throw new BudgetExceededError(
+        throw new AtlasError(
           "budget exhausted: total run budget reached",
+          "budget",
         );
       }
       const reservation = reserveFor(params);

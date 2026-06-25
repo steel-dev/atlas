@@ -227,13 +227,14 @@ describe("pricing resolution", () => {
     ).toBe(0);
   });
 
-  it("falls back to conservative pricing for unknown models", () => {
+  it("falls back to neutral mid-tier pricing for unknown models", () => {
     const { pricing, known } = resolvePricing(
       "totally-unknown-model",
       DEFAULT_PRICING,
     );
     expect(known).toBe(false);
-    expect(pricing.inputPerMTok).toBeGreaterThanOrEqual(5);
+    expect(pricing.inputPerMTok).toBe(3);
+    expect(pricing.outputPerMTok).toBe(15);
   });
 
   it("computes usage cost with cache factors", () => {
