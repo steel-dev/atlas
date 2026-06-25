@@ -51,6 +51,7 @@ export interface GradeConfig {
   grader: "per-criterion" | "one-shot";
   judgeConcurrency: number;
   judgeTimeoutMs: number;
+  gradeRuns?: number;
 }
 
 interface GradeOutcome {
@@ -337,22 +338,27 @@ export class DracoRunHost {
     entry.gradeDone = 0;
     entry.gradeTotal = entry.dracoCase.criteria.length;
     const usage = emptyJudgeUsage();
-    const reports = await gradeRubric({
-      judge: grade.judge,
-      grader: grade.grader,
-      criteria: entry.dracoCase.criteria,
-      response: result.report,
-      query: entry.dracoCase.problem,
-      concurrency: grade.judgeConcurrency,
-      timeoutMs: grade.judgeTimeoutMs,
-      usage,
-      onProgress: (done, total) => {
-        entry.gradeDone = done;
-        entry.gradeTotal = total;
-        push({ type: "grade_progress", done, total });
-      },
-    });
-    const { report, score } = aggregateGrading([reports], entry.dracoCase);
+    const gradeRuns = Math.max(1, grade.gradeRuns ?? 1);
+    const reportSets: CriterionReport[][] = [];
+    for (let k = 0; k < gradeRuns; k++) {
+      const reports = await gradeRubric({
+        judge: grade.judge,
+        grader: grade.grader,
+        criteria: entry.dracoCase.criteria,
+        response: result.report,
+        query: entry.dracoCase.problem,
+        concurrency: grade.judgeConcurrency,
+        timeoutMs: grade.judgeTimeoutMs,
+        usage,
+        onProgress: (done, total) => {
+          entry.gradeDone = done;
+          entry.gradeTotal = total;
+          push({ type: "grade_progress", done, total });
+        },
+      });
+      reportSets.push(reports);
+    }
+    const { report, score } = aggregateGrading(reportSets, entry.dracoCase);
     const judgeErrors = report.filter((r) => r.judgeError).length;
     return { score, report, judgeErrors, usage };
   }

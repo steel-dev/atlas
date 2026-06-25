@@ -14,9 +14,11 @@
   "files": [
     "dist",
     "README.md",
-    "LICENSE",
-    "llms.txt"
+    "LICENSE"
   ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "dev": "tsx examples/cli.ts",
     "eval:browsecomp": "tsx evals/browsecomp.ts",
@@ -36,19 +38,28 @@
     "node": ">=20.16.0"
   },
   "dependencies": {
-    "@ai-sdk/anthropic": "^3.0.81",
-    "@ai-sdk/openai": "^3.0.67",
     "@ai-sdk/provider": "^3.0.0",
     "cheerio": "^1.0.0",
+    "exa-js": "^2.14.0",
     "pdf-parse": "^2.4.5",
     "steel-sdk": "^0.18.0",
     "zod": "^4.1.8"
   },
   "peerDependencies": {
-    "ai": "^6.0.0"
+    "ai": "^6.0.0",
+    "@ai-sdk/anthropic": "^3.0.0",
+    "@ai-sdk/openai": "^3.0.0",
+    "@ai-sdk/google": "^3.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@ai-sdk/anthropic": { "optional": true },
+    "@ai-sdk/openai": { "optional": true },
+    "@ai-sdk/google": { "optional": true }
   },
   "devDependencies": {
+    "@ai-sdk/anthropic": "^3.0.81",
     "@ai-sdk/google": "^3.0.80",
+    "@ai-sdk/openai": "^3.0.67",
     "@types/node": "^22.0.0",
     "ai": "^6.0.194",
     "tsx": "^4.19.2",
@@ -70,7 +81,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/steel-experiments/atlas.git"
+    "url": "git+https://github.com/steel-dev/atlas.git"
   },
   "optionalDependencies": {
     "isolated-vm": "^6.1.2"

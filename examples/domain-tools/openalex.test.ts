@@ -1,16 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { openalex } from "./openalex.js";
-import type { ToolContext } from "../../src/custom-tools.js";
-
-function makeCtx(signal?: AbortSignal) {
-  const sources: { url: string; title?: string; content: string }[] = [];
-  const ctx: ToolContext = {
-    addSource: (s) => sources.push(s),
-    signal,
-    log: () => {},
-  };
-  return { ctx, sources };
-}
 
 const RESP = JSON.stringify({
   results: [
@@ -35,15 +24,16 @@ describe("openalex", () => {
       "fetch",
       vi.fn(async () => new Response(RESP, { status: 200 })),
     );
-    const { ctx, sources } = makeCtx();
-    const out = await openalex().execute({ query: "widgets" }, ctx);
-    expect(sources).toHaveLength(1);
-    expect(sources[0].url).toBe("https://doi.org/10.1/abc");
-    expect(sources[0].content).toContain("The widget works");
-    expect(sources[0].content).toContain("Authors: Jane Smith");
-    expect(sources[0].content).toContain("Widget Journal (2021)");
-    expect(sources[0].content).toContain("Cited by 42");
-    expect(out).toContain("found 1 result");
+    const results = await openalex().search({ query: "widgets" });
+    expect(results).toHaveLength(1);
+    expect(results[0].url).toBe("https://doi.org/10.1/abc");
+    expect(results[0].title).toBe("On Widgets");
+    expect(results[0].snippet).toContain("The widget works");
+    const fallback = String(results[0].meta?.fallbackText);
+    expect(fallback).toContain("The widget works");
+    expect(fallback).toContain("Authors: Jane Smith");
+    expect(fallback).toContain("Widget Journal (2021)");
+    expect(fallback).toContain("Cited by 42");
   });
 
   it("adds mailto and per_page from options", async () => {
@@ -51,11 +41,7 @@ describe("openalex", () => {
       async (_url: string | URL) => new Response(RESP, { status: 200 }),
     );
     vi.stubGlobal("fetch", fetchMock);
-    const { ctx } = makeCtx();
-    await openalex({ defaultLimit: 8, email: "a@b.co" }).execute(
-      { query: "x" },
-      ctx,
-    );
+    await openalex({ defaultLimit: 8, email: "a@b.co" }).search({ query: "x" });
     const u = String(fetchMock.mock.calls[0][0]);
     expect(u).toContain("per_page=8");
     expect(u).toContain("mailto=a%40b.co");

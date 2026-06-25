@@ -1,26 +1,39 @@
+import {
+  exa as exaSearch,
+  brave as braveSearch,
+  tavily as tavilySearch,
+  nativeModelSearch,
+} from "./providers/search.js";
+import {
+  exaContents,
+  steel as steelFetch,
+  basicFetch,
+} from "./providers/fetch.js";
+import { exaAgent } from "./providers/exa-agent.js";
+import { perplexityAgent } from "./providers/perplexity-agent.js";
+import { parallelAgent } from "./providers/parallel-agent.js";
+
 export { Atlas } from "./atlas.js";
-export type { StructuredResearchResult } from "./atlas.js";
 export type {
   AtlasConfig,
   Budget,
   ConcurrencyConfig,
   Effort,
-  OutputSpec,
   ResearchOptions,
   SourceFilter,
   TraceMode,
 } from "./config.js";
+export type { ModelRole } from "./model.js";
 export type {
-  ResearchClaims,
   ResearchResult,
   ResearchRun,
   ResumeOptions,
   RunStatus,
   SourceRecord,
 } from "./run.js";
-export type { Citation } from "./bind.js";
+export type { StructuredResult } from "./structured.js";
 export type {
-  AgentRole,
+  Citation,
   ResearchEvent,
   ResearchEventMap,
   ResearchEventType,
@@ -41,44 +54,54 @@ export type {
   SpanStatus,
   TraceStep,
 } from "./trace.js";
-export type {
-  ClaimConfidence,
-  ClaimImportance,
-  ClaimSourceQuality,
-  ClaimStatus,
-  ClaimVote,
-  ResearchClaim,
-} from "./ledger.js";
 export type { ModelPricing, PricingTable } from "./budget.js";
 export { DEFAULT_PRICING } from "./budget.js";
 export type { SafetyPolicy } from "./safety.js";
 export { researchTool } from "./custom-tools.js";
 export type { ResearchTool, ToolContext } from "./custom-tools.js";
-export {
-  brave,
-  exa,
-  nativeModelSearch,
-  tavily,
-} from "./providers/search.js";
+export { researcher } from "./researcher.js";
 export type {
+  Researcher,
+  ResearchReport,
+  ResearcherContext,
+} from "./researcher.js";
+export const exa = {
+  search: exaSearch,
+  contents: exaContents,
+  agent: exaAgent,
+};
+export const brave = { search: braveSearch };
+export const tavily = { search: tavilySearch };
+export const native = { search: nativeModelSearch };
+export const steel = { fetch: steelFetch };
+export const basic = { fetch: basicFetch };
+export const perplexity = { agent: perplexityAgent };
+export const parallel = { agent: parallelAgent };
+export type { ExaAgentOptions } from "./providers/exa-agent.js";
+export type { PerplexityAgentOptions } from "./providers/perplexity-agent.js";
+export type { ParallelAgentOptions } from "./providers/parallel-agent.js";
+export type {
+  BraveOptions,
+  ExaOptions,
+  NativeModelSearchOptions,
   SearchProvider,
   SearchQuery,
   SearchResult,
+  TavilyOptions,
 } from "./providers/search.js";
-export { basicFetch, steel } from "./providers/fetch.js";
 export type {
   FetchAttempt,
   FetchProvider,
   FetchRequest,
   FetchedPage,
+  SteelOptions,
 } from "./providers/fetch.js";
 export { fileStore, loadTrace, memoryStore } from "./providers/store.js";
 export type { JournalEntry, RunStore, RunSummary } from "./providers/store.js";
-export type { FieldBasis, BasisCitation } from "./structured.js";
 export type {
-  CitedSource,
-  FetchedSource,
-  SourceDocument,
+  SourceDiscoveredLink,
+  SourceExtractionAttempt,
+  SourceExtractionMetadata,
 } from "./sources.js";
 export {
   AtlasError,

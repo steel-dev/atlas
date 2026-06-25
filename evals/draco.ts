@@ -18,6 +18,7 @@ import {
 } from "../src/defaults.js";
 import {
   Atlas,
+  fileStore,
   type AtlasConfig,
   type Effort,
   type ResearchOptions,
@@ -25,6 +26,13 @@ import {
   type ResearchRun,
   type TraceMode,
 } from "../src/index.js";
+import { defaultSearchProviders } from "../src/providers/search.js";
+import {
+  arxiv,
+  edgar,
+  openalex,
+  pubmed,
+} from "../examples/domain-tools/index.js";
 import {
   buildDiagnostics,
   formatCountMap,
@@ -163,7 +171,7 @@ const DEFAULT_EFFORT: Effort = "deep";
 export const DEFAULT_LEAF_MODEL = "claude-haiku-4-5";
 const DEFAULT_JUDGE_TIMEOUT_MS = 120_000;
 const DEFAULT_JUDGE_CONCURRENCY = 8;
-const JUDGE_MAX_RETRIES = 5;
+const JUDGE_MAX_RETRIES = 30;
 const PER_CRITERION_JUDGE_MAX_TOKENS = 8_192;
 const ONE_SHOT_JUDGE_MAX_TOKENS = 32_768;
 const JUDGE_TEMPERATURE = 0;
@@ -743,9 +751,26 @@ export function buildAtlasConfig(opts: EvalOptions): AtlasConfig {
   const modelId = resolveResearchModel(provider, opts.model);
   const model = buildResearchModel(provider, modelId);
   const leafModelId = effectiveLeafModel(opts);
-  if (!leafModelId || leafModelId === modelId) return { model };
-  const leaf = buildResearchModel(provider, leafModelId);
-  return { model, models: { extract: leaf, verify: leaf } };
+  const config: AtlasConfig =
+    !leafModelId || leafModelId === modelId
+      ? { model }
+      : {
+          model,
+          models: {
+            extract: buildResearchModel(provider, leafModelId),
+            verify: buildResearchModel(provider, leafModelId),
+          },
+        };
+  config.search = {
+    web: defaultSearchProviders(model),
+    academic: [openalex(), arxiv()],
+    finance: [edgar()],
+    medical: [pubmed()],
+  };
+  if (opts.traceMode === "full") {
+    config.store = fileStore(join("eval-runs", "sources", currentCommit()));
+  }
+  return config;
 }
 
 function defaultJudgeModel(provider: JudgeProvider): string {

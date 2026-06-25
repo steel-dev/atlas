@@ -1,16 +1,17 @@
 import type { Effort } from "./config.js";
-import type { ClaimImportance, ClaimStatus } from "./ledger.js";
 
-export type AgentRole = "orchestrator" | "research" | "verify" | "write";
+export type AgentRole = "gather" | "write";
+
+export interface Citation {
+  sourceId: string;
+}
 
 export type StopReason =
-  | "answered"
   | "completed"
   | "stopped"
   | "budget"
   | "tokens"
-  | "timeout"
-  | "agent-cap";
+  | "timeout";
 
 export interface RunStats {
   effort: Effort;
@@ -20,25 +21,13 @@ export interface RunStats {
   modelGatePeakWidth: number;
   sourcesFetched: number;
   sourcesFailed: number;
-  claimsExtracted: number;
-  claimsUnsupported: number;
-  claimsVerified: number;
-  claimsConfirmed: number;
-  claimsScreened: number;
-  claimsContested: number;
-  claimsRefuted: number;
   citationsBound: number;
   citationsUnsupported: number;
-  dupesDropped: number;
-  agentsSpawned: number;
-  maxDepth: number;
-  singleAgent: boolean;
   tokens: Record<string, { input: number; output: number }>;
   costUSD: number;
   durationMs: number;
   budgetExhausted: boolean;
   tokensExhausted: boolean;
-  agentCapReached: boolean;
   stopReason: StopReason;
 }
 
@@ -51,37 +40,6 @@ export type ResearchEvent =
       budgetUSD: number;
     }
   | { type: "plan.updated"; rationale: string }
-  | { type: "lead.recontexted"; session: number }
-  | {
-      type: "checklist.built";
-      items: number;
-      central: number;
-      volatile: number;
-    }
-  | {
-      type: "coverage.assessed";
-      round: number;
-      answered: boolean;
-      gaps: string[];
-    }
-  | {
-      type: "agent.spawned";
-      agentId: string;
-      parentId?: string;
-      role: AgentRole;
-      task: string;
-      grantUSD: number;
-      depth: number;
-    }
-  | {
-      type: "agent.returned";
-      agentId: string;
-      role: AgentRole;
-      note: string;
-      claimsAdded: number;
-      spentUSD: number;
-      stopReason: string;
-    }
   | {
       type: "search.completed";
       query: string;
@@ -99,37 +57,10 @@ export type ResearchEvent =
       warnings?: string[];
     }
   | { type: "source.failed"; url: string; reason: string }
-  | {
-      type: "claim.extracted";
-      claimId: string;
-      sourceId: string;
-      text: string;
-      importance: ClaimImportance;
-    }
-  | {
-      type: "extraction.completed";
-      sourceId: string;
-      url: string;
-      count: number;
-      unsupported: number;
-      error?: string;
-    }
-  | {
-      type: "claim.verified";
-      claimId: string;
-      status: ClaimStatus;
-      votes: string;
-    }
   | { type: "report.drafting" }
   | { type: "report.delta"; text: string }
   | { type: "report.reset" }
   | { type: "report.completed"; report: string }
-  | {
-      type: "citation.bound";
-      claimId: string;
-      sentence: string;
-      ok: boolean;
-    }
   | {
       type: "budget.warning";
       spentUSD: number;
@@ -143,7 +74,6 @@ export type ResearchEvent =
       url?: string;
     }
   | { type: "pricing.missing"; modelId: string; detail: string }
-  | { type: "model.fallback"; roles: string[]; modelId: string; detail: string }
   | { type: "run_code.unavailable"; detail: string }
   | { type: "rate.limited"; retryAfterSeconds: number }
   | { type: "tool.event"; tool: string; data: unknown }

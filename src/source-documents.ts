@@ -12,7 +12,9 @@ const STORED_MARKDOWN_CAP = 500_000;
 const SOURCE_CHUNK_CHARS = 12_000;
 const DISCOVERY_LINK_LIMIT = 20;
 const SOURCE_CARD_PREVIEW_CHARS = 700;
-const SOURCE_SEARCH_CONTEXT_CHARS = 180;
+const GOAL_PASSAGE_MIN_DOC_CHARS = 3_000;
+const GOAL_PASSAGE_COUNT = 2;
+const GOAL_HEAD_PREVIEW_CHARS = 300;
 
 function createChunks(markdown: string): SourceChunk[] {
   const chunks: SourceChunk[] = [];
@@ -168,6 +170,19 @@ export function extractionMetadataFromHtml(opts: {
   });
 }
 
+export function extractionMetadataFromExa(opts: {
+  markdownChars: number;
+  finalUrl?: string;
+  attempts?: SourceExtractionAttempt[];
+  qualityWarnings?: string[];
+}): SourceExtractionMetadata {
+  return buildExtractionMetadata({
+    ...opts,
+    method: "exa_contents",
+    leadNote: "Fetched via the Exa /contents API.",
+  });
+}
+
 export function storeMarkdown(markdown: string): {
   markdown: string;
   originalChars: number;
@@ -197,15 +212,22 @@ export function formatSourceCard(
 export function sourceCardData(
   document: SourceDocument,
   previewChars = SOURCE_CARD_PREVIEW_CHARS,
+  goal?: string,
 ): Record<string, unknown> {
   const qualityWarnings = document.metadata.qualityWarnings ?? [];
   const isDiscoveryPage =
     document.metadata.qualityWarnings?.some((warning) =>
       warning.startsWith("search_listing_page"),
     ) ?? false;
+  const passages =
+    goal && goal.trim() && document.markdown.length > GOAL_PASSAGE_MIN_DOC_CHARS
+      ? rankSourcePassages([document], goal, GOAL_PASSAGE_COUNT)
+      : [];
+  const headChars =
+    passages.length > 0 ? Math.min(previewChars, GOAL_HEAD_PREVIEW_CHARS) : previewChars;
   const previewEnd = Math.min(
     document.markdown.length,
-    Math.max(0, Math.floor(previewChars)),
+    Math.max(0, Math.floor(headChars)),
   );
   const result = {
     source_id: document.sourceId,
@@ -256,6 +278,16 @@ export function sourceCardData(
     ...(previewEnd > 0
       ? { preview: document.markdown.slice(0, previewEnd) }
       : {}),
+    ...(passages.length > 0
+      ? {
+          relevant_passages: passages.map((passage) => ({
+            chunk_index: passage.chunkIndex,
+            start: passage.start,
+            end: passage.end,
+            snippet: passage.snippet,
+          })),
+        }
+      : {}),
     raw_access:
       "Stored as a source document. Use search_sources to find relevant passages across stored sources, and read_source to read a chunk or quote an exact span.",
   };
@@ -299,77 +331,140 @@ export function formatSourceChunk(
   return JSON.stringify(result, null, 2);
 }
 
+const SEARCH_WINDOW_CHARS = 900;
+const SEARCH_WINDOW_OVERLAP = 200;
+const BM25_K1 = 1.5;
+const BM25_B = 0.75;
+
+interface SearchWindow {
+  start: number;
+  end: number;
+  lower: string;
+  len: number;
+}
+
+const searchWindowCache = new WeakMap<SourceDocument, SearchWindow[]>();
+
+function windowsForDocument(document: SourceDocument): SearchWindow[] {
+  const cached = searchWindowCache.get(document);
+  if (cached) return cached;
+  const text = document.markdown;
+  const windows: SearchWindow[] = [];
+  const step = SEARCH_WINDOW_CHARS - SEARCH_WINDOW_OVERLAP;
+  for (let start = 0; start < text.length; start += step) {
+    const end = Math.min(start + SEARCH_WINDOW_CHARS, text.length);
+    const slice = text.slice(start, end);
+    const len = (slice.match(/[\p{L}\p{N}]+/gu) ?? []).length;
+    windows.push({ start, end, lower: slice.toLowerCase(), len });
+    if (end >= text.length) break;
+  }
+  if (windows.length === 0) {
+    windows.push({ start: 0, end: 0, lower: "", len: 0 });
+  }
+  searchWindowCache.set(document, windows);
+  return windows;
+}
+
+export interface SourcePassage {
+  sourceId: string;
+  title: string;
+  url: string;
+  canonicalUrl: string;
+  chunkIndex: number;
+  start: number;
+  end: number;
+  score: number;
+  snippet: string;
+}
+
+export function rankSourcePassages(
+  documents: SourceDocument[],
+  query: string,
+  maxResults: number,
+): SourcePassage[] {
+  const terms = searchTerms(query);
+  if (terms.length === 0) return [];
+
+  const pool: Array<{ document: SourceDocument; window: SearchWindow }> = [];
+  for (const document of documents) {
+    for (const window of windowsForDocument(document)) {
+      if (window.lower.length > 0) pool.push({ document, window });
+    }
+  }
+  if (pool.length === 0) return [];
+
+  const total = pool.length;
+  const avgdl = pool.reduce((sum, p) => sum + p.window.len, 0) / total || 1;
+  const df = new Map<string, number>();
+  for (const term of terms) {
+    let n = 0;
+    for (const p of pool) if (p.window.lower.includes(term)) n++;
+    df.set(term, n);
+  }
+
+  const scored: Array<{
+    document: SourceDocument;
+    window: SearchWindow;
+    score: number;
+  }> = [];
+  for (const { document, window } of pool) {
+    let score = 0;
+    const dl = window.len || 1;
+    for (const term of terms) {
+      const f = countOccurrences(window.lower, term);
+      if (f === 0) continue;
+      const n = df.get(term) ?? 0;
+      const idf = Math.log(1 + (total - n + 0.5) / (n + 0.5));
+      score +=
+        (idf * (f * (BM25_K1 + 1))) /
+        (f + BM25_K1 * (1 - BM25_B + (BM25_B * dl) / avgdl));
+    }
+    if (score > 0) scored.push({ document, window, score });
+  }
+
+  scored.sort(
+    (a, b) =>
+      b.score - a.score ||
+      a.document.sourceId.localeCompare(b.document.sourceId) ||
+      a.window.start - b.window.start,
+  );
+
+  return scored.slice(0, maxResults).map(({ document, window, score }) => ({
+    sourceId: document.sourceId,
+    title: document.title,
+    url: document.url,
+    canonicalUrl: document.canonicalUrl,
+    chunkIndex: chunkForRange(document, window.start).index,
+    start: window.start,
+    end: window.end,
+    score: Number(score.toFixed(3)),
+    snippet: document.markdown.slice(window.start, window.end).trim(),
+  }));
+}
+
 export function searchSourceDocuments(
   documents: SourceDocument[],
   query: string,
   maxResults: number,
 ): string {
-  const terms = searchTerms(query);
-  if (terms.length === 0) {
+  if (searchTerms(query).length === 0) {
     return "Error: search_sources requires a non-empty `query`.";
   }
-
-  const results: Array<{
-    source_id: string;
-    title: string;
-    url: string;
-    canonical_url: string;
-    chunk_index: number;
-    start: number;
-    end: number;
-    score: number;
-    snippet: string;
-  }> = [];
-
-  for (const document of documents) {
-    for (const chunk of document.chunks) {
-      const chunkText = document.markdown.slice(chunk.start, chunk.end);
-      const chunkLower = chunkText.toLowerCase();
-      let score = 0;
-      let firstMatch = -1;
-      let lastMatch = -1;
-      for (const term of terms) {
-        const relative = chunkLower.indexOf(term);
-        if (relative === -1) continue;
-        const absolute = chunk.start + relative;
-        const count = countOccurrences(chunkLower, term);
-        score += count * Math.max(1, term.length);
-        firstMatch =
-          firstMatch === -1 ? absolute : Math.min(firstMatch, absolute);
-        lastMatch = Math.max(lastMatch, absolute + term.length);
-      }
-      if (score === 0 || firstMatch === -1 || lastMatch === -1) continue;
-      const snippetStart = Math.max(
-        0,
-        firstMatch - SOURCE_SEARCH_CONTEXT_CHARS,
-      );
-      const snippetEnd = Math.min(
-        document.markdown.length,
-        lastMatch + SOURCE_SEARCH_CONTEXT_CHARS,
-      );
-      results.push({
-        source_id: document.sourceId,
-        title: document.title,
-        url: document.url,
-        canonical_url: document.canonicalUrl,
-        chunk_index: chunk.index,
-        start: snippetStart,
-        end: snippetEnd,
-        score,
-        snippet: document.markdown.slice(snippetStart, snippetEnd),
-      });
-    }
-  }
-
-  results.sort(
-    (a, b) => b.score - a.score || a.source_id.localeCompare(b.source_id),
+  const matches = rankSourcePassages(documents, query, maxResults).map(
+    (passage) => ({
+      source_id: passage.sourceId,
+      title: passage.title,
+      url: passage.url,
+      canonical_url: passage.canonicalUrl,
+      chunk_index: passage.chunkIndex,
+      start: passage.start,
+      end: passage.end,
+      score: passage.score,
+      snippet: passage.snippet,
+    }),
   );
   return JSON.stringify(
-    {
-      query,
-      result_count: Math.min(results.length, maxResults),
-      matches: results.slice(0, maxResults),
-    },
+    { query, result_count: matches.length, matches },
     null,
     2,
   );

@@ -24,6 +24,19 @@ describe("parseRobots and robotsAllows", () => {
     expect(robotsAllows(rules, "/doc.pdfx")).toBe(true);
   });
 
+  it("matches adversarial wildcard patterns without catastrophic backtracking", () => {
+    const pattern = "/" + "a*".repeat(40) + "b$";
+    const rules = parseRobots(
+      `User-agent: *\nDisallow: ${pattern}`,
+      "atlasresearchbot",
+    );
+    const path = "/" + "a".repeat(6000);
+    const start = Date.now();
+    const verdict = robotsAllows(rules, path);
+    expect(Date.now() - start).toBeLessThan(1000);
+    expect(verdict).toBe(true);
+  });
+
   it("ignores empty disallow values", () => {
     const rules = parseRobots("User-agent: *\nDisallow:", "atlasresearchbot");
     expect(robotsAllows(rules, "/anything")).toBe(true);

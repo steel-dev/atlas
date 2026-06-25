@@ -7,12 +7,11 @@ export class AtlasError extends Error {
     message: string,
     readonly code:
       | "config"
-      | "provider"
       | "budget"
       | "resume"
       | "cancelled"
       | "paused"
-      | "output",
+      | "timeout",
   ) {
     super(message);
     this.name = "AtlasError";

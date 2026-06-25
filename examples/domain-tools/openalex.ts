@@ -1,18 +1,11 @@
-import { jsonSchema } from "ai";
-import {
-  researchTool,
-  type ResearchTool,
-  type ToolContext,
-} from "../../src/custom-tools.js";
 import { errorMessage } from "../../src/errors.js";
 import { readEnv } from "../../src/env.js";
 import {
-  buildContent,
-  clampLimit,
-  collapse,
-  fetchJson,
-  manifest,
-} from "./shared.js";
+  safeDomain,
+  type SearchProvider,
+  type SearchResult,
+} from "../../src/providers/search.js";
+import { buildContent, clampLimit, collapse, fetchJson } from "./shared.js";
 
 export interface OpenAlexOptions {
   defaultLimit?: number;
@@ -22,7 +15,7 @@ export interface OpenAlexOptions {
 
 const ENDPOINT = "https://api.openalex.org/works";
 
-export function openalex(opts: OpenAlexOptions = {}): ResearchTool {
+export function openalex(opts: OpenAlexOptions = {}): SearchProvider {
   const defaultLimit = clampLimit(opts.defaultLimit ?? 5);
   const email = opts.email ?? readEnv("ATLAS_OPENALEX_EMAIL");
   const sort =
@@ -31,42 +24,35 @@ export function openalex(opts: OpenAlexOptions = {}): ResearchTool {
       : opts.sort === "citations"
         ? "cited_by_count:desc"
         : undefined;
-  return researchTool({
-    description:
-      "Search OpenAlex, an open index of scholarly works across all disciplines including the social sciences and humanities. Returns paper abstracts and metadata as cited sources.",
-    inputSchema: jsonSchema<{ query: string }>({
-      type: "object",
-      properties: { query: { type: "string", description: "Search query" } },
-      required: ["query"],
-      additionalProperties: false,
-    }),
-    async execute(input, ctx) {
-      const query = String(input.query ?? "").trim();
-      if (!query) return "openalex: empty query";
+  return {
+    id: "openalex",
+    async search({ query, maxResults, signal }) {
+      const q = query.trim();
+      if (!q) return [];
       const params = new URLSearchParams({
-        search: query,
-        per_page: String(defaultLimit),
+        search: q,
+        per_page: String(clampLimit(maxResults ?? defaultLimit)),
       });
       if (sort) params.set("sort", sort);
       if (email) params.set("mailto", email);
       let data: unknown;
       try {
-        data = await fetchJson(`${ENDPOINT}?${params.toString()}`, ctx.signal);
+        data = await fetchJson(`${ENDPOINT}?${params.toString()}`, signal);
       } catch (err) {
-        return `openalex: request failed: ${errorMessage(err)}`;
+        throw new Error(`openalex: request failed: ${errorMessage(err)}`);
       }
-      return manifest("openalex", query, ingest(data, ctx));
+      return toResults(data);
     },
-  });
+  };
 }
 
-function ingest(data: unknown, ctx: ToolContext): string[] {
+function toResults(data: unknown): SearchResult[] {
   const results =
     data && typeof data === "object"
       ? (data as { results?: unknown }).results
       : undefined;
   if (!Array.isArray(results)) return [];
-  const titles: string[] = [];
+  const out: SearchResult[] = [];
   for (const row of results) {
     const w = (row ?? {}) as Record<string, unknown>;
     const title = collapse(String(w.title ?? w.display_name ?? ""));
@@ -89,14 +75,39 @@ function ingest(data: unknown, ctx: ToolContext): string[] {
     else if (year) meta.push(`(${year})`);
     if (typeof w.cited_by_count === "number")
       meta.push(`Cited by ${w.cited_by_count}`);
-    ctx.addSource({
-      url,
+    out.push({
+      position: out.length + 1,
       title,
-      content: buildContent({ title, authors, meta, abstract }),
+      url,
+      snippet: collapse([meta.join(" · "), abstract].filter(Boolean).join(" — ")),
+      domain: safeDomain(url),
+      meta: {
+        openUrls: openAccessUrls(w),
+        fallbackText: buildContent({ title, authors, meta, abstract }),
+      },
     });
-    titles.push(title);
   }
-  return titles;
+  return out;
+}
+
+function openAccessUrls(w: Record<string, unknown>): string[] {
+  const out: string[] = [];
+  const push = (u: unknown) => {
+    if (typeof u === "string" && /^https?:\/\//.test(u)) out.push(u);
+  };
+  const best = w.best_oa_location as Record<string, unknown> | undefined;
+  push(best?.pdf_url);
+  push(best?.landing_page_url);
+  push((w.open_access as Record<string, unknown> | undefined)?.oa_url);
+  const locs = w.oa_locations;
+  if (Array.isArray(locs)) {
+    for (const loc of locs) {
+      const l = loc as Record<string, unknown>;
+      push(l?.pdf_url);
+      push(l?.landing_page_url);
+    }
+  }
+  return out;
 }
 
 function workUrl(w: Record<string, unknown>): string {

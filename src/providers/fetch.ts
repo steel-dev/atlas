@@ -6,6 +6,7 @@ import { extractPdfText } from "../pdf-extract.js";
 import { guardRedirect as guardRedirectUrl } from "../safety.js";
 import { createRobotsCache, type RobotsCache } from "../robots.js";
 import {
+  extractionMetadataFromExa,
   extractionMetadataFromHtml,
   extractionMetadataFromPdf,
   extractionMetadataFromScrape,
@@ -225,6 +226,42 @@ export function basicFetch(): FetchProvider {
   };
 }
 
+class ResponseTooLargeError extends Error {}
+
+async function readCappedBytes(
+  response: Response,
+  maxBytes: number,
+): Promise<Uint8Array> {
+  const body = response.body;
+  if (!body) {
+    const buf = new Uint8Array(await response.arrayBuffer());
+    if (buf.byteLength > maxBytes) throw new ResponseTooLargeError();
+    return buf;
+  }
+  const reader = body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value) continue;
+      total += value.byteLength;
+      if (total > maxBytes) throw new ResponseTooLargeError();
+      chunks.push(value);
+    }
+  } finally {
+    await reader.cancel().catch(() => {});
+  }
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return out;
+}
+
 const MAX_REDIRECT_HOPS = 5;
 
 async function directFetch(
@@ -321,12 +358,21 @@ async function directFetch(
       false,
     );
   }
-  const data = new Uint8Array(await response.arrayBuffer());
-  if (data.byteLength > maxBytes) {
+  let data: Uint8Array;
+  try {
+    data = await readCappedBytes(response, maxBytes);
+  } catch (err) {
+    if (signal?.aborted) throw err;
+    if (err instanceof ResponseTooLargeError) {
+      return failed(
+        "direct_http",
+        `too_large: direct response exceeded ${maxBytes} bytes`,
+        false,
+      );
+    }
     return failed(
       "direct_http",
-      `too_large: direct response is too large (${data.byteLength} bytes)`,
-      false,
+      `network_error: reading response failed: ${errorMessage(err)}`,
     );
   }
 
@@ -416,7 +462,6 @@ async function extractPdf(
       return failed(
         "pdf_direct",
         "pdf_no_text: PDF extraction produced no text",
-        false,
       );
     }
     const attempt: SourceExtractionAttempt = {
@@ -444,7 +489,6 @@ async function extractPdf(
     return failed(
       "pdf_direct",
       `pdf_parse_error: PDF extraction failed: ${errorMessage(err)}`,
-      false,
     );
   }
 }
@@ -549,7 +593,13 @@ export function steel(opts: SteelOptions = {}): FetchProvider {
           () =>
             client().then((steelClient) =>
               steelClient.scrape(
-                { url, format: ["html"], useProxy: opts.proxy ?? true },
+                {
+                  url,
+                  format: isLikelyPdfUrl(url)
+                    ? ["html", "markdown"]
+                    : ["html"],
+                  useProxy: opts.proxy ?? true,
+                },
                 { signal, timeout: SCRAPE_TIMEOUT_MS },
               ),
             ),
@@ -564,91 +614,93 @@ export function steel(opts: SteelOptions = {}): FetchProvider {
           false,
         );
       }
-      const status = response.metadata?.statusCode;
-      if (status !== undefined && status >= 400) {
-        return failed(
-          "steel_scrape",
-          `http_error: steel scrape returned HTTP ${status}`,
-          false,
-        );
-      }
-      const finalUrl = response.metadata?.canonical || url;
-      const html = response.content?.html;
-      if (html) {
-        const extracted = htmlToMarkdown(html, finalUrl);
-        if (looksBlockedPage(extracted.markdown, html)) {
-          return failed(
-            "steel_scrape",
-            "blocked_or_challenge: steel scrape HTML looked blocked",
-            false,
-          );
-        }
-        if (extracted.markdown.length < DIRECT_HTML_MIN_CHARS) {
-          return failed(
-            "steel_scrape",
-            `thin_content: steel scrape extracted ${extracted.markdown.length} chars`,
-            false,
-          );
-        }
-        const attempt: SourceExtractionAttempt = {
-          method: "steel_scrape",
-          ok: true,
-          note: `steel_scrape: extracted ${extracted.markdown.length} text chars`,
-        };
-        return {
-          ok: true,
-          attempt,
-          page: {
-            finalUrl,
-            title: extracted.title,
-            markdown: extracted.markdown,
-            renderedWith: "steel_scrape",
-            metadata: extractionMetadataFromScrape({
-              markdownChars: extracted.markdown.length,
-              contentType: "text/html",
-              finalUrl,
-              attempts: [attempt],
-              discoveredLinks: extracted.links,
-              pageMetadata: extracted.metadata,
-            }),
-          },
-        };
-      }
-      const markdown = response.content?.markdown?.trim();
-      if (markdown && !looksBlockedPage(markdown)) {
-        const attempt: SourceExtractionAttempt = {
-          method: "steel_scrape",
-          ok: true,
-          note: `steel_scrape: extracted ${markdown.length} text chars`,
-        };
-        return {
-          ok: true,
-          attempt,
-          page: {
-            finalUrl,
-            title: response.metadata?.title?.trim() || titleFromUrl(finalUrl),
-            markdown,
-            renderedWith: "steel_scrape",
-            metadata: extractionMetadataFromScrape({
-              markdownChars: markdown.length,
-              finalUrl,
-              attempts: [attempt],
-            }),
-          },
-        };
-      }
-      return failed(
-        "steel_scrape",
-        "empty_content: steel scrape returned no content",
-        false,
-      );
+      return steelAttemptFromResponse(response, url);
     },
   };
 }
 
-interface SteelScrapeResponse {
+export interface SteelScrapeResponse {
   content?: { html?: string; markdown?: string };
   metadata?: { statusCode?: number; canonical?: string; title?: string };
+}
+
+export function steelAttemptFromResponse(
+  response: SteelScrapeResponse,
+  url: string,
+): FetchAttempt {
+  const status = response.metadata?.statusCode;
+  if (status !== undefined && status >= 400) {
+    return failed(
+      "steel_scrape",
+      `http_error: steel scrape returned HTTP ${status}`,
+      false,
+    );
+  }
+  const finalUrl = response.metadata?.canonical || url;
+  const html = response.content?.html;
+  if (html) {
+    const extracted = htmlToMarkdown(html, finalUrl);
+    if (
+      !looksBlockedPage(extracted.markdown, html) &&
+      extracted.markdown.length >= DIRECT_HTML_MIN_CHARS
+    ) {
+      const attempt: SourceExtractionAttempt = {
+        method: "steel_scrape",
+        ok: true,
+        note: `steel_scrape: extracted ${extracted.markdown.length} text chars`,
+      };
+      return {
+        ok: true,
+        attempt,
+        page: {
+          finalUrl,
+          title: extracted.title,
+          markdown: extracted.markdown,
+          renderedWith: "steel_scrape",
+          metadata: extractionMetadataFromScrape({
+            markdownChars: extracted.markdown.length,
+            contentType: "text/html",
+            finalUrl,
+            attempts: [attempt],
+            discoveredLinks: extracted.links,
+            pageMetadata: extracted.metadata,
+          }),
+        },
+      };
+    }
+  }
+  const markdown = response.content?.markdown?.trim();
+  if (
+    markdown &&
+    !looksBlockedPage(markdown) &&
+    markdown.length >= DIRECT_HTML_MIN_CHARS
+  ) {
+    const attempt: SourceExtractionAttempt = {
+      method: "steel_scrape",
+      ok: true,
+      note: `steel_scrape: extracted ${markdown.length} text chars`,
+    };
+    return {
+      ok: true,
+      attempt,
+      page: {
+        finalUrl,
+        title: response.metadata?.title?.trim() || titleFromUrl(finalUrl),
+        markdown,
+        renderedWith: "steel_scrape",
+        metadata: extractionMetadataFromScrape({
+          markdownChars: markdown.length,
+          finalUrl,
+          attempts: [attempt],
+        }),
+      },
+    };
+  }
+  return failed(
+    "steel_scrape",
+    "empty_content: steel scrape returned no usable content",
+    false,
+  );
 }
 
 interface SteelScrapeClient {
@@ -689,8 +741,94 @@ async function withSteelRetry<T>(
   }
 }
 
+const EXA_CONTENTS_MIN_CHARS = 200;
+
+export function exaContents(
+  opts: { apiKey?: string; baseUrl?: string } = {},
+): FetchProvider {
+  const apiKey = opts.apiKey ?? readEnv("ATLAS_EXA_API_KEY", "EXA_API_KEY");
+  const endpoint = `${(opts.baseUrl ?? "https://api.exa.ai").replace(/\/+$/, "")}/contents`;
+  return {
+    id: "exa_contents",
+    async fetch(req) {
+      if (!apiKey) {
+        return failed("exa_contents", "exa_contents: no Exa API key", true);
+      }
+      let resp: Response;
+      try {
+        resp = await fetch(endpoint, {
+          method: "POST",
+          signal: req.signal ?? null,
+          headers: { "content-type": "application/json", "x-api-key": apiKey },
+          body: JSON.stringify({
+            urls: [req.url],
+            text: true,
+            livecrawl: "fallback",
+          }),
+        });
+      } catch (err) {
+        if (req.signal?.aborted) throw err;
+        return failed("exa_contents", `exa_contents: ${errorMessage(err)}`, true);
+      }
+      if (!resp.ok) {
+        return failed("exa_contents", `exa_contents: HTTP ${resp.status}`, true);
+      }
+      let data: {
+        results?: Array<{ title?: string; text?: string; url?: string }>;
+      };
+      try {
+        data = (await resp.json()) as typeof data;
+      } catch (err) {
+        return failed(
+          "exa_contents",
+          `exa_contents: bad JSON: ${errorMessage(err)}`,
+          true,
+        );
+      }
+      const row = data.results?.[0];
+      const markdown = (row?.text ?? "").trim();
+      if (looksBlockedPage(markdown)) {
+        return failed(
+          "exa_contents",
+          "blocked_or_challenge: exa contents looked blocked",
+        );
+      }
+      if (markdown.length < EXA_CONTENTS_MIN_CHARS) {
+        return failed(
+          "exa_contents",
+          `thin_content: exa contents returned ${markdown.length} chars`,
+        );
+      }
+      const finalUrl = row?.url ?? req.url;
+      const attempt: SourceExtractionAttempt = {
+        method: "exa_contents",
+        ok: true,
+        note: `exa_contents: extracted ${markdown.length} text chars`,
+      };
+      return {
+        ok: true,
+        attempt,
+        page: {
+          finalUrl,
+          title: row?.title ?? null,
+          markdown,
+          renderedWith: "exa_contents",
+          metadata: extractionMetadataFromExa({
+            markdownChars: markdown.length,
+            finalUrl,
+            attempts: [attempt],
+          }),
+        },
+      };
+    },
+  };
+}
+
 export function defaultFetchProviders(): FetchProvider[] {
   const providers: FetchProvider[] = [basicFetch()];
+  if (readEnv("ATLAS_EXA_API_KEY", "EXA_API_KEY")) {
+    providers.push(exaContents());
+  }
   if (readEnv("ATLAS_STEEL_API_KEY", "STEEL_API_KEY")) {
     providers.push(steel());
   }
@@ -705,25 +843,37 @@ export interface ChainFetchOutcome {
 const FETCH_PROVIDER_TIMEOUT_MS = 120_000;
 const FETCH_CHAIN_TIMEOUT_MS = 180_000;
 
+const CHAIN_GOOD_CHARS = 600;
+
+function pageScore(page: FetchedPage): number {
+  const len = page.markdown.trim().length;
+  return looksBlockedPage(page.markdown) ? len : len + 1_000_000;
+}
+
+function pageIsGood(page: FetchedPage): boolean {
+  return (
+    !looksBlockedPage(page.markdown) &&
+    page.markdown.trim().length >= CHAIN_GOOD_CHARS
+  );
+}
+
 export async function fetchThroughChain(
   chain: FetchProvider[],
   req: FetchRequest,
 ): Promise<ChainFetchOutcome> {
   const attempts: SourceExtractionAttempt[] = [];
   const deadlineAt = Date.now() + FETCH_CHAIN_TIMEOUT_MS;
-  for (const provider of chain) {
+  const runProvider = async (provider: FetchProvider): Promise<FetchAttempt> => {
     const remainingMs = deadlineAt - Date.now();
     if (remainingMs <= 0) {
-      attempts.push({
-        method: provider.id,
-        ok: false,
-        note: "timeout: fetch chain deadline exhausted before this provider ran",
-      });
-      break;
+      return failed(
+        provider.id,
+        "timeout: fetch chain deadline exhausted before this provider ran",
+        false,
+      );
     }
-    let result: FetchAttempt;
     try {
-      result = await withTimeout(
+      return await withTimeout(
         Math.min(FETCH_PROVIDER_TIMEOUT_MS, remainingMs),
         req.signal,
         provider.id,
@@ -731,23 +881,39 @@ export async function fetchThroughChain(
       );
     } catch (err) {
       if (req.signal?.aborted) throw err;
-      result = failed(provider.id, `timeout: ${errorMessage(err)}`);
+      return failed(provider.id, `timeout: ${errorMessage(err)}`);
     }
-    attempts.push(result.attempt);
-    if (result.ok) {
-      const merged = [
-        ...attempts.slice(0, -1),
-        ...(result.page.metadata.attempts ?? []),
-      ];
-      return {
-        page: {
-          ...result.page,
-          metadata: { ...result.page.metadata, attempts: merged },
-        },
-        attempts: merged,
-      };
+  };
+  const finalize = (page: FetchedPage): ChainFetchOutcome => {
+    const merged = [
+      ...attempts.filter((a) => !a.ok),
+      ...(page.metadata.attempts ?? []),
+    ];
+    return {
+      page: { ...page, metadata: { ...page.metadata, attempts: merged } },
+      attempts: merged,
+    };
+  };
+  if (chain.length === 0) return { page: null, attempts };
+  const first = await runProvider(chain[0]);
+  attempts.push(first.attempt);
+  const firstPage = first.ok ? first.page : null;
+  if (firstPage && pageIsGood(firstPage)) return finalize(firstPage);
+  if (!first.ok && !first.escalate) return { page: null, attempts };
+  const rest = chain.slice(1);
+  const candidates: FetchedPage[] = firstPage ? [firstPage] : [];
+  if (rest.length > 0) {
+    const settled = await Promise.allSettled(rest.map((p) => runProvider(p)));
+    for (const s of settled) {
+      if (s.status === "fulfilled") {
+        attempts.push(s.value.attempt);
+        if (s.value.ok) candidates.push(s.value.page);
+      } else if (req.signal?.aborted) {
+        throw s.reason;
+      }
     }
-    if (!result.escalate) break;
   }
-  return { page: null, attempts };
+  if (candidates.length === 0) return { page: null, attempts };
+  const best = candidates.reduce((a, b) => (pageScore(b) > pageScore(a) ? b : a));
+  return finalize(best);
 }

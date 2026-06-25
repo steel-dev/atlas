@@ -109,6 +109,59 @@ describe("pricing resolution", () => {
     expect(
       resolvePricing("us.anthropic.claude-opus-4-8", DEFAULT_PRICING).known,
     ).toBe(true);
+    expect(resolvePricing("zai.GLM-5.2", DEFAULT_PRICING).known).toBe(true);
+    expect(resolvePricing("zai.glm-5.2", DEFAULT_PRICING).known).toBe(true);
+  });
+
+  it("resolves dated small-model variants to the specific cheap entry, not the pricier prefix", () => {
+    const nano = resolvePricing("gpt-5-nano-2025-08-07", DEFAULT_PRICING);
+    expect(nano.known).toBe(true);
+    expect(nano.pricing.inputPerMTok).toBe(0.05);
+    expect(nano.pricing.outputPerMTok).toBe(0.4);
+
+    const mini = resolvePricing("gpt-4o-mini-2024-07-18", DEFAULT_PRICING);
+    expect(mini.known).toBe(true);
+    expect(mini.pricing.inputPerMTok).toBe(0.15);
+
+    const air = resolvePricing("GLM-4.5-Air-250414", DEFAULT_PRICING);
+    expect(air.known).toBe(true);
+    expect(air.pricing.inputPerMTok).toBe(0.2);
+  });
+
+  it("resolves Z.ai GLM pricing including cached input rates", () => {
+    const { pricing, known } = resolvePricing("GLM-5.2", DEFAULT_PRICING);
+    expect(known).toBe(true);
+    expect(pricing.inputPerMTok).toBe(1.4);
+    expect(pricing.cacheReadPerMTok).toBe(0.26);
+    expect(pricing.cacheWritePerMTok).toBe(0);
+    expect(pricing.outputPerMTok).toBe(4.4);
+
+    const cost = usageCostUSD(
+      {
+        input: 1_000_000,
+        output: 1_000_000,
+        cacheRead: 1_000_000,
+        cacheWrite: 1_000_000,
+      },
+      pricing,
+    );
+    expect(cost).toBeCloseTo(6.06);
+  });
+
+  it("treats free Z.ai Flash models as zero-cost", () => {
+    const { pricing, known } = resolvePricing("GLM-4.5-Flash", DEFAULT_PRICING);
+    expect(known).toBe(true);
+    expect(
+      usageCostUSD(
+        {
+          input: 1_000_000,
+          output: 1_000_000,
+          cacheRead: 1_000_000,
+          cacheWrite: 1_000_000,
+        },
+        pricing,
+      ),
+    ).toBe(0);
   });
 
   it("falls back to conservative pricing for unknown models", () => {

@@ -177,7 +177,7 @@ describe("computeDigest", () => {
     ];
     const digest = computeDigest(spans, [], { ...META, wallMs: 10 });
     expect(digest.attribution.synthesize).toBe(
-      "src/synthesize.ts:synthesizeReport",
+      "src/spine.ts:synthesizeHolistic",
     );
   });
 

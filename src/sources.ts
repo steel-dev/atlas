@@ -5,6 +5,9 @@ export interface FetchedSource {
   canonicalUrl?: string;
 }
 
+export const NON_EVIDENCE_WARNINGS =
+  /\b(?:blocked_or_challenge|thin_content|error_page|search_listing_page)\b/i;
+
 export interface CitedSource {
   url: string;
   title: string;

@@ -20,6 +20,8 @@ Overview (cheap, start here):
 Per-case (one case, still compact):
   case <sha> <caseId>             Rubric + per-criterion MET/UNMET + judge
                                   reason + score + claim stats + run list
+  verdicts <runId>                One run's grading: 4 axis scores + UNMET
+                                  criteria (judge reason + k-vote split + weight)
   rubric <caseId>                 The rubric (sections, criteria, weights)
 
 Evidence (one run — get run_id from \`case\`/\`runs\`):
@@ -45,6 +47,15 @@ Trace (timing/cost spans + bottleneck digest):
 
 History:
   runs <sha> [<caseId>]           Every run (append-only), newest first
+
+Analysis (agent-first):
+  diff <shaA> <shaB>              Per-case score Δ + aggregate tool-discipline Δ
+                                  (search/fetch/search_sources/read_source/run_code/note) between two commits
+  audit <runId>                   Tool histogram + search redundancy (near-dup query pairs)
+                                  + phase budget + critical-path / wait-vs-compute digest
+  systems [<sha>]                 Per-system mean±CI(95%) over cases + 4 axes (FA/BD/PQ/CQ)
+                                  + paired per-case deltas between systems
+  quality [<sha>]                 Per-run research health: sources, report size, finish, cost, latency
 
 Options:
   --db PATH    SQLite path (default: eval-runs/draco-explore.db)
@@ -253,6 +264,57 @@ interface Criterion {
   judgeError?: string;
   metVotes?: number;
   runs?: number;
+}
+
+function cmdVerdicts(store: Store, positionals: string[]): void {
+  const runId = need(positionals, 1, "runId");
+  const report =
+    (parseJson(blobOrFail(store, runId, "report")) as Criterion[] | null) ?? [];
+  const score = parseJson(store.getBlob(runId, "score") ?? "null") as {
+    normalizedScore?: number;
+    sections?: Array<{
+      id: string;
+      normalizedScore: number;
+      passRate: number;
+      criteria: number;
+    }>;
+  } | null;
+  const pct = (n: number) => Math.round(n * 1000) / 10;
+  const sections = (score?.sections ?? []).map((s) => ({
+    id: s.id,
+    score: pct(s.normalizedScore),
+    passRate: pct(s.passRate),
+    criteria: s.criteria,
+  }));
+  const unmet = report
+    .filter((c) => c.verdict === "UNMET")
+    .sort((a, b) => b.weight - a.weight)
+    .map((c) => ({
+      section: c.sectionId,
+      id: c.id,
+      weight: c.weight,
+      ...(c.metVotes !== undefined && c.runs !== undefined
+        ? { metVotes: `${c.metVotes}/${c.runs}` }
+        : {}),
+      requirement: c.requirement,
+      reason: c.reason,
+    }));
+  const unmetBySection: Record<string, { unmet: number; weightLost: number }> =
+    {};
+  for (const c of unmet) {
+    const b = (unmetBySection[c.section] ??= { unmet: 0, weightLost: 0 });
+    b.unmet++;
+    b.weightLost += c.weight;
+  }
+  out({
+    runId,
+    overall: score?.normalizedScore !== undefined ? pct(score.normalizedScore) : null,
+    sections,
+    unmetBySection,
+    unmetCount: unmet.length,
+    metCount: report.length - unmet.length,
+    unmet,
+  });
 }
 
 function shapeRubric(row: Record<string, unknown>): unknown {
@@ -482,6 +544,448 @@ function cmdTranscript(store: Store, positionals: string[], flags: Flags): void 
   raw(selected.map((s) => renderStep(s, flags.messages)).join("\n\n"));
 }
 
+function transcriptSteps(store: Store, runId: string): TranscriptStep[] {
+  const blob = store.getBlob(runId, "transcript");
+  return blob ? ((parseJson(blob) as TranscriptStep[]) ?? []) : [];
+}
+
+function toolHistogram(steps: TranscriptStep[]): Record<string, number> {
+  const hist: Record<string, number> = {};
+  for (const step of steps) {
+    for (const block of step.output ?? []) {
+      if (block.type === "tool_call") {
+        const name = String(block.name ?? "?");
+        hist[name] = (hist[name] ?? 0) + 1;
+      }
+    }
+  }
+  return hist;
+}
+
+function searchQueries(steps: TranscriptStep[]): string[] {
+  const queries: string[] = [];
+  for (const step of steps) {
+    for (const block of step.output ?? []) {
+      if (block.type !== "tool_call" || block.name !== "search") continue;
+      const input = (block.input ?? {}) as Record<string, unknown>;
+      const list = input.queries;
+      if (Array.isArray(list)) {
+        for (const q of list) if (typeof q === "string") queries.push(q);
+      }
+      if (typeof input.query === "string") queries.push(input.query);
+    }
+  }
+  return queries;
+}
+
+const QUERY_STOPWORDS = /\b(or|and|the|of|in|on|for|to|a|an|site)\b/gi;
+
+function queryTokens(query: string): Set<string> {
+  return new Set(
+    query
+      .toLowerCase()
+      .replace(/["']/g, " ")
+      .replace(QUERY_STOPWORDS, " ")
+      .replace(/[^a-z0-9 ]/g, " ")
+      .split(/\s+/)
+      .filter((w) => w.length > 2),
+  );
+}
+
+function jaccard(a: Set<string>, b: Set<string>): number {
+  let inter = 0;
+  for (const x of a) if (b.has(x)) inter++;
+  const union = a.size + b.size - inter;
+  return union === 0 ? 0 : inter / union;
+}
+
+function nearDupPairs(queries: string[], threshold = 0.5): number {
+  const sets = queries.map(queryTokens);
+  let pairs = 0;
+  for (let i = 0; i < sets.length; i++) {
+    for (let j = i + 1; j < sets.length; j++) {
+      if (jaccard(sets[i]!, sets[j]!) >= threshold) pairs++;
+    }
+  }
+  return pairs;
+}
+
+function computeFetchYield(store: Store, runId: string): Record<string, unknown> {
+  const sources = (parseJson(store.getBlob(runId, "sources") ?? "[]") ??
+    []) as Array<{ id?: string; url?: string; via?: string }>;
+  const cit = parseJson(store.getBlob(runId, "citations") ?? "null") as {
+    citations?: Array<{ sourceId?: string }>;
+  } | null;
+  const fetched = sources
+    .map((s) => s.id)
+    .filter((x): x is string => Boolean(x));
+  const cited = new Set(
+    (cit?.citations ?? [])
+      .map((c) => c.sourceId)
+      .filter((x): x is string => Boolean(x)),
+  );
+  const uncitedUrls = sources
+    .filter((s) => s.id && !cited.has(s.id))
+    .map((s) => s.url);
+  const byVia: Record<string, number> = {};
+  for (const s of sources) {
+    const via = s.via ?? "unknown";
+    byVia[via] = (byVia[via] ?? 0) + 1;
+  }
+  return {
+    fetched: fetched.length,
+    cited: cited.size,
+    uncited: uncitedUrls.length,
+    yield: fetched.length
+      ? Number((cited.size / fetched.length).toFixed(2))
+      : null,
+    byVia,
+    uncitedUrls,
+  };
+}
+
+function cmdAudit(store: Store, positionals: string[]): void {
+  const runId = need(positionals, 1, "runId");
+  const steps = transcriptSteps(store, runId);
+  const digest = parseJson(store.getBlob(runId, "digest") ?? "null") as Record<
+    string,
+    any
+  > | null;
+  const hist = toolHistogram(steps);
+  const queries = searchQueries(steps);
+  const fetchCalls = hist.fetch ?? 0;
+  const phases = digest?.phaseBreakdown ?? {};
+  out({
+    runId,
+    toolCalls: hist,
+    search: {
+      queries: queries.length,
+      uniqueExact: new Set(queries.map((q) => q.toLowerCase().trim())).size,
+      nearDupPairs: nearDupPairs(queries),
+      queriesPerFetch:
+        fetchCalls > 0 ? Number((queries.length / fetchCalls).toFixed(1)) : null,
+    },
+    fetchYield: computeFetchYield(store, runId),
+    phases: Object.fromEntries(
+      Object.entries(phases).map(([k, v]) => [
+        k,
+        {
+          wallMs: (v as any).wallMs,
+          costUSD: (v as any).costUSD,
+          tokens: (v as any).tokens,
+          spanCount: (v as any).spanCount,
+        },
+      ]),
+    ),
+    critical: digest
+      ? {
+          wallMs: digest.wallMs,
+          criticalPathPct: digest.wallMs
+            ? Math.round((digest.criticalPathMs / digest.wallMs) * 100)
+            : null,
+          waitVsCompute: digest.waitVsCompute,
+          idleMs: digest.idleMs,
+          peakModelInFlight: digest.concurrency?.peakModelInFlight,
+        }
+      : null,
+    anomalies: ((digest?.anomalies ?? []) as any[]).map(
+      (a) => `${a.kind}@${a.site ?? "?"}: ${a.detail}`,
+    ),
+  });
+}
+
+function commitToolTotals(
+  store: Store,
+  commit: string,
+): { totals: Record<string, number>; runs: number } {
+  const totals: Record<string, number> = {};
+  let runs = 0;
+  for (const row of store.grid(commit)) {
+    if (!row.runId) continue;
+    runs++;
+    const hist = toolHistogram(transcriptSteps(store, row.runId));
+    for (const [k, v] of Object.entries(hist)) totals[k] = (totals[k] ?? 0) + v;
+  }
+  return { totals, runs };
+}
+
+function cmdDiff(store: Store, positionals: string[]): void {
+  const shaA = need(positionals, 1, "shaA");
+  const shaB = need(positionals, 2, "shaB");
+  const gridB = new Map(store.grid(shaB).map((r) => [r.caseId, r]));
+  const perCase = store
+    .grid(shaA)
+    .filter((a) => gridB.has(a.caseId))
+    .map((a) => {
+      const b = gridB.get(a.caseId)!;
+      const delta =
+        a.normalized !== null && b.normalized !== null
+          ? Number((a.normalized - b.normalized).toFixed(4))
+          : null;
+      return {
+        caseId: a.caseId,
+        domain: a.domain,
+        a: a.normalized,
+        b: b.normalized,
+        delta,
+      };
+    });
+  const scored = perCase.filter((c) => c.delta !== null);
+  const totalsA = commitToolTotals(store, shaA);
+  const totalsB = commitToolTotals(store, shaB);
+  const toolKeys = [
+    ...new Set([
+      ...Object.keys(totalsA.totals),
+      ...Object.keys(totalsB.totals),
+    ]),
+  ].sort();
+  const toolDelta = Object.fromEntries(
+    toolKeys.map((k) => [
+      k,
+      {
+        a: totalsA.totals[k] ?? 0,
+        b: totalsB.totals[k] ?? 0,
+        delta: (totalsA.totals[k] ?? 0) - (totalsB.totals[k] ?? 0),
+      },
+    ]),
+  );
+  out({
+    a: shaA.slice(0, 10),
+    b: shaB.slice(0, 10),
+    sharedCases: perCase.length,
+    avgScoreDelta: scored.length
+      ? Number(
+          (
+            scored.reduce((s, c) => s + (c.delta ?? 0), 0) / scored.length
+          ).toFixed(4),
+        )
+      : null,
+    regressions: scored
+      .filter((c) => (c.delta ?? 0) < 0)
+      .sort((a, b) => (a.delta ?? 0) - (b.delta ?? 0))
+      .map((c) => `${c.caseId} (${c.delta})`),
+    improvements: scored
+      .filter((c) => (c.delta ?? 0) > 0)
+      .sort((a, b) => (b.delta ?? 0) - (a.delta ?? 0))
+      .map((c) => `${c.caseId} (+${c.delta})`),
+    toolDiscipline: { runsA: totalsA.runs, runsB: totalsB.runs, delta: toolDelta },
+    perCase,
+    ...(scored.length < 3
+      ? { noisy: "few shared scored cases — deltas are noisy" }
+      : {}),
+  });
+}
+
+const SECTION_LABELS: Record<string, string> = {
+  "factual-accuracy": "FA",
+  "breadth-and-depth-of-analysis": "BD",
+  "presentation-quality": "PQ",
+  "citation-quality": "CQ",
+};
+
+const T95: Record<number, number> = {
+  1: 12.706, 2: 4.303, 3: 3.182, 4: 2.776, 5: 2.571, 6: 2.447, 7: 2.365,
+  8: 2.306, 9: 2.262, 10: 2.228, 11: 2.201, 12: 2.179, 13: 2.16, 14: 2.145,
+  15: 2.131, 16: 2.12, 17: 2.11, 18: 2.101, 19: 2.093, 20: 2.086,
+};
+
+function t95(df: number): number {
+  if (df <= 0) return 0;
+  if (df <= 20) return T95[df];
+  if (df <= 29) return 2.045;
+  return 1.96;
+}
+
+function meanOf(xs: number[]): number {
+  return xs.length ? xs.reduce((s, x) => s + x, 0) / xs.length : 0;
+}
+
+function stdSample(xs: number[]): number {
+  if (xs.length < 2) return 0;
+  const m = meanOf(xs);
+  return Math.sqrt(xs.reduce((s, x) => s + (x - m) ** 2, 0) / (xs.length - 1));
+}
+
+function round(x: number, d = 4): number {
+  return Number(x.toFixed(d));
+}
+
+function systemCost(store: Store, runId: string): number | null {
+  const diag = parseJson(store.getBlob(runId, "diagnostics")) as {
+    stats?: { costUSD?: number };
+    exa?: { costDollars?: { total?: number } | number };
+  } | null;
+  if (typeof diag?.stats?.costUSD === "number" && diag.stats.costUSD > 0)
+    return diag.stats.costUSD;
+  const c = diag?.exa?.costDollars;
+  const exaTotal =
+    c && typeof c === "object" ? c.total : typeof c === "number" ? c : undefined;
+  if (typeof exaTotal === "number" && exaTotal > 0) return exaTotal;
+  const usage = parseJson(store.getBlob(runId, "usage")) as RunUsage | null;
+  const u = runCost(usage).totalUsd;
+  return u !== null && u > 0 ? u : null;
+}
+
+function pairedDelta(
+  a: Map<string, number>,
+  b: Map<string, number>,
+): {
+  n: number;
+  meanDelta: number;
+  ci95: number;
+  lo: number;
+  hi: number;
+  aWins: number;
+  significant: boolean;
+} | null {
+  const deltas: number[] = [];
+  for (const [cid, va] of a) {
+    const vb = b.get(cid);
+    if (vb !== undefined) deltas.push(va - vb);
+  }
+  const n = deltas.length;
+  if (n === 0) return null;
+  const m = meanOf(deltas);
+  const sd = stdSample(deltas);
+  const ci = n >= 2 ? t95(n - 1) * (sd / Math.sqrt(n)) : 0;
+  return {
+    n,
+    meanDelta: round(m),
+    ci95: round(ci),
+    lo: round(m - ci),
+    hi: round(m + ci),
+    aWins: deltas.filter((d) => d > 0).length,
+    significant: m - ci > 0 || m + ci < 0,
+  };
+}
+
+function cmdSystems(store: Store, positionals: string[]): void {
+  const sha = resolveCommit(positionals[1]);
+  const runs = store.listRuns(sha);
+  const byModel = new Map<string, Map<string, (typeof runs)[number]>>();
+  for (const r of runs) {
+    const model = r.researchModel ?? "unknown";
+    let perCase = byModel.get(model);
+    if (!perCase) {
+      perCase = new Map();
+      byModel.set(model, perCase);
+    }
+    if (!perCase.has(r.caseId)) perCase.set(r.caseId, r);
+  }
+  const systems = [...byModel.entries()].map(([model, perCase]) => {
+    const cases = [...perCase.values()];
+    const scoredRuns = cases.filter(
+      (r) => r.status === "scored" && r.normalized !== null,
+    );
+    const norms = scoredRuns.map((r) => r.normalized as number);
+    const axisVals: Record<string, number[]> = {};
+    const costs: number[] = [];
+    for (const r of scoredRuns) {
+      const score = parseJson(store.getBlob(r.runId, "score")) as {
+        sections?: Array<{ id: string; normalizedScore: number }>;
+      } | null;
+      for (const sec of score?.sections ?? []) {
+        (axisVals[sec.id] ??= []).push(sec.normalizedScore);
+      }
+      const c = systemCost(store, r.runId);
+      if (c !== null) costs.push(c);
+    }
+    const n = norms.length;
+    const m = n ? meanOf(norms) : null;
+    const sd = n >= 2 ? stdSample(norms) : n === 1 ? 0 : null;
+    const sem = sd !== null && n > 0 ? sd / Math.sqrt(n) : null;
+    const ci = sem !== null && n >= 2 ? t95(n - 1) * sem : n === 1 ? 0 : null;
+    const axes: Record<string, number | null> = {};
+    for (const id of Object.keys(SECTION_LABELS)) {
+      const vals = axisVals[id];
+      axes[SECTION_LABELS[id]] = vals && vals.length ? round(meanOf(vals)) : null;
+    }
+    return {
+      system: model,
+      n: cases.length,
+      scored: n,
+      errors: cases.filter((r) => r.status === "error").length,
+      meanNormalized: m !== null ? round(m) : null,
+      sd: sd !== null ? round(sd) : null,
+      sem: sem !== null ? round(sem) : null,
+      ci95: ci !== null ? round(ci) : null,
+      lo: m !== null && ci !== null ? round(m - ci) : null,
+      hi: m !== null && ci !== null ? round(m + ci) : null,
+      axes,
+      meanCostUsd: costs.length ? round(meanOf(costs)) : null,
+    };
+  });
+  systems.sort((a, b) => (b.meanNormalized ?? -1) - (a.meanNormalized ?? -1));
+  const caseScores = new Map<string, Map<string, number>>();
+  for (const [model, perCase] of byModel) {
+    const scored = new Map<string, number>();
+    for (const [cid, r] of perCase)
+      if (r.status === "scored" && r.normalized !== null)
+        scored.set(cid, r.normalized);
+    caseScores.set(model, scored);
+  }
+  const pairs: Array<Record<string, unknown>> = [];
+  for (let i = 0; i < systems.length; i++) {
+    for (let j = i + 1; j < systems.length; j++) {
+      const a = systems[i].system;
+      const b = systems[j].system;
+      const pd = pairedDelta(
+        caseScores.get(a) ?? new Map<string, number>(),
+        caseScores.get(b) ?? new Map<string, number>(),
+      );
+      if (pd) pairs.push({ a, b, ...pd });
+    }
+  }
+  out({ commit: sha, systems, pairs });
+}
+
+function cmdQuality(store: Store, positionals: string[]): void {
+  const sha = resolveCommit(positionals[1]);
+  const runs = store.listRuns(sha);
+  const seen = new Set<string>();
+  const rows: Array<Record<string, unknown>> = [];
+  for (const r of runs) {
+    const key = r.caseId + "|" + (r.researchModel ?? "?");
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const md = store.getBlob(r.runId, "markdown") ?? "";
+    const srcBlob = store.getBlob(r.runId, "sources");
+    const sources = srcBlob
+      ? ((parseJson(srcBlob) as unknown[]) ?? []).length
+      : 0;
+    const diag = parseJson(store.getBlob(r.runId, "diagnostics")) as {
+      stats?: { budgetExhausted?: boolean };
+    } | null;
+    const scalars = store.runScalars(r.runId) as
+      | { latency_ms?: number }
+      | undefined;
+    rows.push({
+      system: r.researchModel,
+      domain: r.domain,
+      caseId: r.caseId,
+      status: r.status,
+      sources,
+      reportChars: md.length,
+      finish:
+        r.status === "error"
+          ? "error"
+          : diag?.stats?.budgetExhausted
+            ? "budget-exhausted"
+            : "completed",
+      costUsd: systemCost(store, r.runId),
+      latencyS: scalars?.latency_ms
+        ? Math.round(scalars.latency_ms / 1000)
+        : null,
+    });
+  }
+  rows.sort(
+    (a, b) =>
+      String(a.system).localeCompare(String(b.system)) ||
+      String(a.domain).localeCompare(String(b.domain)),
+  );
+  out({ commit: sha, runs: rows });
+}
+
 function main(): void {
   const { values, positionals } = parseArgs({
     args: process.argv.slice(2),
@@ -537,6 +1041,8 @@ function main(): void {
         return cmdCommit(store, positionals, flags);
       case "case":
         return cmdCase(store, positionals);
+      case "verdicts":
+        return cmdVerdicts(store, positionals);
       case "rubric":
         return cmdRubric(store, positionals);
       case "report":
@@ -563,6 +1069,14 @@ function main(): void {
         return cmdSpans(store, positionals, flags);
       case "runs":
         return cmdRuns(store, positionals);
+      case "audit":
+        return cmdAudit(store, positionals);
+      case "diff":
+        return cmdDiff(store, positionals);
+      case "systems":
+        return cmdSystems(store, positionals);
+      case "quality":
+        return cmdQuality(store, positionals);
       default:
         fail(`unknown command: ${command} (run with -h for usage)`);
     }

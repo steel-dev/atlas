@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   combineSearchProviders,
   mergeSearchResults,
+  nativeModelSearch,
   type SearchProvider,
   type SearchResult,
 } from "./search.js";
@@ -70,5 +71,74 @@ describe("combineSearchProviders", () => {
     expect(merged).toHaveLength(1);
     expect(warnings).toHaveLength(1);
     expect(warnings[0]).toContain("broken");
+  });
+
+  it("retries a transient rate-limit error rather than swallowing it as empty", async () => {
+    let attempts = 0;
+    const flaky: SearchProvider = {
+      id: "flaky",
+      search: async () => {
+        attempts++;
+        if (attempts < 2) throw new Error("exa: too many requests");
+        return [result(1, "https://x.com/1")];
+      },
+    };
+    const combined = combineSearchProviders([flaky]);
+    const { merged, warnings } = await combined.run({ query: "q" });
+    expect(attempts).toBe(2);
+    expect(merged).toHaveLength(1);
+    expect(warnings).toHaveLength(0);
+  });
+
+  it("does not retry a non-retryable error", async () => {
+    let attempts = 0;
+    const broken: SearchProvider = {
+      id: "broken",
+      search: async () => {
+        attempts++;
+        throw new Error("invalid api key");
+      },
+    };
+    const combined = combineSearchProviders([broken]);
+    const { merged, warnings } = await combined.run({ query: "q" });
+    expect(attempts).toBe(1);
+    expect(merged).toHaveLength(0);
+    expect(warnings[0]).toContain("broken");
+  });
+
+  it("stops retrying once the query signal is aborted", async () => {
+    const controller = new AbortController();
+    let attempts = 0;
+    const flaky: SearchProvider = {
+      id: "flaky",
+      search: async () => {
+        attempts++;
+        controller.abort();
+        throw new Error("rate limit");
+      },
+    };
+    const combined = combineSearchProviders([flaky]);
+    const { warnings } = await combined.run({
+      query: "q",
+      signal: controller.signal,
+    });
+    expect(attempts).toBe(1);
+    expect(warnings).toHaveLength(1);
+  });
+});
+
+describe("nativeModelSearch", () => {
+  it("does not map Z.ai GLM models to OpenAI native web search", async () => {
+    const provider = nativeModelSearch({
+      model: {
+        specificationVersion: "v3",
+        provider: "openai.chat",
+        modelId: "glm-5.2",
+      } as Parameters<typeof nativeModelSearch>[0]["model"],
+    });
+
+    await expect(provider.search({ query: "z.ai" })).rejects.toThrow(
+      /configure a search adapter/,
+    );
   });
 });

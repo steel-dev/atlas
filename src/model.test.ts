@@ -98,7 +98,7 @@ describe("engineModel", () => {
     const inner = mock();
     let exhausted = false;
     const model = engineModel(inner as unknown as ResolvedModel, {
-      role: "verify",
+      role: "write",
       grant: createBudgetMeter(10),
       pricing: {},
       gate: createConcurrencyGate(2),
@@ -119,7 +119,7 @@ describe("engineModel", () => {
     const inner = mock();
     let cacheHits = 0;
     const model = engineModel(inner as unknown as ResolvedModel, {
-      role: "verify",
+      role: "write",
       grant: meter,
       pricing: { "claude-sonnet-4-6": { inputPerMTok: 3, outputPerMTok: 15 } },
       gate: createConcurrencyGate(2),
@@ -147,7 +147,7 @@ describe("engineModel", () => {
   it("issues a fresh call when the prompt differs", async () => {
     const inner = mock();
     const model = engineModel(inner as unknown as ResolvedModel, {
-      role: "verify",
+      role: "write",
       grant: createBudgetMeter(10),
       pricing: {},
       gate: createConcurrencyGate(2),
@@ -163,14 +163,14 @@ describe("engineModel", () => {
     const usage = createRunUsage();
     const meter = createBudgetMeter(10);
     const model = engineModel(mock() as unknown as ResolvedModel, {
-      role: "extract",
+      role: "write",
       grant: meter,
       pricing: {},
       gate: createConcurrencyGate(2),
       usage,
     });
     await generateText({ model: model as LanguageModelV3, prompt: "hi" });
-    expect(usage.byRole.get("extract")?.input).toBe(1_000_000);
+    expect(usage.byRole.get("write")?.input).toBe(1_000_000);
   });
 
   it("journals calls and replays them without re-invoking the model", async () => {

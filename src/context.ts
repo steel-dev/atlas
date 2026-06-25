@@ -13,12 +13,11 @@ import {
   type BudgetMeter,
   type PricingTable,
 } from "./budget.js";
-import type { AtlasConfig, ResolvedRunConfig } from "./config.js";
+import type { AtlasConfig, ResolvedRunConfig, SearchConfig } from "./config.js";
 import { resolveCustomTools } from "./custom-tools.js";
 import { ECONOMY } from "./economy.js";
 import type { EventHub } from "./event-hub.js";
 import type { ResearchEvent } from "./events.js";
-import { createLedger, type ResearchClaim } from "./ledger.js";
 import {
   createModelCallCache,
   createRunUsage,
@@ -32,6 +31,8 @@ import { defaultFetchProviders } from "./providers/fetch.js";
 import {
   combineSearchProviders,
   defaultSearchProviders,
+  type ResolvedSearch,
+  type SearchProvider,
 } from "./providers/search.js";
 import type { JournalWriter, ReplayCache } from "./providers/store.js";
 import {
@@ -43,7 +44,6 @@ import {
 import { isRunCodeAvailable } from "./sandbox.js";
 import { createTrail } from "./trail.js";
 import { createTraceRecorder } from "./trace.js";
-import { verifyClaims } from "./verify.js";
 
 const TIMEOUT_SYNTHESIS_RESERVE_MS = 120_000;
 const BUDGET_WARNING_FRACTIONS = [0.5, 0.8, 0.95];
@@ -77,8 +77,6 @@ export interface RunAssembly {
   rctx: RunCtx;
   meter: BudgetMeter;
   synthesisGrant: BudgetGrant;
-  verifyReserve: BudgetGrant;
-  drainEagerVerifications(): Promise<void>;
 }
 
 export async function assembleRun(args: AssembleRunArgs): Promise<RunAssembly> {
@@ -96,6 +94,7 @@ export async function assembleRun(args: AssembleRunArgs): Promise<RunAssembly> {
   const smallLimit = makeModelLimit();
   const ioGate = createConcurrencyGate(resolved.maxConcurrentIo);
   const modelCache = createModelCallCache();
+  const callOrdinals = new Map<string, number>();
   const counters = createRunCounters();
   const warnedUnknownModels = new Set<string>();
   const warnedFractions = new Set<number>();
@@ -188,6 +187,7 @@ export async function assembleRun(args: AssembleRunArgs): Promise<RunAssembly> {
       journal: args.journal,
       replay: args.replay,
       modelCache,
+      callOrdinals,
       recorder,
       onCost: tier.onCost,
       onUnknownModel,
@@ -200,13 +200,11 @@ export async function assembleRun(args: AssembleRunArgs): Promise<RunAssembly> {
   const bindModel = (role: ModelRole, grant: BudgetGrant) =>
     bindModelWithTier(role, grant, tierForRole(role));
 
-  const searchProviders = Array.isArray(args.config.search)
-    ? args.config.search
-    : args.config.search
-      ? [args.config.search]
-      : defaultSearchProviders(
-          bindModelWithTier("research", meter, tierForRole("research")),
-        );
+  const { search, searchBySource } = resolveSearchConfig(args.config.search, () =>
+    defaultSearchProviders(
+      bindModelWithTier("research", meter, tierForRole("research")),
+    ),
+  );
   const fetchChain = Array.isArray(args.config.fetch)
     ? args.config.fetch
     : args.config.fetch
@@ -220,42 +218,23 @@ export async function assembleRun(args: AssembleRunArgs): Promise<RunAssembly> {
       fraction: ECONOMY.synthesis.fraction,
       minUSD: ECONOMY.synthesis.minUSD,
     }) ?? meter;
-  const verifyReserve =
-    meter.grant({
-      fraction: resolved.envelope.verifyReserveFraction,
-      minUSD: ECONOMY.verifyReserve.minUSD,
-    }) ?? meter;
-
-  const eagerVerifications = new Set<Promise<void>>();
-  const eagerVerifyGate = createDynamicConcurrencyGate(() =>
-    counters.researchInFlight > 0
-      ? ECONOMY.verify.eagerConcurrencyDuringResearch
-      : ECONOMY.verify.eagerConcurrency,
-  );
-  let eagerVerifyStarted = 0;
-  const ledger = createLedger({
-    emit,
-    signal: args.hardSignal,
-    shouldExtract: () => !budgetExhausted(),
-    claimsPerSource: resolved.envelope.maxClaimsPerSource,
-    extractionChars: resolved.envelope.maxExtractionChars,
-    onClaim: (claim) => eagerVerify(claim),
-  });
-
   const rctx: RunCtx = {
     runId,
     question,
     todayISO: args.todayISO,
     config: resolved,
     meter,
-    verifyReserve,
     usage,
     pricing,
-    ledger,
-    checklist: null,
+    ledger: null,
     trail: createTrail(),
+    notes: [],
+    readCounts: new Map(),
     sources: createSourceStore(),
-    search: combineSearchProviders(searchProviders),
+    search,
+    searchBySource,
+    oaCandidates: new Map(),
+    surfacedCandidates: new Map(),
     fetchChain,
     customTools,
     runCodeEnabled,
@@ -270,12 +249,10 @@ export async function assembleRun(args: AssembleRunArgs): Promise<RunAssembly> {
     modelGate: heavyTier.gate,
     ioGate,
     seenDomains: new Set(),
-    verifyInFlight: new Map(),
     counters,
     agentSequence: { next: 1 },
     bindModel,
     rawModel: (role: ModelRole) => resolved.models[role],
-    verify: (spawnArgs) => verifyClaims(rctx, spawnArgs),
     stopReason: () => {
       if (args.stopSignal.aborted) return "stop requested";
       if (
@@ -290,27 +267,6 @@ export async function assembleRun(args: AssembleRunArgs): Promise<RunAssembly> {
     },
   };
 
-  function eagerVerify(claim: ResearchClaim): void {
-    if (claim.importance !== "central") return;
-    if (eagerVerifyStarted >= ECONOMY.verify.eagerMaxClaims) return;
-    if (rctx.stopReason() || verifyReserve.floored()) return;
-    eagerVerifyStarted++;
-    const task = eagerVerifyGate
-      .run(() =>
-        rctx.verify({
-          claimIds: [claim.id],
-          reserve: verifyReserve,
-          perClaimFraction: ECONOMY.verify.perClaimFraction,
-          concurrency: 1,
-        }),
-      )
-      .then(
-        () => undefined,
-        () => undefined,
-      );
-    eagerVerifications.add(task);
-    void task.finally(() => eagerVerifications.delete(task));
-  }
 
   if (args.replay) primeSourceNumbers(rctx.sources, args.replay);
 
@@ -318,22 +274,55 @@ export async function assembleRun(args: AssembleRunArgs): Promise<RunAssembly> {
     rctx,
     meter,
     synthesisGrant,
-    verifyReserve,
-    drainEagerVerifications: async () => {
-      while (eagerVerifications.size > 0) {
-        await Promise.all([...eagerVerifications]);
-      }
-    },
   };
+}
+
+function isSearchProvider(value: unknown): value is SearchProvider {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    typeof (value as { id?: unknown }).id === "string" &&
+    typeof (value as { search?: unknown }).search === "function"
+  );
+}
+
+function resolveSearchConfig(
+  raw: SearchConfig | undefined,
+  webFallback: () => SearchProvider[],
+): { search: ResolvedSearch; searchBySource: Map<string, ResolvedSearch> } {
+  const flat = (
+    providers: SearchProvider[],
+  ): { search: ResolvedSearch; searchBySource: Map<string, ResolvedSearch> } => {
+    const web = combineSearchProviders(
+      providers.length > 0 ? providers : webFallback(),
+    );
+    return { search: web, searchBySource: new Map([["web", web]]) };
+  };
+  if (raw === undefined) return flat([]);
+  if (isSearchProvider(raw)) return flat([raw]);
+  if (Array.isArray(raw)) return flat(raw);
+  const searchBySource = new Map<string, ResolvedSearch>();
+  for (const [source, value] of Object.entries(raw)) {
+    const providers = Array.isArray(value) ? value : [value];
+    if (providers.length > 0) {
+      searchBySource.set(source, combineSearchProviders(providers));
+    }
+  }
+  if (!searchBySource.has("web")) {
+    searchBySource.set("web", combineSearchProviders(webFallback()));
+  }
+  return { search: searchBySource.get("web")!, searchBySource };
 }
 
 function primeSourceNumbers(sources: SourceStore, replay: ReplayCache): void {
   let max = 0;
-  for (const value of replay.values("fetch:")) {
-    const sourceId = (value as { sourceId?: unknown } | undefined)?.sourceId;
-    const match =
-      typeof sourceId === "string" ? /^source_(\d+)$/.exec(sourceId) : null;
-    if (match) max = Math.max(max, Number(match[1]));
+  for (const prefix of ["fetch:", "custom-source:"]) {
+    for (const value of replay.values(prefix)) {
+      const sourceId = (value as { sourceId?: unknown } | undefined)?.sourceId;
+      const match =
+        typeof sourceId === "string" ? /^source_(\d+)$/.exec(sourceId) : null;
+      if (match) max = Math.max(max, Number(match[1]));
+    }
   }
   if (max >= sources.nextSourceNumber) sources.nextSourceNumber = max + 1;
 }

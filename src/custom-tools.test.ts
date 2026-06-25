@@ -19,7 +19,7 @@ describe("resolveCustomTools", () => {
     await expect(resolveCustomTools({ fetch: tool })).rejects.toThrow(
       ConfigError,
     );
-    await expect(resolveCustomTools({ add_claim: tool })).rejects.toThrow(
+    await expect(resolveCustomTools({ note: tool })).rejects.toThrow(
       /shadow/,
     );
   });

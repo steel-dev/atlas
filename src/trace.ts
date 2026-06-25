@@ -171,19 +171,10 @@ export interface RunTrace {
 
 /** site -> source location, so a hot span maps back to code an agent can change. */
 export const SITE_SOURCE: Record<string, string> = {
-  orchestrator: "src/orchestrator.ts:runOrchestrator",
-  research: "src/agent.ts:runAgent",
-  verify: "src/verify.ts:castVote",
-  screen: "src/verify.ts:screenClaim",
-  synthesize: "src/synthesize.ts:synthesizeReport",
-  repair: "src/synthesize.ts:repairReport",
-  bind: "src/bind.ts:bindCitations",
-  structured: "src/structured.ts:synthesizeStructured",
-  adjudicate: "src/adjudicate.ts:adjudicateCoverage",
-  checklist: "src/checklist.ts:buildChecklist",
-  conflicts: "src/conflicts.ts:conflictPass",
-  "open-questions": "src/run.ts:deriveOpenQuestions",
-  extract: "src/ledger.ts:extraction",
+  gather: "src/agent.ts:runAgent",
+  write: "src/agent.ts:runAgent",
+  synthesize: "src/spine.ts:synthesizeHolistic",
+  seed: "src/checklist.ts:seedLedger",
   search: "src/tools.ts:execSearchTool",
   fetch: "src/tools.ts:fetchSourceDocument",
   run_code: "src/tools.ts:run_code",

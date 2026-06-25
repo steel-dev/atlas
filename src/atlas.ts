@@ -1,4 +1,4 @@
-import type { FlexibleSchema, InferSchema } from "ai";
+import type { FlexibleSchema } from "ai";
 import type { AtlasConfig, ResearchOptions } from "./config.js";
 import {
   resumeRun,
@@ -9,10 +9,13 @@ import {
 } from "./run.js";
 
 export type { AtlasConfig, ResearchOptions } from "./config.js";
+import type { Researcher } from "./researcher.js";
+import { runOrchestrated } from "./orchestrate.js";
+import { extractStructured, type StructuredResult } from "./structured.js";
+import { ConfigError } from "./errors.js";
 
-export interface StructuredResearchResult<T> extends ResearchResult {
-  structured: T;
-}
+const DEFAULT_ATLAS_DESCRIBE =
+  "Atlas's own deep-research spine: plans, searches, fetches, and synthesizes a grounded, citation-backed report. Strong on academic, finance, and multi-source synthesis. Default for any sub-task without a more specialized fit.";
 
 export class Atlas {
   readonly #config: AtlasConfig;
@@ -27,28 +30,74 @@ export class Atlas {
     question: string,
     options?: ResearchOptions,
   ): Promise<ResearchResult>;
-  research<SCHEMA extends FlexibleSchema>(
+  research<T>(
     question: string,
-    options: ResearchOptions & {
-      output: { kind: "structured"; schema: SCHEMA };
-    },
-  ): Promise<StructuredResearchResult<InferSchema<SCHEMA>>>;
-  research(
+    options: ResearchOptions & { schema: FlexibleSchema<T> },
+  ): Promise<StructuredResult<T>>;
+  async research<T>(
     question: string,
-    options: ResearchOptions = {},
+    options: ResearchOptions & { schema?: FlexibleSchema<T> } = {},
+  ): Promise<ResearchResult | StructuredResult<T>> {
+    const { schema, ...rest } = options;
+    const result = await this.#researchReport(question, rest);
+    if (!schema) return result;
+    const object = await extractStructured<T>(this.#config, rest, result, schema);
+    return { ...result, object };
+  }
+
+  #researchReport(
+    question: string,
+    options: ResearchOptions,
   ): Promise<ResearchResult> {
-    return this.start(question, options).result();
+    const researchers = this.#config.researchers;
+    if (researchers && Object.keys(researchers).length > 0) {
+      return runOrchestrated(this.#config, question, options, {
+        atlas: this.asResearcher(DEFAULT_ATLAS_DESCRIBE),
+        ...researchers,
+      });
+    }
+    return this.#startSpine(question, options).result();
   }
 
   start(question: string, options: ResearchOptions = {}): ResearchRun {
-    if (this.#closed) throw new Error("Atlas is closed");
+    if (this.#closed) throw new ConfigError("Atlas is closed; create a new instance");
+    const researchers = this.#config.researchers;
+    if (researchers && Object.keys(researchers).length > 0) {
+      throw new ConfigError(
+        "start() runs a single research spine and cannot orchestrate; call research() to fan out to configured researchers, or construct an Atlas without `researchers` to stream a spine run",
+      );
+    }
+    return this.#startSpine(question, options);
+  }
+
+  #startSpine(question: string, options: ResearchOptions): ResearchRun {
     const run = startRun({ config: this.#config, question, options });
     this.#track(run);
     return run;
   }
 
+  asResearcher(describe: string): Researcher {
+    return {
+      describe,
+      research: async (query, ctx) => {
+        const result = await this
+          .#startSpine(query, {
+            budget: { maxUSD: ctx.budget.maxUSD },
+            ...(ctx.signal ? { signal: ctx.signal } : {}),
+          })
+          .result();
+        return {
+          report: result.report,
+          sources: result.sources.map((s) => ({ url: s.url, title: s.title })),
+          cost: result.stats.costUSD,
+          confidence: 1,
+        };
+      },
+    };
+  }
+
   async resume(runId: string, options?: ResumeOptions): Promise<ResearchRun> {
-    if (this.#closed) throw new Error("Atlas is closed");
+    if (this.#closed) throw new ConfigError("Atlas is closed; create a new instance");
     const run = await resumeRun(runId, this.#config, options);
     this.#track(run);
     return run;

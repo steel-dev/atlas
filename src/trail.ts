@@ -9,12 +9,13 @@ const CAP_FLOOR_DEAD_ENDS = 15;
 export interface TrailRenderOptions {
   maxSearches?: number;
   maxDeadEnds?: number;
+  guidance?: string;
 }
 
 export function trailCapsFor(
   maxSources: number,
   fraction = 1,
-): Required<TrailRenderOptions> {
+): Required<Pick<TrailRenderOptions, "maxSearches" | "maxDeadEnds">> {
   const maxSearches = Math.max(
     CAP_FLOOR_SEARCHES,
     Math.ceil(maxSources * fraction),
@@ -30,6 +31,7 @@ export interface Trail {
   readonly deadEndCount: number;
   recordSearch(query: string, results: number): void;
   recordDeadEnd(url: string, reason: string): void;
+  isDeadEnd(url: string): string | undefined;
   render(opts?: TrailRenderOptions): string;
 }
 
@@ -60,14 +62,17 @@ export function createTrail(): Trail {
       if (!target || deadEnds.has(target)) return;
       deadEnds.set(target, reason.trim().slice(0, REASON_MAX_CHARS));
     },
+    isDeadEnd(url) {
+      return deadEnds.get(url.trim());
+    },
     render(opts = {}) {
       const maxSearches = opts.maxSearches ?? RENDER_MAX_SEARCHES;
       const maxDeadEnds = opts.maxDeadEnds ?? RENDER_MAX_DEAD_ENDS;
+      const guidance =
+        opts.guidance ?? "do not repeat them; vary the terms or angle instead";
       const lines: string[] = [];
       if (searches.size > 0) {
-        lines.push(
-          `Searches already run (${searches.size} — do not repeat them; vary the terms or angle instead):`,
-        );
+        lines.push(`Searches already run (${searches.size} — ${guidance}):`);
         const entries = [...searches.values()];
         for (const entry of entries.slice(0, maxSearches)) {
           lines.push(`- "${entry.query}" → ${entry.results} result(s)`);

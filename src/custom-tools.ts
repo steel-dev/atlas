@@ -1,12 +1,16 @@
 import { asSchema, type FlexibleSchema } from "ai";
 import { ConfigError } from "./errors.js";
-import { BUILTIN_TOOL_NAMES } from "./tools.js";
+import { BUILTIN_TOOL_NAMES, LEDGER_TOOL_NAMES } from "./tools.js";
 
-const RESERVED_TOOL_NAMES = new Set<string>(BUILTIN_TOOL_NAMES);
+const RESERVED_TOOL_NAMES = new Set<string>([
+  ...BUILTIN_TOOL_NAMES,
+  ...LEDGER_TOOL_NAMES,
+]);
 const TOOL_NAME_PATTERN = /^[A-Za-z][\w-]{0,63}$/;
 
 export interface ToolContext {
   addSource(source: { url: string; title?: string; content: string }): void;
+  fetchText(url: string): Promise<string | null>;
   readonly signal?: AbortSignal | undefined;
   log(message: string): void;
 }

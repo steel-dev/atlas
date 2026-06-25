@@ -26,14 +26,7 @@ import { BudgetExceededError, errorMessage } from "./errors.js";
 import { currentFrame, type SpanStatus, type TraceRecorder } from "./trace.js";
 import type { JournalWriter, ReplayCache } from "./providers/store.js";
 
-export type ModelRole =
-  | "lead"
-  | "research"
-  | "verify"
-  | "extract"
-  | "write"
-  | "screen"
-  | "entail";
+export type ModelRole = "lead" | "research" | "write";
 
 export type ResolvedModel = Exclude<LanguageModel, string>;
 
@@ -95,6 +88,14 @@ export interface EngineModelHooks {
   onRateLimit?: ((notice: RateLimitNotice) => void) | undefined;
   onCacheHit?: (() => void) | undefined;
   budgetExhausted?: (() => boolean) | undefined;
+  callOrdinals?: Map<string, number> | undefined;
+}
+
+function nextOrdinal(map: Map<string, number> | undefined, key: string): number {
+  if (!map) return 0;
+  const n = map.get(key) ?? 0;
+  map.set(key, n + 1);
+  return n;
 }
 
 const VOLATILE_BUDGET_PATTERNS: ReadonlyArray<RegExp> = [
@@ -286,9 +287,6 @@ function withOpenAIDefaults(
   const openai = {
     ...params.providerOptions?.openai,
     strictJsonSchema: false,
-    ...(params.responseFormat?.type === "json"
-      ? { reasoningEffort: "minimal" as const }
-      : {}),
   };
   return {
     ...params,
@@ -618,10 +616,12 @@ export function engineModel(
     },
     wrapGenerate: async ({ doGenerate, params }) => {
       const key = callKey(inner, params, hooks.role);
-      const cached = hooks.replay?.take(key) as JournaledCall | undefined;
+      const journalKey = `${key}#${nextOrdinal(hooks.callOrdinals, key)}`;
+      const cached = hooks.replay?.take(journalKey) as JournaledCall | undefined;
       if (cached) {
         settleReplay(cached.usage);
         recordReplayStep(key, params, cached);
+        hooks.modelCache?.set(key, cached);
         return {
           content: cached.content,
           finishReason: cached.finishReason,
@@ -698,7 +698,7 @@ export function engineModel(
       if (hooks.journal || hooks.modelCache) {
         const record = serializeResult(result);
         if (record) {
-          hooks.journal?.call(key, record);
+          hooks.journal?.call(journalKey, record);
           hooks.modelCache?.set(key, record);
         }
       }
@@ -713,10 +713,12 @@ export function engineModel(
     },
     wrapStream: async ({ doStream, params }) => {
       const key = callKey(inner, params, hooks.role);
-      const cached = hooks.replay?.take(key) as JournaledCall | undefined;
+      const journalKey = `${key}#${nextOrdinal(hooks.callOrdinals, key)}`;
+      const cached = hooks.replay?.take(journalKey) as JournaledCall | undefined;
       if (cached) {
         settleReplay(cached.usage);
         recordReplayStep(key, params, cached);
+        hooks.modelCache?.set(key, cached);
         return { stream: streamFromJournaledCall(cached) };
       }
       if (hooks.budgetExhausted?.()) {
@@ -834,7 +836,7 @@ export function engineModel(
                   : {}),
                 warnings: [],
               });
-              if (record) hooks.journal.call(key, record);
+              if (record) hooks.journal.call(journalKey, record);
             }
             recordStream(state.finish ? "ok" : "aborted");
           },

@@ -5,6 +5,7 @@ import { execSync } from "node:child_process";
 import { parseArgs } from "node:util";
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { createOpenAI } from "@ai-sdk/openai";
+import { createGoogleGenerativeAI } from "@ai-sdk/google";
 import {
   Atlas,
   fileStore,
@@ -20,8 +21,12 @@ import {
 import {
   DEFAULT_ANTHROPIC_MODEL,
   DEFAULT_OPENAI_MODEL,
+  DEFAULT_ZAI_BASE_URL,
+  DEFAULT_ZAI_MODEL,
 } from "../src/defaults.js";
 import { readEnv } from "../src/env.js";
+import { defaultSearchProviders } from "../src/providers/search.js";
+import { arxiv, edgar, openalex, pubmed } from "./domain-tools/index.js";
 
 const USAGE = `atlas — deep research from your terminal
 
@@ -35,7 +40,7 @@ Options:
       --effort LEVEL      fast | balanced | deep | max (default: balanced)
       --budget USD        Spend cap in USD (default: effort envelope)
       --timeout SECONDS   Wall-clock cap; synthesizes what it has near the deadline
-      --provider NAME     anthropic | openai (default: ATLAS_PROVIDER or anthropic)
+      --provider NAME     anthropic | openai | zai (default: ATLAS_PROVIDER or anthropic)
       --model ID          Model id (default: ATLAS_MODEL or provider default)
       --store DIR         Journal the run to DIR (enables --resume)
       --resume RUNID      Resume a parked or failed run from --store
@@ -52,6 +57,8 @@ Environment:
   ATLAS_CHEAP_PROVIDER / ATLAS_CHEAP_MODEL      cross-provider cheap tier for screen/entail/extract
   ANTHROPIC_API_KEY or ATLAS_ANTHROPIC_API_KEY  for provider=anthropic
   OPENAI_API_KEY    or ATLAS_OPENAI_API_KEY     for provider=openai
+  ZAI_API_KEY       or ATLAS_ZAI_API_KEY        for provider=zai
+  ZAI_BASE_URL      or ATLAS_ZAI_BASE_URL       optional Z.ai OpenAI-compatible endpoint
   TAVILY_API_KEY / EXA_API_KEY / BRAVE_API_KEY  optional search providers
   STEEL_API_KEY                                 optional fetch escalation
 
@@ -116,22 +123,60 @@ function parseTrace(raw: string | undefined): TraceMode | undefined {
   fail(`--trace must be one of: off, spans, full (got "${raw}")`);
 }
 
+function normalizeProvider(
+  provider: string,
+): "anthropic" | "openai" | "google" | "zai" {
+  if (
+    provider === "anthropic" ||
+    provider === "openai" ||
+    provider === "google"
+  )
+    return provider;
+  if (provider === "zai" || provider === "z.ai" || provider === "zhipu") {
+    return "zai";
+  }
+  fail(
+    `provider must be one of: anthropic, openai, google, zai (got "${provider}")`,
+  );
+}
+
 function resolveModel(
   providerFlag: string | undefined,
   modelFlag: string | undefined,
 ): AtlasConfig["model"] {
-  const provider = providerFlag ?? readEnv("ATLAS_PROVIDER") ?? "anthropic";
-  if (provider !== "anthropic" && provider !== "openai") {
-    fail(`provider must be one of: anthropic, openai (got "${provider}")`);
-  }
+  const provider = normalizeProvider(
+    providerFlag ?? readEnv("ATLAS_PROVIDER") ?? "anthropic",
+  );
   const modelId =
     modelFlag ??
     readEnv("ATLAS_MODEL") ??
-    (provider === "anthropic" ? DEFAULT_ANTHROPIC_MODEL : DEFAULT_OPENAI_MODEL);
+    (provider === "anthropic"
+      ? DEFAULT_ANTHROPIC_MODEL
+      : provider === "google"
+        ? "gemini-3.5-flash"
+        : provider === "openai"
+          ? DEFAULT_OPENAI_MODEL
+          : DEFAULT_ZAI_MODEL);
   if (provider === "anthropic") {
     const apiKey = readEnv("ATLAS_ANTHROPIC_API_KEY", "ANTHROPIC_API_KEY");
     if (!apiKey) fail("ANTHROPIC_API_KEY is required for provider=anthropic");
     return createAnthropic({ apiKey })(modelId);
+  }
+  if (provider === "google") {
+    const apiKey = readEnv(
+      "ATLAS_GOOGLE_API_KEY",
+      "GEMINI_API_KEY",
+      "GOOGLE_GENERATIVE_AI_API_KEY",
+    );
+    if (!apiKey) fail("GEMINI_API_KEY is required for provider=google");
+    return createGoogleGenerativeAI({ apiKey })(modelId);
+  }
+  if (provider === "zai") {
+    const apiKey = readEnv("ATLAS_ZAI_API_KEY", "ZAI_API_KEY");
+    if (!apiKey) fail("ZAI_API_KEY is required for provider=zai");
+    const baseURL =
+      readEnv("ATLAS_ZAI_BASE_URL", "ZAI_BASE_URL") ?? DEFAULT_ZAI_BASE_URL;
+    return createOpenAI({ apiKey, baseURL }).chat(modelId);
   }
   const apiKey = readEnv("ATLAS_OPENAI_API_KEY", "OPENAI_API_KEY");
   if (!apiKey) fail("OPENAI_API_KEY is required for provider=openai");
@@ -164,7 +209,7 @@ function resolveCheapModels(): AtlasConfig["models"] | undefined {
     }
     model = createOpenAI({ apiKey })(modelId);
   }
-  return { screen: model, entail: model, extract: model };
+  return { research: model, write: model };
 }
 
 function formatEvent(e: ResearchEvent): string | null {
@@ -176,18 +221,6 @@ function formatEvent(e: ResearchEvent): string | null {
       );
     case "plan.updated":
       return paint(DIM, "plan ") + truncate(e.rationale, 120);
-    case "agent.spawned":
-      return (
-        paint(DIM, `+ ${e.role} `) +
-        truncate(e.task, 90) +
-        paint(DIM, ` ($${e.grantUSD.toFixed(2)}, depth ${e.depth})`)
-      );
-    case "agent.returned":
-      return (
-        paint(DIM, `- ${e.role} `) +
-        `${e.claimsAdded} claim${e.claimsAdded === 1 ? "" : "s"}, $${e.spentUSD.toFixed(2)}` +
-        paint(DIM, ` (${e.stopReason})`)
-      );
     case "search.completed":
       return (
         paint(DIM, "  search ") +
@@ -207,22 +240,6 @@ function formatEvent(e: ResearchEvent): string | null {
       );
     case "source.failed":
       return paint(YELLOW, `  ! ${e.url} — ${e.reason}`);
-    case "extraction.completed":
-      return e.error
-        ? paint(YELLOW, `    ! claims: ${e.url} — ${e.error}`)
-        : paint(
-            DIM,
-            `    ↳ ${e.count} claim${e.count === 1 ? "" : "s"}${e.unsupported > 0 ? ` (${e.unsupported} unsupported)` : ""}`,
-          );
-    case "claim.verified": {
-      const mark =
-        e.status === "confirmed" || e.status === "screened"
-          ? paint(GREEN, "  ✓ ")
-          : e.status === "refuted"
-            ? paint(YELLOW, "  ✗ ")
-            : paint(YELLOW, "  ? ");
-      return mark + `${e.claimId} ${e.status}` + paint(DIM, ` (${truncate(e.votes, 60)})`);
-    }
     case "report.drafting":
       return paint(DIM, "drafting report");
     case "budget.warning":
@@ -234,7 +251,7 @@ function formatEvent(e: ResearchEvent): string | null {
       return paint(YELLOW, `! safety ${e.kind}: ${truncate(e.detail, 100)}`);
     case "pricing.missing":
       return paint(YELLOW, `! ${truncate(e.detail, 100)}`);
-    case "model.fallback":
+    case "run_code.unavailable":
       return paint(YELLOW, `! ${truncate(e.detail, 140)}`);
     case "rate.limited":
       return paint(YELLOW, `! rate limited — waiting ${e.retryAfterSeconds}s`);
@@ -313,11 +330,15 @@ function writeTrace(
 
 function footer(result: ResearchResult): string {
   const s = result.stats;
+  const cites =
+    s.citationsBound > 0 || s.citationsUnsupported > 0
+      ? ` · ${s.citationsBound} cited / ${s.citationsUnsupported} unsupported`
+      : "";
   return (
     paint(GREEN, "✓") +
     ` done — $${s.costUSD.toFixed(4)} · ${result.sources.length} source${result.sources.length === 1 ? "" : "s"} · ` +
-    `${s.claimsConfirmed} confirmed / ${s.claimsScreened} screened / ${s.claimsContested} contested / ${s.claimsRefuted} refuted · ` +
-    `${s.agentsSpawned} agent${s.agentsSpawned === 1 ? "" : "s"} · ${(s.durationMs / 1000).toFixed(0)}s`
+    `${s.searches} search${s.searches === 1 ? "" : "es"}${cites} · ` +
+    `${s.stopReason} · ${(s.durationMs / 1000).toFixed(0)}s`
   );
 }
 
@@ -377,8 +398,15 @@ async function main(): Promise<void> {
   }
 
   const cheapModels = resolveCheapModels();
+  const model = resolveModel(values.provider, values.model);
   const config: AtlasConfig = {
-    model: resolveModel(values.provider, values.model),
+    model,
+    search: {
+      web: defaultSearchProviders(model),
+      academic: [openalex(), arxiv()],
+      finance: [edgar()],
+      medical: [pubmed()],
+    },
     ...(cheapModels ? { models: cheapModels } : {}),
     ...(values.store ? { store: fileStore(values.store) } : {}),
     ...(traceMode && traceMode !== "off" ? { trace: traceMode } : {}),
