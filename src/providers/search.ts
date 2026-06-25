@@ -370,37 +370,45 @@ export function nativeModelSearch(
         maxOutputTokens: 1_500,
         abortSignal: signal,
       });
-      const snippets = snippetsByUrl(result.text);
+      const lines = parseResultLines(result.text);
+      const summaryByKey = new Map<string, string>();
+      for (const line of lines) {
+        summaryByKey.set(normalizeUrlForSource(line.url), line.summary);
+      }
       const seen = new Set<string>();
       const results: SearchResult[] = [];
+      const add = (url: unknown, title: unknown, snippet: string) => {
+        if (results.length >= limit || typeof url !== "string") return;
+        const key = normalizeUrlForSource(url);
+        if (seen.has(key)) return;
+        const parsed = toResult(results.length, url, title, snippet);
+        if (!parsed) return;
+        seen.add(key);
+        results.push(parsed);
+      };
       for (const source of result.sources) {
         if (source.sourceType !== "url") continue;
         const key = normalizeUrlForSource(source.url);
-        if (seen.has(key)) continue;
-        seen.add(key);
-        const parsed = toResult(
-          results.length,
-          source.url,
-          source.title,
-          snippets.get(key) ?? "",
-        );
-        if (parsed) results.push(parsed);
-        if (results.length >= limit) break;
+        add(source.url, source.title, summaryByKey.get(key) ?? "");
       }
+      for (const line of lines) add(line.url, undefined, line.summary);
       return results;
     },
   };
 }
 
-function snippetsByUrl(text: string): Map<string, string> {
-  const map = new Map<string, string>();
+function parseResultLines(text: string): { url: string; summary: string }[] {
+  const out: { url: string; summary: string }[] = [];
+  const seen = new Set<string>();
   for (const line of text.split("\n")) {
     const match = /(https?:\/\/\S+?)[)\]>.,]*\s*::\s*(\S.*)/.exec(line);
     if (!match) continue;
     const key = normalizeUrlForSource(match[1]);
-    if (!map.has(key)) map.set(key, match[2].trim().slice(0, 500));
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ url: match[1], summary: match[2].trim().slice(0, 500) });
   }
-  return map;
+  return out;
 }
 
 async function importProvider<T>(

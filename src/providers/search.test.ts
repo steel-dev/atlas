@@ -1,3 +1,5 @@
+import type { LanguageModelV3GenerateResult } from "@ai-sdk/provider";
+import { MockLanguageModelV3 } from "ai/test";
 import { describe, expect, it } from "vitest";
 import {
   combineSearchProviders,
@@ -140,5 +142,42 @@ describe("nativeModelSearch", () => {
     await expect(provider.search({ query: "z.ai" })).rejects.toThrow(
       /configure a search adapter/,
     );
+  });
+
+  it("parses url :: summary lines from text when no structured sources are returned", async () => {
+    const result: LanguageModelV3GenerateResult = {
+      content: [
+        {
+          type: "text",
+          text:
+            "https://example.com/a :: First page about the topic\n" +
+            "https://example.org/b :: Second page with more detail",
+        },
+      ],
+      finishReason: { unified: "stop", raw: undefined },
+      usage: {
+        inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 },
+        outputTokens: { total: 1, text: 1, reasoning: 0 },
+      },
+      warnings: [],
+    };
+    const model = new MockLanguageModelV3({
+      provider: "openai",
+      modelId: "gpt-test",
+      doGenerate: async () => result,
+    });
+
+    const provider = nativeModelSearch({
+      model: model as unknown as Parameters<
+        typeof nativeModelSearch
+      >[0]["model"],
+    });
+    const results = await provider.search({ query: "topic", maxResults: 10 });
+
+    expect(results.map((r) => r.url)).toEqual([
+      "https://example.com/a",
+      "https://example.org/b",
+    ]);
+    expect(results[0].snippet).toBe("First page about the topic");
   });
 });
