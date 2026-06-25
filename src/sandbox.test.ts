@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { runCodeSandboxed } from "./sandbox.js";
+import { isRunCodeAvailable, runCodeSandboxed } from "./sandbox.js";
 
 const sources = [
   {
@@ -10,7 +10,24 @@ const sources = [
   },
 ];
 
-describe("runCodeSandboxed", () => {
+const sandboxAvailable = await isRunCodeAvailable();
+
+describe.skipIf(sandboxAvailable)(
+  "runCodeSandboxed without isolated-vm",
+  () => {
+    it("reports run_code as unavailable instead of crashing", async () => {
+      const output = await runCodeSandboxed({
+        code: "sources.length",
+        sources,
+        timeoutMs: 5000,
+      });
+      expect(output.error).toMatch(/run_code is unavailable/i);
+      expect(output.sources_in_scope).toBe(1);
+    });
+  },
+);
+
+describe.runIf(sandboxAvailable)("runCodeSandboxed", () => {
   it("evaluates code over sources in an isolate", async () => {
     const output = await runCodeSandboxed({
       code: "sources.length",

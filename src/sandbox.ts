@@ -59,7 +59,7 @@ interface IsolatedVM {
 let isolatedVmPromise: Promise<IsolatedVM | null> | null = null;
 
 function loadIsolatedVm(): Promise<IsolatedVM | null> {
-  isolatedVmPromise ??= import("isolated-vm").then(
+  isolatedVmPromise ??= import("isolated-vm" as string).then(
     (mod) =>
       (mod as { default?: IsolatedVM }).default ??
       (mod as unknown as IsolatedVM),
