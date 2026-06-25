@@ -170,6 +170,30 @@ export function extractionMetadataFromHtml(opts: {
   });
 }
 
+export function extractionMetadataFromYoutube(opts: {
+  markdownChars: number;
+  finalUrl?: string;
+  attempts?: SourceExtractionAttempt[];
+  author?: string;
+  language?: string;
+  description?: string;
+  notes?: string[];
+}): SourceExtractionMetadata {
+  return buildExtractionMetadata({
+    markdownChars: opts.markdownChars,
+    method: "youtube_transcript",
+    leadNote: "Fetched the YouTube caption track (timed text) for this video.",
+    ...(opts.finalUrl ? { finalUrl: opts.finalUrl } : {}),
+    ...(opts.attempts ? { attempts: opts.attempts } : {}),
+    ...(opts.notes ? { notes: opts.notes } : {}),
+    pageMetadata: {
+      ...(opts.author ? { author: opts.author } : {}),
+      ...(opts.language ? { language: opts.language } : {}),
+      ...(opts.description ? { description: opts.description } : {}),
+    } as HtmlPageMetadata,
+  });
+}
+
 export function extractionMetadataFromExa(opts: {
   markdownChars: number;
   finalUrl?: string;

@@ -12,11 +12,17 @@ import {
   extractionMetadataFromPdf,
   extractionMetadataFromScrape,
   extractionMetadataFromText,
+  extractionMetadataFromYoutube,
 } from "../source-documents.js";
 import type {
   SourceExtractionAttempt,
   SourceExtractionMetadata,
 } from "../sources.js";
+import {
+  fetchYoutubeTranscript,
+  youtubeTranscriptToMarkdown,
+  youtubeVideoId,
+} from "../youtube.js";
 
 const DIRECT_PDF_MAX_BYTES = 25 * 1024 * 1024;
 const DIRECT_HTML_MAX_BYTES = 5 * 1024 * 1024;
@@ -276,6 +282,10 @@ async function directFetch(
       );
     }
   }
+  if (youtubeVideoId(url)) {
+    const transcript = await tryYoutubeTranscript(url, signal);
+    if (transcript) return transcript;
+  }
   let currentUrl = url;
   let response: Response;
   for (let hop = 0; ; hop++) {
@@ -436,6 +446,49 @@ function extractHtml(
         attempts: [attempt],
         discoveredLinks: extracted.links,
         pageMetadata: extracted.metadata,
+      }),
+    },
+  };
+}
+
+const YOUTUBE_TRANSCRIPT_MIN_CHARS = 40;
+
+async function tryYoutubeTranscript(
+  url: string,
+  signal: AbortSignal | undefined,
+): Promise<FetchAttempt | null> {
+  let transcript: Awaited<ReturnType<typeof fetchYoutubeTranscript>>;
+  try {
+    transcript = await fetchYoutubeTranscript(url, { signal });
+  } catch {
+    return null;
+  }
+  if (!transcript) return null;
+  const markdown = youtubeTranscriptToMarkdown(transcript).trim();
+  if (markdown.length < YOUTUBE_TRANSCRIPT_MIN_CHARS) return null;
+  const finalUrl = `https://www.youtube.com/watch?v=${transcript.videoId}`;
+  const attempt: SourceExtractionAttempt = {
+    method: "youtube_transcript",
+    ok: true,
+    note: `youtube_transcript: extracted ${markdown.length} text chars (${transcript.kind} ${transcript.languageCode}, ${transcript.segmentCount} segments)`,
+  };
+  return {
+    ok: true,
+    attempt,
+    page: {
+      finalUrl,
+      title: transcript.title,
+      markdown,
+      renderedWith: "youtube_transcript",
+      metadata: extractionMetadataFromYoutube({
+        markdownChars: markdown.length,
+        finalUrl,
+        attempts: [attempt],
+        ...(transcript.author ? { author: transcript.author } : {}),
+        language: transcript.languageCode,
+        ...(transcript.description
+          ? { description: transcript.description }
+          : {}),
       }),
     },
   };
