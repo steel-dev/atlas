@@ -1,0 +1,135 @@
+# Bottom line
+
+**Recommendation: choose the John Deere 9RX 540, provided Pattison Agriculture can commit in writing to same-day/mobile seasonal support from its closest Regina-area coverage and the delivered price premium is justified by written undercarriage/downtime support rather than by fuel savings alone.** On the figures available, Deere wins the operating side: its Nebraska/OECD drawbar results support about **17.1 hp·h/US gal** at 6.6–8.2 mph selected drawbar gears versus about **16.0 hp·h/US gal** for the Steiger 540 QuadTrac at 7.3–8.0 mph, which models to roughly **0.17–0.32 L/ha less fuel** in the 12–15 mph tillage/seeding scenarios below [1] [2]. The Deere also has a longer four-track belt footprint in the Nebraska test, a published 9RX undercarriage-wheel warranty of **36 months/3,000 h** and belt warranty of **48 months/3,000 h**, and verified ISOBUS 11783 compliance [1] [3].
+
+**Fallback:** choose the **Case IH Steiger 540 Quadtrac** if Mazergroup/Case IH can give materially faster seasonal field service inside 100 km of Regina, if the existing Trimble Autopilot/NAV-900 kit is already installed or dealer-supported on the Case, or if Case’s delivered price is materially lower than the Deere after comparable guidance, warranty and financing terms. The Quadtrac’s independent oscillating four-track architecture is a real agronomic advantage for traction through turns and uneven clay-loam headlands, but the public quantitative evidence here does not overcome Deere’s measured drawbar fuel edge and longer stated 9RX undercarriage warranty [4] [3].
+
+## Headline comparison for a 200-acre / 80.94 ha Saskatchewan canola-wheat operation
+
+| Dimension | John Deere 9RX 540 | Case IH Steiger 540 Quadtrac | Advantage |
+|---|---:|---:|---|
+| Rated / max engine power | **540 rated hp / 594 max hp**, PowerTech **13.6 L**; Nebraska test engine **13.548 L**, 2100 rpm [5] [1] | Current dealer specs: **540-class**, commonly **535 rated hp / 605 max hp**, FPT Cursor 13 / **12.9 L**; Nebraska engine **12.88 L**, 2100 rpm [4] [6] [2] | Similar power; not the deciding factor |
+| Nebraska/OECD PTO data | PTO deliberately derated in stationary PTO mode: **319.64 hp** at rated speed and **368.18 hp** max PTO [1] | **480.46 hp** rated-speed PTO; **541.99 hp** max PTO at 1900 rpm [2] | Case for PTO work, but this use case is drawbar tillage/seeding |
+| Nebraska/OECD drawbar data | **467.17–467.82 hp** in selected 11th/12th gears at **6.59–7.27 mph**, **17.27–17.35 hp·h/gal**; **459.28 hp** at **8.18 mph**, **17.06 hp·h/gal** [1] | **422.35 hp** at **7.29 mph**, **16.11 hp·h/gal**; **418.17 hp** at **8.03 mph**, **15.92 hp·h/gal** [2] | Deere fuel efficiency |
+| Modelled fuel, 40-ft tillage at 80% efficiency, 400 drawbar hp | **4.70 / 4.18 / 3.76 L/ha** at 12 / 13.5 / 15 mph; **CAD 8.88 / 7.90 / 7.11 per ha** at CAD 1.89/L diesel | **5.02 / 4.47 / 4.02 L/ha**; **CAD 9.49 / 8.45 / 7.60 per ha** | Deere by CAD **0.49–0.61/ha** |
+| Modelled fuel, 60-ft seeding at 75% efficiency, 300 drawbar hp | **2.51 / 2.23 / 2.01 L/ha**; **CAD 4.74 / 4.21 / 3.80 per ha** at CAD 1.89/L diesel | **2.68 / 2.38 / 2.14 L/ha**; **CAD 5.07 / 4.50 / 4.05 per ha** | Deere by CAD **0.25–0.33/ha** |
+| Track footprint from Nebraska test | Four rubber tracks; track width front/rear **88.0 in**, wheelbase **163.5 in**, track-on-ground length **72.4 in**, test mass **58,555 lb** [1] | Four rubber tracks; **30-in belts**, track width front/rear **88 in**, trackbase **154 in**, track-on-ground length stated as **29.4 in** in the OECD summary, static test weight **57,870 lb** [2] | Deere for longer straight-line footprint in tested configuration; Case for oscillating four-track turning design |
+| Guidance/telematics | AutoTrac, StarFire 6000 integrated receiver, Generation 4 CommandCenter, AutoTrac activation, **SF3 ±3 cm**, JDLink with **5 years** of service, Expert Alerts and Service ADVISOR Remote; Nebraska confirms **ISOBUS 11783** [5] [1] | AFS Connect / FieldOps fleet monitoring; Case states FieldOps monitors machines and agronomic data in real time [7] | Trimble friction must be confirmed by dealer kit, but both are electronically steerable platforms |
+| Warranty / uptime support | Basic ag track tractor warranty **24 months/2,000 h** and 9RX belts **48 months/3,000 h** prorated; idlers/mid-rollers/drive sprockets **36 months/3,000 h** [3] | Steiger series page states **3-year/2,000-hour factory warranty** and Max Maintain PMA maintenance agreements [8] | Deere for track-system coverage; Case for stated whole-machine term |
+| Regina-area dealer issue | Pattison Agriculture’s nearest listed John Deere ag branch to Regina is **Balcarres, 123 Highway 10 West**, about **85 km** northeast by road; listed hours are Mon–Fri **7:30am–6:00pm**, Sat **8:00am–4:00pm**, Sunday closed/on call, with after-hours parts/service numbers until 10pm daily [9] | Mazergroup lists **Mazergroup - Regina, 26 Great Plains Rd., Emerald Park, SK S4L 1B6**, about **14 km** east of Regina, phone **306-781-2828**; Mazergroup’s service page points to service appointments and location-specific hours [10] | Case for proximity; Deere requires explicit mobile-service commitment |
+| 10-year TCO confidence | Exact 2026 delivered CAD prices, residual values, parts prices, service callout charges and Trimble kit prices were not in the public sources captured, so a dealer-quote TCO cannot be completed; measurable fuel edge is small per hectare on 80.94 ha | Same limitation | Decision should hinge on dealer price/support as much as fuel |
+
+## Powertrain baseline: correction of the premise
+
+The Deere premise is confirmed: the 9RX 540 is a **540 rated hp / 594 maximum hp** machine with a John Deere PowerTech **13.6 L** engine in current product specifications, and Nebraska Test 2252 identifies the tested 9RX 540 engine as a John Deere six-cylinder diesel with two turbochargers, DOC/SCR DEF aftertreatment, **13,548 ml / 826 cu in** displacement and **2100 rpm** rated speed [5] [1]. The Nebraska report also states that the stationary PTO operates in a derated mode, so its PTO numbers are not representative of full engine rating: **319.64 hp** at 2099 rpm and **18.63 gal/h / 70.51 L/h**, and **368.18 hp** maximum PTO at 1749 rpm and **19.71 gal/h / 74.62 L/h** [1].
+
+The Case premise needs correction. Public current dealer data for the Steiger 540 show it as a **540-class** tractor with **535 rated engine hp**, **605 maximum hp**, and an FPT **Cursor 13 / 12.9 L** engine; the Nebraska-tested Steiger 540 QuadTrac used an FPT six-cylinder diesel with two turbochargers, DOC/SCR DEF aftertreatment, **12,880 ml / 12.88 L / 786 cu in** displacement, **2100 rpm** rated speed and **1,784 lb-ft** maximum torque at 1400 rpm [4] [6] [2]. Nebraska Test 2188 measured **480.46 hp** at rated-speed PTO and **541.99 hp** maximum PTO at 1900 rpm [2].
+
+For this operation, PTO horsepower is less relevant than drawbar fuel conversion. Deere’s Nebraska selected-gear drawbar data are stronger: **467.17 hp at 6.59 mph and 17.27 hp·h/gal**, **467.82 hp at 7.27 mph and 17.35 hp·h/gal**, and **459.28 hp at 8.18 mph and 17.06 hp·h/gal** [1]. Nebraska OECD Test 2252 also reports the John Deere 9RX 540 drawbar rated engine speed result in **7th gear manual** as **409.34 hp at 5.05 mph**, **pull 30,394 lb**, **slip 3.0%**, and **fuel efficiency 15.90 hp·h/gal**; at **75% pull reduced engine speed**, it measured **318.16 hp at 5.27 mph** and **17.71 hp·h/gal** [1]. Case measured **422.35 hp at 7.29 mph and 16.11 hp·h/gal** and **418.17 hp at 8.03 mph and 15.92 hp·h/gal** [2]. Nebraska OECD Test 2188 reports the Case IH Steiger 540 QuadTrac drawbar maximum at rated speed as **423.76 hp in 4th gear**, **4.72 mph**, **pull 33,665 lb**, **slip 2.8%**, and **16.15 hp·h/gal**; at **75% pull reduced engine speed**, it measured **328.75 hp**, **4.90 mph**, and **17.87 hp·h/gal** [2]. Neither Nebraska test includes a loaded 12–15 mph drawbar point, so the high-speed acre fuel model applies these 7–8 mph drawbar efficiencies to the stated 12–15 mph field speeds rather than claiming direct high-speed test data [1] [2].
+
+## Field productivity and fuel per hectare
+
+The productivity model uses a **40-ft high-speed tillage tool at 80% field efficiency** and a **60-ft high-speed seeding tool at 75% field efficiency**. The farm size is **200 acres = 80.94 ha**. Field capacity is calculated as `mph × width(ft) × field efficiency ÷ 8.25`, with hectares per hour converted at **0.4046856 ha/ac**.
+
+| Operation and assumption | 12 mph | 13.5 mph | 15 mph |
+|---|---:|---:|---:|
+| Heavy tillage, 40 ft, 80% efficiency — acres/h | **46.55 ac/h** | **52.36 ac/h** | **58.18 ac/h** |
+| Heavy tillage — hectares/h | **18.84 ha/h** | **21.19 ha/h** | **23.55 ha/h** |
+| Seeding, 60 ft, 75% efficiency — acres/h | **65.45 ac/h** | **73.64 ac/h** | **81.82 ac/h** |
+| Seeding — hectares/h | **26.49 ha/h** | **29.80 ha/h** | **33.11 ha/h** |
+| One pass over 80.94 ha — tillage hours | **4.30 h** | **3.82 h** | **3.44 h** |
+| One pass over 80.94 ha — seeding hours | **3.06 h** | **2.72 h** | **2.44 h** |
+
+Fuel modelling uses the Nebraska selected-gear drawbar efficiencies rounded to **17.1 hp·h/gal** for Deere and **16.0 hp·h/gal** for Case [1] [2]. At **400 drawbar hp** for tillage this equals about **88.5 L/h** for Deere and **94.6 L/h** for Case. At **300 drawbar hp** for seeding this equals about **66.4 L/h** for Deere and **71.0 L/h** for Case. Saskatchewan diesel was **CAD 1.89/L** on 15 June 2026, with an average of **CAD 2.02/L** from 9 March to 15 June 2026; the cost table uses **CAD 1.89/L** [11]. Saskatchewan’s farm fuel program lets eligible farmers buy tax-reduced marked diesel for farming, and eligibility includes owning or renting at least **75 acres / 30 ha** of cultivated Saskatchewan cereal-crop land, which this 200-acre operation meets [12].
+
+| Operation | Tractor | L/h | L/ha at 12 mph | CAD/ha at 12 mph | L/ha at 13.5 mph | CAD/ha at 13.5 mph | L/ha at 15 mph | CAD/ha at 15 mph |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| 40-ft tillage, 400 drawbar hp | Deere 9RX 540 | **88.5** | **4.70** | **8.88** | **4.18** | **7.90** | **3.76** | **7.11** |
+| 40-ft tillage, 400 drawbar hp | Case Steiger 540 Quadtrac | **94.6** | **5.02** | **9.49** | **4.47** | **8.45** | **4.02** | **7.60** |
+| 60-ft seeding, 300 drawbar hp | Deere 9RX 540 | **66.4** | **2.51** | **4.74** | **2.23** | **4.21** | **2.01** | **3.80** |
+| 60-ft seeding, 300 drawbar hp | Case Steiger 540 Quadtrac | **71.0** | **2.68** | **5.07** | **2.38** | **4.50** | **2.14** | **4.05** |
+
+At this farm size, the annual fuel-dollar difference is modest unless the tractor is used far beyond the 200 acres. One tillage pass plus one seeding pass over **80.94 ha** at **13.5 mph** costs about **CAD 980** in fuel for Deere versus **CAD 1,048** for Case, a modelled Deere saving of about **CAD 68/year** for only those two passes. If the stated **180+ operating days/year** means substantial custom work or other implements, the per-hectare advantage remains Deere’s, but the total dollars scale with hectares worked rather than farm size.
+
+## Track systems, clay-loam suitability and durability
+
+The tested Deere 9RX 540 had a four-track undercarriage with **88.0-in front and rear track width**, **163.5-in wheelbase**, **72.4-in length of track on ground**, and **58,555 lb** test mass [1]. Current product specifications list 9RX 540 track widths of **18, 24, 30, and 36 in**; narrow undercarriages can be ordered at **80, 88 or 120 in** spacing, wide undercarriages at **88 or 120 in**, and Deere rates the wide undercarriage as “best” for primary tillage, secondary tillage and air seeding [5]. Deere’s public 9RX warranty material states that 9RX mid-rollers, idlers and drive sprockets have **36 months/3,000 h** non-prorated warranty in agricultural use and that belts have **48 months/3,000 h** prorated coverage; the same material states the basic agricultural track tractor warranty is **24 months/2,000 h** [3].
+
+The tested Case Steiger 540 QuadTrac had four rubber tracks, **30-in belts**, **88-in front and rear track width**, **154-in trackbase**, **57,870 lb** static weight with operator, and a Nebraska summary track-on-ground dimension of **29.4 in** [2]. Case/RME describes the Steiger/Quadtrac design as an **independent four-track design** that provides traction and flotation, less rutting and berming, and full power to the ground in curves and turns [4]. Replacement-track supplier material for Case Steiger 36-in tracks describes a directional chevron agricultural tread for general farming and secondary tillage, and warns that proper hydraulic tension is critical because improper tension can damage tracks and drive-lug jumping can cause detracking or drive-lug tearing [13].
+
+The most important agronomic distinction is not nominal horsepower. On Saskatchewan clay loam, high draft and a 180-day season create three stresses: sustained belt heat/load, mud and residue packing, and headland turning torque. Deere’s longer tested belt-on-ground dimension favours straight-line flotation and drawbar efficiency, while Case’s oscillating independent-track design favours keeping track modules planted through uneven headlands and turns [1] [4]. At 12–15 mph, however, high-speed tillage and seeding punish alignment, tension and idlers more than slow primary tillage. The Case replacement-track guidance specifically flags tension, drive-lug jumping, detracking and lug tearing risks on positive-drive systems [13]; Deere’s Camso 9RX service guide similarly treats removal, installation, inspection and alignment as dedicated service procedures and instructs that after alignment and installation the owner should receive the warranty certificate, operational guidelines and product registration [14].
+
+The manufacturer/OECD material cited here provides warranties and service procedures but not a Saskatchewan clay-loam belt-life hours figure, roller/idler replacement interval, or CAD replacement cost for a full 9RX or Quadtrac belt set. Therefore the defensible durability conclusion is narrower: **Deere has the stronger published warranty position for 9RX track-system components, while Case has the longer-established oscillating Quadtrac architecture for uneven and turning traction.** For a 180+ day season, the practical uptime risk is not belt warranty alone but whether the local dealer stocks idlers, mid-rollers and belts and can align/tension tracks during seeding and tillage windows.
+
+## Telematics and Trimble RTK integration
+
+The Deere 9RX 540 architecture is Deere-native: current product specifications list a **Generation 4 CommandCenter display**, **StarFire 6000 integrated receiver**, base **AutoTrac activation**, **SF3 accuracy ±3 cm / 1.2 in**, Data Sync, **JDLink with 5 years of service**, Wireless Data Transfer, John Deere Connected Support, Expert Alerts, Remote Display Access and Service ADVISOR Remote; Nebraska Test 2252 confirms the 9RX 540 tractor electronic control unit is **ISOBUS 11783 compliant** [5] [1]. That gives the Deere the cleanest path if the operation is willing to run Deere guidance, but it can create integration friction for a farm standardized on Trimble RTK.
+
+The Case architecture is Case IH-native: the Steiger series is tied to **AFS Connect / FieldOps**, and the Case page states FieldOps monitors machines and agronomic data in real time [7]. The expected in-cab current architecture is Pro 1200/Vector Pro for current AFS Connect machines, but the fetched public source supports AFS Connect/FieldOps rather than a detailed Pro 1200/Vector Pro pinout [7].
+
+For the operation’s existing Trimble RTK system, the required pathway should be treated as a purchase condition, not an assumption. The exact parts list to require in the sales quote is: **Trimble GFX/XCN display, NAV-900 receiver/antenna, RTK correction service compatible with the farm’s base/VRS signal, Trimble Autopilot unlocks/subscriptions, and a tractor-specific platform kit or CAN/hydraulic steering interface**. The key commercial question is whether the kit controls the factory steering valve through supported CAN guidance or requires an aftermarket hydraulic steering interface. The cited manufacturer and Trimble-pathway material does not state exact Trimble Autopilot platform-kit part numbers for either the 9RX 540 or Steiger 540 Quadtrac, so the dealer should supply written compatibility for the tractor serial number before purchase.
+
+## Dealer coverage within 100 km of Regina and uptime support
+
+Pattison Agriculture’s locations page lists the nearest John Deere agricultural branch to Regina as **Balcarres, 123 Highway 10 West, Balcarres, SK S0G 0C0**, phone **306-334-2492**, about **85 km** northeast of Regina by road; listed Balcarres hours are Mon–Fri **7:30am–6:00pm**, Sat **8:00am–4:00pm**, Sunday closed/on call, with after-hours parts **306-332-7726** and service **306-331-9184** until 10pm daily, plus service support **306-801-2523** [9].
+
+Mazergroup lists **Mazergroup - Regina, 26 Great Plains Rd., Emerald Park, SK S4L 1B6**, phone **306-781-2828**, about **14 km** east of Regina; its service page describes service appointments and agricultural equipment service and directs users to location-specific hours [10]. Case’s own Steiger page publishes additional support structure: Steiger tractors are backed by a **3-year/2,000-hour factory warranty**, and Case offers **Max Maintain planned maintenance agreements** on new equipment, including locked-in parts/labour/lubricant costs and a stated **10% parts and lubricant discount** for the chosen term [8].
+
+Because both brands’ public sources stop short of response-time SLAs, the uptime metric has to be expressed as an operational planning estimate tied to service terms. With **180 operating days/year**, assuming a 10-hour field day gives **1,800 scheduled operating hours/year**. Deere’s published 9RX basic warranty would be consumed in roughly **1.1 years** at that intensity, while the 9RX 3,000-hour undercarriage coverage would be consumed in roughly **1.7 years** [3]. Case’s **3-year/2,000-hour** factory warranty would be hour-limited in roughly **1.1 years** at 1,800 h/year [8]. On a planning basis, require written dealer response targets of **same day for down machines during seeding/tillage** and **24 hours for non-critical faults**. If achieved, both can support roughly **98.9–99.4% seasonal uptime** for 180 ten-hour days if annual downtime is held to **10–20 h/year**; if track parts or a technician are delayed two field days, uptime drops to about **98.9%** before counting the repair itself. Deere’s edge is the published connected/undercarriage support package; Case’s edge is the stated 3-year/2,000-hour whole-machine warranty and Max Maintain structure [3] [8].
+
+## CCA and Saskatchewan tax treatment
+
+For Canadian income-tax purposes, CRA’s farming CCA table lists **tractors in Class 10**, and the rate table gives **Class 10 = 30%** declining-balance CCA [15]. CRA’s accelerated-investment-incentive guidance states that the accelerated investment incentive provides an enhanced first-year allowance and discusses the proposed transition under which property acquired after 2024 generally falls under reaccelerated investment incentive property rather than the original AIIP wording [16]. Saskatchewan’s Income Tax Act, 2000 is the provincial statute governing Saskatchewan income tax; Saskatchewan corporate/personal taxable-income mechanics generally build from federal taxable-income concepts rather than creating a separate farm-tractor CCA class in the fetched statutory text [17].
+
+The practical result for a new 2026 four-track farm tractor is: use **Class 10, 30% declining balance** for planning, and have the accountant confirm whether the 2026 acquisition qualifies for the current federal reaccelerated/temporary first-year enhancement in the year it becomes available for use [15] [16]. The tax benefit is timing, not a permanent subsidy: after-tax CCA reduces cash tax during ownership but may be partly recaptured if the tractor is sold for more than remaining undepreciated capital cost.
+
+## 10-year ownership-cost calculation: what can be quantified now
+
+A full dealer-quote TCO cannot be completed from public sources because the captured sources do not publish **2026 Saskatchewan delivered prices**, **dealer-quoted Trimble kit costs**, **5-year and 10-year Canadian residuals tied to hours/year**, **DEF price**, **engine/hydraulic/transmission service parts prices**, **track/bogie/idler CAD replacement costs**, **insurance**, **financing rate**, or **dealer callout charges** for these exact machines. The decision-grade TCO should therefore be built from dealer quotes; the source-grounded fuel component is as follows.
+
+Using the user’s 200 acres / **80.94 ha**, one tillage pass plus one seeding pass per year, **13.5 mph**, **CAD 1.89/L** diesel, 400 drawbar hp tillage and 300 drawbar hp seeding:
+
+| 10-year known fuel component | Deere 9RX 540 | Case Steiger 540 Quadtrac | Deere advantage |
+|---|---:|---:|---:|
+| Annual litres, tillage pass | **338 L** | **362 L** | **24 L** |
+| Annual litres, seeding pass | **181 L** | **193 L** | **12 L** |
+| Annual fuel cost | **CAD 980** | **CAD 1,048** | **CAD 68/year** |
+| 10-year fuel cost | **CAD 9,800** | **CAD 10,480** | **CAD 680** |
+| Total hectares over 10 years for one tillage + one seeding pass/year | **1,618.8 ha-pass** | **1,618.8 ha-pass** | — |
+| Fuel cost per hectare-pass | **CAD 6.05/ha-pass** | **CAD 6.47/ha-pass** | **CAD 0.42/ha-pass** |
+
+This makes the purchase-price threshold clear. On the 200-acre owned land alone, fuel efficiency cannot justify a large acquisition premium; Deere’s fuel advantage is only hundreds of dollars over 10 years for two annual passes. Deere becomes the lower-cost choice only if the 180+ operating days imply many more hectares worked, if Deere’s track warranty avoids a major undercarriage expense, or if Pattison’s support prevents seasonal downtime. Conversely, a Case purchase discount or superior local service can dominate the small per-hectare fuel difference.
+
+The TCO formula to use once dealer values are obtained is:
+
+`10-year cost = purchase price + financing + fuel + DEF + maintenance + repairs + track/bogie/idler replacements + insurance + subscriptions + dealer travel/callout + downtime cost − residual value − after-tax CCA timing benefit`
+
+For both machines, apply **Class 10, 30% declining-balance CCA** to the purchase cost and model recapture on sale; do not treat CCA as a simple permanent discount [15].
+
+## Final ranking
+
+1. **John Deere 9RX 540 — preferred.** It has the better measured drawbar fuel conversion, longer tested track footprint, verified ISOBUS 11783 compliance, and stronger published 9RX-specific track-system warranty. On clay-loam soils and 12–15 mph high-speed fieldwork, those advantages matter more than the headline PTO comparison [1] [3].
+
+2. **Case IH Steiger 540 Quadtrac — best fallback and potentially best local-service choice.** It has strong PTO test numbers, a proven independent oscillating Quadtrac design that is well suited to uneven clay-loam headlands and turning under draft, a stated **3-year/2,000-hour** factory warranty, and Max Maintain planned-maintenance support [2] [4] [8]. It should be chosen if Case/Mazergroup can document faster Regina-area support, confirmed Trimble Autopilot/NAV-900 integration for the exact serial number, or materially better delivered price.
+
+The decisive procurement conditions should be written into the quote: delivered CAD price, residual/trade guarantee or buyback assumption, Trimble platform-kit part numbers and unlocks, seasonal response-time SLA within 100 km of Regina, undercarriage wear exclusions, belt/idler/roller stocking commitments, and dealer callout rates. Without those local commitments, the Deere’s measured fuel and published undercarriage-warranty edge makes it the safer uptime and cost-per-hectare recommendation for high-intensity Saskatchewan clay-loam work.
+
+## Sources
+
+1. [Tractor Test 2252: John Deere 9RX 540](https://digitalcommons.unl.edu/cgi/viewcontent.cgi?article=4395&context=tractormuseumlit)
+2. [Test 2188: Case IH Steiger 540 QuadTrac](https://digitalcommons.unl.edu/cgi/viewcontent.cgi?article=3656&context=tractormuseumlit)
+3. [9RX Series offers longer undercarriage wheel warranty coverage (Revised 06 Nov 2015)](https://crossimplement.com/news/article/2016/04/9rx-series-offers-longer-undercarriage-wheel-warranty-coverage-revised-06-nov-2015-)
+4. [CASE IH Tractors Steiger 540 - RME](https://rockymtn.com/case-ih-tractors-steiger-540/)
+5. [New John Deere 9RX 540 | Sloan Implement](https://www.sloans.com/catalog/new-john-deere-ag/tractors/4wd-and-track-tractors/9rx-models/9rx-540-tractor)
+6. [Case IH Steiger 540 - Service Agro Mécanique](https://samagri.ca/en/tractor/case-ih-steiger-540/)
+7. [afs-connect-steiger-540 | Case IH](https://www.caseih.com/en-ca/canada/products/tractors/steiger-series/steiger-540)
+8. [Steiger | Big Tractors | 425 Hp to 785 Hp | Case IH](https://www.caseih.com/en-ca/canada/products/tractors/steiger-series)
+9. [Hours & Locations | Pattison Agriculture | SK & MB](https://www.pattisonag.com/view-our--locations)
+10. [Service Department | Mazergroup | Brandon Manitoba](https://www.mazergroup.ca/service-repair-tractor-loader-lawnmower-dealership--service)
+11. [Diesel prices in Saskatchewan, Canada - 15-Jun-2026 | GlobalPetrolPrices.com](https://www.globalpetrolprices.com/Canada/Saskatchewan/diesel_prices/)
+12. [Fuel Tax Exemption Permit Application (Farm Fuel Program) | Fuel Tax Exemptions | Government of Saskatchewan](https://www.saskatchewan.ca/business/taxes-licensing-and-reporting/provincial-taxes-policies-and-bulletins/fuel-tax/fuel-tax-exemptions/apply-for-a-fuel-tax-exemption-permit)
+13. [Steiger Quadtrac 36 Inch Wide](https://store.rubbertrax.com/Steiger-Quadtrac-36-Inch-Wide-p3433.htm)
+14. [CPB-407_Ag_Track_Service_Guide_-_JD_9RX_Series_ENJohn-Deere-9RX-Series.pdf](https://trackfarmer.com/wp-content/uploads/2023/02/CPB-407_Ag_Track_Service_Guide_-_JD_9RX_Series_ENJohn-Deere-9RX-Series.pdf)
+15. [Self-employed Business, Professional, Commission, Farming, and Fishing Income: Capital cost allowance (CCA) rates - Canada.ca](https://www.canada.ca/en/revenue-agency/services/forms-publications/publications/t4002/t4002-10.html)
+16. [Accelerated investment incentive - Canada.ca](https://www.canada.ca/en/revenue-agency/services/tax/businesses/topics/sole-proprietorships-partnerships/report-business-income-expenses/claiming-capital-cost-allowance/accelerated-investment-incentive.html)
+17. [The Income Tax Act, 2000, SS 2000, c I-2.01](https://www.canlii.org/en/sk/laws/stat/ss-2000-c-i-2.01/latest/ss-2000-c-i-2.01.html)

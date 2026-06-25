@@ -1,0 +1,144 @@
+# Bottom line
+
+For Ti-6Al-4V aerospace work in northern Mexico, the **Okuma MULTUS U4000** is the strongest technical choice if the shop’s part mix needs heavy B-axis milling, thermal stability over long unattended runs, and the lowest risk of holding **±0.0005 in.** The **Mazak INTEGREX i-400S** is the closest rival when high main-spindle torque and Mazatrol/SmoothX workflow are priorities, and Mazak’s Mexico Technology Center is also local to the Monterrey/Apodaca, Nuevo León area [1]. The **DMG MORI NLX 2500SY** is the most cost-effective fit for smaller turn-mill parts and has strong Nuevo León service proximity, but it is a turret-based turn-mill rather than the same class of B-axis multitasking platform as the Mazak and Okuma.
+
+| Rank for Ti-6Al-4V aerospace parts | Machine | Main torque / milling torque grounded in sources | Rigidity and thermal control | NX CAM fit | Traceability / connectivity | Nuevo León service position | Best fit |
+|---:|---|---|---|---|---|---|---|
+| **1** | **Okuma MULTUS U4000** | U4000 spindle options include **700/477 N·m** at **4,200 min⁻¹** and a larger-spindle option of **1,413/1,050 N·m** at **3,000 min⁻¹**; upper milling spindle **25/19 kW** and **120/90 N·m** at **12,000 min⁻¹** [2] | Strongest thermal evidence: Thermo-Friendly Concept with TAS-C/TAS-S, spindle temperature regulation, brochure test displacement around **X 7 µm, Y 8 µm, Z 9 µm** over a 24-hour/8°C room-temperature profile [2] | NX postprocessor/digital twin route: Siemens NX CAM Post Hub outputs machine-ready NC for many machine/controller kits and G-code-driven simulation moves a 3D machine model with part, fixtures and tooling [3] | OSP-P500S includes communications/networking functions and MacMan; MTConnect/OPC-UA should be specified/validated as options or adapter layer | Okuma support in Mexico is through HEMAQ, which cites CentroTec Monterrey, +8,300 CNC machines installed in its territory as of June 2025, and 24·7·365 service support; verify U4000-specific Monterrey SLA [4], [5] | High-value Ti structural parts, heavy roughing plus 5-axis/B-axis finishing, long unattended runs |
+| **2** | **Mazak INTEGREX i-400S** | Main spindle **30/22 kW**, **3,300 rpm**, **1,400 N·m max** for i-400/400S/400ST; second spindle for i-300S/400S class **26/22 kW**, **4,000 rpm**, **500 N·m**; milling spindle **12,000 rpm**, **120 N·m** [6] | Rigid linear roller guides, C-axis disc brake, roller-gear-cam B-axis, ball-screw core cooling, spindle temperature control, Intelligent Thermal Shield; reference test shows **X 8 µm, Y 6 µm, Z 7 µm** [6] | Good NX CAM target if SmoothX post and machine kinematics are proven; NX supports machine-ready postprocessing and G-code-driven simulation, while Mazatrol features do not replace NX-controlled aerospace process planning [3] | Ethernet and industrial network options are listed; MTConnect/OPC-UA should be treated as integration scope, not assumed standard | Mazak has a Mexico Technology Center at Spectrum 100, Parque Industrial Finsa, Apodaca, Nuevo León 66600, with listed process/application engineering, training, service contact and parts contact [1] | High-torque turn-mill parts where Mazak workflow and applications support are already in the shop |
+| **3** | **DMG MORI NLX 2500SY / NLX 2500 2nd Gen SY configuration** | New-generation NLX: left spindle **843 N·m** at **5,000 rpm** or optional **1,273 N·m** at **3,000 rpm**; optional right spindle up to **577 N·m**; BMT turret up to **12,000 rpm / 100 N·m**; a stocked NLX 2500SY/700 source shows **26/26/22 kW** main spindle and rotary tool spindle **40/14 N·m** at **10,000 min⁻¹** [7], [8] | Rigid box/roller-guide architecture and SmartSCALE/temperature stabilization on 2nd Gen; older/current NLX references emphasize controlled thermal displacement and slideways/rigid construction [9], [7] | Strongest direct Siemens path among the three if ordered with Siemens control; DMG MORI page lists **SIEMENS** as a control/software alternative, and DMG MORI/Siemens sources describe manufacturer-certified postprocessors for Siemens NX CAM [7], [10], [11] | CELOS X MDC lists standardized machine-data output in **OPC UA, MTConnect and MQTT** [7] | Strong local-support fit: DMG MORI México lists an Apodaca, Nuevo León office at Av. Miguel Alemán 248 and service hotline 01 800 DMG MORI [12] | Smaller Ti turn-mill aerospace components, shafts, rings, fittings; best where local service and lower installed cost outweigh B-axis milling capability |
+
+## Utilization assumption: 15,000 annual hours must mean multi-machine or spindle-hour accounting
+
+A single machine cannot run **15,000 clock hours/year** because a calendar year has **8,760 hours**. Use one of these interpretations before comparing cost per part:
+
+- **One machine, high utilization:** cap at **8,760 scheduled hours/year** before downtime, maintenance, tool changes, probing, warm-up and setup losses.
+- **Two-machine cell:** **15,000 scheduled machine-hours/year** equals about **7,500 hours/machine/year** across two machines, a plausible 24/6-to-24/7 utilization target if automation, tool life, coolant management and service response are engineered.
+- **Spindle-hours accounting:** if main spindle, subspindle, milling spindle, or lower turret time are summed, “15,000 annual hours” is not equivalent to clock utilization and should not be used directly for depreciation or service-capacity planning.
+
+For the machine choice below, assume **15,000 annual hours means cell-level scheduled machine-hours**, not one physical machine’s calendar time.
+
+## Titanium process implications that change the machine ranking
+
+Ti-6Al-4V pushes the decision toward torque, stiffness, heat control, coolant delivery and tool-life stability rather than peak rpm. ISCAR’s titanium guide states that titanium machining requires **high-torque main drives, advanced CNC software/adaptive control, and high-pressure coolant**, and that rough titanium milling requires high rigidity of the full technological system: machine tool, workholding, toolholding and tool overhang [13]. It also states that high-pressure coolant can dramatically improve milling efficiency [13].
+
+Recommended tooling/process baseline for all three machines:
+
+- Use **carbide**, not ceramics, as the default for Ti-6Al-4V. ISCAR’s titanium guide frames titanium milling grade selection around cemented-carbide grades, naming **IC840** as the universal first-choice indexable milling grade, **IC808** for semi-finish/finish, **IC882** for heavy-duty/unfavorable conditions, and **IC5820** for high-pressure coolant applications [13].
+- For **turning Ti-6Al-4V**, specify a titanium-capable carbide roughing and finishing set, not only milling cutters. Sandvik identifies **H13A** as an uncoated carbide grade for titanium that combines abrasive-wear resistance and toughness for **medium-to-rough turning of titanium alloys**, with **T-Max P** as first choice for general turning from small components to heavy machining [14]. For finishing and slender/internal features, use a sharper/lower-force finishing geometry direction and validate a complementary PVD carbide grade such as **GC1205/GC1210** where the application favors adhesion/flank-wear resistance, crater-wear resistance or higher cutting speed; Sandvik lists GC1205 as a PVD-coated carbide with good adhesion and flank-wear resistance and GC1210 as a tougher PVD-coated carbide complement [14]. On the **NLX 2500SY**, this applies directly to main-spindle and subspindle turret turning, with roughing biased to the left/main spindle and finishing or back-working on the right spindle where rigidity allows. On the **INTEGREX i-400S** and **MULTUS U4000**, use the high-torque main spindle for heavy OD/ID rough turning and reserve the subspindle for back-working, finishing, and transfer-side features within its torque/workholding limits; their second-spindle torques are lower than the main-spindle torques in the sourced brochures [2], [6].
+- Expect **high-pressure coolant** for both turning and milling titanium. ISCAR states that titanium machining requires high-pressure coolant and that high-pressure coolant can dramatically improve milling efficiency [13]; for turning, route high-pressure coolant through the toolholder/nozzle package at the cutting edge for chip control, notch-wear control and thermal stability rather than relying on flood coolant alone.
+- Use **solid carbide end mills / replaceable-head systems / indexable high-feed and extended-flute cutters**, with the shortest possible projection and high-rigidity holders; ISCAR notes titanium producers often prefer integral tool designs for maximum rigidity and more productive milling when high-volume metal removal and overhang are present [13].
+- Use **high-feed milling and trochoidal/constant-engagement toolpaths** rather than slotting wherever geometry allows. ISCAR notes that lower radial engagement reduces heat generation and can allow higher cutting speed; it also recommends arc entry/rolling-in to reduce sudden mechanical and thermal load [13].
+- Do not spec ceramic tooling as the mainstream Ti-6Al-4V solution in **milling or turning**. ISCAR states that **coated cemented carbides are the main tool materials for titanium milling**, that most titanium milling inserts are PVD-coated carbide, and that **cutting ceramics and CBN are not so suitable for machining titanium**; Sandvik’s turning page lists ceramic and CBN grades in the HRSA/titanium family primarily for HRSA/high-speed finishing contexts while identifying H13A specifically for titanium turning [13], [14].
+
+## Machine-by-machine comparison
+
+### 1) Okuma MULTUS U4000 — best technical fit for ±0.0005 in Ti aerospace work
+
+**Torque and rigidity.** The MULTUS U4000 has the best combination of turning torque, B-axis milling torque and machine-structure evidence. The brochure lists U4000 spindle options including **4,200 min⁻¹, 22/15 kW, 700/477 N·m** and larger-spindle data of **3,000 min⁻¹, 37/30 kW, 1,413/1,050 N·m**; the upper milling spindle is **12,000 min⁻¹, 25/19 kW, 120/90 N·m** [2]. For titanium, that matters more than peak rpm because aggressive roughing and interrupted cuts are usually torque/stiffness limited. Okuma also cites diagonal ribs with **7×** the rigidity of a non-ribbed structure, a highly rigid traveling column, and a B-axis roller-gear configuration for zero backlash in B-axis drive [2].
+
+**Thermal control for ±0.0005 in.** ±0.0005 in equals **±12.7 µm**. Okuma’s own MULTUS U thermal chart reports displacement over a 24-hour test with room temperature changing from about 20°C to 28°C: **X-axis 7 µm, Y-axis 8 µm, Z-axis 9 µm**, with Thermo-Friendly Concept, TAS-C/TAS-S and spindle operation data feeding compensation [2]. These are manufacturer test values and not a process capability guarantee on a Ti aerospace part, but they are directly in the tolerance band before adding workholding, tool wear, probing and thermal growth of the workpiece.
+
+**CAM integration.** NX CAM is a viable route if the postprocessor, C/B-axis kinematics, subspindle handoff and machine simulation are validated. Okuma’s OSP-P500S is not the same as programming a generic mill-turn; the practical requirement is a locked NX post, digital twin/machine simulation, and prove-out of TCP, rotary center calibration, subspindle transfer and probing cycles.
+
+**Traceability.** The OSP-P500S package includes communications/networking and MacMan functionality in the standard-specification section [2]. For AS9100D production, specify capture of NC program ID/revision, operator, lot/serial, tool offset changes, spindle/load alarms, probe results, machine state, and any adaptive-control events through MTConnect/OPC-UA or an approved adapter; do not treat the control brochure alone as a full AS9100D traceability system.
+
+**Service in Nuevo León.** Okuma’s Mexico support should be contracted through HEMAQ or the current authorized Mexico channel: HEMAQ cites CentroTec Monterrey, +8,300 CNC machines installed in its territory as of June 2025, 24·7·365 service support and aerospace as a served industry [4], [5]. Before award, require written confirmation of U4000-specific Monterrey/Nuevo León response time, local spare-parts stocking for OSP drives/spindles/probes, and applications support for titanium mill-turn prove-out.
+
+### 2) Mazak INTEGREX i-400S — very strong torque, strong thermal package, service-locality to verify
+
+**Torque and rigidity.** The INTEGREX i-400S has the highest grounded main-spindle max torque in the comparable i-400/400S/400ST brochure set: **30 kW/22 kW**, **3,300 rpm**, **1,400 N·m max torque** [6]. Its second-spindle data for the i-300S/300ST/400S/400ST group list **26/22 kW**, **4,000 rpm**, **500 N·m max torque** [6]. The milling spindle is competitive with Okuma’s at **12,000 rpm** and **120 N·m** [6]. Structurally, the brochure cites rigid linear roller guides on all linear axes, high-rigidity/high-accuracy C-axis disc brake, spindle/core cooling, and a roller-gear-cam B-axis that eliminates backlash for high-rigidity and high-power cutting [6].
+
+**Thermal control for ±0.0005 in.** Mazak’s Intelligent Thermal Shield automatically compensates for room-temperature changes and machining-area temperature changes, with compensation data displayed on screen [6]. Its reference chart reports **X-axis 8 µm, Y-axis 6 µm, Z-axis 7 µm** displacement, within the **±12.7 µm** tolerance band in the manufacturer’s test context [6]. The same brochure states that ball-screw core cooling uses temperature-controlled oil for stable machining over extended high-speed operation and that spindle temperature control circulates oil around bearings and the headstock [6].
+
+**CAM integration.** Treat the i-400S as an NX CAM post/simulation project rather than a Mazatrol-only machine if the customer’s aerospace process plan, revision control and inspection planning live in NX. The Mazak brochure lists EIA functions, 5-axis options, scale feedback options and Ethernet/network functions [6], but the decisive deliverable is a validated SmoothX post and machine simulation for the exact i-400S configuration.
+
+**Traceability.** The brochure lists Ethernet and industrial network options such as PROFIBUS-DP, EtherNet/IP and CC-Link [6]. For AS9100D, specify a Mazak-compatible MTConnect/OPC-UA data path or third-party collector as part of the purchase order, not after installation.
+
+**Service in Nuevo León.** Mazak has a local Mexico Technology Center in the Monterrey/Apodaca corridor: the source lists the address as Spectrum 100, Parque Industrial Finsa, Apodaca, Nuevo León 66600, plus process/application engineering, training facilities, service contact, parts contact, a regional service manager and a regional applications manager [1]. Require written escalation terms for field service, spindle repair/exchange, SmoothX post support and titanium applications engineering.
+
+### 3) DMG MORI NLX 2500SY — strongest local/service and Siemens path, but lighter class for Ti milling
+
+**Torque and rigidity.** The latest NLX 2500 2nd Generation data show substantial improvement: **10 in. left spindle, 5,000 rpm, 843 N·m**, optional **12 in., 3,000 rpm, 1,273 N·m**, right spindle up to **577 N·m**, and BMT turret options up to **12,000 rpm / 100 N·m** [7]. The stocked NLX 2500SY/700 source shows a specific machine with **26/26/22 kW** high-output main spindle at **4,000 min⁻¹**, standard second spindle **11/7.5 kW** at **6,000 min⁻¹**, and rotary-tool spindle **40/14 N·m** at **10,000 min⁻¹** [8]. For Ti-6Al-4V, the 2nd Gen high-torque turret configuration is materially more attractive than the stocked 40/14 N·m rotary-tool configuration.
+
+**Thermal control for ±0.0005 in.** DMG MORI states that enhanced box guideways, 55 mm roller guides and double-anchored ballscrews improve rigidity, while internally cooled ballscrews, machine-bed and spindle temperature control, and SmartSCALE direct measuring reduce thermal displacement and improve long-term production stability [9]. This is directionally strong, but the retrieved DMG sources do not provide the same µm-level 24-hour thermal displacement chart as Okuma or Mazak, so for ±0.0005 in Ti work the acceptance test should include a warm/cold capability run on representative material.
+
+**CAM integration.** This is the easiest of the three to align with Siemens NX if ordered with the Siemens control/software alternative: the DMG MORI NLX product page lists **SIEMENS** and MAPPS as control/software alternatives [7]. For aerospace release, still require a locked NX postprocessor, machine simulation, C/Y/subspindle handoff verification and post-revision control.
+
+**Traceability.** DMG MORI’s CELOS X section explicitly lists MDC standardized machine-data output in **OPC UA, MTConnect and MQTT** formats, plus NETservice remote diagnostics and Service Agent maintenance support [7]. That makes DMG the clearest sourced traceability/connectivity fit among the three, provided the installed configuration includes the required CELOS/MDC licenses and the MES/QMS interface maps the data to AS9100D production records.
+
+**Service in Nuevo León.** DMG MORI México lists a direct Apodaca, Nuevo León office at Av. Miguel Alemán 248, Piso 5, C.P. 66600, with telephone +52 81 86471612 and service hotline 01 800 DMG MORI [12]. Because downtime dominates the economics at high utilization, require a local service agreement covering technician dispatch, spindle/drive availability, CELOS/MDC support and annual laser/ballbar verification.
+
+## Siemens NX CAM: integration requirement, not a simple yes/no
+
+All three machines can be programmed from NX CAM if the purchase includes a validated post and simulation model for the exact machine build: Siemens states that NX CAM Post Hub generates machine-ready NC programs for a wide range of machine tools/controllers and that G-code-driven simulation moves a 3D machine model with the part, fixtures and tooling [3]. The risk differs:
+
+1. **Lowest integration risk: DMG MORI NLX 2500SY with Siemens control**, because the product page lists Siemens as a control/software alternative [7].
+2. **Medium risk: Okuma MULTUS U4000**, because OSP-P500S is a powerful multitasking control but needs an Okuma-specific NX post and simulation for B/C axes, subspindle, probing and lower-turret options [2].
+3. **Medium risk: Mazak INTEGREX i-400S**, because SmoothX/Mazatrol is mature but aerospace NX workflows should run through EIA/NX post output, with SmoothX-specific validation [6].
+
+Acceptance criteria should include: first-article NC code generated from NX, verified machine simulation with clamps/chucks/probes, subspindle transfer proof, tool-center-point behavior, rotary-center calibration, post revision lock, and archived NC/program-revision records tied to part serial/lot.
+
+## AS9100D traceability through MTConnect / OPC-UA
+
+For AS9100D, MTConnect/OPC-UA is not certification by itself; it is the machine-data transport/model layer that helps populate controlled production and quality records. AS9100D was revised on **2016-09-20** as the SAE aerospace QMS standard [15], and AS9100 Rev D traceability guidance for clause 8.5.2 centers on controlled identification and traceability: suitable product identification such as serial/part number, maintaining configuration by knowing the part/process revisions actually used, identifying monitoring/measurement status, controlling acceptance media such as stamps/passwords/e-signatures, and retaining traceability records with any required forward/backward traceability and customer-specified retention [16]. The required architecture is therefore:
+
+- **Machine/control data mapped to the production record:** NC program name/revision, active block or block count where available, offsets, tool ID/life, spindle load, alarms/faults, feed override, mode, cycle start/stop, probe results and machine state. MTConnect supports this layer because its Agent publishes equipment information to client applications, its Controller model covers control-program execution, operating mode and faults, and its data items include EXECUTION states, BLOCK, BLOCK_COUNT, program edit/name/comment and FUNCTIONAL_MODE [17].
+- **Process/configuration data mapped to AS9100D traceability:** material heat/lot, part serial number, operation, setup-sheet revision, inspection-plan revision, gage/probe data, acceptance authority media, nonconformance disposition and customer retention requirements; these are the records that substantiate identification, status, configuration and traceability, not the presence of a network protocol alone [16].
+- **System linkage:** MES/QMS record linking machine events to traveler, serial/lot, operator and accepted configuration. OPC UA is relevant as the platform-independent service-oriented architecture for information access, transport, discovery, security and robustness; the MTConnect information model fits between vendor information models and OPC UA base services for information access, transport, discovery, security and robustness; the MTConnect-OPC UA companion specifications are intended to ensure interoperability and consistency between MTConnect and OPC UA specifications and products, with Version 2.00 released in June 2019 [18].
+
+On sourced connectivity, **DMG MORI is clearest** because CELOS X MDC explicitly states standardized output in **OPC UA, MTConnect and MQTT** [7]. **Mazak** has Ethernet and industrial-network options in the brochure, but the MTConnect/OPC-UA collector should be specified explicitly [6]. **Okuma** has OSP communications/networking and MacMan functions in the U4000 brochure, but MTConnect/OPC-UA should likewise be specified as an adapter or option in the contract [2].
+
+## Nuevo León service and uptime economics
+
+At the corrected **7,500 hours/machine/year** assumption for a two-machine cell, service response and spare-part availability can outweigh a small torque difference. Recommended commercial requirements:
+
+| Requirement | Why it matters for Ti-6Al-4V aerospace | Buying implication |
+|---|---|---|
+| Written Monterrey/Nuevo León response-time SLA | A 24-hour outage at high utilization consumes a large share of weekly capacity | Include penalties/escalation and named service office/technicians |
+| Local spindle/drive/probe support | Ti roughing stresses spindles, bearings, toolholders and probes | Require critical-spares list and exchange-spindle terms |
+| Applications support for titanium | Tool life and chatter control depend on process tuning, not only machine specs | Include on-site prove-out on Ti-6Al-4V, not steel demo cuts |
+| Postprocessor support | NX post errors can scrap high-value aerospace parts | Require OEM/post vendor sign-off before runoff |
+| Preventive maintenance windows | Thermal accuracy and spindle health degrade without scheduled maintenance | Tie PM to machine-hour intervals, not calendar only |
+
+## Long-term operating-cost drivers
+
+The main long-term cost drivers are not the machine purchase price; they are cost per conforming part at high utilization:
+
+1. **Tooling and tool life.** Ti-6Al-4V requires carbide grades, rigid holders, controlled engagement and high-pressure coolant; ISCAR identifies tool design/material as a prime factor in titanium productivity [13]. Tooling spend will be highest where chatter forces conservative parameters or where tool overhang is excessive.
+2. **Scrap and rework.** ±0.0005 in tolerance makes thermal drift, probe strategy, tool wear offsets and machine calibration central cost drivers. Okuma and Mazak provide µm-level thermal test figures in the retrieved brochures [2], [6]; DMG should be accepted on representative Ti cuts if selected [9].
+3. **Downtime and service latency.** At 7,500 scheduled hours/machine/year, a few days of downtime materially changes cost per part. Local service in Nuevo León, spare parts and spindle repair terms should be weighted heavily.
+4. **Coolant and chip management.** Ti chips, heat, filtration and high-pressure coolant affect tool life, fire risk, maintenance and housekeeping. DMG’s NLX page cites coolant/mist management, extended coolant life and zero-sludge coolant options [7]; Okuma and Mazak both list coolant and chip-conveyor options in the retrieved brochures [2], [6].
+5. **Energy and compressed air.** DMG claims **16% less energy**, **44% less lubrication oil** and **12% less compressed air** for NLX 2500|700 GREENMODE comparisons [7]. Okuma’s ECO suite plus section lists energy-saving functions and a reported annual power-consumption figure of **29,036 kWh/year** in the brochure context [2]. These figures are not directly comparable across machines, but they show why idle-stop and peripheral control matter in a high-hour cell.
+6. **Postprocessor and digital-thread maintenance.** NX posts, simulation models, MTConnect/OPC-UA collectors and MES mappings need revision control; failures here create hidden cost through prove-out time, quality escapes and undocumented process changes.
+7. **Calibration and probing.** B-axis/C-axis centerline calibration, spindle alignment, probe calibration, ballbar/laser checks and thermal compensation verification should be budgeted as recurring costs, especially for AS9100D production.
+8. **Financing/depreciation by real utilization.** Depreciation should be calculated on corrected machine-hours. If the business case uses 15,000 hours for one machine, it understates hourly cost; if it uses 15,000 hours for a two-machine cell, it should allocate depreciation, maintenance and labor across both machines.
+
+## Recommendation
+
+Choose the **Okuma MULTUS U4000** for the titanium aerospace workload if the part family includes heavy milling, thin-wall or structural features, B-axis finishing, and long unattended cycles. It has the best sourced combination of torque, milling spindle capability, rigidity claims and quantified thermal behavior inside the **±12.7 µm** equivalent of **±0.0005 in** [2].
+
+Choose the **Mazak INTEGREX i-400S** only if the shop already has Mazak/SmoothX competence or if the 1,400 N·m main-spindle profile and Mazak applications support prove superior on the actual Ti-6Al-4V parts [6].
+
+Choose the **DMG MORI NLX 2500SY** if the parts are smaller turn-mill components rather than heavy B-axis structural parts, if Siemens control/NX alignment is decisive, or if Nuevo León service proximity and CELOS MTConnect/OPC-UA traceability outweigh the lighter turret-mill architecture [7], [8], [9].
+
+## Sources
+
+1. [Mexico Technology Center | Mazak Corporation](https://www.mazak.com/us-en/about-us/support-bases/mexico-technology-center/)
+2. [MULTUS-U-Series_Jun2025-P500.pdf](https://www.okuma.com/files/documents/MULTUS-U-Series_Jun2025-P500.pdf)
+3. [Postprocessing and machining simulation | Siemens Software](https://www.siemens.com/en-us/products/nx-manufacturing/cam-software/postprocessing-simulation/)
+4. [Venta de Máquinas Herramienta Okuma líder desde 1988](https://www.hemaq.com/venta-maquinas-herramienta-cnc/)
+5. [HEMAQ: CNC Machine Tools](https://www.hemaq.com/en/)
+6. [Untitled](https://www.mmsonline.com/cdn/cms/low_integrex_%20i-series_ea.pdf)
+7. [NLX 2500 2nd Generation - Universal Turning - DMG MORI](https://en.dmgmori.com/products/machines/turning/universal-turning/nlx/nlx-2500-2nd)
+8. [12-pdf-nlx-2500-12-canada-1--data.pdf](https://ca-en.dmgmori.com/resource/blob/421142/123d43973e3fe6ffba9313332542d8db/12-pdf-nlx-2500-12-canada-1--data.pdf)
+9. [All new Next Generation turning center - DMG MORI Canada](https://ca-en.dmgmori.com/news-and-media/news/nws24-14-world-premiere-nlx-2500)
+10. [Post processors - DMG MORI](https://en.dmgmori.com/products/digitization/work-preparation/postprocessor)
+11. [DMG MORI Postprocessor for Siemens NX](https://www.siemens.com/en-us/products/dmg-mori-postprocessor-for-siemens-nx/)
+12. [DMG MORI Mexico - DMG MORI México](https://mx.dmgmori.com/empresa/ubicaciones/dmg-mori-mexico)
+13. [machining_titanium_05_2019.pdf](https://www.iscar.com/Catalogs/Publication/english_1/machining_titanium/machining_titanium_05_2019.pdf)
+14. [Turning inserts and grades for titanium and HRSA](https://www.sandvik.coromant.com/en-us/turning-inserts-grades-for-titanium-hrsa)
+15. [AS9100D: Quality Management Systems - Requirements for Aviation, Space, and Defense Organizations - Technical Standard](https://saemobilus.sae.org/standards/as9100d-quality-management-systems-requirements-aviation-space-defense-organizations)
+16. [AS9100 traceability requirements: How to meet them](https://advisera.com/9100academy/blog/2019/06/05/as9100-traceability-requirements-how-to-meet-them/)
+17. [ANSI_MTC1_4-2018.pdf](https://docs.mtconnect.org/ANSI_MTC1_4-2018.pdf)
+18. [OPC UA Companion Specification — MTConnect](https://www.mtconnect.org/opc-ua-companion-specification)

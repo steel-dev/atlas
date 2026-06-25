@@ -1,0 +1,72 @@
+## Bottom line
+
+Across every maternal–newborn indicator for which comparable data exist, the Karen refugee community in **Mae La camp, Thailand** outperforms the **Rohingya camps of Cox's Bazar, Bangladesh** — and by large margins. Mae La recorded **0 maternal deaths in 2018**, 95% skilled birth attendance, 91% antenatal coverage and a neonatal mortality rate of 6/1,000 live births [1], while the Cox's Bazar camps reported a maternal mortality ratio of **295 per 100,000 live births in 2023** (rising to 446.65/100,000 in the single month of January 2024), with 82% facility-based delivery and 75% antenatal four-visit completion [2]. The gap is best explained by the delivery model: Mae La's small (~39,000–50,000) population is served by a stable, long-tenured SMRU/Première Urgence clinical team integrated into the Thai public-health and referral system (Mae Sot Hospital), whereas Cox's Bazar must cover nearly a million refugees through a fragmented network of NGO field hospitals, primary health centres and health posts with chronically under-funded, high-turnover staffing and very limited comprehensive emergency obstetric capacity.
+
+| Indicator | Cox's Bazar (Rohingya) | Mae La (Karen) | Better setting |
+|---|---|---|---|
+| Maternal mortality ratio | 295 / 100,000 live births (2023); 446.65 (Jan 2024) [2] | 0 maternal deaths (2018) [1]; 6-fold decline 1986–2010 [3][4] | **Mae La** (near-zero) |
+| ANC, ≥4 visits | 75% (2023), 82% (Jan 2024); target ≥80% [2] | ANC coverage 91% (2018, overall coverage), ~90% attend SMRU [1][4] | **Mae La** |
+| Skilled birth attendance | 82% (2023), 85% (Jan 2024) [2] | 95% (2018) [1] | **Mae La** (~13 pts) |
+| Neonatal mortality (≤28 d) | Not reported as NNMR; U5 mortality 25.31/1,000 (2023), 39.70/1,000 (Jan 2024) [2]; 220 neonatal deaths in CBS-EWARS 2021 [5] | 6 / 1,000 live births (2018) [1]; fell 21.8→10.7 (2008–2011) [4] | **Mae La** |
+| Postpartum haemorrhage (best indicative figures; no cases-per-deliveries incidence rate is published for either site) | Obstetric haemorrhage = 29.2% of maternal deaths, half of which PPH; 75% of those deaths in facilities (2021) [5] | PPH the most common observed labour complication during the assessment year [6]; SBAs followed protocol but were slow to escalate | Not directly comparable as an incidence rate |
+
+## Maternal mortality
+
+**Cox's Bazar (Rohingya).** The early-emergency baseline was severe: 52 maternal deaths among 82 pregnancy-related deaths in the first year of the camps (Aug 2017–Aug 2018), with women-of-reproductive-age and neonatal deaths making up 28% of all deaths [7][5]. UNFPA's Maternal and Perinatal Mortality Surveillance and Response (MPMSR) system reviewed 96 pregnancy-related deaths in 2021 [5]. By the Health Sector's HIS reporting, the maternal mortality rate stood at **295 per 100,000 live births for Jan–Dec 2023**, against a target of <179, and spiked to **446.65 per 100,000** in January 2024 [2] — many times the SDG-3 aspiration of <70/100,000 referenced in the MPMSR programme [5].
+
+**Mae La (Karen).** The UNHCR HIS 2018 site report records **0 maternal deaths** for the camp that year [1]. The longer SMRU record shows a **six-fold reduction in maternal deaths** among women attending its antenatal clinics between 1986 and 2010, with an overall malaria-era MMR of 184 per 100,000 live births (95% CI 150–230) across the 1986–2010 period that fell sharply with early malaria detection and treatment [3][4]. By the 2017–2023 window the camp's maternal mortality was effectively near zero.
+
+## Antenatal care and skilled birth attendance
+
+- **ANC ≥4 visits:** Cox's Bazar reported **75%** completion (Jan–Dec 2023), rising to **82%** in January 2024, against a target of ≥80% [2]. Mae La's HIS antenatal-care coverage was **91%** in 2018 (this is overall ANC coverage rather than a strict four-visit measure), and roughly 90% of pregnant women attended the SMRU clinic [1][4].
+- **Skilled birth attendance:** Cox's Bazar reached **82%** in 2023 and **85%** in January 2024 [2]; Mae La recorded **95%** of births attended by skilled personnel in 2018, with a caesarean-section rate of 13% (within the 5–15% standard) [1]. Mae La leads by roughly 10–13 percentage points.
+
+## Postpartum haemorrhage
+
+The two systems report PPH differently, so a like-for-like incidence comparison is not available. In Cox's Bazar, the MPMSR death audit found **obstetric haemorrhage was the leading cause of maternal death (29.2%)**, split evenly between antepartum and postpartum haemorrhage, and 75% of haemorrhage-related direct maternal deaths occurred inside facilities — pointing to delays in escalation, blood availability and management rather than absence of contact with care [5]. In Mae La, a WHO Safe Motherhood Needs Assessment of SMRU intrapartum care found PPH was **the most common complication observed during labour and birth**, that skilled birth attendants followed the haemorrhage protocol, but were "slow" to act, alongside good practices such as active management of the third stage of labour [6].
+
+## Neonatal mortality
+
+Mae La's HIS reported a **neonatal mortality rate of 6 per 1,000 live births** in 2018 (standard <20), with an infant mortality rate of 6.2/1,000 [1]; the camp's neonatal mortality had fallen from **21.8 to 10.7 per 1,000 live births** between 2008 and 2011 after a special-care baby unit was introduced [4]. For Cox's Bazar, the HIS does not publish a clean 28-day neonatal rate in the bulletins reviewed; the closest official figures are an under-5 mortality of **25.31/1,000 (2023)** rising to 39.70/1,000 in January 2024 [2], while the 2021 surveillance counted 476 perinatal deaths (251 stillbirths, 220 neonatal deaths) in the CBS-EWARS system [5]. On all available newborn measures Mae La performs markedly better.
+
+## Delivery models
+
+**Cox's Bazar — NGO field hospitals and primary health network.** UNFPA leads the Minimum Initial Service Package, with UNHCR, WHO, MSF, IOM and other NGOs operating the facilities [7][5]. As of December 2023 the camps had **67 health posts, 47 primary health centres, 8 secondary care facilities and only 1 facility with comprehensive emergency obstetric and newborn care (CEmONC)**, staffed by 507 doctors, 345 nurses and 466 midwives across 14 health-sector partners [8]. UNHCR alone supported 28 healthcare facilities plus mental-health, nutrition and stabilization centres, with a 24/7 referral pathway to district facilities including the new Ukhiya Specialised Hospital and Sadar District Hospital [9]. Named facilities in the surveillance system include Hope Field Hospital, the Cox's Bazar Sadar Hospital and Chittagong Medical College Hospital as referral endpoints [5].
+
+**Mae La — Thai MoPH integration with NGO clinical partners.** The camp's principal health provider is **Première Urgence–Aide Médicale Internationale** working with the **Shoklo Malaria Research Unit (SMRU)**, based in Mae Sot and providing obstetric care on the border since 1986 [4][1]. SMRU runs the in-camp obstetric department and special-care baby unit, while complicated cases are referred into the Thai public system (Mae Sot Hospital), giving refugees access to a functioning national hospital tier rather than an isolated humanitarian referral chain [6][4].
+
+## Midwife ratio and EmONC within reach
+
+- **Midwives.** Cox's Bazar deployed **466 midwives for ~970,000 refugees** in 2023 — about 1 midwife per ~2,080 refugees [8]. Mae La's HIS does not publish a midwife count, but the SMRU model concentrates skilled birth attendants and a continuous obstetric department on a population of ~39,000–50,000 [6][4][1], implying a far denser ratio of trained delivery staff to population.
+- **EmONC within ~2-hour transport.** Cox's Bazar had **3 CEmONC and 32 BEmONC facilities in January 2023**, but only **1 CEmONC facility by December 2023** [10][8] — a notable inconsistency in the reporting that itself signals fragile comprehensive obstetric coverage for nearly a million people; the neonatal-mortality surveillance confirmed that camps closer to a secondary facility had lower neonatal mortality [11]. Mae La's in-camp obstetric/neonatal unit plus direct referral to Mae Sot Hospital places comprehensive emergency care effectively within the camp and its immediate hospital catchment [6][4].
+
+## Cultural mediation and traditional birth attendants
+
+In Cox's Bazar, the response works to integrate rather than exclude **traditional birth attendants (TBAs/dais)**: MPMSR recommendations call for allowing TBAs and female family members into facilities during delivery for the mother's moral support, using local language or interpreters, and disseminating information on free 24/7 ambulances — explicit cultural-mediation steps to overcome mistrust and care-seeking delays [5]. The SMRU/Mae La model instead substitutes traditional attendance with a trained skilled-birth-attendant cadre and near-universal facility delivery, reflected in the 95% skilled-attendance figure [6][1].
+
+## The 2021 UNFPA funding context
+
+UNFPA leads the Minimum Initial Service Package in the Rohingya response and provides 24/7 sexual, reproductive, maternal and newborn care, supporting antenatal, postnatal and family-planning clinics in the camps [9][7]. The Cox's Bazar health sector remained chronically under-financed — the 2023 health appeal of USD 97.3 million was only about 49% funded by mid-year, with as little as 3.8% of the 2022 appeal received at one point [8][10] — which is the mechanism by which staffing stability, supply chains and EmONC coverage degrade. The specific dollar amount and percentage of a discrete 2021 UNFPA cut, and a documented service-continuity impact attributable to it in the Thai border camps, are not quantified in the sources reviewed here; the broader pattern of donor shortfalls undermining maternal services is, however, consistent across both settings, and Thailand's border camps later faced severe aid cuts that terminated most Border Consortium food and medical assistance for over 100,000 Myanmar refugees.
+
+## Synthesis: why the gap, and differential resilience
+
+The four-indicator comparison is unambiguous — Mae La is better on maternal mortality (0 vs 295/100,000), ANC (91% vs 75%), skilled attendance (95% vs 82%) and neonatal mortality (6/1,000 vs an under-5 rate of 25/1,000) [1][2]. The driver is structural. Mae La couples a **dense, stable skilled-attendant workforce** (SMRU's decades-long obstetric team), **in-camp comprehensive obstetric and neonatal care**, and **integration into a national hospital referral tier** (Mae Sot), so haemorrhage and prematurity are managed close to delivery [6][4]. Cox's Bazar must stretch a single CEmONC facility and a ~1:2,080 midwife ratio across nearly a million people, so even women who reach care die in facilities from haemorrhage and hypertension — 75% of haemorrhage deaths were facility-based [5][8] — implicating delays in referral, blood and escalation rather than first contact.
+
+On **resilience to funding shocks**, the smaller, integrated Mae La system is structurally better buffered because clinical staffing is concentrated and partly carried by the Thai public system, whereas the Cox's Bazar model depends on annual humanitarian appeals that were only ~49% funded in 2023 [8], leaving its much larger population exposed to any donor reduction. Two data limitations bound this comparison: the Mae La HIS figures are anchored to 2018 (the most recent comparable site report), so the 2017–2023 trend for Mae La rests partly on the longer SMRU research record [3][4][1]; and Cox's Bazar reports an under-5 rather than a clean 28-day neonatal rate and shows an internal inconsistency in EmONC facility counts (3 CEmONC in Jan 2023 vs 1 in Dec 2023) [10][8][2], so the newborn-mortality and EmONC-access comparisons should be read as directional rather than exact.
+
+- Earlier MPMSR/baseline finding: WRA (women of reproductive age) deaths and neonatal deaths accounted for 28% of total deaths Aug 2017-Aug 2018; review article (Sex Reprod Health Matters 2019) reported 52 maternal deaths out of 82 pregnancy-related deaths in early camp period. UNFPA leads MISP (Minimum Initial Service Package) in Rohingya camps.
+- Cox's Bazar Rohingya Health Sector Bulletin Jan 2023 (pop 925,367): Facilities = 84 health posts, 46 primary health centres, 32 facilities with BEmONC, 03 with CEmONC, 08 secondary care facilities. 2,354 facility-based births (3% stillbirths), 82% health facility births, 09 maternal deaths. Note discrepancy: Jan 2023 lists 32 BEmONC + 3 CEmONC; Dec 2023 lists only 1 CEmONC facility — possible reporting change/consolidation.
+
+## Sources
+
+1. [Thailand_2018_Maela.pdf](https://his.unhcr.org/ar2018/files/TH/Thailand_2018_Maela.pdf)
+2. [CXB-Health-Sector-Bulletin-Jan-2024-1.pdf](https://rohingyaresponse.org/wp-content/uploads/2024/03/CXB-Health-Sector-Bulletin-Jan-2024-1.pdf)
+3. [Effect of Early Detection and Treatment on Malaria Related Maternal Mortality on the North-Western Border of Thailand 1986–2010](https://journals.plos.org/plosone/article?id=10.1371%2Fjournal.pone.0040244)
+4. [Neonatal Intensive Care in a Karen Refugee Camp: A 4 Year Descriptive Study - PMC](https://pmc.ncbi.nlm.nih.gov/articles/PMC3749980/)
+5. [mpmsr_annual_report_2021.pdf](https://bangladesh.unfpa.org/sites/default/files/pub-pdf/mpmsr_annual_report_2021.pdf)
+6. [Quality of intrapartum care by skilled birth attendants in a refugee clinic on the Thai-Myanmar border: a survey using WHO Safe Motherhood Needs Assessment - PubMed](https://pubmed.ncbi.nlm.nih.gov/25652646/)
+7. [Mortality in Rohingya refugee camps in Bangladesh: historical, social, and political context - PMC](https://pmc.ncbi.nlm.nih.gov/articles/PMC7888086/)
+8. [CXB-Health-Sector-Bulletin-Dec-2023-1.pdf](https://rohingyaresponse.org/wp-content/uploads/2024/01/CXB-Health-Sector-Bulletin-Dec-2023-1.pdf)
+9. [100119](https://data.unhcr.org/en/documents/download/100119)
+10. [](https://reliefweb.int/attachments/7e6cbc21-661d-4a04-bb3e-2e111ee4b381/cxb_health_sector_bulletin_jan_2023.pdf)
+11. [Estimating stillbirth and neonatal mortality rate among Rohingya refugees in Bangladesh, September 2017 to December 2018: a prospective surveillance - PubMed](https://pubmed.ncbi.nlm.nih.gov/35443939/)

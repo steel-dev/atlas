@@ -1,0 +1,94 @@
+# Multimodal Checkout for Blind and Low-Vision (BLV) Grocery Shoppers: Voice-Only vs. Touch-with-Audio
+
+## Bottom line
+
+The evidence points to a **scenario-split design, not a single winning modality**. For *system-driven confirmation and authorization*, a structured, predictable workflow (voice-automated or hybrid) decisively beats free-form manual screen-reader navigation: a voice-driven mobile-transaction framework raised task success from **65–75% to >90%** and cut transaction time from **40–60 s to 12–15 s** versus manual USSD-with-screen-reader [1]. For *numerical and free-text entry*, touch-with-audio is far more accurate than the dominant screen-reader text method: an eyes-free multi-touch keyboard (No-Look Notes) cut the mean error rate to **0.11 vs. 0.60 for VoiceOver — a 445% higher error rate for VoiceOver** among 10 visually impaired participants [2]. But hybrid is not free: adding tactile feedback to audio *slowed* menu navigation (audio-only ≈86 s vs. audio-tactile ≈115 s) without reducing NASA-TLX workload [3]. The one categorical rule across all sources: **payment authorization must use an explicit, reversible, read-back confirmation step (item count + total) and must never auto-commit on a single voice command**, per WCAG 2.2 SC 3.3.4 [4].
+
+Three deployment assumptions drive the specifics below and should be confirmed before build: **(1) target OS** — iOS VoiceOver vs. Android TalkBack (the entry-accuracy evidence is iPhone/VoiceOver-specific [2]); **(2) the low-vision vs. fully-blind split** in your user base (low-vision users can use residual vision plus magnification, changing the touch-target calculus); and **(3) the acceptable payment authentication method** — biometric (Face ID/fingerprint), passkey, or PIN — which WCAG 2.2 SC 3.3.8 constrains to mechanisms that require no memorization, transcription, or cognitive puzzle [5].
+
+## Headline comparison
+
+| Sub-dimension | Sequential voice-only | Hybrid touch-with-audio-feedback | Winner |
+|---|---|---|---|
+| Task completion / success rate | Manual screen-reader navigation 65–75% success [1]; structured voice-automation >90% [1] | Touch+audio menu navigation completes but slower than audio-only [3] | **Voice-automation** when the flow is system-driven and predictable [1] |
+| Transaction/navigation time | Manual USSD+screen reader 40–60 s; voice-automation 12–15 s [1]; audio-only menu locate ≈86.2 s (SD 25.9) [3] | Audio-tactile menu locate ≈114.8 s (SD 93.1), significantly slower than audio-only (p<.05) [3] | **Audio-only / voice-automation** for menu traversal speed [3][1] |
+| Numeric / text entry error rate | Free speech entry prone to misrecognition; VoiceOver text error rate 0.60 [2] | Eyes-free multi-touch (No-Look Notes) error rate 0.11 — VoiceOver had 445% more errors [2] | **Touch-with-audio** for character/number entry [2] |
+| Confidence / satisfaction | Low confidence with VoiceOver; SUS 52.5 (poor) for novice BLV users [6]; voice-only users anxious about unverified actions [7] | No-Look Notes rated significantly higher on "felt in control," "easy to learn," "fast" (8 of 14 items, all favoring touch) [2] | **Touch-with-audio** on perceived control [2] |
+| Cognitive load (NASA-TLX) | High in non-visual conditions [3]; ephemeral speech forces listen-remember-compare burden [7] | NASA-TLX statistically indistinguishable from audio-only [3] | **Tie** — adding tactile did not lower measured workload [3] |
+
+## Task completion and time
+
+The clearest checkout-relevant completion data come from Ajayi et al. (2026, Carnegie Mellon Africa), comparing a voice-driven, biometrically secured transaction framework against conventional manual USSD navigation with a screen reader for visually impaired users: traditional approach **65–75% task success** versus the structured voice-automation system **>90%**; transaction time **40–60 s** (traditional) versus **12–15 s** (proposed); error rate "High (manual input and navigation errors)" versus "Low" [1]. The gains are attributed to eliminating manual menu navigation, using predefined transaction flows, and faster system-driven confirmation handling [1] — i.e., the win comes from *structure and automation of the flow*, not from voice per se.
+
+For menu traversal as an isolated act, Metatla et al. (2014, Queen Mary) had 12 participants locate items on visual, audio-only, and audio-tactile touchscreen menus: audio-only mean completion **86.16 s (SD 25.94)**; audio-tactile **114.75 s (SD 93.08)**, significantly slower than both visual (42 s) and audio-only (p<.05) [3]. Counterintuitively, *adding* tactile feedback to audio slowed users — average swipe times were slowest in the audio-tactile condition (M=4.4 s vs. 3.04 s audio-only, p<.01) [3]. (Caveat: Metatla's participants were sighted CS students performing non-visual tasks, a documented limitation [3].)
+
+## Numerical entry: the highest-error subtask
+
+Numeric/text entry is where modality choice matters most, and **touch-with-audio wins decisively**. In Bonner et al.'s within-subjects study (n=10) of eyes-free multi-touch text entry, No-Look Notes' mean error rate was **0.11** versus VoiceOver's **0.60** — a **445% higher error rate for VoiceOver** (paired t-test, p<.05) [2]. No-Look Notes was also faster at peak (1.67 WPM vs. 0.76 WPM in block 4) and rated significantly higher on 8 of 14 questionnaire items, all favoring touch, including "felt in control" [2].
+
+The mechanism analysis explains *why*: VoiceOver's high error rate is largely attributable to the difficulty of locating one small target among many on a soft keyboard — VoiceOver's focus-box input technique "simply did not translate well to the large number of targets in a soft keyboard," with seven of ten participants responding negatively to the size and number of targets [2]. Voice input adds a *second* failure mode — speech misrecognition — that is especially damaging for digits and quantities, where a single substituted number silently changes the order; the CHI study documents BLV users re-asking "I only ordered one, right?" precisely because voice gives no visual feedback to self-check quantity [7]. Touch-with-audio's failure mode is a *touch slip*, which the user can usually detect and correct via per-character audio feedback. **Mitigation implication:** numeric fields (quantity, payment amounts) should default to a touch-driven, large-target, audio-confirmed control (stepper or grouped keypad), with any voice numeric input echoed back digit-by-digit before it is committed.
+
+## Confidence and satisfaction
+
+Confidence is low under voice-only/screen-reader conditions for less-experienced BLV users. Kim (2024, CSUN/NC A&T) measured **SUS 52.5 ± 16.11 for VoiceOver** among visually impaired participants new to iPhone — a **"poor" rating** (below the ~68 benchmark); positive-item mean was 3.52±0.52 (they valued the functions and would use them often) "however, their confidence was low" [6]. By contrast, touch-with-audio scored significantly higher on perceived control in Bonner et al. [2]. Net: **hybrid touch-with-audio wins on confidence for entry tasks**, while voice's confidence deficit is remediable specifically through read-back confirmation.
+
+## Cognitive load and cart size (15+ items)
+
+Both non-visual modalities impose high cognitive load. Metatla found NASA-TLX overall workload **significantly higher in both audio-only and audio-tactile than visual** (F(2,22)=33.39, p<.0001), with **no significant difference between audio-only and audio-tactile** — tactile feedback did not buy back workload [3]. The deeper problem for large carts is the **ephemeral, serial nature of speech**: the CHI 2026 study found BLV users bear "substantial cognitive burden, as they had to listen, remember, and compare all information through speech," and therefore preferred concise summaries, a limit of about **three items of information at a time**, and review digests to curb fatigue [7]. The ODU micro-behavioral study reinforces that unfamiliar/serial navigation drives "navigation entropy" — frequent corrections, revisits, and high mental effort [8].
+
+This means a **sequential audio read-out of 15+ cart items imposes a heavy working-memory load** (the user must hold a running mental tally with no random access), whereas a **touch-navigable hybrid review lets the user jump to, re-read, and edit any single line on demand** without re-hearing the whole list. **Design consequence:** for carts of 15+ items, provide a touch-navigable, per-line review (each line a focusable element exposing name, quantity, price), announce a concise summary first ("18 items, total \$84.20"), and let the user drill into individual lines — rather than forcing a linear spoken recitation.
+
+## WCAG 2.2 success criteria for confirmation and error recovery
+
+| SC | Level | Requirement | Checkout application |
+|---|---|---|---|
+| **3.3.4 Error Prevention (Legal, Financial, Data)** | AA | Financial/legal submissions must be **Reversible**, **Checked**, or **Confirmed** (review-confirm-correct before finalizing) [4] | The binding rule for payment authorization — provide a reversible, confirmed review step [4] |
+| **3.3.6 Error Prevention (All)** | AAA | Same reversible/checked/confirmed options, for **any** form submission [9] | Apply the review/undo pattern beyond payment, e.g., to quantity and address steps [9] |
+| **3.3.7 Redundant Entry** | A | Don't ask for the same info twice in one process; auto-populate or let the user reselect; on error, **don't clear already-entered fields** (e.g., credit-card number) [10] | Preserve entered card/address data after an error; offer "billing same as delivery" [10] |
+| **3.3.8 Accessible Authentication (Minimum)** | AA | No cognitive-function test to log in; allow password managers, copy-paste, email-link auth (G218) [5] | Payment auth should use biometrics/passkey or otherwise avoid memorization/transcription [5] |
+| **4.1.3 Status Messages** | AA | Status changes must be programmatically exposed so AT announces them **without moving focus** [11] | Announce "item added," "quantity updated," "payment processing" via live regions without yanking focus [11] |
+
+The WCAG 3.3.4/3.3.6 "Confirmed" option *is* the multi-step review pattern, and 3.3.7's worked example is itself a checkout case: a checkout form with an incorrect credit-card number shows an error but does **not** clear the submitted number [10]. These criteria collectively encode the confirmation/review and error-recovery patterns the question asks for.
+
+## Optimal confirmation strategies and error recovery (from studies)
+
+- **Explicit read-back / double-check, phrased as a statement not a question.** The CHI 2026 study found BLV users spontaneously want the system to confirm "product name, color/size, quantity, price" and that this is a safeguard against voice errors and a driver of trust; crucially, confirmation should be delivered as a **clear statement of the outcome** ("The tumbler you selected has been added to your cart. Color: pink … Quantity: …") rather than a repeated "Is that correct?" question, which causes fatigue [7].
+- **Read-back of total and item count before payment.** Follows directly from 3.3.4's "Confirmed" requirement [4] and the read-back evidence above [7]; the verification cell on a 15+ cart should be a concise summary plus drill-down [7].
+- **Undo / reversibility over hard re-entry.** 3.3.4/3.3.6 explicitly accept "Reversible" submissions [4][9]; undo/redo is also the error-recovery mechanism BLV users respond to in voice/agent interfaces [7].
+- **Redundant-entry avoidance.** Preserve and pre-fill previously entered data; never wipe a field on validation error [10].
+- **Status messages for every state change** so the user is informed without losing their place [11].
+- **Accessible re-authentication.** If a session expires mid-checkout, recovery must not impose a memory/transcription puzzle (3.3.8) — biometric or passkey re-auth is preferred [5].
+
+## Scenario-split recommendation
+
+| Subtask | Recommended modality | Confirmation / recovery strategy |
+|---|---|---|
+| **Product selection** | Voice for search/intent + audio (or touch list) for browsing; limit to ~3 options at a time [7] | System read-back of the chosen item's key details as a statement [7]; choice-preview prompts to reduce question-formulation burden [7] |
+| **Quantity adjustment** | **Touch-with-audio** (large-target stepper/keypad) — touch entry has ~445% fewer errors than the screen-reader text path [2]; if voice is used, echo the number back digit-by-digit before committing [7] | Per-character/per-step audio feedback; status message on each change [11]; easy undo [9] |
+| **Payment authorization** | Structured, system-driven confirm step (the pattern that lifted success to >90% [12]); biometric/passkey auth (3.3.8) [5] | **Mandatory explicit, reversible confirmation with audio read-back of item count and total** [4][7]; preserve entered fields on error (3.3.7) [10]; announce processing/success via live region (4.1.3) [11] |
+
+## Categorical directive
+
+**Payment authorization must include an explicit, reversible confirmation step that reads back the order total and item count, and must never auto-commit on a single voice command.** This is mandated by WCAG 2.2 SC 3.3.4 (financial transactions must be Reversible, Checked, or Confirmed) [4], reinforced by the documented anxiety and self-check behavior of BLV voice users when actions are unconfirmed [7], and consistent with the read-back-as-statement pattern shown to build trust [7]. The confirmation should be a clear spoken statement of the total and count, focus should not be stolen by transient status updates (4.1.3) [11], and the user must retain a reversible/undo path through finalization (3.3.4/3.3.6) [4][9].
+
+- WCAG 2.2 SC 4.1.3 Status Messages, Level AA: Status messages must be programmatically determinable through role/properties so AT can present them WITHOUT receiving focus (e.g., via ARIA live regions). Intent: make users aware of important content changes not given focus, without unnecessarily interrupting work. Beneficiaries: blind and low-vision screen reader users. Directly relevant to announcing cart updates ("item added", "quantity updated", "payment processing") without yanking focus. Note: an error message in a dialog that takes focus is a change of context, NOT a status message. Source: w3.org WCAG22 Understanding 4.1.3.
+- Ajayi et al. 2026 (Carnegie Mellon Africa), "Toward Accessible Mobile Money: A Voice-Driven, Biometrically Secured USSD Automation Framework for Visually Impaired Users" (arxiv 2605.31375): Comparison vs conventional manual USSD with screen reader. TASK SUCCESS RATE: Traditional approach 65–75% vs Proposed (voice-automation) system >90%. TRANSACTION TIME: Traditional USSD with screen reader 40–60 seconds vs Proposed system 12–15 seconds. Error rate: Traditional "High (manual input and navigation errors)" vs Proposed "Low". Improvements attributed to elimination of manual menu navigation, predefined transaction flows, faster system-driven confirmation handling.
+- Kim et al. 2026 CHI (dl.acm 3772318.3791681), "Toward Independent Online Shopping of the Visually Impaired Through Voice-based Computer-Using Agent": 12 BLV participants (mix total blindness & low vision) used voice-based CUA on Naver Shopping (Korea). Key confirmation theme — participants spontaneously sought "Double-check"/read-back confirmation of selected product details to prevent errors during voice ordering (e.g. "I ordered two red T-shirts and one white pair of pants, right?"). Payment process NOT included — task ended when product added to cart. Shows BLV users want explicit read-back confirmation in voice ordering.
+- CORRECTION: Ajayi et al. voice-USSD framework is source_15 (arxiv 2605.31375), NOT source_13. source_13 is the PMC word-prediction keyboard paper (11 blind participants; QWERTY TER 7.93% vs word-prediction 8.826%, no significant accuracy difference; uncorrected error 3.195% standard vs 2.373% word-prediction). source_15 confirms task success 65-75%→>90%, transaction time 40-60s→12-15s, error High→Low.
+- source_5 (ODU Micro-Behavioral Analysis of Online Shopping for Blind Users): 25 blind participants (12 female, 13 male), avg age 25.8, exclusively screen-reader users (JAWS/NVDA/VoiceOver), experienced with online shopping; 3-month longitudinal study. Key findings: "Unfamiliarity drives navigation entropy" — on unfamiliar sites users reduce shortcut diversity, shift to slow exploratory behavior (Arrow/TAB), increasing key presses, interaction times, navigation loops, and cognitive load.
+- source_10 (Food Delivery Apps for BVI, dl.acm 3565066.3608688): DoorDash VoiceOver "falls into a loop of reading a few restaurants" — P147 cannot scroll past first few restaurants without getting caught in a loop. 130 participants reported UI/information architecture too complex for screen readers. Multiple participants reported difficulty locating the checkout button or the shopping cart. 83.10% of participants experienced with food delivery apps for ≥1 year.
+
+## Sources
+
+1. [Toward Accessible Mobile Money: A Voice-Driven, Biometrically Secured USSD Automation Framework for Visually Impaired Users](https://arxiv.org/html/2605.31375)
+2. [perv2010-nolooknotes.pdf](https://faculty.cc.gatech.edu/~keith/pubs/perv2010-nolooknotes.pdf)
+3. [BSCHCI2014.pdf](https://sid.eecs.qmul.ac.uk/projects/depic/BSCHCI2014.pdf)
+4. [Understanding Success Criterion 3.3.4: Error Prevention (Legal, Financial, Data) | WAI | W3C](https://www.w3.org/WAI/WCAG22/Understanding/error-prevention-legal-financial-data)
+5. [Understanding Success Criterion 3.3.8: Accessible Authentication (Minimum) | WAI | W3C](https://www.w3.org/WAI/WCAG22/Understanding/accessible-authentication-minimum.html)
+6. [10543242](https://par.nsf.gov/servlets/purl/10543242)
+7. [Toward Independent Online Shopping of the Visually Impaired Through Voice-based Computer-Using Agent | Proceedings of the 2026 CHI Conference on Human Factors in Computing Systems](https://dl.acm.org/doi/10.1145/3772318.3791681)
+8. [Micro-Behavioral Analysis of Online Shopping Patterns for Blind Users](https://digitalcommons.odu.edu/cgi/viewcontent.cgi?article=1441&context=computerscience_fac_pubs)
+9. [Understanding Success Criterion 3.3.6: Error Prevention (All) | WAI | W3C](https://www.w3.org/WAI/WCAG22/Understanding/error-prevention-all)
+10. [Understanding Success Criterion 3.3.7: Redundant Entry | WAI | W3C](https://www.w3.org/WAI/WCAG22/Understanding/redundant-entry)
+11. [Understanding Success Criterion 4.1.3: Status Messages | WAI | W3C](https://www.w3.org/WAI/WCAG22/Understanding/status-messages)
+12. [Exploring the impact of word prediction assistive features on smartphone keyboards for blind users - PMC](https://pmc.ncbi.nlm.nih.gov/articles/PMC11388727/)
