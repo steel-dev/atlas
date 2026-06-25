@@ -47,7 +47,7 @@
   "dependencies": {
     "@ai-sdk/provider": "^3.0.0",
     "cheerio": "^1.0.0",
-    "exa-js": "^2.14.0",
+    "exa-js": "^2.15.0",
     "pdf-parse": "^2.4.5",
     "steel-sdk": "^0.18.0",
     "undici": "^7.25.0",
