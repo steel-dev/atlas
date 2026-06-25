@@ -11,6 +11,7 @@ import { runAgent, type AgentResult } from "./agent.js";
 import type { Citation } from "./bind.js";
 import { withGrant, type BudgetGrant, type BudgetMeter } from "./budget.js";
 import type { AgentRole } from "./events.js";
+import { errorMessage } from "./errors.js";
 import { NON_EVIDENCE_WARNINGS } from "./ledger.js";
 import { stubToolResultWindow } from "./memory.js";
 import { MODEL_CALL_MAX_RETRIES } from "./model.js";
@@ -776,6 +777,7 @@ export async function runSpine(
     : null;
   const gatherGrant = meter.grant({ fraction: 1 }) ?? meter;
   let gathered: AgentResult | null = null;
+  let gatherError: unknown = null;
   try {
     gathered = await gather(rctx, gatherGrant, task);
   } catch (err) {
@@ -787,6 +789,18 @@ export async function runSpine(
       presynthGrant?.release();
       throw err;
     }
+    // A non-abort gather failure (e.g. an unreachable model endpoint) would
+    // otherwise be invisible: the run still "completes" with a no-source
+    // report. Surface it on stderr and as a recoverable run event so both
+    // operators and event consumers (CLI, web UI) can see the real cause, and
+    // remember it so the returned report can name it instead of guessing.
+    gatherError = err;
+    process.stderr.write(`atlas: gather failed: ${errorMessage(err)}\n`);
+    rctx.emit({
+      type: "run.error",
+      message: `gather failed: ${errorMessage(err)}`,
+      recoverable: true,
+    });
   } finally {
     if (gatherGrant !== meter) gatherGrant.release();
   }
@@ -798,11 +812,15 @@ export async function runSpine(
     if (patchGrant !== meter) patchGrant.release();
     if (reconcileGrant !== meter) reconcileGrant.release();
     presynthGrant?.release();
+    const failNote = gatherError
+      ? `Research failed before any sources could be retrieved: ${errorMessage(gatherError)}`
+      : "";
     return {
       report:
         note ||
+        failNote ||
         "No sources could be retrieved for this question, so no grounded report could be written.",
-      note,
+      note: failNote || note,
       citations: [],
       unsupportedSentences: [],
     };
@@ -819,6 +837,13 @@ export async function runSpine(
         if (reconcileGrant !== meter) reconcileGrant.release();
         throw err;
       }
+      // Surface the degraded phase instead of silently moving on; the run still
+      // completes, but event consumers can see why a gap went unfilled.
+      rctx.emit({
+        type: "run.error",
+        message: `pre-synthesis gap fill failed: ${errorMessage(err)}`,
+        recoverable: true,
+      });
     } finally {
       presynthGrant.release();
     }
@@ -829,6 +854,7 @@ export async function runSpine(
     ...(gathered?.messages ?? []),
   ];
   const draft: Draft = { text: "" };
+  let synthError: unknown = null;
   try {
     await synthesizeHolistic(rctx, synthGrant, priorMessages, draft);
   } catch (err) {
@@ -838,6 +864,14 @@ export async function runSpine(
       if (reconcileGrant !== meter) reconcileGrant.release();
       throw err;
     }
+    // Synthesis threw: the run falls back to a no-report result. Surface the
+    // cause so the fallback isn't mistaken for a budget limit.
+    synthError = err;
+    rctx.emit({
+      type: "run.error",
+      message: `synthesis failed: ${errorMessage(err)}`,
+      recoverable: true,
+    });
   } finally {
     if (synthGrant !== meter) synthGrant.release();
   }
@@ -862,6 +896,11 @@ export async function runSpine(
     await flushDroppedNotes(rctx, reconcileGrant, draft);
   } catch (err) {
     if (rctx.signal?.aborted) throw err;
+    rctx.emit({
+      type: "run.error",
+      message: `coverage/patch failed: ${errorMessage(err)}`,
+      recoverable: true,
+    });
   } finally {
     if (coverageGrant !== meter) coverageGrant.release();
     if (patchGrant !== meter) patchGrant.release();
@@ -869,9 +908,15 @@ export async function runSpine(
   }
 
   if (!draft.text.trim()) {
+    const failNote = synthError
+      ? `Synthesis failed: ${errorMessage(synthError)}`
+      : "";
     return {
-      report: note || "Sources were gathered but no report could be composed within budget.",
-      note,
+      report:
+        failNote ||
+        note ||
+        "Sources were gathered but no report could be composed within budget.",
+      note: failNote || note,
       citations: [],
       unsupportedSentences: [],
     };

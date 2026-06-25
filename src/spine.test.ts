@@ -5,8 +5,9 @@ import type {
   LanguageModelV3GenerateResult,
   LanguageModelV3ToolChoice,
 } from "@ai-sdk/provider";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { Atlas } from "./atlas.js";
+import type { ResearchEvent } from "./events.js";
 import type { ResolvedModel } from "./model.js";
 import type { FetchProvider } from "./providers/fetch.js";
 import type { SearchProvider } from "./providers/search.js";
@@ -161,5 +162,165 @@ describe("spine engagement", () => {
     expect(seenToolChoices.length).toBeGreaterThanOrEqual(1);
     expect(seenToolChoices[0]).toEqual({ type: "tool", toolName: "search" });
     expect(searched).toBe(true);
+  });
+});
+
+describe("gather failure visibility", () => {
+  it("surfaces a non-abort gather model error instead of swallowing it", async () => {
+    // Mirrors a real incident: the research/gather model endpoint is unreachable
+    // (e.g. "Invalid JSON response" through a mismatched proxy). Before the fix
+    // this was swallowed and the run "completed" with a generic no-source report.
+    const failingResearchModel = new MockLanguageModelV3({
+      provider: "mock-provider",
+      modelId: "research-model",
+      doGenerate: async () => {
+        throw Object.assign(new Error("Invalid JSON response"), {
+          isRetryable: false,
+        });
+      },
+    });
+
+    const stderr = vi.spyOn(process.stderr, "write");
+
+    const atlas = new Atlas({
+      model: planModel() as unknown as ResolvedModel,
+      models: {
+        research: failingResearchModel as unknown as ResolvedModel,
+        extract: jsonModel("extract-model") as unknown as ResolvedModel,
+        write: writeModel(),
+      },
+      search: { id: "stub", search: async () => [] },
+      fetch: stubFetch,
+      effort: "fast",
+      safety: { allowPrivateNetworks: true },
+    });
+
+    const run = atlas.start("test question", {
+      runId: "run_gather_fail",
+      budget: { maxUSD: 5 },
+    });
+    const events: ResearchEvent[] = [];
+    const drain = (async () => {
+      for await (const event of run.events()) events.push(event);
+    })();
+    const result = await run.result();
+    await drain;
+    stderr.mockRestore();
+
+    expect(run.status()).toBe("completed");
+    // The real cause is now embedded in the report and note, not a generic message.
+    expect(result.report).toMatch(/Research failed before any sources/i);
+    expect(result.note).toMatch(/Invalid JSON response/i);
+    // It is also emitted as a recoverable run event so CLI and web consumers see it.
+    const runErrors = events.filter(
+      (event): event is Extract<ResearchEvent, { type: "run.error" }> =>
+        event.type === "run.error",
+    );
+    expect(
+      runErrors.some(
+        (event) => event.recoverable && /gather failed/i.test(event.message),
+      ),
+    ).toBe(true);
+  });
+});
+
+function fetchCallResult(): LanguageModelV3GenerateResult {
+  return {
+    content: [
+      {
+        type: "tool-call",
+        toolCallId: "call_fetch_1",
+        toolName: "fetch",
+        input: JSON.stringify({ urls: ["https://example.com/answer"] }),
+      },
+    ],
+    finishReason: { unified: "tool-calls", raw: undefined },
+    usage: USAGE,
+    warnings: [],
+  };
+}
+
+// A gather model that searches, then fetches a source (so the run reaches the
+// post-gather synthesis phase), then writes a closing note.
+function gatherModelFetching(): MockLanguageModelV3 {
+  let step = 0;
+  return new MockLanguageModelV3({
+    provider: "mock-provider",
+    modelId: "research-model",
+    doGenerate: async () => {
+      step++;
+      if (step === 1) return searchCallResult();
+      if (step === 2) return fetchCallResult();
+      return textResult("Closing note: surveyed the question from fetched sources.");
+    },
+  });
+}
+
+function failingWriteModel(message: string): ResolvedModel {
+  return wrapLanguageModel({
+    model: new MockLanguageModelV3({
+      provider: "mock-provider",
+      modelId: "write-model",
+      doGenerate: async () => {
+        throw Object.assign(new Error(message), { isRetryable: false });
+      },
+    }),
+    middleware: simulateStreamingMiddleware(),
+  }) as unknown as ResolvedModel;
+}
+
+describe("post-gather failure visibility", () => {
+  it("emits a recoverable run.error when synthesis fails instead of swallowing it", async () => {
+    const atlas = new Atlas({
+      model: planModel() as unknown as ResolvedModel,
+      models: {
+        research: gatherModelFetching() as unknown as ResolvedModel,
+        extract: jsonModel("extract-model") as unknown as ResolvedModel,
+        write: failingWriteModel("synthesis endpoint down"),
+      },
+      search: {
+        id: "stub",
+        search: async () => [
+          {
+            position: 1,
+            title: "Answer",
+            url: "https://example.com/answer",
+            snippet: "snippet",
+            domain: "example.com",
+          },
+        ],
+      },
+      fetch: stubFetch,
+      effort: "fast",
+      safety: { allowPrivateNetworks: true },
+    });
+
+    const run = atlas.start("test question", {
+      runId: "run_synth_fail",
+      budget: { maxUSD: 5 },
+    });
+    const events: ResearchEvent[] = [];
+    const drain = (async () => {
+      for await (const event of run.events()) events.push(event);
+    })();
+    const result = await run.result();
+    await drain;
+
+    // Sanity: gather fetched a source, so the run reached the post-gather path.
+    expect(result.sources.length).toBeGreaterThan(0);
+    expect(run.status()).toBe("completed");
+    // The synthesis cause reaches the user-facing report and note, not only the
+    // event stream — so a total synthesis outage isn't mistaken for a budget cap.
+    expect(result.report).toMatch(/synthesis failed/i);
+    expect(result.note).toMatch(/synthesis endpoint down/i);
+    const runErrors = events.filter(
+      (event): event is Extract<ResearchEvent, { type: "run.error" }> =>
+        event.type === "run.error",
+    );
+    expect(
+      runErrors.some(
+        (event) => event.recoverable && /synthesis failed/i.test(event.message),
+      ),
+    ).toBe(true);
   });
 });
