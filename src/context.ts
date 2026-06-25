@@ -326,3 +326,18 @@ function primeSourceNumbers(sources: SourceStore, replay: ReplayCache): void {
   }
   if (max >= sources.nextSourceNumber) sources.nextSourceNumber = max + 1;
 }
+
+export function deriveChildCtx(parent: RunCtx, question: string): RunCtx {
+  return {
+    ...parent,
+    question,
+    ledger: null,
+    trail: createTrail(),
+    notes: [],
+    readCounts: new Map(),
+    sources: createSourceStore(),
+    oaCandidates: new Map(),
+    surfacedCandidates: new Map(),
+    seenDomains: new Set(),
+  };
+}

@@ -393,9 +393,14 @@ export function renderDeliverableContract(ledger: Ledger): string {
   const legend = shapesPresent
     .map((shape) => `- ${shape}: ${SHAPE_RENDER_LEGEND[shape]}`)
     .join("\n");
-  const lines = filled.map(
-    (slot) => `- [${slot.shape}] ${slot.ask} -> ${fillValue(slot.fill!)}`,
-  );
+  const lines = filled.map((slot) => {
+    const fill = slot.fill!;
+    let line = `- [${slot.shape}] ${slot.ask} -> ${fillValue(fill)}`;
+    if (fill.kind === "grounded" && fill.quote.trim()) {
+      line += `\n    evidence: "${fill.quote.trim().slice(0, 200)}"`;
+    }
+    return line;
+  });
   return (
     "DELIVERABLE CONTRACT — these are the findings your report is judged on. State each plainly and up front; never bury, hedge, or silently drop one you hold. Render each to the depth its shape calls for:\n" +
     legend +

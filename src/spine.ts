@@ -13,7 +13,6 @@ import {
   resolvePricing,
   withGrant,
   type BudgetGrant,
-  type BudgetMeter,
 } from "./budget.js";
 import { ConfigError } from "./errors.js";
 import type { AgentRole, Citation } from "./events.js";
@@ -23,7 +22,6 @@ import { MODEL_CALL_MAX_RETRIES } from "./model.js";
 import type { RunCtx } from "./state.js";
 import {
   applyCoverageUpdate,
-  centralFactsAllFilled,
   draftCoverageSchema,
   ledgerFromSubQuestions,
   renderDeliverableContract,
@@ -47,6 +45,8 @@ export interface SpineOutput {
   note: string;
   citations: Citation[];
   unsupportedSentences: string[];
+  sources?: { url: string; title: string; via: string }[];
+  warnings?: string[];
 }
 
 interface Gap {
@@ -176,10 +176,6 @@ async function gather(
     captureMessages: true,
     memoryCursor: GATHER_MEMORY_KEEP,
     forceFirstTool: "search",
-    stopWhenSatisfied: () =>
-      rctx.sources.fetchedSources.length > 0 &&
-      rctx.ledger !== null &&
-      centralFactsAllFilled(rctx.ledger),
   });
 }
 
@@ -301,6 +297,7 @@ const SYNTH_SYSTEM =
 const WRITE_INSTRUCTION =
   "You have finished gathering. Write the report now.\n" +
   "FIRST, immediately call draft_set and write the complete answer in one pass at the length and shape given above — match the DELIVERABLE SHAPE (a single-fact lookup is a short answer-first paragraph with no section headers, never a multi-section report; a broad question earns a full structured report), drawing on the research conversation above and comparing or ranking explicitly where the question asks, citing inline as [source_N]. You already have the material in front of you; do not retrieve before this first full draft.\n" +
+  "Be thorough on a broad question — it earns a complete, fully developed report: cover every sub-question and slot the contract names, work each comparison across all its dimensions, trace each mechanism and trade-off in full, and surface every grounded specific you hold. Let the length follow the question's breadth; do not compress a multi-part analysis into a thin summary, and never omit analysis you have the evidence for — that is lost coverage, not concision.\n" +
   "THEN reread with draft_show and, wherever a specific figure or detail is vague or missing, retrieve just that with search_sources/read_source (or recompute with run_code) and fix that one spot with draft_patch.\n" +
   "Ground every claim in the sources and do not claim more than they support. Fix real gaps only; do not re-polish.\n" +
   "State the facts you have grounded plainly and up front: when the question asks for a specific quantity, range, date, or named entity and a source supports it, give that value directly first, then add any caveat — do not bury a supported fact under hedging until it reads as a non-answer. Attach the exact value the question calls for to each recommendation (the duration, the percentage, the threshold, the figure), and keep the precise value from your notes rather than rounding or generalizing it away. Where a standard metric is not stated outright but its components are in the sources, compute and state it rather than conceding it is undisclosed. Cite the most authoritative source you have for each claim — a primary or official source over commentary or a blog — and write the exact identifier the claim turns on (the statute section, the standard's number, the DOI) rather than paraphrasing it away. Never cite a study-aid, flashcard, forum, or wiki page as the authority for a statute, standard, Restatement, or official figure: if that is your only source for such a foundational text, re-anchor the claim to a primary or official source you fetched, or drop the citation rather than attach a low-tier one.\n" +
@@ -383,7 +380,7 @@ async function synthesizeHolistic(
 ): Promise<void> {
   const actx = ioActx(rctx, grant, "writer", "write");
   const tools: ToolSet = {
-    ...buildAgentTools(rctx, actx, ["search_sources", "read_source", "note", "run_code"]),
+    ...buildAgentTools(rctx, actx, ["search_sources", "read_source", "note"]),
     ...draftTools(rctx, draft),
   };
   const seed = stubToolResultWindow(priorMessages, WRITE_KEEP);
@@ -415,7 +412,7 @@ async function synthesizeHolistic(
         } = {
           messages: stubToolResultWindow(messages as ModelMessage[], WRITE_KEEP),
         };
-        if (!draft.text.trim() && stepNumber >= 1) {
+        if (!draft.text.trim() && stepNumber >= 3) {
           out.toolChoice = { type: "tool", toolName: "draft_set" };
         }
         return out;
@@ -776,7 +773,7 @@ function renumberAndGround(
 
 export async function runSpine(
   rctx: RunCtx,
-  opts: { meter: BudgetMeter },
+  opts: { meter: BudgetGrant },
 ): Promise<SpineOutput> {
   const meter = opts.meter;
   let ledger = await withGrant(
@@ -800,7 +797,7 @@ export async function runSpine(
   const researchModelId =
     (rctx.config.models.research as { modelId?: string }).modelId ?? "";
   const plan = resolveBudgetPlan({
-    budgetUSD: rctx.config.budgetUSD,
+    budgetUSD: meter.limitUSD,
     maxTokens: rctx.config.maxTokens,
     maxReportTokens: rctx.config.envelope.maxReportTokens,
     scope: ledger?.scope === "single_fact" ? "single_fact" : "broad",

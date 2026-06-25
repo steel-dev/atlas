@@ -23,6 +23,7 @@ import {
 } from "./providers/store.js";
 import type { RunCtx } from "./state.js";
 import { runSpine } from "./spine.js";
+import { runOrchestrated } from "./orchestrate.js";
 import type { RunTrace, TraceRecorder } from "./trace.js";
 import { computeDigest } from "./trace-digest.js";
 import { EVENT_SCHEMA_VERSION } from "./events.js";
@@ -267,27 +268,20 @@ async function executeRun(args: ExecuteRunArgs): Promise<ResearchResult> {
     });
   }
 
-  let report: string;
-  let note: string;
-  let citations: Citation[];
-  let unsupportedSentences: string[];
-  let citationsBound: number;
-  let citationsUnsupported: number;
-
   synthesisGrant.release();
-  const spine = await runSpine(rctx, { meter });
-  report = spine.report;
-  note = spine.note;
-  citations = spine.citations;
-  unsupportedSentences = spine.unsupportedSentences;
-  citationsBound = spine.citations.length;
-  citationsUnsupported = spine.unsupportedSentences.length;
-  emit({ type: "report.completed", report });
+  const out =
+    Object.keys(resolved.researchers).length > 0
+      ? await runOrchestrated(rctx, resolved.researchers)
+      : await runSpine(rctx, { meter });
+  emit({ type: "report.completed", report: out.report });
 
   const durationMs = args.now() - startedAt;
   const stats = buildStats({
     rctx,
-    bound: { citationsBound, citationsUnsupported },
+    bound: {
+      citationsBound: out.citations.length,
+      citationsUnsupported: out.unsupportedSentences.length,
+    },
     durationMs,
     stopped: args.stopSignal.aborted,
   });
@@ -307,27 +301,36 @@ async function executeRun(args: ExecuteRunArgs): Promise<ResearchResult> {
   const result: ResearchResult = {
     runId,
     question,
-    report,
-    note,
-    sources: rctx.sources.fetchedSources.map((source) => {
-      const document = source.sourceId
-        ? rctx.sources.byId.get(source.sourceId)
-        : undefined;
-      return {
-        id: source.sourceId ?? "",
-        url: source.url,
-        finalUrl: document?.metadata.finalUrl ?? source.url,
-        title: source.title,
-        via: document?.metadata.method ?? "unknown",
-        chars: document?.storedChars ?? 0,
-        ...(document?.metadata.qualityWarnings
-          ? { warnings: document.metadata.qualityWarnings }
-          : {}),
-      };
-    }),
-    citations,
-    unsupportedSentences,
-    warnings: [],
+    report: out.report,
+    note: out.note,
+    sources: out.sources
+      ? out.sources.map((source, index) => ({
+          id: `source_${index + 1}`,
+          url: source.url,
+          finalUrl: source.url,
+          title: source.title,
+          via: source.via,
+          chars: 0,
+        }))
+      : rctx.sources.fetchedSources.map((source) => {
+          const document = source.sourceId
+            ? rctx.sources.byId.get(source.sourceId)
+            : undefined;
+          return {
+            id: source.sourceId ?? "",
+            url: source.url,
+            finalUrl: document?.metadata.finalUrl ?? source.url,
+            title: source.title,
+            via: document?.metadata.method ?? "unknown",
+            chars: document?.storedChars ?? 0,
+            ...(document?.metadata.qualityWarnings
+              ? { warnings: document.metadata.qualityWarnings }
+              : {}),
+          };
+        }),
+    citations: out.citations,
+    unsupportedSentences: out.unsupportedSentences,
+    warnings: out.warnings ?? [],
     stats,
     ...(rctx.recorder ? { trace: rctx.recorder.snapshot() } : {}),
     eventVersion: EVENT_SCHEMA_VERSION,

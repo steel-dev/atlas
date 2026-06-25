@@ -9,7 +9,20 @@ export interface ParallelAgentOptions {
   describe?: string;
   timeoutMs?: number;
   pollIntervalMs?: number;
+  costPerRunUSD?: number;
 }
+
+const PARALLEL_PRICE_PER_RUN: Record<string, number> = {
+  lite: 0.005,
+  base: 0.01,
+  core: 0.025,
+  core2x: 0.05,
+  pro: 0.1,
+  ultra: 0.3,
+  ultra2x: 0.6,
+  ultra4x: 1.2,
+  ultra8x: 2.4,
+};
 
 const DEFAULT_TIMEOUT_MS = 15 * 60_000;
 const DEFAULT_POLL_INTERVAL_MS = 3_000;
@@ -44,13 +57,14 @@ export function parallelAgent(opts: ParallelAgentOptions = {}): Researcher {
         );
       }
       const headers = { "content-type": "application/json", "x-api-key": apiKey };
+      const processor = opts.processor ?? "core";
       const created = await fetch(`${base}/v1/tasks/runs`, {
         method: "POST",
         signal: ctx.signal ?? null,
         headers,
         body: JSON.stringify({
           input: query,
-          processor: opts.processor ?? "core",
+          processor,
         }),
       });
       if (!created.ok) {
@@ -107,8 +121,14 @@ export function parallelAgent(opts: ParallelAgentOptions = {}): Researcher {
           }
         }
       }
-      ctx.log(`parallel.agent: ${sources.length} sources`);
-      return { report, sources };
+      const cost = opts.costPerRunUSD ?? PARALLEL_PRICE_PER_RUN[processor];
+      ctx.log(
+        `parallel.agent: ${sources.length} sources` +
+          (cost != null
+            ? `, $${cost.toFixed(4)}`
+            : " (cost unknown — set costPerRunUSD)"),
+      );
+      return { report, sources, ...(cost != null ? { cost } : {}) };
     },
   };
 }

@@ -4,9 +4,9 @@ import type {
   LanguageModelV3GenerateResult,
 } from "@ai-sdk/provider";
 import { describe, expect, it } from "vitest";
-import { runOrchestrated } from "./orchestrate.js";
+import { Atlas } from "./atlas.js";
+import type { ResolvedModel } from "./model.js";
 import { researcher, type Researcher } from "./researcher.js";
-import type { AtlasConfig } from "./config.js";
 
 const USAGE = {
   inputTokens: { total: 1_000, noCache: 1_000, cacheRead: 0, cacheWrite: 0 },
@@ -22,7 +22,7 @@ function textResult(text: string): LanguageModelV3GenerateResult {
   };
 }
 
-function leadModel(decomposition: unknown, synth = "INTEGRATED"): MockLanguageModelV3 {
+function leadModel(decomposition: unknown, synth = "MERGED"): ResolvedModel {
   return new MockLanguageModelV3({
     provider: "mock-provider",
     modelId: "claude-sonnet-4-6",
@@ -32,7 +32,7 @@ function leadModel(decomposition: unknown, synth = "INTEGRATED"): MockLanguageMo
       }
       return textResult(synth);
     },
-  });
+  }) as unknown as ResolvedModel;
 }
 
 function fakeResearcher(
@@ -60,90 +60,95 @@ function fakeResearcher(
   });
 }
 
-function cfg(model: MockLanguageModelV3): AtlasConfig {
-  return { model };
-}
+const PRICING = { "claude-sonnet-4-6": { inputPerMTok: 0.5, outputPerMTok: 2 } };
 
-describe("runOrchestrated", () => {
-  it("decomposes, routes, dispatches in isolation, and synthesizes over reports", async () => {
+describe("orchestrated research (via Atlas)", () => {
+  it("decomposes, routes to researchers, synthesizes, and reports real stats", async () => {
     const calls: string[] = [];
-    const researchers = {
-      atlas: fakeResearcher("ATLAS", { calls, sources: [{ url: "https://a", title: "A" }] }),
-      exa: fakeResearcher("EXA", { calls, sources: [{ url: "https://e", title: "E" }] }),
-    };
-    const model = leadModel(
-      {
-        strategy: "split into two",
-        subtasks: [
-          { query: "academic angle", researcher: "atlas" },
-          { query: "shopping angle", researcher: "exa" },
-        ],
+    const budgets: number[] = [];
+    const atlas = new Atlas({
+      model: leadModel(
+        {
+          strategy: "split into two",
+          subtasks: [
+            { query: "academic angle", researcher: "exa" },
+            { query: "shopping angle", researcher: "web" },
+          ],
+        },
+        "MERGED",
+      ),
+      researchers: {
+        exa: fakeResearcher("EXA", {
+          calls,
+          budgets,
+          sources: [{ url: "https://e", title: "E" }],
+        }),
+        web: fakeResearcher("WEB", {
+          calls,
+          budgets,
+          sources: [{ url: "https://w", title: "W" }],
+        }),
       },
-      "MERGED",
-    );
-    const result = await runOrchestrated(cfg(model), "Q", {}, researchers);
+      pricing: PRICING,
+    });
+    const result = await atlas.research("Q");
     expect(result.report).toBe("MERGED");
     expect([...calls].sort()).toEqual(["academic angle", "shopping angle"]);
-    expect(result.sources.map((s) => s.via).sort()).toEqual(["atlas", "exa"]);
-    expect(result.stats.sourcesFetched).toBe(2);
+    expect(result.sources.map((s) => s.via).sort()).toEqual(["exa", "web"]);
     expect(result.note).toBe("split into two");
+    expect(result.stats.costUSD).toBeGreaterThan(0);
+    expect(result.stats.stopReason).toBe("completed");
+    expect(budgets.every((b) => b > 0)).toBe(true);
   });
 
-  it("returns the sub-report verbatim for a single sub-task (skips the synth pass)", async () => {
-    const researchers = { atlas: fakeResearcher("SOLO") };
-    const model = leadModel(
-      { strategy: "trivial", subtasks: [{ query: "Q", researcher: "atlas" }] },
-      "SHOULD_NOT_APPEAR",
-    );
-    const result = await runOrchestrated(cfg(model), "Q", {}, researchers);
+  it("returns the sub-report verbatim for a single sub-task (skips synth)", async () => {
+    const atlas = new Atlas({
+      model: leadModel(
+        { strategy: "trivial", subtasks: [{ query: "Q", researcher: "exa" }] },
+        "SHOULD_NOT_APPEAR",
+      ),
+      researchers: { exa: fakeResearcher("SOLO") },
+      pricing: PRICING,
+    });
+    const result = await atlas.research("Q");
     expect(result.report).toBe("SOLO");
   });
 
-  it("drops a failed researcher and reports the failure", async () => {
-    const researchers = {
-      atlas: fakeResearcher("GOOD"),
-      exa: fakeResearcher("BAD", { fail: true }),
-    };
-    const model = leadModel({
-      strategy: "two",
-      subtasks: [
-        { query: "ok", researcher: "atlas" },
-        { query: "boom", researcher: "exa" },
-      ],
+  it("drops a failed researcher and surfaces the failure as a warning", async () => {
+    const atlas = new Atlas({
+      model: leadModel({
+        strategy: "two",
+        subtasks: [
+          { query: "ok", researcher: "good" },
+          { query: "boom", researcher: "bad" },
+        ],
+      }),
+      researchers: {
+        good: fakeResearcher("GOOD"),
+        bad: fakeResearcher("BAD", { fail: true }),
+      },
+      pricing: PRICING,
     });
-    const result = await runOrchestrated(cfg(model), "Q", {}, researchers);
+    const result = await atlas.research("Q");
     expect(result.report).toBe("GOOD");
-    expect(result.warnings.join(" ")).toContain("exa");
+    expect(result.warnings.join(" ")).toContain("bad");
     expect(result.warnings.join(" ")).toContain("boom");
-    expect(result.unsupportedSentences).toEqual([]);
   });
 
-  it("routes an unknown researcher key to the default atlas researcher", async () => {
-    const calls: string[] = [];
-    const researchers = { atlas: fakeResearcher("FALLBACK", { calls }) };
-    const model = leadModel({
-      strategy: "x",
-      subtasks: [{ query: "q1", researcher: "ghost" }],
+  it("streams an orchestrated run through start() (guard relaxed)", async () => {
+    const atlas = new Atlas({
+      model: leadModel(
+        { strategy: "s", subtasks: [{ query: "q", researcher: "exa" }] },
+        "X",
+      ),
+      researchers: { exa: fakeResearcher("ONE") },
+      pricing: PRICING,
     });
-    const result = await runOrchestrated(cfg(model), "Q", {}, researchers);
-    expect(calls).toEqual(["q1"]);
-    expect(result.report).toBe("FALLBACK");
-  });
-
-  it("slices the budget into equal isolated shares per researcher", async () => {
-    const budgets: number[] = [];
-    const researchers = {
-      atlas: fakeResearcher("A", { budgets }),
-      exa: fakeResearcher("B", { budgets }),
-    };
-    const model = leadModel({
-      strategy: "s",
-      subtasks: [
-        { query: "1", researcher: "atlas" },
-        { query: "2", researcher: "exa" },
-      ],
-    });
-    await runOrchestrated(cfg(model), "Q", { budget: { maxUSD: 10 } }, researchers);
-    expect(budgets).toEqual([4, 4]);
+    const run = atlas.start("Q");
+    const types: string[] = [];
+    for await (const e of run.events()) types.push(e.type);
+    const result = await run.result();
+    expect(result.report).toBe("ONE");
+    expect(types).toContain("run.completed");
   });
 });

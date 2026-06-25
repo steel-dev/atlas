@@ -10,12 +10,8 @@ import {
 
 export type { AtlasConfig, ResearchOptions } from "./config.js";
 import type { Researcher } from "./researcher.js";
-import { runOrchestrated } from "./orchestrate.js";
 import { extractStructured, type StructuredResult } from "./structured.js";
 import { ConfigError } from "./errors.js";
-
-const DEFAULT_ATLAS_DESCRIBE =
-  "Atlas's own deep-research spine: plans, searches, fetches, and synthesizes a grounded, citation-backed report. Strong on academic, finance, and multi-source synthesis. Default for any sub-task without a more specialized fit.";
 
 export class Atlas {
   readonly #config: AtlasConfig;
@@ -49,28 +45,16 @@ export class Atlas {
     question: string,
     options: ResearchOptions,
   ): Promise<ResearchResult> {
-    const researchers = this.#config.researchers;
-    if (researchers && Object.keys(researchers).length > 0) {
-      return runOrchestrated(this.#config, question, options, {
-        atlas: this.asResearcher(DEFAULT_ATLAS_DESCRIBE),
-        ...researchers,
-      });
-    }
-    return this.#startSpine(question, options).result();
+    return this.#startRun(question, options).result();
   }
 
   start(question: string, options: ResearchOptions = {}): ResearchRun {
-    if (this.#closed) throw new ConfigError("Atlas is closed; create a new instance");
-    const researchers = this.#config.researchers;
-    if (researchers && Object.keys(researchers).length > 0) {
-      throw new ConfigError(
-        "start() runs a single research spine and cannot orchestrate; call research() to fan out to configured researchers, or construct an Atlas without `researchers` to stream a spine run",
-      );
-    }
-    return this.#startSpine(question, options);
+    if (this.#closed)
+      throw new ConfigError("Atlas is closed; create a new instance");
+    return this.#startRun(question, options);
   }
 
-  #startSpine(question: string, options: ResearchOptions): ResearchRun {
+  #startRun(question: string, options: ResearchOptions): ResearchRun {
     const run = startRun({ config: this.#config, question, options });
     this.#track(run);
     return run;
@@ -81,7 +65,7 @@ export class Atlas {
       describe,
       research: async (query, ctx) => {
         const result = await this
-          .#startSpine(query, {
+          .#startRun(query, {
             budget: { maxUSD: ctx.budget.maxUSD },
             ...(ctx.signal ? { signal: ctx.signal } : {}),
           })

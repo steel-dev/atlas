@@ -429,3 +429,20 @@ export function resolveBudgetPlan(input: BudgetPlanInput): BudgetPlan {
     gatherCeilingTokens,
   };
 }
+
+export function minViableSubtaskUSD(
+  scope: SpineScope,
+  maxReportTokens: number,
+  researchPricing: ModelPricing,
+): number {
+  const single = scope === "single_fact";
+  const reportTokens = single
+    ? Math.min(maxReportTokens, SINGLE_FACT_REPORT_TOKENS)
+    : maxReportTokens;
+  const draftReserveTokens =
+    (single ? DRAFT_CONTEXT_TOKENS_SINGLE : DRAFT_CONTEXT_TOKENS_BROAD) +
+    reportTokens;
+  const minGather = single ? GATHER_MIN_TOKENS_SINGLE : GATHER_MIN_TOKENS_BROAD;
+  const minTokens = PLAN_RESERVE_TOKENS + draftReserveTokens + minGather;
+  return minTokens * blendedUsdPerToken(researchPricing);
+}

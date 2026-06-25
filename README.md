@@ -1,4 +1,4 @@
-![Atlas — Research Agent for the Open Web](assets/cover.png)
+![Atlas — Research Agent for the Open Web](cover.png)
 
 # Atlas
 
@@ -182,7 +182,7 @@ await atlas.research(question, {
 });
 ```
 
-`maxUSD` is a **best-effort target, not a hard ceiling.** The meter checks between agent turns, so a run stops *starting* work once spent, but in-flight calls (up to `concurrency.models`) can overshoot. Pricing comes from a built-in table that can lag provider changes — pass `pricing` to correct a rate when the cap must be accurate.
+`maxUSD` is a **best-effort target, not a hard ceiling.** The meter checks between agent turns, so a run stops _starting_ work once spent, but in-flight calls (up to `concurrency.models`) can overshoot. Pricing comes from a built-in table that can lag provider changes — pass `pricing` to correct a rate when the cap must be accurate.
 
 The real backstops are **price-independent** — each defaults to the effort row above and is enforced regardless of prices:
 
