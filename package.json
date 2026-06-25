@@ -1,6 +1,6 @@
 {
   "name": "@steel-dev/atlas",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Deep research from your terminal or your code. Backed by Steel Browser and model providers.",
   "type": "module",
   "main": "./dist/index.js",
