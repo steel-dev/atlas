@@ -25,6 +25,7 @@ import {
   DEFAULT_ZAI_MODEL,
 } from "../src/defaults.js";
 import { readEnv } from "../src/env.js";
+import { classifyRunOutcome } from "../src/outcome.js";
 import { defaultSearchProviders } from "../src/providers/search.js";
 import { arxiv, edgar, openalex, pubmed } from "./domain-tools/index.js";
 
@@ -366,6 +367,21 @@ function footer(result: ResearchResult): string {
   );
 }
 
+// A zero-source run is degenerate (almost always a model/search failure). Show
+// the cause from result.note and signal failure with a non-zero exit instead of
+// the green "done" footer, so scripts and CI can detect it.
+function footerDegenerate(result: ResearchResult): string {
+  const s = result.stats;
+  const note = result.note.trim();
+  return (
+    paint(YELLOW, "✗") +
+    ` no usable report — $${s.costUSD.toFixed(4)} · ${result.sources.length} source${result.sources.length === 1 ? "" : "s"} · ` +
+    `${s.claimsConfirmed} confirmed / ${s.claimsScreened} screened / ${s.claimsContested} contested / ${s.claimsRefuted} refuted · ` +
+    `${s.agentsSpawned} agent${s.agentsSpawned === 1 ? "" : "s"} · ${(s.durationMs / 1000).toFixed(0)}s` +
+    (note ? `\n  ${note}` : "")
+  );
+}
+
 async function main(): Promise<void> {
   try {
     process.loadEnvFile();
@@ -517,7 +533,16 @@ async function main(): Promise<void> {
     } else {
       process.stdout.write("\n");
     }
-    if (!values.quiet) process.stderr.write(footer(result) + "\n");
+    const outcome = classifyRunOutcome(result);
+    if (!values.quiet) {
+      process.stderr.write(
+        (outcome.status === "degenerate" ? footerDegenerate(result) : footer(result)) +
+          "\n",
+      );
+    }
+    // Set the code (don't process.exit) so the event loop flushes the report
+    // and JSON writes to stdout before the process exits.
+    if (outcome.exitCode !== 0) process.exitCode = outcome.exitCode;
   } catch (err) {
     if (run.status() === "paused") {
       process.stderr.write(`atlas: ${messageOf(err)}\n`);

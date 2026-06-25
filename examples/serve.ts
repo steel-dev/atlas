@@ -15,7 +15,7 @@ import {
   DEFAULT_ZAI_BASE_URL,
   DEFAULT_ZAI_MODEL,
 } from "../src/defaults.js";
-import { readEnv } from "../src/env.js";
+import { detectProxyBaseURL, readEnv } from "../src/env.js";
 
 const USAGE = `atlas serve — minimal local web UI for deep research
 
@@ -197,6 +197,13 @@ async function main(): Promise<void> {
     fail(`--port must be a valid port 0-65535 (got "${values.port}")`);
   }
   const host = values.host ?? "127.0.0.1";
+
+  for (const name of detectProxyBaseURL()) {
+    process.stderr.write(
+      `atlas-serve: WARNING: ${name} is set; the matching provider routes model calls through this base URL. ` +
+        `A mismatched proxy behind it (e.g. a non-Anthropic API under ANTHROPIC_BASE_URL) will make every model call fail.\n`,
+    );
+  }
 
   const atlas = new Atlas({ model: resolveModel(values.provider, values.model) });
 
