@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createRobotsCache, parseRobots, robotsAllows } from "./robots.js";
 import { basicFetch } from "./providers/fetch.js";
+import { createRobotsCache, parseRobots, robotsAllows } from "./robots.js";
 
 describe("parseRobots and robotsAllows", () => {
   it("applies prefix disallow rules with longest-match allow overrides", () => {
@@ -25,12 +25,12 @@ describe("parseRobots and robotsAllows", () => {
   });
 
   it("matches adversarial wildcard patterns without catastrophic backtracking", () => {
-    const pattern = "/" + "a*".repeat(40) + "b$";
+    const pattern = `/${"a*".repeat(40)}b$`;
     const rules = parseRobots(
       `User-agent: *\nDisallow: ${pattern}`,
       "atlasresearchbot",
     );
-    const path = "/" + "a".repeat(6000);
+    const path = `/${"a".repeat(6000)}`;
     const start = Date.now();
     const verdict = robotsAllows(rules, path);
     expect(Date.now() - start).toBeLessThan(1000);
@@ -63,9 +63,10 @@ describe("parseRobots and robotsAllows", () => {
 });
 
 describe("createRobotsCache", () => {
-  function fetchStub(
-    handler: (url: string) => Response | Promise<Response>,
-  ): { impl: typeof fetch; calls: string[] } {
+  function fetchStub(handler: (url: string) => Response | Promise<Response>): {
+    impl: typeof fetch;
+    calls: string[];
+  } {
     const calls: string[] = [];
     const impl = (async (input: Parameters<typeof fetch>[0]) => {
       const url = String(input);

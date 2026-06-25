@@ -1,10 +1,10 @@
-import { appendFile, mkdir, readFile, readdir } from "node:fs/promises";
+import { appendFile, mkdir, readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
-  TRACE_SCHEMA_VERSION,
   type RunDigest,
   type RunTrace,
   type Span,
+  TRACE_SCHEMA_VERSION,
   type TraceStep,
 } from "../trace.js";
 
@@ -69,9 +69,7 @@ export function fileStore(dir: string): RunStore {
         if (!trimmed) continue;
         try {
           yield JSON.parse(trimmed) as JournalEntry;
-        } catch {
-          continue;
-        }
+        } catch {}
       }
     },
     async *list() {

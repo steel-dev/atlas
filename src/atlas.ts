@@ -1,17 +1,18 @@
 import type { FlexibleSchema } from "ai";
 import type { AtlasConfig, ResearchOptions } from "./config.js";
 import {
-  resumeRun,
-  startRun,
   type ResearchResult,
   type ResearchRun,
   type ResumeOptions,
+  resumeRun,
+  startRun,
 } from "./run.js";
 
 export type { AtlasConfig, ResearchOptions } from "./config.js";
+
+import { AtlasError } from "./errors.js";
 import type { Researcher } from "./researcher.js";
 import type { StructuredResult } from "./structured.js";
-import { AtlasError } from "./errors.js";
 
 export class Atlas {
   readonly #config: AtlasConfig;
@@ -70,12 +71,10 @@ export class Atlas {
     return {
       description,
       research: async (query, ctx) => {
-        const result = await this
-          .#startRun(query, {
-            budget: { maxUSD: ctx.budget.maxUSD },
-            ...(ctx.signal ? { signal: ctx.signal } : {}),
-          })
-          .result();
+        const result = await this.#startRun(query, {
+          budget: { maxUSD: ctx.budget.maxUSD },
+          ...(ctx.signal ? { signal: ctx.signal } : {}),
+        }).result();
         return {
           report: result.report,
           sources: result.sources.map((s) => ({ url: s.url, title: s.title })),

@@ -1,5 +1,5 @@
-import { generateObject, type FlexibleSchema } from "ai";
 import type { LanguageModelV3 } from "@ai-sdk/provider";
+import { type FlexibleSchema, generateObject } from "ai";
 import { MODEL_CALL_MAX_RETRIES } from "./model.js";
 import type { ResearchResult } from "./run.js";
 

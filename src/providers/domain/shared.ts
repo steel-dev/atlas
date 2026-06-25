@@ -19,7 +19,8 @@ export async function fetchText(
     signal,
     headers: { "user-agent": USER_AGENT, accept },
   });
-  if (!resp.ok) throw new Error(`HTTP ${resp.status} ${resp.statusText}`.trim());
+  if (!resp.ok)
+    throw new Error(`HTTP ${resp.status} ${resp.statusText}`.trim());
   return resp.text();
 }
 
@@ -44,7 +45,11 @@ export function buildContent(parts: {
   return lines.join("\n");
 }
 
-export function manifest(tool: string, query: string, titles: string[]): string {
+export function manifest(
+  tool: string,
+  query: string,
+  titles: string[],
+): string {
   if (titles.length === 0) return `${tool}: no results for "${query}"`;
   const list = titles.map((t) => `- ${t}`).join("\n");
   return `${tool}: found ${titles.length} result(s) for "${query}"; submitted as sources:\n${list}`;

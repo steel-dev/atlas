@@ -1,12 +1,12 @@
+import { readFileSync } from "node:fs";
 import {
   createServer,
   type IncomingMessage,
   type ServerResponse,
 } from "node:http";
-import { readFileSync } from "node:fs";
 import * as ts from "typescript";
-import { captureCommit } from "./git.js";
 import { ensureCatalog } from "./catalog.js";
+import { captureCommit } from "./git.js";
 import type { DracoRunHost, WireEvent } from "./runner.js";
 import type { Store } from "./store.js";
 
@@ -253,7 +253,9 @@ async function route(
     return;
   }
 
-  const runMatch = path.match(/^\/api\/runs\/([^/]+)\/(run|stream|stop|abort)$/);
+  const runMatch = path.match(
+    /^\/api\/runs\/([^/]+)\/(run|stream|stop|abort)$/,
+  );
   if (runMatch) {
     const target = decodeURIComponent(runMatch[1]);
     const action = runMatch[2];

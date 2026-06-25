@@ -1,10 +1,6 @@
 import { describe, expect, it } from "vitest";
-import {
-  acceptsRepair,
-  deriveStopReason,
-} from "./run.js";
 import type { StopReasonInputs } from "./run.js";
-
+import { acceptsRepair, deriveStopReason } from "./run.js";
 
 describe("acceptsRepair", () => {
   it("accepts a repair that cuts unsupported citations without losing bound ones", () => {

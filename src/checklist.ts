@@ -207,9 +207,7 @@ export async function seedLedger(
   }
 }
 
-export function ledgerFromSubQuestions(
-  subQuestions: string[],
-): Ledger | null {
+export function ledgerFromSubQuestions(subQuestions: string[]): Ledger | null {
   const slots: Slot[] = subQuestions
     .map((q) => q.trim())
     .filter((q) => q.length > 0)

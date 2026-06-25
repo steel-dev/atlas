@@ -1,7 +1,7 @@
 import { jsonSchema } from "ai";
 import {
-  researchTool,
   type ResearchTool,
+  researchTool,
   type ToolContext,
 } from "../../custom-tools.js";
 import { errorMessage } from "../../errors.js";

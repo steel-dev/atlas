@@ -4,8 +4,8 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   basicFetch,
   looksBlockedPage,
-  steelAttemptFromResponse,
   type SteelScrapeResponse,
+  steelAttemptFromResponse,
 } from "./fetch.js";
 
 const PAGE_BODY =
@@ -60,9 +60,7 @@ describe("basicFetch redirect handling", () => {
     base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   });
 
-  afterAll(
-    () => new Promise<void>((resolve) => server.close(() => resolve())),
-  );
+  afterAll(() => new Promise<void>((resolve) => server.close(() => resolve())));
 
   it("follows redirects hop by hop through the guard", async () => {
     const provider = basicFetch();
@@ -201,19 +199,27 @@ describe("looksBlockedPage", () => {
   it("flags a thin challenge page", () => {
     const raw =
       "<html><body><h1>Just a moment...</h1><p>Enable JavaScript and cookies to continue.</p></body></html>";
-    expect(looksBlockedPage("Just a moment... Enable JavaScript and cookies to continue.", raw)).toBe(true);
+    expect(
+      looksBlockedPage(
+        "Just a moment... Enable JavaScript and cookies to continue.",
+        raw,
+      ),
+    ).toBe(true);
   });
 
   it("ignores marker words in the raw HTML of a substantive page", () => {
     const raw =
       '<html><head><script>{"wgConfirmEditCaptchaNeededForGenericEdit":"hcaptcha"}</script></head><body>article</body></html>';
-    const markdown = "Land reform in Zimbabwe began in earnest in 2000. ".repeat(60);
+    const markdown =
+      "Land reform in Zimbabwe began in earnest in 2000. ".repeat(60);
     expect(looksBlockedPage(markdown, raw)).toBe(false);
   });
 
   it("ignores marker words in the body of a substantive page", () => {
     const markdown =
-      "This article explains how captcha challenges and access denied responses work. ".repeat(40);
+      "This article explains how captcha challenges and access denied responses work. ".repeat(
+        40,
+      );
     expect(looksBlockedPage(markdown)).toBe(false);
   });
 });

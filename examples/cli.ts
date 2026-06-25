@@ -1,23 +1,11 @@
 #!/usr/bin/env node
+import { execSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { execSync } from "node:child_process";
 import { parseArgs } from "node:util";
 import { createAnthropic } from "@ai-sdk/anthropic";
-import { createOpenAI } from "@ai-sdk/openai";
 import { createGoogleGenerativeAI } from "@ai-sdk/google";
-import {
-  Atlas,
-  fileStore,
-  type AtlasConfig,
-  type Budget,
-  type Effort,
-  type ResearchEvent,
-  type ResearchResult,
-  type ResearchRun,
-  type RunStats,
-  type TraceMode,
-} from "../src/index.js";
+import { createOpenAI } from "@ai-sdk/openai";
 import {
   DEFAULT_ANTHROPIC_MODEL,
   DEFAULT_OPENAI_MODEL,
@@ -25,8 +13,25 @@ import {
   DEFAULT_ZAI_MODEL,
 } from "../src/defaults.js";
 import { readEnv } from "../src/env.js";
+import {
+  Atlas,
+  type AtlasConfig,
+  type Budget,
+  type Effort,
+  fileStore,
+  type ResearchEvent,
+  type ResearchResult,
+  type ResearchRun,
+  type RunStats,
+  type TraceMode,
+} from "../src/index.js";
+import {
+  arxiv,
+  edgar,
+  openalex,
+  pubmed,
+} from "../src/providers/domain/index.js";
 import { defaultSearchProviders } from "../src/providers/search.js";
-import { arxiv, edgar, openalex, pubmed } from "../src/providers/domain/index.js";
 
 const USAGE = `atlas — deep research from your terminal
 
@@ -312,21 +317,23 @@ function writeTrace(
     JSON.stringify({ ...meta, stats, digest: trace.digest ?? null }, null, 2),
   );
   if (quiet) return;
-  process.stderr.write(paint(DIM, `trace ${trace.mode} → ${digestPath}`) + "\n");
+  process.stderr.write(
+    `${paint(DIM, `trace ${trace.mode} → ${digestPath}`)}\n`,
+  );
   const d = trace.digest;
   if (!d) return;
   process.stderr.write(
-    paint(
+    `${paint(
       DIM,
       `  wall ${fmtMs(d.wallMs)} · compute ${fmtMs(d.waitVsCompute.computeMs)} / wait ${fmtMs(d.waitVsCompute.waitMs)} (ratio ${d.waitVsCompute.ratio}) · ` +
         `peak ${d.concurrency.peakModelInFlight}/${d.concurrency.gateLimitModel} model · ${d.anomalies.length} anomal${d.anomalies.length === 1 ? "y" : "ies"}`,
-    ) + "\n",
+    )}\n`,
   );
   const hot = d.anomalies
     .slice(0, 3)
     .map((a) => a.site ?? a.kind)
     .join(" · ");
-  if (hot) process.stderr.write(paint(DIM, `  hot: ${hot}`) + "\n");
+  if (hot) process.stderr.write(`${paint(DIM, `  hot: ${hot}`)}\n`);
 }
 
 function footer(result: ResearchResult): string {
@@ -464,7 +471,7 @@ async function main(): Promise<void> {
       if (event.type === "report.completed") continue;
       if (values.quiet) continue;
       const line = formatEvent(event);
-      if (line) process.stderr.write(line + "\n");
+      if (line) process.stderr.write(`${line}\n`);
     }
     const result = await run.result();
     if (traceMode && traceMode !== "off") {
@@ -477,7 +484,7 @@ async function main(): Promise<void> {
       );
     }
     if (values.json) {
-      process.stdout.write(JSON.stringify(result, null, 2) + "\n");
+      process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
     } else if (values.out) {
       writeFileSync(values.out, result.report);
       if (!values.quiet) process.stderr.write(`wrote ${values.out}\n`);
@@ -489,12 +496,12 @@ async function main(): Promise<void> {
         );
       }
       process.stdout.write(
-        result.report.endsWith("\n") ? result.report : result.report + "\n",
+        result.report.endsWith("\n") ? result.report : `${result.report}\n`,
       );
     } else {
       process.stdout.write("\n");
     }
-    if (!values.quiet) process.stderr.write(footer(result) + "\n");
+    if (!values.quiet) process.stderr.write(`${footer(result)}\n`);
   } catch (err) {
     if (run.status() === "paused") {
       process.stderr.write(`atlas: ${messageOf(err)}\n`);

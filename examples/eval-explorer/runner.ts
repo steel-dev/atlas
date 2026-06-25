@@ -1,25 +1,25 @@
 import {
-  Atlas,
-  type Budget,
-  type Effort,
-  type ResearchEvent,
-  type ResearchResult,
-  type ResearchRun,
-  type RunTrace,
-  type TraceMode,
-} from "../../src/index.js";
-import { traceEvent, type EvalTraceEvent } from "../../evals/lib.js";
-import {
-  gradeRubric,
   aggregateGrading,
-  emptyJudgeUsage,
-  type DracoCase,
-  type JudgeSpec,
   type CriterionReport,
-  type RubricScore,
+  type DracoCase,
+  emptyJudgeUsage,
+  gradeRubric,
+  type JudgeSpec,
   type JudgeUsage,
+  type RubricScore,
 } from "../../evals/draco.js";
-import { captureCommit, type CommitInfo } from "./git.js";
+import { type EvalTraceEvent, traceEvent } from "../../evals/lib.js";
+import type {
+  Atlas,
+  Budget,
+  Effort,
+  ResearchEvent,
+  ResearchResult,
+  ResearchRun,
+  RunTrace,
+  TraceMode,
+} from "../../src/index.js";
+import { type CommitInfo, captureCommit } from "./git.js";
 import type { Store } from "./store.js";
 
 export type RunPhase =
@@ -142,7 +142,7 @@ export class DracoRunHost {
         `draco-explore: ⚠ STALE CODE — server is running ${this.startupCommit.shortSha}, HEAD is now ${current.shortSha}. Runs are tagged ${this.startupCommit.shortSha} (the loaded code); restart the server to test HEAD.\n`,
       );
     }
-    const id = "run_" + Date.now().toString(36) + (this.counter++).toString(36);
+    const id = `run_${Date.now().toString(36)}${(this.counter++).toString(36)}`;
     const entry: DracoRunEntry = {
       id,
       caseId,
@@ -245,7 +245,7 @@ export class DracoRunHost {
   private pump(): void {
     while (this.active < this.maxConcurrent && this.queue.length > 0) {
       const entry = this.queue.shift();
-      if (!entry || entry.phase !== "queued") continue;
+      if (entry?.phase !== "queued") continue;
       this.active++;
       entry.startedAt = Date.now();
       void this.execute(entry).finally(() => {
@@ -299,7 +299,14 @@ export class DracoRunHost {
         passRate: grading?.score?.passRate ?? null,
       });
       entry.phase = "persisting";
-      this.persist(entry, result, trace, Date.now() - started, grading, runTrace);
+      this.persist(
+        entry,
+        result,
+        trace,
+        Date.now() - started,
+        grading,
+        runTrace,
+      );
       push({
         type: "persisted",
         commit: entry.commitSha,

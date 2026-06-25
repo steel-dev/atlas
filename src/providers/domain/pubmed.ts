@@ -1,12 +1,18 @@
 import * as cheerio from "cheerio";
-import { errorMessage } from "../../errors.js";
 import { readEnv } from "../../env.js";
+import { errorMessage } from "../../errors.js";
 import {
-  safeDomain,
   type SearchProvider,
   type SearchResult,
+  safeDomain,
 } from "../search.js";
-import { buildContent, clampLimit, collapse, fetchJson, fetchText } from "./shared.js";
+import {
+  buildContent,
+  clampLimit,
+  collapse,
+  fetchJson,
+  fetchText,
+} from "./shared.js";
 
 export interface PubmedOptions {
   defaultLimit?: number;

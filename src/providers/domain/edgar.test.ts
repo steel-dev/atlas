@@ -92,7 +92,9 @@ describe("edgar", () => {
   it("throws without a contact email", async () => {
     const fetchMock = ok(RESULT);
     vi.stubGlobal("fetch", fetchMock);
-    await expect(edgar().search({ query: "x" })).rejects.toThrow(/contact email/);
+    await expect(edgar().search({ query: "x" })).rejects.toThrow(
+      /contact email/,
+    );
     expect(fetchMock).not.toHaveBeenCalled();
   });
 

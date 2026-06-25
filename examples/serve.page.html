@@ -175,7 +175,7 @@
         try {
           await research(question, $("effort").value);
         } catch (err) {
-          line(`! ${err && err.message ? err.message : err}`, "warn");
+          line(`! ${err?.message ? err.message : err}`, "warn");
         } finally {
           $("go").disabled = false;
         }

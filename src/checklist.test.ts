@@ -5,12 +5,12 @@ import {
   centralFactsAllFilled,
   findSlot,
   isAnswered,
+  type Ledger,
   openItems,
   renderDeliverableContract,
   renderGatherContract,
   renderLedgerAudit,
   stripGuessedValues,
-  type Ledger,
 } from "./checklist.js";
 
 function fixture(): Ledger {
@@ -150,7 +150,12 @@ describe("isAnswered / centralFactsAllFilled", () => {
 
   it("an exhausted central fact does not count as filled for the gather stop", () => {
     const ledger = fixture();
-    ledger.slots[0].fill = { kind: "grounded", value: "x", quote: "supporting quote text", source: "source_1" };
+    ledger.slots[0].fill = {
+      kind: "grounded",
+      value: "x",
+      quote: "supporting quote text",
+      source: "source_1",
+    };
     ledger.slots[1].fill = { kind: "exhausted", reason: "dead end" };
     expect(centralFactsAllFilled(ledger)).toBe(false);
     expect(isAnswered(ledger)).toBe(true);
@@ -179,7 +184,9 @@ describe("isAnswered / centralFactsAllFilled", () => {
 describe("rendering", () => {
   it("gather contract carries slot ids, importance, and shape", () => {
     const contract = renderGatherContract(fixture());
-    expect(contract).toContain("[slot_1 · central · value] Q1 2026 revenue figure");
+    expect(contract).toContain(
+      "[slot_1 · central · value] Q1 2026 revenue figure",
+    );
   });
 
   it("audit shows status and the closed value", () => {

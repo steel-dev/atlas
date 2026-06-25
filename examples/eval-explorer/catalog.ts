@@ -1,4 +1,4 @@
-import { readCases, DEFAULT_CASES_URL } from "../../evals/draco.js";
+import { DEFAULT_CASES_URL, readCases } from "../../evals/draco.js";
 import type { Store } from "./store.js";
 
 function revisionOf(casesUrl: string): string {

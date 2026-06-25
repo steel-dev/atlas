@@ -1,7 +1,7 @@
 import { jsonSchema } from "ai";
 import {
-  researchTool,
   type ResearchTool,
+  researchTool,
   type ToolContext,
 } from "../../custom-tools.js";
 import { errorMessage } from "../../errors.js";
@@ -20,9 +20,7 @@ export interface ClinicalTrialsOptions {
 
 const ENDPOINT = "https://clinicaltrials.gov/api/v2/studies";
 
-export function clinicaltrials(
-  opts: ClinicalTrialsOptions = {},
-): ResearchTool {
+export function clinicaltrials(opts: ClinicalTrialsOptions = {}): ResearchTool {
   const defaultLimit = clampLimit(opts.defaultLimit ?? 5);
   const status = (opts.status ?? [])
     .map((s) => s.trim().toUpperCase())
@@ -84,7 +82,9 @@ function ingest(data: unknown, ctx: ToolContext): string[] {
       String(p.sponsorCollaboratorsModule?.leadSponsor?.name ?? ""),
     );
     const conditions = list(p.conditionsModule?.conditions);
-    const interventions = Array.isArray(p.armsInterventionsModule?.interventions)
+    const interventions = Array.isArray(
+      p.armsInterventionsModule?.interventions,
+    )
       ? p.armsInterventionsModule.interventions
           .map((i: any) => collapse(String(i?.name ?? "")))
           .filter(Boolean)
@@ -117,6 +117,9 @@ function ingest(data: unknown, ctx: ToolContext): string[] {
 
 function list(value: unknown): string[] {
   return Array.isArray(value)
-    ? value.map((v) => collapse(String(v))).filter(Boolean).slice(0, 8)
+    ? value
+        .map((v) => collapse(String(v)))
+        .filter(Boolean)
+        .slice(0, 8)
     : [];
 }

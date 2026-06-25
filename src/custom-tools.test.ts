@@ -19,9 +19,7 @@ describe("resolveCustomTools", () => {
     await expect(resolveCustomTools({ fetch: tool })).rejects.toThrow(
       AtlasError,
     );
-    await expect(resolveCustomTools({ note: tool })).rejects.toThrow(
-      /shadow/,
-    );
+    await expect(resolveCustomTools({ note: tool })).rejects.toThrow(/shadow/);
   });
 
   it("rejects invalid tool identifiers", async () => {

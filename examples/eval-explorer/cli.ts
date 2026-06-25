@@ -1,8 +1,19 @@
-import { parseArgs } from "node:util";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { parseArgs } from "node:util";
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { createOpenAI } from "@ai-sdk/openai";
+import {
+  buildJudgeSpec,
+  DEFAULT_CASES_URL,
+  DEFAULT_LEAF_MODEL,
+  type EvalOptions,
+} from "../../evals/draco.js";
+import {
+  DEFAULT_ANTHROPIC_MODEL,
+  DEFAULT_OPENAI_MODEL,
+} from "../../src/defaults.js";
+import { readEnv } from "../../src/env.js";
 import {
   Atlas,
   type AtlasConfig,
@@ -10,19 +21,8 @@ import {
   type Effort,
   type TraceMode,
 } from "../../src/index.js";
-import {
-  DEFAULT_ANTHROPIC_MODEL,
-  DEFAULT_OPENAI_MODEL,
-} from "../../src/defaults.js";
-import { readEnv } from "../../src/env.js";
-import {
-  DEFAULT_CASES_URL,
-  DEFAULT_LEAF_MODEL,
-  buildJudgeSpec,
-  type EvalOptions,
-} from "../../evals/draco.js";
-import { DracoRunHost, type GradeConfig } from "./runner.js";
 import { captureCommit } from "./git.js";
+import { DracoRunHost, type GradeConfig } from "./runner.js";
 import { serveExplore } from "./server.js";
 import { Store } from "./store.js";
 

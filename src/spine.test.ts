@@ -1,10 +1,10 @@
-import { simulateStreamingMiddleware, wrapLanguageModel } from "ai";
-import { MockLanguageModelV3 } from "ai/test";
 import type {
   LanguageModelV3CallOptions,
   LanguageModelV3GenerateResult,
   LanguageModelV3ToolChoice,
 } from "@ai-sdk/provider";
+import { simulateStreamingMiddleware, wrapLanguageModel } from "ai";
+import { MockLanguageModelV3 } from "ai/test";
 import { describe, expect, it } from "vitest";
 import { Atlas } from "./atlas.js";
 import type { ResolvedModel } from "./model.js";
@@ -32,7 +32,9 @@ function searchCallResult(): LanguageModelV3GenerateResult {
         type: "tool-call",
         toolCallId: "call_search_1",
         toolName: "search",
-        input: JSON.stringify({ queries: ["paradoxical bronchospasm rescue inhaler"] }),
+        input: JSON.stringify({
+          queries: ["paradoxical bronchospasm rescue inhaler"],
+        }),
       },
     ],
     finishReason: { unified: "tool-calls", raw: undefined },
@@ -73,7 +75,9 @@ function gatherModel(
       seenToolChoices.push(options.toolChoice);
       step++;
       if (step === 1) return searchCallResult();
-      return textResult("Closing note: surveyed the question from fetched sources.");
+      return textResult(
+        "Closing note: surveyed the question from fetched sources.",
+      );
     },
   });
 }
@@ -181,7 +185,9 @@ function fetchingGatherModel(): ResolvedModel {
           warnings: [],
         };
       }
-      return textResult("Closing note: the rescue inhaler can worsen wheezing.");
+      return textResult(
+        "Closing note: the rescue inhaler can worsen wheezing.",
+      );
     },
   }) as unknown as ResolvedModel;
 }
@@ -232,7 +238,9 @@ const stubSearch: SearchProvider = {
   ],
 };
 
-function budgetAtlas(pricing: Record<string, { inputPerMTok: number; outputPerMTok: number }>): Atlas {
+function budgetAtlas(
+  pricing: Record<string, { inputPerMTok: number; outputPerMTok: number }>,
+): Atlas {
   return new Atlas({
     model: planModel() as unknown as ResolvedModel,
     models: { research: fetchingGatherModel(), write: draftingWriteModel() },

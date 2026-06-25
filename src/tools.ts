@@ -1,15 +1,25 @@
-import { jsonSchema, tool, type ToolSet } from "ai";
+import { jsonSchema, type ToolSet, tool } from "ai";
 import { z } from "zod";
 import { mapWithConcurrency, withTimeout } from "./async.js";
 import type { BudgetGrant } from "./budget.js";
+import { addSlot, findSlot, stripGuessedValues } from "./checklist.js";
+import type { ToolContext } from "./custom-tools.js";
 import { errorMessage } from "./errors.js";
 import type { AgentRole } from "./events.js";
+import { fetchThroughChain, looksBlockedPage } from "./providers/fetch.js";
+import {
+  type MergedSearchResult,
+  openUrlsOf,
+  type ResolvedSearch,
+} from "./providers/search.js";
+import { ROLE_CAPABILITIES } from "./roles.js";
 import { guardRedirect, guardUrl, quarantine } from "./safety.js";
 import {
   clampSandboxTimeout,
   runCodeSandboxed,
   shapeSandboxOutput,
 } from "./sandbox.js";
+import { canonicalQuery } from "./search-normalize.js";
 import {
   createSourceDocument,
   extractionMetadataFromCustomTool,
@@ -19,17 +29,8 @@ import {
   sourceCardData,
   storeMarkdown,
 } from "./source-documents.js";
-import { NON_EVIDENCE_WARNINGS } from "./sources.js";
 import type { SourceDocument } from "./sources.js";
-import { fetchThroughChain, looksBlockedPage } from "./providers/fetch.js";
-import {
-  openUrlsOf,
-  type MergedSearchResult,
-  type ResolvedSearch,
-} from "./providers/search.js";
-import { ROLE_CAPABILITIES } from "./roles.js";
-import { addSlot, findSlot, stripGuessedValues } from "./checklist.js";
-import { canonicalQuery } from "./search-normalize.js";
+import { NON_EVIDENCE_WARNINGS } from "./sources.js";
 import {
   budgetStatusLine,
   type RunCtx,
@@ -38,7 +39,6 @@ import {
   type SurfacedCandidate,
 } from "./state.js";
 import { currentFrame, type SpanStatus } from "./trace.js";
-import type { ToolContext } from "./custom-tools.js";
 import { normalizeUrlForSource } from "./url.js";
 
 export const BUILTIN_TOOL_NAMES = [
@@ -128,12 +128,17 @@ function withOpenSlots(rctx: RunCtx, actx: AgentCtx, content: string): string {
   const open = ledger.slots.filter((slot) => !slot.fill);
   if (open.length === 0) return content;
   const central = open.filter((slot) => slot.importance === "central");
-  const pick = (central.length ? central : open).slice(0, OPEN_SLOTS_FOOTER_MAX);
+  const pick = (central.length ? central : open).slice(
+    0,
+    OPEN_SLOTS_FOOTER_MAX,
+  );
   const lines = pick
     .map((slot) => `${slot.id} (${slot.shape}): ${slot.ask}`)
     .join("; ");
   const more =
-    open.length > pick.length ? ` (+${open.length - pick.length} more open)` : "";
+    open.length > pick.length
+      ? ` (+${open.length - pick.length} more open)`
+      : "";
   return `${content}\n\n[open slots — if what you just retrieved grounds any of these, close it now with close_slot(slot_id, value, source_id, quote): ${lines}${more}]`;
 }
 
@@ -245,7 +250,11 @@ const SURFACED_CANDIDATE_CAP = 80;
 // empty store). First-writer-wins, FIFO-evicted, insertion-ordered.
 function registerSurfacedCandidate(
   rctx: RunCtx,
-  result: { url: string; title?: string | undefined; snippet?: string | undefined },
+  result: {
+    url: string;
+    title?: string | undefined;
+    snippet?: string | undefined;
+  },
 ): void {
   const url = result.url?.trim();
   if (!url || !/^https?:\/\//i.test(url)) return;
@@ -315,9 +324,7 @@ export async function execSearchTool(
     rctx.counters.searches++;
     const ioKey = `search:${sourceKey}:${limit}:${query}`;
     try {
-      const replayed = rctx.replay?.take(ioKey) as
-        | SearchCacheEntry
-        | undefined;
+      const replayed = rctx.replay?.take(ioKey) as SearchCacheEntry | undefined;
       const { merged, warnings } =
         replayed ?? (await liveSearch(rctx, resolved, sourceKey, query, limit));
       if (!replayed) rctx.journal?.io(ioKey, { merged, warnings });
@@ -359,7 +366,8 @@ export async function execSearchTool(
                 ...openUrlsOf(result.meta),
               ]),
             ];
-            if (open.length) existing.meta = { ...existing.meta, openUrls: open };
+            if (open.length)
+              existing.meta = { ...existing.meta, openUrls: open };
           }
         }
       }
@@ -620,11 +628,7 @@ async function fetchSourceDocument(
   }
   const page = outcome.page;
   const title = page.title ?? url;
-  const quality = assessSourceQuality(
-    page.markdown,
-    title,
-    outcome.attempts,
-  );
+  const quality = assessSourceQuality(page.markdown, title, outcome.attempts);
   if (quality.fatalError) {
     rctx.counters.sourcesFailed++;
     rctx.trail.recordDeadEnd(url, quality.fatalError);
@@ -805,7 +809,10 @@ export async function fetchOneUrl(
         url,
       });
     }
-    return { ok: false, error: `Fetch blocked (${guard.kind}): ${guard.reason}` };
+    return {
+      ok: false,
+      error: `Fetch blocked (${guard.kind}): ${guard.reason}`,
+    };
   }
 
   const normalized = normalizeUrlForSource(url);
@@ -874,7 +881,11 @@ function documentsForScope(
   sourceIds: string[] | undefined,
 ): { documents: SourceDocument[]; missing: string[]; fellBackToAll: boolean } {
   const ids = Array.isArray(sourceIds)
-    ? [...new Set(sourceIds.map((id) => String(id ?? "").trim()).filter(Boolean))]
+    ? [
+        ...new Set(
+          sourceIds.map((id) => String(id ?? "").trim()).filter(Boolean),
+        ),
+      ]
     : [];
   if (ids.length === 0) {
     return {
@@ -1001,7 +1012,11 @@ export function buildAgentTools(
       description:
         "Record a durable note — the extracted VALUE of what you learned (the exact number, name, date, ratio, or relationship), not merely that you searched or fetched something. Raw search/fetch/read results scroll out of view as you work, but your notes stay: this is your working memory, and the writer composes the report from these notes. A note like 'fetched source_7' is useless — write the fact it contains. Write several as you go, right after you learn something, so you never lose a finding or repeat a search.",
       inputSchema: z.object({
-        note: z.string().describe("A self-contained finding, figure, relationship, or coverage note — the actual value, not a pointer to a source."),
+        note: z
+          .string()
+          .describe(
+            "A self-contained finding, figure, relationship, or coverage note — the actual value, not a pointer to a source.",
+          ),
       }),
       execute: async ({ note }) => {
         const text = String(note).trim();
@@ -1086,7 +1101,14 @@ export function buildAgentTools(
         "Add a slot the plan missed — a requirement the question or the field demands that is not already in the ledger. Phrase the ask value-agnostically (the question to answer, never a guessed answer), then close it with close_slot once grounded.",
       inputSchema: z.object({
         ask: z.string(),
-        shape: z.enum(["value", "range", "split", "causal", "matrix", "verdict"]),
+        shape: z.enum([
+          "value",
+          "range",
+          "split",
+          "causal",
+          "matrix",
+          "verdict",
+        ]),
         kind: z.enum(["fact", "analysis"]),
         importance: z.enum(["central", "peripheral"]),
         parent: z.string().optional(),
@@ -1153,7 +1175,8 @@ export function buildAgentTools(
       ? `${baseDescription}\n\nSet \`source\` to target a specialized index instead of the general web:\n` +
         sourceKeys
           .map(
-            (key) => `- ${key}: ${SEARCH_SOURCE_HINTS[key] ?? `the ${key} index`}`,
+            (key) =>
+              `- ${key}: ${SEARCH_SOURCE_HINTS[key] ?? `the ${key} index`}`,
           )
           .join("\n") +
         '\nOmit `source` (or use "web") for general web search.'
@@ -1229,7 +1252,9 @@ export function buildAgentTools(
               try {
                 const parsed = JSON.parse(s);
                 if (Array.isArray(parsed)) {
-                  return parsed.map((u) => String(u ?? "").trim()).filter(Boolean);
+                  return parsed
+                    .map((u) => String(u ?? "").trim())
+                    .filter(Boolean);
                 }
               } catch {
                 // not a JSON array — treat as a single url below
@@ -1448,9 +1473,7 @@ export function buildAgentTools(
               tool: custom.name,
               data: { sources_added: sourcesAdded },
             });
-            return typeof output === "string"
-              ? output
-              : JSON.stringify(output);
+            return typeof output === "string" ? output : JSON.stringify(output);
           } catch (err) {
             recordToolSpan(
               rctx,

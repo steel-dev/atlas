@@ -192,7 +192,7 @@ export function withTraceFrame<T>(
 function clampText(value: string): { text: string; truncated: boolean } {
   if (value.length <= MAX_FIELD_CHARS) return { text: value, truncated: false };
   return {
-    text: value.slice(0, MAX_FIELD_CHARS) + "…[truncated]",
+    text: `${value.slice(0, MAX_FIELD_CHARS)}…[truncated]`,
     truncated: true,
   };
 }
@@ -410,7 +410,9 @@ export class TraceRecorder {
       kind: "model",
       site,
       ...(frame?.agentId ? { agentId: frame.agentId } : {}),
-      ...(frame?.logicalAgentId ? { logicalAgentId: frame.logicalAgentId } : {}),
+      ...(frame?.logicalAgentId
+        ? { logicalAgentId: frame.logicalAgentId }
+        : {}),
       role: rec.role,
       t0: rec.t0,
       t1: rec.t1,
@@ -476,12 +478,15 @@ export class TraceRecorder {
       waitMs: rec.waitMs,
       system: systemFromPrompt(params.prompt),
       messages: params.prompt as unknown[],
-      ...(toolNames && toolNames.length ? { toolNames } : {}),
+      ...(toolNames?.length ? { toolNames } : {}),
       maxTokens: params.maxOutputTokens ?? 0,
       ...(outputSchema ? { outputSchema } : {}),
       output: outputBlocks,
       ...(rec.tokens
-        ? { inputTokens: rec.tokens.input + rec.tokens.cacheRead + rec.tokens.cacheWrite }
+        ? {
+            inputTokens:
+              rec.tokens.input + rec.tokens.cacheRead + rec.tokens.cacheWrite,
+          }
         : {}),
       ...(rec.costUSD !== undefined ? { costUSD: rec.costUSD } : {}),
       ...(rec.finishReason ? { finishReason: rec.finishReason } : {}),
@@ -494,7 +499,10 @@ export class TraceRecorder {
   }
 
   finalize(digest: RunDigest): void {
-    this.digest = { ...digest, ...(this.degradedFlag ? { degraded: true } : {}) };
+    this.digest = {
+      ...digest,
+      ...(this.degradedFlag ? { degraded: true } : {}),
+    };
     this.sink?.("digest", "digest", this.digest);
   }
 

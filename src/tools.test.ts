@@ -1,13 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { RunCtx } from "./state.js";
-import {
-  buildAgentTools,
-  execSearchTool,
-  type AgentCtx,
-} from "./tools.js";
-
-
-
+import { type AgentCtx, buildAgentTools, execSearchTool } from "./tools.js";
 
 describe("run_code tool gating", () => {
   const actx = { agentId: "agent_1", role: "research" } as AgentCtx;
@@ -24,7 +17,6 @@ describe("run_code tool gating", () => {
     expect(tools.run_code).toBeUndefined();
   });
 });
-
 
 describe("execSearchTool live cache", () => {
   function searchRctx(calls: { count: number }) {

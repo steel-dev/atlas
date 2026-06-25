@@ -30,7 +30,7 @@ describe("selectExtractionWindow", () => {
   it("pulls a late relevant chunk instead of head-truncating", () => {
     const head = "a".repeat(12_000);
     const middle = "b".repeat(12_000);
-    const tail = "GAMMAUNIQUE the measured answer is 42 units. " + "c".repeat(6_000);
+    const tail = `GAMMAUNIQUE the measured answer is 42 units. ${"c".repeat(6_000)}`;
     const doc = makeDoc(head + middle + tail);
 
     const window = selectExtractionWindow(doc, "GAMMAUNIQUE answer", 26_000);

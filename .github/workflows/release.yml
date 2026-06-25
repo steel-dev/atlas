@@ -43,6 +43,9 @@ jobs:
           fi
           echo "Version OK: $PKG_VERSION"
 
+      - name: Lint
+        run: npm run lint
+
       - name: Typecheck
         run: npm run typecheck
 
@@ -51,6 +54,9 @@ jobs:
 
       - name: Build
         run: npm run build
+
+      - name: Check package exports
+        run: npm run check:exports
 
       - name: Publish to npm
         run: npm publish --provenance --access public

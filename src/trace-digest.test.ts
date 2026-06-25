@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { computeDigest, type DigestMeta } from "./trace-digest.js";
 import type { Span, SpanKind } from "./trace.js";
+import { computeDigest, type DigestMeta } from "./trace-digest.js";
 
 function span(
   p: Partial<Span> & { id: string; kind: SpanKind; t0: number; t1: number },
@@ -113,7 +113,9 @@ describe("computeDigest", () => {
       }),
     ];
     const digest = computeDigest(spans, [], { ...META, wallMs: 30 });
-    expect(digest.anomalies.some((a) => a.kind === "redundant-call")).toBe(true);
+    expect(digest.anomalies.some((a) => a.kind === "redundant-call")).toBe(
+      true,
+    );
   });
 
   it("rolls per-agent self-time and sums own model spans for cost", () => {
@@ -161,9 +163,30 @@ describe("computeDigest", () => {
 
   it("ranks model spans by wait, latency, and cost", () => {
     const spans = [
-      span({ id: "cheap-fast", kind: "model", t0: 0, t1: 10, costUSD: 0.01, computeMs: 10 }),
-      span({ id: "pricey", kind: "model", t0: 0, t1: 20, costUSD: 9, computeMs: 20 }),
-      span({ id: "waiter", kind: "model", t0: 0, t1: 5000, waitMs: 4000, computeMs: 1000 }),
+      span({
+        id: "cheap-fast",
+        kind: "model",
+        t0: 0,
+        t1: 10,
+        costUSD: 0.01,
+        computeMs: 10,
+      }),
+      span({
+        id: "pricey",
+        kind: "model",
+        t0: 0,
+        t1: 20,
+        costUSD: 9,
+        computeMs: 20,
+      }),
+      span({
+        id: "waiter",
+        kind: "model",
+        t0: 0,
+        t1: 5000,
+        waitMs: 4000,
+        computeMs: 1000,
+      }),
     ];
     const digest = computeDigest(spans, [], { ...META, wallMs: 5000 });
     expect(digest.topByCost[0].spanId).toBe("pricey");

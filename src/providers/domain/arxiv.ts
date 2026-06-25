@@ -1,9 +1,9 @@
 import * as cheerio from "cheerio";
 import { errorMessage } from "../../errors.js";
 import {
-  safeDomain,
   type SearchProvider,
   type SearchResult,
+  safeDomain,
 } from "../search.js";
 import { buildContent, clampLimit, collapse, fetchText } from "./shared.js";
 

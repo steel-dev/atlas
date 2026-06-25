@@ -1,11 +1,11 @@
 import type { Dispatcher } from "undici";
 import { sleep, withTimeout } from "../async.js";
-import { errorMessage } from "../errors.js";
 import { readEnv } from "../env.js";
+import { errorMessage } from "../errors.js";
 import { htmlToMarkdown } from "../html-extract.js";
 import { extractPdfText } from "../pdf-extract.js";
-import { guardRedirect as guardRedirectUrl } from "../safety.js";
 import { createRobotsCache, type RobotsCache } from "../robots.js";
+import { guardRedirect as guardRedirectUrl } from "../safety.js";
 import {
   extractionMetadataFromExa,
   extractionMetadataFromHtml,
@@ -80,11 +80,7 @@ export interface FetchProvider {
   fetch(req: FetchRequest): Promise<FetchAttempt>;
 }
 
-function failed(
-  method: string,
-  note: string,
-  escalate = true,
-): FetchAttempt {
+function failed(method: string, note: string, escalate = true): FetchAttempt {
   return { ok: false, attempt: { method, ok: false, note }, escalate };
 }
 
@@ -176,7 +172,7 @@ function normalizeDirectText(
   contentType: string | undefined,
 ): { markdown: string; method: "json_direct" | "text_direct" | "xml_direct" } {
   const trimmed = text.trim();
-  if (isJsonContentType(contentType) || /^[\[{]/.test(trimmed)) {
+  if (isJsonContentType(contentType) || /^[[{]/.test(trimmed)) {
     try {
       return {
         markdown: JSON.stringify(JSON.parse(trimmed), null, 2),
@@ -572,8 +568,7 @@ function parseRetryAfterSeconds(err: unknown): number | null {
 }
 
 export function steel(opts: SteelOptions = {}): FetchProvider {
-  const apiKey =
-    opts.apiKey ?? readEnv("ATLAS_STEEL_API_KEY", "STEEL_API_KEY");
+  const apiKey = opts.apiKey ?? readEnv("ATLAS_STEEL_API_KEY", "STEEL_API_KEY");
   if (!apiKey) {
     throw new Error(
       "steel() requires an apiKey (or set ATLAS_STEEL_API_KEY / STEEL_API_KEY)",
@@ -598,9 +593,7 @@ export function steel(opts: SteelOptions = {}): FetchProvider {
               steelClient.scrape(
                 {
                   url,
-                  format: isLikelyPdfUrl(url)
-                    ? ["html", "markdown"]
-                    : ["html"],
+                  format: isLikelyPdfUrl(url) ? ["html", "markdown"] : ["html"],
                   useProxy: opts.proxy ?? true,
                 },
                 { signal, timeout: SCRAPE_TIMEOUT_MS },
@@ -772,10 +765,18 @@ export function exaContents(
         } as RequestInit);
       } catch (err) {
         if (req.signal?.aborted) throw err;
-        return failed("exa_contents", `exa_contents: ${errorMessage(err)}`, true);
+        return failed(
+          "exa_contents",
+          `exa_contents: ${errorMessage(err)}`,
+          true,
+        );
       }
       if (!resp.ok) {
-        return failed("exa_contents", `exa_contents: HTTP ${resp.status}`, true);
+        return failed(
+          "exa_contents",
+          `exa_contents: HTTP ${resp.status}`,
+          true,
+        );
       }
       let data: {
         results?: Array<{ title?: string; text?: string; url?: string }>;
@@ -867,7 +868,9 @@ export async function fetchThroughChain(
 ): Promise<ChainFetchOutcome> {
   const attempts: SourceExtractionAttempt[] = [];
   const deadlineAt = Date.now() + FETCH_CHAIN_TIMEOUT_MS;
-  const runProvider = async (provider: FetchProvider): Promise<FetchAttempt> => {
+  const runProvider = async (
+    provider: FetchProvider,
+  ): Promise<FetchAttempt> => {
     const remainingMs = deadlineAt - Date.now();
     if (remainingMs <= 0) {
       return failed(
@@ -918,6 +921,8 @@ export async function fetchThroughChain(
     }
   }
   if (candidates.length === 0) return { page: null, attempts };
-  const best = candidates.reduce((a, b) => (pageScore(b) > pageScore(a) ? b : a));
+  const best = candidates.reduce((a, b) =>
+    pageScore(b) > pageScore(a) ? b : a,
+  );
   return finalize(best);
 }

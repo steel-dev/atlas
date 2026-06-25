@@ -12,7 +12,7 @@
     }
   },
   "bin": {
-    "atlas": "./dist/cli.js"
+    "atlas": "dist/cli.js"
   },
   "files": [
     "dist",
@@ -33,6 +33,10 @@
     "eval:typecheck": "tsc -p evals/tsconfig.json && tsc -p examples/eval-explorer/tsconfig.client.json",
     "build": "rm -rf dist && tsc -p tsconfig.build.json && node scripts/bundle-cli.mjs",
     "typecheck": "tsc -p tsconfig.json && tsc -p examples/tsconfig.cli.json",
+    "lint": "biome check .",
+    "lint:fix": "biome check --write .",
+    "format": "biome format --write .",
+    "check:exports": "publint --strict && attw --pack . --ignore-rules cjs-resolves-to-esm",
     "test": "vitest",
     "test:run": "vitest run",
     "prepublishOnly": "npm run build"
@@ -70,9 +74,12 @@
     "@ai-sdk/anthropic": "^3.0.81",
     "@ai-sdk/google": "^3.0.80",
     "@ai-sdk/openai": "^3.0.67",
+    "@arethetypeswrong/cli": "^0.18.4",
+    "@biomejs/biome": "^2.5.1",
     "@types/node": "^22.0.0",
     "ai": "^6.0.194",
     "esbuild": "^0.25.12",
+    "publint": "^0.3.21",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2",
     "vitest": "^2.1.8"

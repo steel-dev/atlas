@@ -1,11 +1,11 @@
-import { describe, it, expect } from "vitest";
+import { describe, expect, it } from "vitest";
 import {
   buildEvalOptions,
-  scoreReports,
-  selectCases,
   type CriterionReport,
   type DracoCase,
   type EvalOptions,
+  scoreReports,
+  selectCases,
 } from "./draco.js";
 
 function crit(

@@ -103,9 +103,7 @@ export function htmlToMarkdown(
 }
 
 function isElement(node: AnyNode): node is Element {
-  return (
-    node.type === "tag" || node.type === "script" || node.type === "style"
-  );
+  return node.type === "tag" || node.type === "script" || node.type === "style";
 }
 
 function isText(node: AnyNode): node is Text {
@@ -421,7 +419,9 @@ function extractHtmlMetadata(
     .filter((value): value is unknown => value !== undefined);
   return {
     ...(canonical ? { canonical } : {}),
-    ...(meta('meta[name="author"]') ? { author: meta('meta[name="author"]') } : {}),
+    ...(meta('meta[name="author"]')
+      ? { author: meta('meta[name="author"]') }
+      : {}),
     ...(meta('meta[property="article:author"]')
       ? { articleAuthor: meta('meta[property="article:author"]') }
       : {}),

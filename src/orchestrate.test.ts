@@ -1,12 +1,12 @@
-import { MockLanguageModelV3 } from "ai/test";
 import type {
   LanguageModelV3CallOptions,
   LanguageModelV3GenerateResult,
 } from "@ai-sdk/provider";
+import { MockLanguageModelV3 } from "ai/test";
 import { describe, expect, it } from "vitest";
 import { Atlas } from "./atlas.js";
 import type { ResolvedModel } from "./model.js";
-import { researcher, type Researcher } from "./researcher.js";
+import { type Researcher, researcher } from "./researcher.js";
 
 const USAGE = {
   inputTokens: { total: 1_000, noCache: 1_000, cacheRead: 0, cacheWrite: 0 },
@@ -52,14 +52,18 @@ function fakeResearcher(
       if (opts.fail) throw new Error("researcher boom");
       return {
         report,
-        sources: opts.sources ?? [{ url: `https://x/${report}`, title: report }],
+        sources: opts.sources ?? [
+          { url: `https://x/${report}`, title: report },
+        ],
         cost: 0.1,
       };
     },
   });
 }
 
-const PRICING = { "claude-sonnet-4-6": { inputPerMTok: 0.5, outputPerMTok: 2 } };
+const PRICING = {
+  "claude-sonnet-4-6": { inputPerMTok: 0.5, outputPerMTok: 2 },
+};
 
 describe("orchestrated research (via Atlas)", () => {
   it("decomposes, routes to researchers, synthesizes, and reports real stats", async () => {

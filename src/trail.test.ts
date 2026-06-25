@@ -72,7 +72,9 @@ describe("createTrail", () => {
     expect(rendered).toContain(
       "- https://a.example.com/x — blocked_or_challenge",
     );
-    expect(rendered).toContain(`- https://b.example.com/y — ${"e".repeat(120)}`);
+    expect(rendered).toContain(
+      `- https://b.example.com/y — ${"e".repeat(120)}`,
+    );
     expect(rendered).not.toContain("e".repeat(121));
   });
 

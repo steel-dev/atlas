@@ -1,10 +1,10 @@
-import { createAnthropic } from "@ai-sdk/anthropic";
-import { createOpenAI } from "@ai-sdk/openai";
-import { generateText } from "ai";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { createAnthropic } from "@ai-sdk/anthropic";
+import { createOpenAI } from "@ai-sdk/openai";
+import { generateText } from "ai";
 import {
   DEFAULT_ANTHROPIC_MODEL,
   DEFAULT_OPENAI_MODEL,
@@ -12,18 +12,18 @@ import {
 import { Atlas, type AtlasConfig, type Effort } from "../src/index.js";
 import {
   buildDiagnostics,
+  type EvalDiagnostics,
+  type EvalTraceEvent,
   formatCountMap,
   mapWithConcurrency,
   median,
   progressLine,
+  type RunMetrics,
   readEnv,
   stableHash,
   summarizeRun,
   traceEvent,
   writeJsonl,
-  type EvalDiagnostics,
-  type EvalTraceEvent,
-  type RunMetrics,
 } from "./lib.js";
 
 type ModelProvider = "anthropic" | "openai";
@@ -161,12 +161,7 @@ function readProvider(raw: string): ModelProvider {
 }
 
 function readEffort(raw: string): Effort {
-  if (
-    raw === "fast" ||
-    raw === "balanced" ||
-    raw === "deep" ||
-    raw === "max"
-  ) {
+  if (raw === "fast" || raw === "balanced" || raw === "deep" || raw === "max") {
     return raw;
   }
   fail(`--effort must be one of: fast, balanced, deep, max (got "${raw}")`);
@@ -839,7 +834,8 @@ function summarize(results: EvalResult[]) {
     capBoundRate: completed.length === 0 ? 0 : capBound / completed.length,
     medianLatencyMs: median(completed.map((result) => result.latencyMs)),
     totalCostUSD,
-    averageCostUSD: completed.length === 0 ? 0 : totalCostUSD / completed.length,
+    averageCostUSD:
+      completed.length === 0 ? 0 : totalCostUSD / completed.length,
     averageAgentsSpawned:
       completed.length === 0 ? 0 : totalAgentsSpawned / completed.length,
     totalCitationsUnsupported: completed.reduce(
@@ -882,10 +878,10 @@ async function main(): Promise<void> {
       ? resolveEvalProvider(opts.judgeProvider ?? DEFAULT_JUDGE_PROVIDER)
       : null,
     judgeModel: opts.judge
-      ? (opts.judgeModel?.trim() ||
+      ? opts.judgeModel?.trim() ||
         defaultJudgeModel(
           resolveEvalProvider(opts.judgeProvider ?? DEFAULT_JUDGE_PROVIDER),
-        ))
+        )
       : null,
     selectedCaseIds: selected.map((entry) => entry.id),
     startedAt: new Date().toISOString(),
@@ -917,7 +913,7 @@ async function main(): Promise<void> {
   const outPath = opts.outPath ?? defaultOutPath();
   await writeJsonl(outPath, [manifest, ...results, summary]);
   process.stdout.write(
-    [
+    `${[
       `cases: ${summary.total}`,
       `accuracy: ${(summary.accuracy * 100).toFixed(1)}% (${summary.correct}/${summary.total})`,
       `exact accuracy: ${(summary.exactAccuracy * 100).toFixed(1)}% (${summary.exactCorrect}/${summary.total})`,
@@ -932,7 +928,7 @@ async function main(): Promise<void> {
       `citations unsupported: ${summary.totalCitationsUnsupported}`,
       `fetch health: fetched=${summary.fetchHealth.fetched}, rejected=${summary.fetchHealth.rejected}, blocked_or_thin=${summary.fetchHealth.blockedOrThin}, methods=${formatCountMap(summary.fetchHealth.fetchedByMethod)}`,
       `results: ${outPath}`,
-    ].join("\n") + "\n",
+    ].join("\n")}\n`,
   );
 }
 

@@ -1,19 +1,25 @@
 import { randomUUID } from "node:crypto";
 import type { FlexibleSchema } from "ai";
 import {
-  resolveRunConfig,
   type AtlasConfig,
   type Budget,
   type ResearchOptions,
   type ResolvedRunConfig,
+  resolveRunConfig,
   type SourceFilter,
 } from "./config.js";
 import { assembleRun } from "./context.js";
 import { AtlasError, errorMessage } from "./errors.js";
 import { EventHub } from "./event-hub.js";
-import type { Citation, ResearchEvent, RunStats, StopReason } from "./events.js";
-import { totalFreshTokens, type ModelRole } from "./model.js";
-import { extractStructured } from "./structured.js";
+import type {
+  Citation,
+  ResearchEvent,
+  RunStats,
+  StopReason,
+} from "./events.js";
+import { EVENT_SCHEMA_VERSION } from "./events.js";
+import { type ModelRole, totalFreshTokens } from "./model.js";
+import { runOrchestrated } from "./orchestrate.js";
 import { isoDate } from "./prompts.js";
 import {
   JournalWriter,
@@ -23,12 +29,11 @@ import {
   type ReplayCache,
   type RunStore,
 } from "./providers/store.js";
-import type { RunCtx } from "./state.js";
 import { runSpine } from "./spine.js";
-import { runOrchestrated } from "./orchestrate.js";
+import type { RunCtx } from "./state.js";
+import { extractStructured } from "./structured.js";
 import type { RunTrace, TraceRecorder } from "./trace.js";
 import { computeDigest } from "./trace-digest.js";
-import { EVENT_SCHEMA_VERSION } from "./events.js";
 
 const EXTRACTION_FRACTION = 0.1;
 const EXTRACTION_MIN_USD = 0.02;
@@ -227,21 +232,20 @@ interface ExecuteRunArgs {
 async function executeRun(args: ExecuteRunArgs): Promise<ResearchResult> {
   const { resolved, question, runId } = args;
   const startedAt = args.now();
-  const { rctx, meter, synthesisGrant } =
-    await assembleRun({
-      runId,
-      question,
-      todayISO: isoDate(args.anchorStartedAt ?? startedAt),
-      resolved,
-      config: args.config,
-      journal: args.journal,
-      replay: args.replay,
-      hub: args.hub,
-      hardSignal: args.hardSignal,
-      stopSignal: args.stopSignal,
-      now: args.now,
-      startedAt,
-    });
+  const { rctx, meter, synthesisGrant } = await assembleRun({
+    runId,
+    question,
+    todayISO: isoDate(args.anchorStartedAt ?? startedAt),
+    resolved,
+    config: args.config,
+    journal: args.journal,
+    replay: args.replay,
+    hub: args.hub,
+    hardSignal: args.hardSignal,
+    stopSignal: args.stopSignal,
+    now: args.now,
+    startedAt,
+  });
   const { emit } = rctx;
   args.captureRecorder?.(rctx.recorder);
 
@@ -459,7 +463,10 @@ function sourceFilterFromMeta(value: unknown): SourceFilter | undefined {
     (filter[key] as unknown[]).every((domain) => typeof domain === "string")
       ? { [key]: filter[key] as string[] }
       : {};
-  const restored = { ...domains("includeDomains"), ...domains("excludeDomains") };
+  const restored = {
+    ...domains("includeDomains"),
+    ...domains("excludeDomains"),
+  };
   return Object.keys(restored).length > 0 ? restored : undefined;
 }
 
@@ -482,7 +489,9 @@ export async function resumeRun(
   const replay = await loadReplayCache(store, runId);
   const budget: Budget = {
     ...(typeof meta.budgetUSD === "number" ? { maxUSD: meta.budgetUSD } : {}),
-    ...(typeof meta.maxTokens === "number" ? { maxTokens: meta.maxTokens } : {}),
+    ...(typeof meta.maxTokens === "number"
+      ? { maxTokens: meta.maxTokens }
+      : {}),
     ...(typeof meta.maxDurationMs === "number"
       ? { maxDurationMs: meta.maxDurationMs }
       : {}),

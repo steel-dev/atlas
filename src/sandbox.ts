@@ -176,7 +176,9 @@ function hostErrorOutput(err: unknown, req: SandboxRequest): SandboxOutput {
       error: `code timed out after ${req.timeoutMs}ms`,
     };
   }
-  if (/memory limit|isolate was disposed|array buffer allocation/i.test(message)) {
+  if (
+    /memory limit|isolate was disposed|array buffer allocation/i.test(message)
+  ) {
     return {
       sources_in_scope: req.sources.length,
       stdout: "",

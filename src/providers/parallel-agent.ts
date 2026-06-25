@@ -56,7 +56,10 @@ export function parallelAgent(opts: ParallelAgentOptions = {}): Researcher {
           "parallel.agent: no API key (set ATLAS_PARALLEL_API_KEY / PARALLEL_API_KEY or pass { apiKey })",
         );
       }
-      const headers = { "content-type": "application/json", "x-api-key": apiKey };
+      const headers = {
+        "content-type": "application/json",
+        "x-api-key": apiKey,
+      };
       const processor = opts.processor ?? "core";
       const data = await withTimeout(
         opts.timeoutMs ?? DEFAULT_TIMEOUT_MS,
@@ -84,7 +87,10 @@ export function parallelAgent(opts: ParallelAgentOptions = {}): Researcher {
           }
           let status = run.status ?? "queued";
           while (!TERMINAL_STATUSES.has(status)) {
-            await sleep(opts.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS, signal);
+            await sleep(
+              opts.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS,
+              signal,
+            );
             const polled = await fetch(`${base}/v1/tasks/runs/${run.run_id}`, {
               signal,
               headers,

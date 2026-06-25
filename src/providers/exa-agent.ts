@@ -88,7 +88,9 @@ export function exaAgent(opts: ExaAgentOptions = {}): Researcher {
       const report = (fields.output?.content ?? "").trim();
       const sources = sourcesFromText(report);
       const cost = fields.costDollars?.total;
-      ctx.log(`exa.agent: ${sources.length} sources${cost != null ? `, $${cost}` : ""}`);
+      ctx.log(
+        `exa.agent: ${sources.length} sources${cost != null ? `, $${cost}` : ""}`,
+      );
       return { report, sources, ...(cost != null ? { cost } : {}) };
     },
   };

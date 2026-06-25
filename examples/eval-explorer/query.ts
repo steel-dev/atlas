@@ -1,9 +1,9 @@
-import { parseArgs } from "node:util";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { Store } from "./store.js";
+import { parseArgs } from "node:util";
 import { captureCommit } from "./git.js";
-import { runCost, type RunUsage } from "./pricing.js";
+import { type RunUsage, runCost } from "./pricing.js";
+import { Store } from "./store.js";
 
 const USAGE = `draco query — read-only drill-down over benchmark runs
 
@@ -68,11 +68,11 @@ function fail(message: string): never {
 }
 
 function out(value: unknown): void {
-  process.stdout.write(JSON.stringify(value, null, 2) + "\n");
+  process.stdout.write(`${JSON.stringify(value, null, 2)}\n`);
 }
 
 function raw(text: string): void {
-  process.stdout.write(text + "\n");
+  process.stdout.write(`${text}\n`);
 }
 
 function parseJson(value: unknown): unknown {
@@ -247,9 +247,11 @@ function cmdCase(store: Store, positionals: string[]): void {
     cost: runCost(
       parseJson(store.getBlob(runId, "usage") ?? "null") as RunUsage | null,
     ),
-    runs: store
-      .listRuns(sha, caseId)
-      .map((r) => ({ runId: r.runId, normalized: r.normalized, createdAt: r.createdAt })),
+    runs: store.listRuns(sha, caseId).map((r) => ({
+      runId: r.runId,
+      normalized: r.normalized,
+      createdAt: r.createdAt,
+    })),
     artifacts: store.blobInfo(runId),
   });
 }
@@ -308,7 +310,8 @@ function cmdVerdicts(store: Store, positionals: string[]): void {
   }
   out({
     runId,
-    overall: score?.normalizedScore !== undefined ? pct(score.normalizedScore) : null,
+    overall:
+      score?.normalizedScore !== undefined ? pct(score.normalizedScore) : null,
     sections,
     unmetBySection,
     unmetCount: unmet.length,
@@ -338,10 +341,12 @@ function blobOrFail(store: Store, runId: string, kind: string): string {
   const value = store.getBlob(runId, kind);
   if (value === undefined) {
     fail(
-      `no '${kind}' for run ${runId} (available: ${store
-        .blobInfo(runId)
-        .map((b) => b.kind)
-        .join(", ") || "none"})`,
+      `no '${kind}' for run ${runId} (available: ${
+        store
+          .blobInfo(runId)
+          .map((b) => b.kind)
+          .join(", ") || "none"
+      })`,
     );
   }
   return value;
@@ -404,7 +409,9 @@ function cmdTrace(store: Store, positionals: string[], flags: Flags): void {
 }
 
 function cmdDiagnostics(store: Store, positionals: string[]): void {
-  out(parseJson(blobOrFail(store, need(positionals, 1, "runId"), "diagnostics")));
+  out(
+    parseJson(blobOrFail(store, need(positionals, 1, "runId"), "diagnostics")),
+  );
 }
 
 function cmdCost(store: Store, positionals: string[]): void {
@@ -486,7 +493,11 @@ function renderStep(step: TranscriptStep, includeMessages: boolean): string {
   return lines.join("\n");
 }
 
-function cmdTranscript(store: Store, positionals: string[], flags: Flags): void {
+function cmdTranscript(
+  store: Store,
+  positionals: string[],
+  flags: Flags,
+): void {
   const runId = need(positionals, 1, "runId");
   const steps = (parseJson(blobOrFail(store, runId, "transcript")) ??
     []) as TranscriptStep[];
@@ -532,7 +543,8 @@ function cmdTranscript(store: Store, positionals: string[], flags: Flags): void 
     const re = new RegExp(flags.grep, "i");
     selected = selected.filter(
       (s) =>
-        re.test(JSON.stringify(s.output)) || re.test(JSON.stringify(s.messages)),
+        re.test(JSON.stringify(s.output)) ||
+        re.test(JSON.stringify(s.messages)),
     );
   }
   if (flags.head) selected = selected.slice(0, Number(flags.head));
@@ -610,7 +622,10 @@ function nearDupPairs(queries: string[], threshold = 0.5): number {
   return pairs;
 }
 
-function computeFetchYield(store: Store, runId: string): Record<string, unknown> {
+function computeFetchYield(
+  store: Store,
+  runId: string,
+): Record<string, unknown> {
   const sources = (parseJson(store.getBlob(runId, "sources") ?? "[]") ??
     []) as Array<{ id?: string; url?: string; via?: string }>;
   const cit = parseJson(store.getBlob(runId, "citations") ?? "null") as {
@@ -663,7 +678,9 @@ function cmdAudit(store: Store, positionals: string[]): void {
       uniqueExact: new Set(queries.map((q) => q.toLowerCase().trim())).size,
       nearDupPairs: nearDupPairs(queries),
       queriesPerFetch:
-        fetchCalls > 0 ? Number((queries.length / fetchCalls).toFixed(1)) : null,
+        fetchCalls > 0
+          ? Number((queries.length / fetchCalls).toFixed(1))
+          : null,
     },
     fetchYield: computeFetchYield(store, runId),
     phases: Object.fromEntries(
@@ -768,7 +785,11 @@ function cmdDiff(store: Store, positionals: string[]): void {
       .filter((c) => (c.delta ?? 0) > 0)
       .sort((a, b) => (b.delta ?? 0) - (a.delta ?? 0))
       .map((c) => `${c.caseId} (+${c.delta})`),
-    toolDiscipline: { runsA: totalsA.runs, runsB: totalsB.runs, delta: toolDelta },
+    toolDiscipline: {
+      runsA: totalsA.runs,
+      runsB: totalsB.runs,
+      delta: toolDelta,
+    },
     perCase,
     ...(scored.length < 3
       ? { noisy: "few shared scored cases — deltas are noisy" }
@@ -784,9 +805,26 @@ const SECTION_LABELS: Record<string, string> = {
 };
 
 const T95: Record<number, number> = {
-  1: 12.706, 2: 4.303, 3: 3.182, 4: 2.776, 5: 2.571, 6: 2.447, 7: 2.365,
-  8: 2.306, 9: 2.262, 10: 2.228, 11: 2.201, 12: 2.179, 13: 2.16, 14: 2.145,
-  15: 2.131, 16: 2.12, 17: 2.11, 18: 2.101, 19: 2.093, 20: 2.086,
+  1: 12.706,
+  2: 4.303,
+  3: 3.182,
+  4: 2.776,
+  5: 2.571,
+  6: 2.447,
+  7: 2.365,
+  8: 2.306,
+  9: 2.262,
+  10: 2.228,
+  11: 2.201,
+  12: 2.179,
+  13: 2.16,
+  14: 2.145,
+  15: 2.131,
+  16: 2.12,
+  17: 2.11,
+  18: 2.101,
+  19: 2.093,
+  20: 2.086,
 };
 
 function t95(df: number): number {
@@ -819,7 +857,11 @@ function systemCost(store: Store, runId: string): number | null {
     return diag.stats.costUSD;
   const c = diag?.exa?.costDollars;
   const exaTotal =
-    c && typeof c === "object" ? c.total : typeof c === "number" ? c : undefined;
+    c && typeof c === "object"
+      ? c.total
+      : typeof c === "number"
+        ? c
+        : undefined;
   if (typeof exaTotal === "number" && exaTotal > 0) return exaTotal;
   const usage = parseJson(store.getBlob(runId, "usage")) as RunUsage | null;
   const u = runCost(usage).totalUsd;
@@ -898,7 +940,7 @@ function cmdSystems(store: Store, positionals: string[]): void {
     const axes: Record<string, number | null> = {};
     for (const id of Object.keys(SECTION_LABELS)) {
       const vals = axisVals[id];
-      axes[SECTION_LABELS[id]] = vals && vals.length ? round(meanOf(vals)) : null;
+      axes[SECTION_LABELS[id]] = vals?.length ? round(meanOf(vals)) : null;
     }
     return {
       system: model,
@@ -945,7 +987,7 @@ function cmdQuality(store: Store, positionals: string[]): void {
   const seen = new Set<string>();
   const rows: Array<Record<string, unknown>> = [];
   for (const r of runs) {
-    const key = r.caseId + "|" + (r.researchModel ?? "?");
+    const key = `${r.caseId}|${r.researchModel ?? "?"}`;
     if (seen.has(key)) continue;
     seen.add(key);
     const md = store.getBlob(r.runId, "markdown") ?? "";

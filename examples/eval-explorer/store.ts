@@ -1,7 +1,7 @@
-import { DatabaseSync } from "node:sqlite";
-import { gzipSync, gunzipSync } from "node:zlib";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
+import { DatabaseSync } from "node:sqlite";
+import { gunzipSync, gzipSync } from "node:zlib";
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS runs (
@@ -61,7 +61,7 @@ const RUN_COLS = [
 ];
 
 const INSERT_RUN = `INSERT OR REPLACE INTO runs (${RUN_COLS.join(", ")})
-VALUES (${RUN_COLS.map((c) => ":" + c).join(", ")})`;
+VALUES (${RUN_COLS.map((c) => `:${c}`).join(", ")})`;
 
 const INSERT_BLOB = `INSERT OR REPLACE INTO run_blobs (run_id, kind, data, bytes)
 VALUES (?, ?, ?, ?)`;
@@ -387,7 +387,11 @@ export class Store {
     score: PersistableResult["score"],
     report: unknown[],
     judgeErrors: number,
-    judge: { provider: string | null; model: string | null; grader: string | null },
+    judge: {
+      provider: string | null;
+      model: string | null;
+      grader: string | null;
+    },
   ): void {
     this.db.exec("BEGIN");
     try {

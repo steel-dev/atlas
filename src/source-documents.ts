@@ -1,11 +1,11 @@
+import type { HtmlPageMetadata } from "./html-extract.js";
 import type {
   SourceChunk,
-  SourceDocument,
   SourceDiscoveredLink,
+  SourceDocument,
   SourceExtractionAttempt,
   SourceExtractionMetadata,
 } from "./sources.js";
-import type { HtmlPageMetadata } from "./html-extract.js";
 import { normalizeUrlForSource } from "./url.js";
 
 const STORED_MARKDOWN_CAP = 500_000;
@@ -220,11 +220,13 @@ export function sourceCardData(
       warning.startsWith("search_listing_page"),
     ) ?? false;
   const passages =
-    goal && goal.trim() && document.markdown.length > GOAL_PASSAGE_MIN_DOC_CHARS
+    goal?.trim() && document.markdown.length > GOAL_PASSAGE_MIN_DOC_CHARS
       ? rankSourcePassages([document], goal, GOAL_PASSAGE_COUNT)
       : [];
   const headChars =
-    passages.length > 0 ? Math.min(previewChars, GOAL_HEAD_PREVIEW_CHARS) : previewChars;
+    passages.length > 0
+      ? Math.min(previewChars, GOAL_HEAD_PREVIEW_CHARS)
+      : previewChars;
   const previewEnd = Math.min(
     document.markdown.length,
     Math.max(0, Math.floor(headChars)),
@@ -505,7 +507,9 @@ export function selectExtractionWindow(
   };
 
   take(0);
-  for (const { chunk, score } of [...scored].sort((a, b) => b.score - a.score)) {
+  for (const { chunk, score } of [...scored].sort(
+    (a, b) => b.score - a.score,
+  )) {
     if (used >= maxChars) break;
     if (score === 0) break;
     take(chunk.index);
@@ -523,7 +527,8 @@ export function selectExtractionWindow(
   for (const index of ordered) {
     const chunk = document.chunks[index];
     if (!chunk) continue;
-    if (previous !== -1 && index !== previous + 1) text += EXTRACTION_GAP_MARKER;
+    if (previous !== -1 && index !== previous + 1)
+      text += EXTRACTION_GAP_MARKER;
     text += document.markdown.slice(chunk.start, chunk.end);
     previous = index;
   }

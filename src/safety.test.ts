@@ -92,7 +92,9 @@ describe("quarantine", () => {
       sourceId: "source_1",
       url: "https://example.com",
     });
-    expect(wrapped).toContain("<<<untrusted-source source_1 https://example.com>>>");
+    expect(wrapped).toContain(
+      "<<<untrusted-source source_1 https://example.com>>>",
+    );
     expect(wrapped).toContain("page text");
     expect(wrapped).toContain("<<<end-untrusted-source>>>");
   });

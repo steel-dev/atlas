@@ -1,20 +1,21 @@
 import type { LanguageModelV3 } from "@ai-sdk/provider";
 import {
-  createConcurrencyGate,
-  createDynamicConcurrencyGate,
-  createAdaptiveLimit,
   type AdaptiveLimit,
   type ConcurrencyGate,
+  createAdaptiveLimit,
+  createConcurrencyGate,
+  createDynamicConcurrencyGate,
 } from "./async.js";
 import {
-  createBudgetMeter,
-  DEFAULT_PRICING,
   type BudgetGrant,
   type BudgetMeter,
+  createBudgetMeter,
+  DEFAULT_PRICING,
   type PricingTable,
 } from "./budget.js";
 import type { AtlasConfig, ResolvedRunConfig, SearchConfig } from "./config.js";
 import { resolveCustomTools } from "./custom-tools.js";
+import { isSmallModelId } from "./defaults.js";
 import { ECONOMY } from "./economy.js";
 import type { EventHub } from "./event-hub.js";
 import type { ResearchEvent } from "./events.js";
@@ -22,13 +23,11 @@ import {
   createModelCallCache,
   createRunUsage,
   engineModel,
-  totalFreshTokens,
   type ModelRole,
   type RateLimitNotice,
+  totalFreshTokens,
 } from "./model.js";
-import { isSmallModelId } from "./defaults.js";
 import { defaultFetchProviders } from "./providers/fetch.js";
-import { createSafeDispatcher } from "./safe-dispatcher.js";
 import {
   combineSearchProviders,
   defaultSearchProviders,
@@ -36,15 +35,16 @@ import {
   type SearchProvider,
 } from "./providers/search.js";
 import type { JournalWriter, ReplayCache } from "./providers/store.js";
+import { createSafeDispatcher } from "./safe-dispatcher.js";
+import { isRunCodeAvailable } from "./sandbox.js";
 import {
   createRunCounters,
   createSourceStore,
   type RunCtx,
   type SourceStore,
 } from "./state.js";
-import { isRunCodeAvailable } from "./sandbox.js";
-import { createTrail } from "./trail.js";
 import { createTraceRecorder } from "./trace.js";
+import { createTrail } from "./trail.js";
 
 const TIMEOUT_SYNTHESIS_RESERVE_MS = 120_000;
 const BUDGET_WARNING_FRACTIONS = [0.5, 0.8, 0.95];
@@ -201,10 +201,12 @@ export async function assembleRun(args: AssembleRunArgs): Promise<RunAssembly> {
   const bindModel = (role: ModelRole, grant: BudgetGrant) =>
     bindModelWithTier(role, grant, tierForRole(role));
 
-  const { search, searchBySource } = resolveSearchConfig(args.config.search, () =>
-    defaultSearchProviders(
-      bindModelWithTier("research", meter, tierForRole("research")),
-    ),
+  const { search, searchBySource } = resolveSearchConfig(
+    args.config.search,
+    () =>
+      defaultSearchProviders(
+        bindModelWithTier("research", meter, tierForRole("research")),
+      ),
   );
   const fetchChain = Array.isArray(args.config.fetch)
     ? args.config.fetch
@@ -270,7 +272,6 @@ export async function assembleRun(args: AssembleRunArgs): Promise<RunAssembly> {
     },
   };
 
-
   if (args.replay) primeSourceNumbers(rctx.sources, args.replay);
 
   return {
@@ -295,7 +296,10 @@ function resolveSearchConfig(
 ): { search: ResolvedSearch; searchBySource: Map<string, ResolvedSearch> } {
   const flat = (
     providers: SearchProvider[],
-  ): { search: ResolvedSearch; searchBySource: Map<string, ResolvedSearch> } => {
+  ): {
+    search: ResolvedSearch;
+    searchBySource: Map<string, ResolvedSearch>;
+  } => {
     const web = combineSearchProviders(
       providers.length > 0 ? providers : webFallback(),
     );

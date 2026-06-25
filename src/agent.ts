@@ -1,19 +1,15 @@
-import {
-  generateText,
-  stepCountIs,
-  type ModelMessage,
-} from "ai";
+import { generateText, type ModelMessage, stepCountIs } from "ai";
 import type { BudgetGrant } from "./budget.js";
 import type { AgentRole } from "./events.js";
 import { stubToolResultWindow } from "./memory.js";
-import { MODEL_CALL_MAX_RETRIES, totalFreshTokens, type ModelRole } from "./model.js";
-import { currentFrame, withTraceFrame } from "./trace.js";
-import { budgetStatusLine, type RunCtx } from "./state.js";
 import {
-  buildAgentTools,
-  type AgentCtx,
-  type ToolName,
-} from "./tools.js";
+  MODEL_CALL_MAX_RETRIES,
+  type ModelRole,
+  totalFreshTokens,
+} from "./model.js";
+import { budgetStatusLine, type RunCtx } from "./state.js";
+import { type AgentCtx, buildAgentTools, type ToolName } from "./tools.js";
+import { currentFrame, withTraceFrame } from "./trace.js";
 
 const TASK_PREVIEW_CHARS = 300;
 
@@ -80,67 +76,75 @@ export async function runAgent(
 
   const result = await withTraceFrame(recorder, agentFrame, () =>
     generateText({
-    model,
-    system: spec.system,
-    prompt: spec.task,
-    tools,
-    maxRetries: MODEL_CALL_MAX_RETRIES,
-    abortSignal: rctx.signal,
-    ...(spec.maxOutputTokensPerStep
-      ? { maxOutputTokens: spec.maxOutputTokensPerStep }
-      : {}),
-    stopWhen: [
-      stepCountIs(spec.maxTurns ?? rctx.config.envelope.maxTurns),
-      ({ steps }) => {
-        if (spec.grant.floored()) {
-          governorReason = "budget exhausted";
-          return true;
-        }
-        if (
-          spec.tokenCeiling !== undefined &&
-          totalFreshTokens(rctx.usage) >= spec.tokenCeiling
-        ) {
-          governorReason = "token ceiling reached";
-          return true;
-        }
-        const runReason = rctx.stopReason();
-        if (runReason) {
-          governorReason = runReason;
-          return true;
-        }
-        if (spec.stopWhenSatisfied?.()) {
-          governorReason = "ledger satisfied";
-          return true;
-        }
-        if (spec.maxContextTokens !== undefined) {
-          const inputTokens = steps.at(-1)?.usage.inputTokens;
-          if (
-            typeof inputTokens === "number" &&
-            inputTokens >= spec.maxContextTokens
-          ) {
-            governorReason = CONTEXT_BUDGET_STOP;
+      model,
+      system: spec.system,
+      prompt: spec.task,
+      tools,
+      maxRetries: MODEL_CALL_MAX_RETRIES,
+      abortSignal: rctx.signal,
+      ...(spec.maxOutputTokensPerStep
+        ? { maxOutputTokens: spec.maxOutputTokensPerStep }
+        : {}),
+      stopWhen: [
+        stepCountIs(spec.maxTurns ?? rctx.config.envelope.maxTurns),
+        ({ steps }) => {
+          if (spec.grant.floored()) {
+            governorReason = "budget exhausted";
             return true;
           }
+          if (
+            spec.tokenCeiling !== undefined &&
+            totalFreshTokens(rctx.usage) >= spec.tokenCeiling
+          ) {
+            governorReason = "token ceiling reached";
+            return true;
+          }
+          const runReason = rctx.stopReason();
+          if (runReason) {
+            governorReason = runReason;
+            return true;
+          }
+          if (spec.stopWhenSatisfied?.()) {
+            governorReason = "ledger satisfied";
+            return true;
+          }
+          if (spec.maxContextTokens !== undefined) {
+            const inputTokens = steps.at(-1)?.usage.inputTokens;
+            if (
+              typeof inputTokens === "number" &&
+              inputTokens >= spec.maxContextTokens
+            ) {
+              governorReason = CONTEXT_BUDGET_STOP;
+              return true;
+            }
+          }
+          return false;
+        },
+      ],
+      prepareStep: ({ stepNumber, messages }) => {
+        const memory =
+          spec.memoryCursor !== undefined
+            ? {
+                messages: stubToolResultWindow(
+                  messages as ModelMessage[],
+                  spec.memoryCursor,
+                ),
+              }
+            : {};
+        if (spec.forceFirstTool && stepNumber === 0) {
+          return {
+            toolChoice: {
+              type: "tool" as const,
+              toolName: spec.forceFirstTool,
+            },
+            ...memory,
+          };
         }
-        return false;
+        return memory;
       },
-    ],
-    prepareStep: ({ stepNumber, messages }) => {
-      const memory =
-        spec.memoryCursor !== undefined
-          ? { messages: stubToolResultWindow(messages as ModelMessage[], spec.memoryCursor) }
-          : {};
-      if (spec.forceFirstTool && stepNumber === 0) {
-        return {
-          toolChoice: { type: "tool" as const, toolName: spec.forceFirstTool },
-          ...memory,
-        };
-      }
-      return memory;
-    },
-    onStepFinish: (step) => {
-      if (step.text?.trim()) lastText = step.text.trim();
-    },
+      onStepFinish: (step) => {
+        if (step.text?.trim()) lastText = step.text.trim();
+      },
     }),
   );
 

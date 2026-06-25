@@ -1,5 +1,5 @@
-import { build } from "esbuild";
 import { createRequire } from "node:module";
+import { build } from "esbuild";
 
 const require = createRequire(import.meta.url);
 const pkg = require("../package.json");

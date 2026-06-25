@@ -11,9 +11,7 @@ const CHEAP = { inputPerMTok: 0.25, outputPerMTok: 2 };
 const OPUS = { inputPerMTok: 5, outputPerMTok: 25 };
 const FREE = { inputPerMTok: 0, outputPerMTok: 0 };
 
-const planFor = (
-  over: Partial<Parameters<typeof resolveBudgetPlan>[0]>,
-) =>
+const planFor = (over: Partial<Parameters<typeof resolveBudgetPlan>[0]>) =>
   resolveBudgetPlan({
     budgetUSD: 0.5,
     maxTokens: 5_000_000,

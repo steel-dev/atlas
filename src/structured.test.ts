@@ -1,12 +1,12 @@
-import { MockLanguageModelV3 } from "ai/test";
 import type {
+  LanguageModelV3,
   LanguageModelV3CallOptions,
   LanguageModelV3GenerateResult,
 } from "@ai-sdk/provider";
+import { MockLanguageModelV3 } from "ai/test";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { extractStructured } from "./structured.js";
-import type { LanguageModelV3 } from "@ai-sdk/provider";
 
 const USAGE = {
   inputTokens: { total: 1_000, noCache: 1_000, cacheRead: 0, cacheWrite: 0 },

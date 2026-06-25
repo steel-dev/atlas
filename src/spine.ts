@@ -1,28 +1,23 @@
 import {
   generateObject,
   generateText,
-  stepCountIs,
-  tool,
   type ModelMessage,
+  stepCountIs,
   type ToolSet,
+  tool,
 } from "ai";
 import { z } from "zod";
-import { runAgent, type AgentResult } from "./agent.js";
+import { type AgentResult, runAgent } from "./agent.js";
 import {
+  type BudgetGrant,
   resolveBudgetPlan,
   resolvePricing,
   withGrant,
-  type BudgetGrant,
 } from "./budget.js";
-import { AtlasError } from "./errors.js";
-import type { AgentRole, Citation } from "./events.js";
-import { NON_EVIDENCE_WARNINGS } from "./sources.js";
-import { stubToolResultWindow } from "./memory.js";
-import { MODEL_CALL_MAX_RETRIES } from "./model.js";
-import type { RunCtx } from "./state.js";
 import {
   applyCoverageUpdate,
   draftCoverageSchema,
+  type Ledger,
   ledgerFromSubQuestions,
   renderDeliverableContract,
   renderDeliverableShape,
@@ -30,12 +25,17 @@ import {
   renderLedgerAudit,
   renderOpenSlots,
   seedLedger,
-  type Ledger,
 } from "./checklist.js";
+import { AtlasError } from "./errors.js";
+import type { AgentRole, Citation } from "./events.js";
+import { stubToolResultWindow } from "./memory.js";
+import { MODEL_CALL_MAX_RETRIES } from "./model.js";
+import { NON_EVIDENCE_WARNINGS } from "./sources.js";
+import type { RunCtx } from "./state.js";
 import {
+  type AgentCtx,
   buildAgentTools,
   renderUnfetchedCandidates,
-  type AgentCtx,
 } from "./tools.js";
 import { withTraceFrame } from "./trace.js";
 import { normalizeUrlForSource } from "./url.js";
@@ -230,7 +230,8 @@ interface Draft {
 function draftTools(rctx: RunCtx, draft: Draft): ToolSet {
   return {
     draft_show: tool({
-      description: "Show your current draft so you can reread it before patching.",
+      description:
+        "Show your current draft so you can reread it before patching.",
       inputSchema: z.object({}),
       execute: async () => ({ markdown: draft.text, chars: draft.text.length }),
     }),
@@ -260,7 +261,8 @@ function draftTools(rctx: RunCtx, draft: Draft): ToolSet {
         if (!draft.text.includes(find)) {
           return {
             ok: false,
-            error: "find text not found; call draft_show to see the current draft",
+            error:
+              "find text not found; call draft_show to see the current draft",
           };
         }
         draft.text = draft.text.replace(find, replace);
@@ -373,7 +375,10 @@ function sanitizeNoteForReport(raw: string): string {
       !NOTE_LEAD_NARRATION.test(s) &&
       !(PROCESS_CAVEAT_TRIGGER.test(s) && PROCESS_CONTEXT.test(s)),
   );
-  return kept.join(" ").replace(/\s{2,}/g, " ").trim();
+  return kept
+    .join(" ")
+    .replace(/\s{2,}/g, " ")
+    .trim();
 }
 
 async function synthesizeHolistic(
@@ -389,9 +394,7 @@ async function synthesizeHolistic(
   };
   const seed = stubToolResultWindow(priorMessages, WRITE_KEEP);
   const notes = renderNotes(rctx);
-  const contract = rctx.ledger
-    ? renderDeliverableContract(rctx.ledger)
-    : "";
+  const contract = rctx.ledger ? renderDeliverableContract(rctx.ledger) : "";
   const shape = rctx.ledger ? renderDeliverableShape(rctx.ledger) : "";
   const writeMessage =
     (notes
@@ -405,7 +408,10 @@ async function synthesizeHolistic(
     generateText({
       model: rctx.bindModel("write", grant),
       system: SYNTH_SYSTEM,
-      messages: [...seed, { role: "user", content: writeMessage }] as ModelMessage[],
+      messages: [
+        ...seed,
+        { role: "user", content: writeMessage },
+      ] as ModelMessage[],
       tools,
       maxRetries: MODEL_CALL_MAX_RETRIES,
       abortSignal: rctx.signal,
@@ -414,7 +420,10 @@ async function synthesizeHolistic(
           messages: ModelMessage[];
           toolChoice?: { type: "tool"; toolName: string };
         } = {
-          messages: stubToolResultWindow(messages as ModelMessage[], WRITE_KEEP),
+          messages: stubToolResultWindow(
+            messages as ModelMessage[],
+            WRITE_KEEP,
+          ),
         };
         if (!draft.text.trim() && stepNumber >= 1) {
           out.toolChoice = { type: "tool", toolName: "draft_set" };
@@ -447,26 +456,31 @@ async function auditDraftAgainstLedger(
   const fetched = renderFetchedSources(rctx);
   const candidates = renderUnfetchedCandidates(rctx, 24);
   try {
-    const result = await withTraceFrame(rctx.recorder, { site: "coverage" }, () =>
-      generateObject({
-        model: rctx.bindModel("lead", grant),
-        system: DRAFT_COVERAGE_SYSTEM,
-        prompt:
-          `Research question: ${rctx.question}\n\n` +
-          `${renderDeliverableShape(ledger)}\n\n` +
-          `Planning aid — the ledger (slot_id · importance · shape · status, with the closed value where present), incomplete and not the standard:\n${renderLedgerAudit(ledger)}\n\n` +
-          (notes ? `Research notes from gathering (facts already in hand):\n${notes}\n\n` : "") +
-          (fetched ? `Sources fetched into the store:\n${fetched}\n\n` : "") +
-          (candidates
-            ? `Surfaced-but-unfetched candidate URLs — pages earlier searches returned that were never fetched. The patch step can fetch any of these directly:\n${candidates}\n\n`
-            : "") +
-          `Draft report:\n${draftText}\n\n` +
-          "Walk the QUESTION's own sub-requests first, then the notes and fetched sources for dropped facts, then reconcile the checklist items. Return groundedIds (open items the draft now states with the specific value/entity named), exhaustedIds (only items genuinely searched and fetched for that dead-ended — never one never pursued, never one the draft merely concedes), newItems (anything a domain expert would expect that the checklist missed and the draft lacks, including a salient fact sitting unused in the notes or a fetched source), and gaps (each with a directive and needsFetch; a fact already in the notes/store is needsFetch:false; for an unobtainable exact value direct an indicative range with needsFetch:false; if the draft's length violates the deliverable shape, a compression gap). When a needsFetch gap is exactly the page named in the surfaced-but-unfetched candidate list, copy that URL verbatim into the gap's candidateUrl so the patch step fetches it directly. Do not return an empty gap list while a central demand of the question is missing, vague, or merely conceded.",
-        schema: draftCoverageSchema,
-        maxOutputTokens: 8192,
-        maxRetries: MODEL_CALL_MAX_RETRIES,
-        abortSignal: rctx.signal,
-      }),
+    const result = await withTraceFrame(
+      rctx.recorder,
+      { site: "coverage" },
+      () =>
+        generateObject({
+          model: rctx.bindModel("lead", grant),
+          system: DRAFT_COVERAGE_SYSTEM,
+          prompt:
+            `Research question: ${rctx.question}\n\n` +
+            `${renderDeliverableShape(ledger)}\n\n` +
+            `Planning aid — the ledger (slot_id · importance · shape · status, with the closed value where present), incomplete and not the standard:\n${renderLedgerAudit(ledger)}\n\n` +
+            (notes
+              ? `Research notes from gathering (facts already in hand):\n${notes}\n\n`
+              : "") +
+            (fetched ? `Sources fetched into the store:\n${fetched}\n\n` : "") +
+            (candidates
+              ? `Surfaced-but-unfetched candidate URLs — pages earlier searches returned that were never fetched. The patch step can fetch any of these directly:\n${candidates}\n\n`
+              : "") +
+            `Draft report:\n${draftText}\n\n` +
+            "Walk the QUESTION's own sub-requests first, then the notes and fetched sources for dropped facts, then reconcile the checklist items. Return groundedIds (open items the draft now states with the specific value/entity named), exhaustedIds (only items genuinely searched and fetched for that dead-ended — never one never pursued, never one the draft merely concedes), newItems (anything a domain expert would expect that the checklist missed and the draft lacks, including a salient fact sitting unused in the notes or a fetched source), and gaps (each with a directive and needsFetch; a fact already in the notes/store is needsFetch:false; for an unobtainable exact value direct an indicative range with needsFetch:false; if the draft's length violates the deliverable shape, a compression gap). When a needsFetch gap is exactly the page named in the surfaced-but-unfetched candidate list, copy that URL verbatim into the gap's candidateUrl so the patch step fetches it directly. Do not return an empty gap list while a central demand of the question is missing, vague, or merely conceded.",
+          schema: draftCoverageSchema,
+          maxOutputTokens: 8192,
+          maxRetries: MODEL_CALL_MAX_RETRIES,
+          abortSignal: rctx.signal,
+        }),
     );
     applyCoverageUpdate(ledger, {
       closedIds: result.object.groundedIds,
@@ -538,7 +552,14 @@ async function patchDraftForGaps(
   const actx = ioActx(rctx, grant, "writer", "write");
   const { draft_show, draft_patch } = draftTools(rctx, draft);
   const tools: ToolSet = {
-    ...buildAgentTools(rctx, actx, ["search", "fetch", "search_sources", "read_source", "note", "run_code"]),
+    ...buildAgentTools(rctx, actx, [
+      "search",
+      "fetch",
+      "search_sources",
+      "read_source",
+      "note",
+      "run_code",
+    ]),
     draft_show,
     draft_patch,
   };
@@ -649,7 +670,10 @@ async function flushDroppedNotes(
         maxRetries: MODEL_CALL_MAX_RETRIES,
         abortSignal: rctx.signal,
         prepareStep: ({ messages }) => ({
-          messages: stubToolResultWindow(messages as ModelMessage[], WRITE_KEEP),
+          messages: stubToolResultWindow(
+            messages as ModelMessage[],
+            WRITE_KEEP,
+          ),
         }),
         stopWhen: [stepCountIs(FLUSH_MAX_TURNS), () => grant.floored()],
       }),
@@ -663,7 +687,7 @@ async function flushDroppedNotes(
       if (clean && strongAnchors(clean).length > 0) lines.push(`- ${clean}`);
     }
     if (lines.length > 0) {
-      draft.text = draft.text.trimEnd() + "\n\n" + lines.join("\n");
+      draft.text = `${draft.text.trimEnd()}\n\n${lines.join("\n")}`;
     }
   }
 }
@@ -777,12 +801,11 @@ export async function runSpine(
     (grant) => seedLedger(rctx, grant),
   );
   if (!ledger) {
-    const plan =
-      (await withGrant(
-        meter,
-        { fraction: PLAN_FRACTION, minUSD: PLAN_MIN_USD },
-        (grant) => planResearch(rctx, grant, rctx.question),
-      )) ?? { rationale: "", subQuestions: [rctx.question] };
+    const plan = (await withGrant(
+      meter,
+      { fraction: PLAN_FRACTION, minUSD: PLAN_MIN_USD },
+      (grant) => planResearch(rctx, grant, rctx.question),
+    )) ?? { rationale: "", subQuestions: [rctx.question] };
     ledger = ledgerFromSubQuestions(plan.subQuestions);
   }
   rctx.ledger = ledger;
@@ -845,7 +868,8 @@ export async function runSpine(
   try {
     if (ledger && ledger.scope !== "single_fact" && !rctx.signal?.aborted) {
       for (let round = 0; round < COVERAGE_MAX_ROUNDS; round++) {
-        if (!draft.text.trim() || meter.floored() || rctx.signal?.aborted) break;
+        if (!draft.text.trim() || meter.floored() || rctx.signal?.aborted)
+          break;
         const gaps = prioritizeGaps(
           await auditDraftAgainstLedger(rctx, meter, ledger, draft.text),
           ledger,
@@ -862,7 +886,9 @@ export async function runSpine(
 
   if (!draft.text.trim()) {
     return {
-      report: note || "Sources were gathered but no report could be composed within budget.",
+      report:
+        note ||
+        "Sources were gathered but no report could be composed within budget.",
       note,
       citations: [],
       unboundCitations: [],

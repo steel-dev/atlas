@@ -8,7 +8,9 @@ const PAGE_MARKER = /--\s*\d+\s+of\s+\d+\s*--/g;
 const NO_TEXT_LAYER =
   "[This PDF has no extractable text layer — it is likely a scanned or image-only document, so its text could not be read. Do not treat this as 'the fact is not in the document'; try an alternate source, an HTML version, or a different URL for the same content.]";
 
-export async function extractPdfText(data: Uint8Array): Promise<PdfTextExtraction> {
+export async function extractPdfText(
+  data: Uint8Array,
+): Promise<PdfTextExtraction> {
   const parser = new PDFParse({ data });
   try {
     const result = await parser.getText();

@@ -147,7 +147,8 @@ interface LiveState {
   trace: string[];
 }
 
-const $ = (id: string): HTMLElement => document.getElementById(id) as HTMLElement;
+const $ = (id: string): HTMLElement =>
+  document.getElementById(id) as HTMLElement;
 const SECTION_ORDER = [
   "factual-accuracy",
   "breadth-and-depth-of-analysis",
@@ -162,13 +163,13 @@ let commitsInfo: CommitsResponse = {
   commits: [],
 };
 let selectedCommit: string | null = null;
-let catalog: { cases: CatalogCase[]; byId: Record<string, CatalogCase> } = {
+const catalog: { cases: CatalogCase[]; byId: Record<string, CatalogCase> } = {
   cases: [],
   byId: {},
 };
 let gridRows: GridRow[] = [];
 let runsByCase: Record<string, RunInfo> = {};
-let filters: { domain: string; status: string } = { domain: "", status: "" };
+const filters: { domain: string; status: string } = { domain: "", status: "" };
 let sort = "score";
 let detailCaseId: string | null = null;
 let es: EventSource | null = null;
@@ -178,13 +179,15 @@ function escapeHtml(s: unknown): string {
   return String(s).replace(
     /[&<>"']/g,
     (c) =>
-      (({
-        "&": "&amp;",
-        "<": "&lt;",
-        ">": "&gt;",
-        '"': "&quot;",
-        "'": "&#39;",
-      }) as Record<string, string>)[c],
+      (
+        ({
+          "&": "&amp;",
+          "<": "&lt;",
+          ">": "&gt;",
+          '"': "&quot;",
+          "'": "&#39;",
+        }) as Record<string, string>
+      )[c],
   );
 }
 const escapeAttr = (s: unknown): string => escapeHtml(s);
@@ -217,7 +220,7 @@ function renderMarkdown(md: string): string {
   let code: string[] | null = null;
   const fp = () => {
     if (para.length) {
-      out.push("<p>" + inline(para.join(" ")) + "</p>");
+      out.push(`<p>${inline(para.join(" "))}</p>`);
       para = [];
     }
   };
@@ -227,7 +230,7 @@ function renderMarkdown(md: string): string {
         "<" +
           list.tag +
           ">" +
-          list.items.map((i) => "<li>" + inline(i) + "</li>").join("") +
+          list.items.map((i) => `<li>${inline(i)}</li>`).join("") +
           "</" +
           list.tag +
           ">",
@@ -238,7 +241,7 @@ function renderMarkdown(md: string): string {
   for (const line of lines) {
     if (/^\s*```/.test(line)) {
       if (code !== null) {
-        out.push("<pre><code>" + escapeHtml(code.join("\n")) + "</code></pre>");
+        out.push(`<pre><code>${escapeHtml(code.join("\n"))}</code></pre>`);
         code = null;
       } else {
         fp();
@@ -255,13 +258,13 @@ function renderMarkdown(md: string): string {
     if (h) {
       fp();
       fl();
-      out.push("<h" + h[1].length + ">" + inline(h[2]) + "</h" + h[1].length + ">");
+      out.push(`<h${h[1].length}>${inline(h[2])}</h${h[1].length}>`);
       continue;
     }
     const ul = line.match(/^\s*[-*]\s+(.*)$/);
     if (ul) {
       fp();
-      if (!list || list.tag !== "ul") {
+      if (list?.tag !== "ul") {
         fl();
         list = { tag: "ul", items: [] };
       }
@@ -271,7 +274,7 @@ function renderMarkdown(md: string): string {
     const ol = line.match(/^\s*\d+\.\s+(.*)$/);
     if (ol) {
       fp();
-      if (!list || list.tag !== "ol") {
+      if (list?.tag !== "ol") {
         fl();
         list = { tag: "ol", items: [] };
       }
@@ -282,7 +285,7 @@ function renderMarkdown(md: string): string {
     if (bq) {
       fp();
       fl();
-      out.push("<blockquote>" + inline(bq[1]) + "</blockquote>");
+      out.push(`<blockquote>${inline(bq[1])}</blockquote>`);
       continue;
     }
     if (line.trim() === "") {
@@ -293,23 +296,23 @@ function renderMarkdown(md: string): string {
     para.push(line.trim());
   }
   if (code !== null)
-    out.push("<pre><code>" + escapeHtml(code.join("\n")) + "</code></pre>");
+    out.push(`<pre><code>${escapeHtml(code.join("\n"))}</code></pre>`);
   fp();
   fl();
   return out.join("\n");
 }
 
 const pct = (n: number | null | undefined): string =>
-  n == null ? "—" : (n * 100).toFixed(1) + "%";
+  n == null ? "—" : `${(n * 100).toFixed(1)}%`;
 function scoreColor(n: number | null | undefined): string {
   if (n == null) return "#3a3a3a";
   const h = Math.round(120 * Math.max(0, Math.min(1, n)));
-  return "hsl(" + h + ",58%,56%)";
+  return `hsl(${h},58%,56%)`;
 }
 
 async function getJSON<T>(url: string): Promise<T> {
   const r = await fetch(url);
-  if (!r.ok) throw new Error("HTTP " + r.status + " " + url);
+  if (!r.ok) throw new Error(`HTTP ${r.status} ${url}`);
   return r.json() as Promise<T>;
 }
 async function postJSON<T>(url: string, body?: unknown): Promise<T> {
@@ -319,7 +322,7 @@ async function postJSON<T>(url: string, body?: unknown): Promise<T> {
     body: JSON.stringify(body || {}),
   });
   const j = (await r.json().catch(() => ({}))) as { error?: string } & T;
-  if (!r.ok) throw new Error(j.error || "HTTP " + r.status);
+  if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`);
   return j;
 }
 
@@ -350,14 +353,19 @@ function renderTopright(): void {
     opts.push({
       sha: cur,
       label:
-        "current " + (c as CommitInfo).shortSha + (c!.dirty ? " ~dirty" : "") + " (0 runs)",
+        "current " +
+        (c as CommitInfo).shortSha +
+        (c!.dirty ? " ~dirty" : "") +
+        " (0 runs)",
     });
   }
   for (const cm of commitsInfo.commits) {
     const isCur = cm.commitSha === cur;
     const label =
       (isCur ? "current " : "") +
-      (cm.commitSha.startsWith("unknown") ? cm.commitSha : cm.commitSha.slice(0, 10)) +
+      (cm.commitSha.startsWith("unknown")
+        ? cm.commitSha
+        : cm.commitSha.slice(0, 10)) +
       " — " +
       cm.runCount +
       " runs, avg " +
@@ -380,14 +388,13 @@ function renderTopright(): void {
       )
       .join("") +
     "</select>";
-  const dirty =
-    c && c.dirty
-      ? '<span class="pill dirty" title="' +
-        escapeAttr(c.dirtyFiles.join("\n")) +
-        '">~ ' +
-        c.dirtyFiles.length +
-        " uncommitted</span>"
-      : "";
+  const dirty = c?.dirty
+    ? '<span class="pill dirty" title="' +
+      escapeAttr(c.dirtyFiles.join("\n")) +
+      '">~ ' +
+      c.dirtyFiles.length +
+      " uncommitted</span>"
+    : "";
   const vo = commitsInfo.canRun
     ? ""
     : '<span class="pill warn">view-only · no judge key</span>';
@@ -428,7 +435,11 @@ function renderSummary(): void {
       : "") +
     '<div class="profileLine grow" style="text-align:right">' +
     escapeHtml(
-      (p.research || "") + " · judge " + (p.judge || "none") + " · " + (p.grader || ""),
+      (p.research || "") +
+        " · judge " +
+        (p.judge || "none") +
+        " · " +
+        (p.grader || ""),
     ) +
     "</div>";
 }
@@ -494,11 +505,11 @@ function renderToolbar(): void {
   const unrun = gridRows.filter((r) => !r.status).length;
   const runAll =
     commitsInfo.canRun && unrun > 0
-      ? '<button class="btn sm" id="runAll">Run ' + unrun + " un-run</button>"
+      ? `<button class="btn sm" id="runAll">Run ${unrun} un-run</button>`
       : "";
   const refresh = '<button class="btn sm" id="refreshCat">↻ catalog</button>';
   $("toolbar").innerHTML =
-    domSel + chips + sortSel + '<span class="grow"></span>' + runAll + refresh;
+    `${domSel + chips + sortSel}<span class="grow"></span>${runAll}${refresh}`;
   ($("domFilter") as HTMLSelectElement).onchange = (e) => {
     filters.domain = (e.target as HTMLSelectElement).value;
     renderGrid();
@@ -529,25 +540,48 @@ function renderToolbar(): void {
 function cellStatus(row: GridRow): { html: string; color: string } {
   const lr = runsByCase[row.caseId];
   if (lr && lr.phase === "queued")
-    return { html: '<span class="badge queued">queued</span>', color: "#f5a524" };
-  if (lr && (lr.phase === "researching" || lr.phase === "grading" || lr.phase === "persisting"))
-    return { html: '<span class="badge running">' + lr.phase + "</span>", color: "#3ecf8e" };
+    return {
+      html: '<span class="badge queued">queued</span>',
+      color: "#f5a524",
+    };
+  if (
+    lr &&
+    (lr.phase === "researching" ||
+      lr.phase === "grading" ||
+      lr.phase === "persisting")
+  )
+    return {
+      html: `<span class="badge running">${lr.phase}</span>`,
+      color: "#3ecf8e",
+    };
   if (row.status === "error")
-    return { html: '<span class="score" style="color:#ff6b6b">ERR</span>', color: "#ff6b6b" };
+    return {
+      html: '<span class="score" style="color:#ff6b6b">ERR</span>',
+      color: "#ff6b6b",
+    };
   if (row.status === "scored") {
     const c = scoreColor(row.normalized);
     return {
-      html: '<span class="score" style="color:' + c + '">' + pct(row.normalized) + "</span>",
+      html:
+        '<span class="score" style="color:' +
+        c +
+        '">' +
+        pct(row.normalized) +
+        "</span>",
       color: c,
     };
   }
-  return { html: '<span class="score" style="color:#3a3a3a">·</span>', color: "#1f1f1f" };
+  return {
+    html: '<span class="score" style="color:#3a3a3a">·</span>',
+    color: "#1f1f1f",
+  };
 }
 function visibleRows(): GridRow[] {
   let rows = gridRows.slice();
   if (filters.domain) rows = rows.filter((r) => r.domain === filters.domain);
   if (filters.status === "notrun") rows = rows.filter((r) => !r.status);
-  else if (filters.status) rows = rows.filter((r) => r.status === filters.status);
+  else if (filters.status)
+    rows = rows.filter((r) => r.status === filters.status);
   if (sort === "score")
     rows.sort(
       (a, b) =>
@@ -556,9 +590,12 @@ function visibleRows(): GridRow[] {
     );
   else if (sort === "domain")
     rows.sort(
-      (a, b) => a.domain.localeCompare(b.domain) || (b.normalized || 0) - (a.normalized || 0),
+      (a, b) =>
+        a.domain.localeCompare(b.domain) ||
+        (b.normalized || 0) - (a.normalized || 0),
     );
-  else if (sort === "criteria") rows.sort((a, b) => b.criteriaCount - a.criteriaCount);
+  else if (sort === "criteria")
+    rows.sort((a, b) => b.criteriaCount - a.criteriaCount);
   return rows;
 }
 function renderGrid(): void {
@@ -580,8 +617,8 @@ function renderGrid(): void {
               r.gradedCriteria +
               "/" +
               r.criteria +
-              (r.normalizedSD ? " · ±" + (r.normalizedSD * 100).toFixed(1) : "")
-            : r.criteriaCount + " criteria";
+              (r.normalizedSD ? ` · ±${(r.normalizedSD * 100).toFixed(1)}` : "")
+            : `${r.criteriaCount} criteria`;
         return (
           '<div class="cell" data-id="' +
           escapeAttr(r.caseId) +
@@ -631,7 +668,7 @@ async function loadRuns(): Promise<void> {
 }
 async function refreshGrid(): Promise<void> {
   const data = await getJSON<{ commit: string; rows: GridRow[] }>(
-    "/api/grid?commit=" + encodeURIComponent(selectedCommit || ""),
+    `/api/grid?commit=${encodeURIComponent(selectedCommit || "")}`,
   );
   gridRows = data.rows;
   renderSummary();
@@ -657,13 +694,12 @@ function orderedSectionIds(ids: string[]): string[] {
 
 function renderRubric(d: CaseDetail): string {
   const run = d.run;
-  const items: Criterion[] =
-    run && run.report
-      ? run.report
-      : (d.criteria || []).map((c) => ({ ...c, verdict: null }));
+  const items: Criterion[] = run?.report
+    ? run.report
+    : (d.criteria || []).map((c) => ({ ...c, verdict: null }));
   const sectionIds = orderedSectionIds(items.map((c) => c.sectionId));
   const sectionScores: Record<string, SectionScore> = {};
-  if (run && run.score) for (const s of run.score.sections) sectionScores[s.id] = s;
+  if (run?.score) for (const s of run.score.sections) sectionScores[s.id] = s;
   let html = "";
   for (const sid of sectionIds) {
     const crits = items.filter((c) => c.sectionId === sid);
@@ -680,11 +716,12 @@ function renderRubric(d: CaseDetail): string {
           " · pass " +
           pct(ss.passRate) +
           "</span>"
-        : '<span class="s">' + crits.length + " criteria</span>") +
+        : `<span class="s">${crits.length} criteria</span>`) +
       "</div>";
     for (const c of crits) {
       const v = c.verdict;
-      const pass = (c.weight > 0 && v === "MET") || (c.weight < 0 && v === "UNMET");
+      const pass =
+        (c.weight > 0 && v === "MET") || (c.weight < 0 && v === "UNMET");
       const cls = v == null ? "none" : pass ? "met" : "unmet";
       const wcls = c.weight < 0 ? "wt neg" : "wt";
       html +=
@@ -696,12 +733,12 @@ function renderRubric(d: CaseDetail): string {
         wcls +
         '">weight ' +
         c.weight +
-        (v ? " · " + v : "") +
+        (v ? ` · ${v}` : "") +
         (c.runs && c.runs > 1 && c.metVotes != null
-          ? " · " + c.metVotes + "/" + c.runs + " MET"
+          ? ` · ${c.metVotes}/${c.runs} MET`
           : "") +
         "</div>" +
-        (c.reason ? '<div class="reason">' + escapeHtml(c.reason) + "</div>" : "") +
+        (c.reason ? `<div class="reason">${escapeHtml(c.reason)}</div>` : "") +
         "</div></div>";
     }
     html += "</div>";
@@ -711,8 +748,8 @@ function renderRubric(d: CaseDetail): string {
 
 function renderDetail(d: CaseDetail): void {
   const run = d.run;
-  const score = run && run.score;
-  const dirty = run && run.dirty ? '<span class="pill dirty">dirty</span>' : "";
+  const score = run?.score;
+  const dirty = run?.dirty ? '<span class="pill dirty">dirty</span>' : "";
   const head =
     '<div class="dHead"><div class="dHeadMain"><button class="btn sm" id="back">← grid</button>' +
     '<h1 class="cat">' +
@@ -731,7 +768,7 @@ function renderDetail(d: CaseDetail): void {
         pct(score.normalizedScore) +
         "</b>" +
         (score.normalizedScoreSD
-          ? " ±" + (score.normalizedScoreSD * 100).toFixed(1)
+          ? ` ±${(score.normalizedScoreSD * 100).toFixed(1)}`
           : "") +
         " normalized</span><span>pass <b>" +
         pct(score.passRate) +
@@ -741,10 +778,10 @@ function renderDetail(d: CaseDetail): void {
         score.criteria +
         " graded</span>" +
         (score.gradingRuns && score.gradingRuns > 1
-          ? "<span>" + score.gradingRuns + " judge runs</span>"
+          ? `<span>${score.gradingRuns} judge runs</span>`
           : "")
       : '<span style="color:#5a5a5a">not run for this commit</span>') +
-    (run && run.error ? '<span style="color:#ff9b95">errored</span>' : "") +
+    (run?.error ? '<span style="color:#ff9b95">errored</span>' : "") +
     (run
       ? "<span>" +
         escapeHtml(
@@ -755,32 +792,33 @@ function renderDetail(d: CaseDetail): void {
             (run.profile.grader || ""),
         ) +
         "</span><span>" +
-        (run.latencyMs ? (run.latencyMs / 1000).toFixed(0) + "s" : "") +
+        (run.latencyMs ? `${(run.latencyMs / 1000).toFixed(0)}s` : "") +
         "</span>"
       : "") +
     dirty +
     "</div></div>" +
     '<div class="dActions">' +
     (commitsInfo.canRun
-      ? '<button class="btn primary" id="runBtn">' + (run ? "Re-run" : "Run") + "</button>"
+      ? '<button class="btn primary" id="runBtn">' +
+        (run ? "Re-run" : "Run") +
+        "</button>"
       : "") +
     "</div></div>";
 
-  const right =
-    run && run.markdown
-      ? '<div class="reportBody"><div class="report">' +
-        renderMarkdown(run.markdown) +
+  const right = run?.markdown
+    ? '<div class="reportBody"><div class="report">' +
+      renderMarkdown(run.markdown) +
+      "</div></div>"
+    : run?.error
+      ? '<div class="reportBody"><div class="errBox">' +
+        escapeHtml(run.error) +
         "</div></div>"
-      : run && run.error
-        ? '<div class="reportBody"><div class="errBox">' +
-          escapeHtml(run.error) +
-          "</div></div>"
-        : '<div class="reportBody empty">no report yet — click Run to generate.</div>';
+      : '<div class="reportBody empty">no report yet — click Run to generate.</div>';
 
   $("detailWrap").innerHTML =
     head +
     '<div class="split"><div class="panel"><div class="panelHead">rubric · ' +
-    (run && run.report ? run.report.length : (d.criteria || []).length) +
+    (run?.report ? run.report.length : (d.criteria || []).length) +
     ' criteria</div><div class="rubric" id="rubric">' +
     renderRubric(d) +
     '</div></div><div class="panel"><div class="panelHead">report</div>' +
@@ -814,7 +852,7 @@ async function openDetail(caseId: string): Promise<void> {
       attachStream(r.id, caseId);
   } catch (e) {
     $("detailWrap").innerHTML =
-      '<div class="empty">' + escapeHtml((e as Error).message) + "</div>";
+      `<div class="empty">${escapeHtml((e as Error).message)}</div>`;
   }
 }
 function closeDetail(): void {
@@ -833,7 +871,7 @@ function closeDetail(): void {
 async function triggerRun(caseId: string): Promise<void> {
   try {
     const { runId } = await postJSON<{ runId: string }>(
-      "/api/runs/" + encodeURIComponent(caseId) + "/run",
+      `/api/runs/${encodeURIComponent(caseId)}/run`,
     );
     attachStream(runId, caseId);
     await loadRuns();
@@ -844,7 +882,9 @@ async function triggerRun(caseId: string): Promise<void> {
 }
 async function runUnrun(): Promise<void> {
   try {
-    await postJSON("/api/runs/run-unrun?commit=" + encodeURIComponent(selectedCommit || ""));
+    await postJSON(
+      `/api/runs/run-unrun?commit=${encodeURIComponent(selectedCommit || "")}`,
+    );
     await loadRuns();
     renderGrid();
   } catch (e) {
@@ -859,7 +899,9 @@ function renderLive(): void {
     host.innerHTML = "";
     return;
   }
-  const gp = live.gradeTotal ? Math.round((live.gradeDone / live.gradeTotal) * 100) : 0;
+  const gp = live.gradeTotal
+    ? Math.round((live.gradeDone / live.gradeTotal) * 100)
+    : 0;
   host.innerHTML =
     '<div class="live"><div class="liveHead"><span class="ph">' +
     escapeHtml(live.phase) +
@@ -872,21 +914,27 @@ function renderLive(): void {
     live.confirmed +
     "</b></span>" +
     (live.phase === "grading"
-      ? "<span>grading <b>" + live.gradeDone + "/" + live.gradeTotal + "</b></span>"
+      ? "<span>grading <b>" +
+        live.gradeDone +
+        "/" +
+        live.gradeTotal +
+        "</b></span>"
       : "") +
     "</div>" +
     (live.phase === "grading"
-      ? '<div class="progress"><i style="width:' + gp + '%"></i></div>'
+      ? `<div class="progress"><i style="width:${gp}%"></i></div>`
       : "") +
     (live.trace.length
-      ? '<pre class="tlog">' + escapeHtml(live.trace.slice(-40).join("\n")) + "</pre>"
+      ? '<pre class="tlog">' +
+        escapeHtml(live.trace.slice(-40).join("\n")) +
+        "</pre>"
       : "") +
     "</div></div>";
   const stopBtn = document.getElementById("stopBtn");
   if (stopBtn)
     stopBtn.onclick = async () => {
       try {
-        await postJSON("/api/runs/" + live!.runId + "/stop");
+        await postJSON(`/api/runs/${live!.runId}/stop`);
       } catch {
         /* ignore */
       }
@@ -910,7 +958,7 @@ function attachStream(runId: string, caseId: string): void {
     trace: [],
   };
   if (detailCaseId === caseId) renderLive();
-  es = new EventSource("/api/runs/" + encodeURIComponent(runId) + "/stream");
+  es = new EventSource(`/api/runs/${encodeURIComponent(runId)}/stream`);
   es.onmessage = (ev: MessageEvent) => {
     let d: WireEvent;
     try {
@@ -931,33 +979,43 @@ function handleEvent(e: WireEvent, caseId: string): void {
   if (!live) return;
   const t = e.type;
   if (t === "phase") live.phase = e.phase as string;
-  else if (t === "plan.updated") live.trace.push("plan: " + String(e.rationale ?? ""));
+  else if (t === "plan.updated")
+    live.trace.push(`plan: ${String(e.rationale ?? "")}`);
   else if (t === "agent.spawned") {
     live.angles++;
-    live.trace.push("spawn " + String(e.role) + " ($" + Number(e.grantUSD).toFixed(2) + ")");
+    live.trace.push(
+      `spawn ${String(e.role)} ($${Number(e.grantUSD).toFixed(2)})`,
+    );
   } else if (t === "agent.returned")
-    live.trace.push("← " + String(e.role) + " +" + String(e.claimsAdded) + " claims");
+    live.trace.push(`← ${String(e.role)} +${String(e.claimsAdded)} claims`);
   else if (t === "search.completed")
-    live.trace.push("search: " + String(e.query ?? "") + " (" + String(e.results) + ")");
-  else if (t === "search.failed") live.trace.push("✗ search: " + String(e.query ?? ""));
+    live.trace.push(`search: ${String(e.query ?? "")} (${String(e.results)})`);
+  else if (t === "search.failed")
+    live.trace.push(`✗ search: ${String(e.query ?? "")}`);
   else if (t === "source.fetched") {
     live.sources++;
-    live.trace.push("✓ " + String(e.title || e.url));
-  } else if (t === "source.failed") live.trace.push("✗ " + String(e.url));
-  else if (t === "extraction.completed") live.trace.push("claims +" + String(e.count));
+    live.trace.push(`✓ ${String(e.title || e.url)}`);
+  } else if (t === "source.failed") live.trace.push(`✗ ${String(e.url)}`);
+  else if (t === "extraction.completed")
+    live.trace.push(`claims +${String(e.count)}`);
   else if (t === "claim.verified") {
     if (e.status === "confirmed") live.confirmed++;
-    live.trace.push(String(e.status) + " " + String(e.claimId) + " (" + String(e.votes) + ")");
+    live.trace.push(
+      `${String(e.status)} ${String(e.claimId)} (${String(e.votes)})`,
+    );
   } else if (t === "report.drafting") live.trace.push("synthesizing report…");
   else if (t === "citation.bound")
-    live.trace.push("citation " + (e.ok ? "✓" : "✗") + " " + String(e.claimId));
+    live.trace.push(`citation ${e.ok ? "✓" : "✗"} ${String(e.claimId)}`);
   else if (t === "budget.warning")
     live.trace.push(
-      "budget: $" + Number(e.spentUSD).toFixed(2) + " of $" + Number(e.limitUSD).toFixed(2),
+      "budget: $" +
+        Number(e.spentUSD).toFixed(2) +
+        " of $" +
+        Number(e.limitUSD).toFixed(2),
     );
   else if (t === "safety.flag")
-    live.trace.push("⚠ " + String(e.kind) + ": " + String(e.detail));
-  else if (t === "pricing.missing") live.trace.push("⚠ " + String(e.detail));
+    live.trace.push(`⚠ ${String(e.kind)}: ${String(e.detail)}`);
+  else if (t === "pricing.missing") live.trace.push(`⚠ ${String(e.detail)}`);
   else if (t === "run.completed") live.trace.push("research done");
   else if (t === "grade_progress") {
     live.phase = "grading";
@@ -968,14 +1026,16 @@ function handleEvent(e: WireEvent, caseId: string): void {
       "graded: " +
         e.status +
         " " +
-        (e.normalized != null ? ((e.normalized as number) * 100).toFixed(1) + "%" : ""),
+        (e.normalized != null
+          ? `${((e.normalized as number) * 100).toFixed(1)}%`
+          : ""),
     );
   else if (t === "persisted") {
     void onRunDone(caseId);
     return;
   } else if (t === "error") {
     live.phase = "error";
-    live.trace.push("ERROR: " + e.message);
+    live.trace.push(`ERROR: ${e.message}`);
     void onRunDone(caseId);
     return;
   }
@@ -996,7 +1056,13 @@ async function poll(): Promise<void> {
   await loadRuns();
   if (detailCaseId) {
     const r = runsByCase[detailCaseId];
-    if (r && !es && r.phase !== "done" && r.phase !== "error" && r.phase !== "stopped")
+    if (
+      r &&
+      !es &&
+      r.phase !== "done" &&
+      r.phase !== "error" &&
+      r.phase !== "stopped"
+    )
       attachStream(r.id, detailCaseId);
   } else {
     renderGrid();
@@ -1023,7 +1089,8 @@ void (async function init(): Promise<void> {
     await loadCatalog();
     await loadRuns();
     await refreshGrid();
-    if (saved.caseId && catalog.byId[saved.caseId]) await openDetail(saved.caseId);
+    if (saved.caseId && catalog.byId[saved.caseId])
+      await openDetail(saved.caseId);
     setInterval(() => void poll(), 2500);
   } catch (e) {
     $("gridHost").innerHTML =

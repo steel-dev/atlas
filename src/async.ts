@@ -33,9 +33,7 @@ export async function withTimeout<T>(
       const onAbort = (): void =>
         reject(
           timeout.aborted && !parentSignal?.aborted
-            ? new Error(
-                `${label} timed out after ${Math.round(ms / 1000)}s`,
-              )
+            ? new Error(`${label} timed out after ${Math.round(ms / 1000)}s`)
             : (combined.reason ?? new Error("Aborted")),
         );
       if (combined.aborted) onAbort();

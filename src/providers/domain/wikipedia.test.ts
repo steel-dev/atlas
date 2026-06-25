@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { wikipedia } from "./wikipedia.js";
 import type { ToolContext } from "../../custom-tools.js";
+import { wikipedia } from "./wikipedia.js";
 
 function makeCtx(signal?: AbortSignal) {
   const sources: { url: string; title?: string; content: string }[] = [];
@@ -44,7 +44,10 @@ describe("wikipedia", () => {
     );
     vi.stubGlobal("fetch", fetchMock);
     const { ctx } = makeCtx();
-    await wikipedia({ lang: "de", defaultLimit: 4 }).execute({ query: "x" }, ctx);
+    await wikipedia({ lang: "de", defaultLimit: 4 }).execute(
+      { query: "x" },
+      ctx,
+    );
     const u = String(fetchMock.mock.calls[0][0]);
     expect(u).toContain("https://de.wikipedia.org/w/api.php");
     expect(u).toContain("gsrlimit=4");

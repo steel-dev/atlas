@@ -34,7 +34,9 @@ describe("arxiv", () => {
     expect(results).toHaveLength(2);
     expect(results[0].url).toBe("https://arxiv.org/abs/2301.00001v1");
     expect(results[0].title).toBe("Attention Variants");
-    expect(results[0].snippet).toContain("We propose a new transformer variant.");
+    expect(results[0].snippet).toContain(
+      "We propose a new transformer variant.",
+    );
     expect(results[0].meta?.openUrls).toContain(
       "https://arxiv.org/pdf/2301.00001v1",
     );

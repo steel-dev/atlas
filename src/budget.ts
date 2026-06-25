@@ -173,10 +173,7 @@ export function resolvePricing(
   return { pricing: UNKNOWN_MODEL_PRICING, known: false };
 }
 
-export function usageCostUSD(
-  usage: TokenUsage,
-  pricing: ModelPricing,
-): number {
+export function usageCostUSD(usage: TokenUsage, pricing: ModelPricing): number {
   const cacheRead =
     pricing.cacheReadPerMTok ?? pricing.inputPerMTok * CACHE_READ_FACTOR;
   const cacheWrite =

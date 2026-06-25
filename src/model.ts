@@ -1,5 +1,4 @@
 import { createHash } from "node:crypto";
-import { wrapLanguageModel, type LanguageModel } from "ai";
 import type {
   LanguageModelV3,
   LanguageModelV3CallOptions,
@@ -9,22 +8,23 @@ import type {
   LanguageModelV3StreamPart,
   LanguageModelV3Usage,
 } from "@ai-sdk/provider";
-import { sleep } from "./async.js";
+import { type LanguageModel, wrapLanguageModel } from "ai";
 import type { ConcurrencyGate } from "./async.js";
+import { sleep } from "./async.js";
 import {
   addTokenUsage,
-  emptyTokenUsage,
-  resolvePricing,
-  usageCostUSD,
   type BudgetGrant,
   type BudgetHold,
+  emptyTokenUsage,
   type PricingTable,
+  resolvePricing,
   type TokenUsage,
+  usageCostUSD,
 } from "./budget.js";
 import { ECONOMY } from "./economy.js";
 import { AtlasError, errorMessage } from "./errors.js";
-import { currentFrame, type SpanStatus, type TraceRecorder } from "./trace.js";
 import type { JournalWriter, ReplayCache } from "./providers/store.js";
+import { currentFrame, type SpanStatus, type TraceRecorder } from "./trace.js";
 
 export type ModelRole = "lead" | "research" | "write";
 
@@ -91,7 +91,10 @@ export interface EngineModelHooks {
   callOrdinals?: Map<string, number> | undefined;
 }
 
-function nextOrdinal(map: Map<string, number> | undefined, key: string): number {
+function nextOrdinal(
+  map: Map<string, number> | undefined,
+  key: string,
+): number {
   if (!map) return 0;
   const n = map.get(key) ?? 0;
   map.set(key, n + 1);
@@ -617,7 +620,9 @@ export function engineModel(
     wrapGenerate: async ({ doGenerate, params }) => {
       const key = callKey(inner, params, hooks.role);
       const journalKey = `${key}#${nextOrdinal(hooks.callOrdinals, key)}`;
-      const cached = hooks.replay?.take(journalKey) as JournaledCall | undefined;
+      const cached = hooks.replay?.take(journalKey) as
+        | JournaledCall
+        | undefined;
       if (cached) {
         settleReplay(cached.usage);
         recordReplayStep(key, params, cached);
@@ -715,7 +720,9 @@ export function engineModel(
     wrapStream: async ({ doStream, params }) => {
       const key = callKey(inner, params, hooks.role);
       const journalKey = `${key}#${nextOrdinal(hooks.callOrdinals, key)}`;
-      const cached = hooks.replay?.take(journalKey) as JournaledCall | undefined;
+      const cached = hooks.replay?.take(journalKey) as
+        | JournaledCall
+        | undefined;
       if (cached) {
         settleReplay(cached.usage);
         recordReplayStep(key, params, cached);

@@ -1,33 +1,38 @@
-import { generateText, simulateReadableStream, streamText } from "ai";
-import { MockLanguageModelV3 } from "ai/test";
 import type {
   LanguageModelV3,
   LanguageModelV3GenerateResult,
   LanguageModelV3StreamPart,
 } from "@ai-sdk/provider";
+import { generateText, simulateReadableStream, streamText } from "ai";
+import { MockLanguageModelV3 } from "ai/test";
 import { describe, expect, it } from "vitest";
 import { createConcurrencyGate, sleep } from "./async.js";
 import { createBudgetMeter } from "./budget.js";
+import { AtlasError } from "./errors.js";
 import {
   createModelCallCache,
   createRunUsage,
   engineModel,
   normalizeForCacheKey,
-  totalFreshTokens,
   type ResolvedModel,
+  totalFreshTokens,
 } from "./model.js";
 import {
   JournalWriter,
   loadReplayCache,
   memoryStore,
 } from "./providers/store.js";
-import { AtlasError } from "./errors.js";
 
 const RESULT: LanguageModelV3GenerateResult = {
   content: [{ type: "text", text: "hello" }],
   finishReason: { unified: "stop", raw: undefined },
   usage: {
-    inputTokens: { total: 1_000_000, noCache: 1_000_000, cacheRead: 0, cacheWrite: 0 },
+    inputTokens: {
+      total: 1_000_000,
+      noCache: 1_000_000,
+      cacheRead: 0,
+      cacheWrite: 0,
+    },
     outputTokens: { total: 0, text: 0, reasoning: 0 },
   },
   warnings: [],
@@ -509,7 +514,9 @@ describe("engineModel", () => {
 });
 
 describe("engineModel streaming", () => {
-  const PRICING = { "claude-sonnet-4-6": { inputPerMTok: 3, outputPerMTok: 15 } };
+  const PRICING = {
+    "claude-sonnet-4-6": { inputPerMTok: 3, outputPerMTok: 15 },
+  };
 
   function streamingMock(): MockLanguageModelV3 {
     return new MockLanguageModelV3({
@@ -547,7 +554,10 @@ describe("engineModel streaming", () => {
       usage: createRunUsage(),
       journal,
     });
-    const result = streamText({ model: model as LanguageModelV3, prompt: "hi" });
+    const result = streamText({
+      model: model as LanguageModelV3,
+      prompt: "hi",
+    });
     let text = "";
     for await (const delta of result.textStream) text += delta;
     expect(text).toBe("hello world");
@@ -607,8 +617,7 @@ describe("engineModel streaming", () => {
       prompt: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
     } as Parameters<LanguageModelV3["doStream"]>[0]);
     const reader = stream.getReader();
-    while (!(await reader.read()).done) {
-    }
+    while (!(await reader.read()).done) {}
     const spent = meter.totalSpentUSD();
     expect(spent).toBeGreaterThan(0);
     expect(meter.remainingUSD()).toBeCloseTo(10 - spent);
@@ -637,8 +646,7 @@ describe("engineModel streaming", () => {
     expect(competitorRan).toBe(false);
 
     const reader = stream.getReader();
-    while (!(await reader.read()).done) {
-    }
+    while (!(await reader.read()).done) {}
     await competitor;
     expect(competitorRan).toBe(true);
   });

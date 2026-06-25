@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { clinicaltrials } from "./clinicaltrials.js";
 import type { ToolContext } from "../../custom-tools.js";
+import { clinicaltrials } from "./clinicaltrials.js";
 
 function makeCtx(signal?: AbortSignal) {
   const sources: { url: string; title?: string; content: string }[] = [];
@@ -23,8 +23,12 @@ const RESULT = {
           officialTitle: "A Long Official Title",
         },
         statusModule: { overallStatus: "RECRUITING" },
-        sponsorCollaboratorsModule: { leadSponsor: { name: "Novo Nordisk A/S" } },
-        descriptionModule: { briefSummary: "This study evaluates semaglutide." },
+        sponsorCollaboratorsModule: {
+          leadSponsor: { name: "Novo Nordisk A/S" },
+        },
+        descriptionModule: {
+          briefSummary: "This study evaluates semaglutide.",
+        },
         conditionsModule: { conditions: ["Obesity", "Overweight"] },
         designModule: {
           studyType: "INTERVENTIONAL",
@@ -52,8 +56,9 @@ const RESULT = {
 };
 
 function ok(body: unknown) {
-  return vi.fn(async (_url: string | URL, _init?: RequestInit) =>
-    new Response(JSON.stringify(body), { status: 200 }),
+  return vi.fn(
+    async (_url: string | URL, _init?: RequestInit) =>
+      new Response(JSON.stringify(body), { status: 200 }),
   );
 }
 

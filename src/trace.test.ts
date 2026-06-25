@@ -1,15 +1,19 @@
-import { generateText } from "ai";
-import { MockLanguageModelV3 } from "ai/test";
 import type {
   LanguageModelV3,
   LanguageModelV3Content,
   LanguageModelV3GenerateResult,
 } from "@ai-sdk/provider";
+import { generateText } from "ai";
+import { MockLanguageModelV3 } from "ai/test";
 import { describe, expect, it } from "vitest";
 import { createConcurrencyGate } from "./async.js";
 import { createBudgetMeter } from "./budget.js";
 import { createRunUsage, engineModel, type ResolvedModel } from "./model.js";
-import { JournalWriter, loadReplayCache, memoryStore } from "./providers/store.js";
+import {
+  JournalWriter,
+  loadReplayCache,
+  memoryStore,
+} from "./providers/store.js";
 import {
   createTraceRecorder,
   currentFrame,
@@ -65,7 +69,9 @@ describe("trace recorder via engineModel", () => {
     expect(modelSpans).toHaveLength(1);
     expect(modelSpans[0].role).toBe("lead");
     expect(modelSpans[0].status).toBe("ok");
-    expect(modelSpans[0].attrs?.adapter).toBe("mock-provider:claude-sonnet-4-6");
+    expect(modelSpans[0].attrs?.adapter).toBe(
+      "mock-provider:claude-sonnet-4-6",
+    );
     expect(modelSpans[0].costUSD).toBeGreaterThan(0);
 
     expect(snap.steps).toHaveLength(1);
@@ -94,9 +100,9 @@ describe("trace recorder via engineModel", () => {
     });
     expect(result.text).toBe("hello");
     // withTraceFrame is inert without a recorder: the frame is never established
-    expect(withTraceFrame(undefined, { agentId: "x" }, () => currentFrame())).toBe(
-      undefined,
-    );
+    expect(
+      withTraceFrame(undefined, { agentId: "x" }, () => currentFrame()),
+    ).toBe(undefined);
   });
 
   it("attributes each concurrent call to its own agent frame (ALS)", async () => {
@@ -181,7 +187,10 @@ describe("trace recorder via engineModel", () => {
       replay,
       recorder,
     });
-    await generateText({ model: replayModel as LanguageModelV3, prompt: "same" });
+    await generateText({
+      model: replayModel as LanguageModelV3,
+      prompt: "same",
+    });
 
     expect(fresh.doGenerateCalls).toHaveLength(0);
     const snap = recorder.snapshot();

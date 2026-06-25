@@ -1,14 +1,14 @@
 import type { LanguageModelV3 } from "@ai-sdk/provider";
-import { AtlasError } from "./errors.js";
-import { readEnv } from "./env.js";
-import type { ModelRole, ResolvedModel } from "./model.js";
 import type { PricingTable } from "./budget.js";
-import type { SafetyPolicy } from "./safety.js";
-import type { RunStore } from "./providers/store.js";
-import type { SearchProvider } from "./providers/search.js";
-import type { FetchProvider } from "./providers/fetch.js";
 import type { ResearchTool } from "./custom-tools.js";
+import { readEnv } from "./env.js";
+import { AtlasError } from "./errors.js";
+import type { ModelRole, ResolvedModel } from "./model.js";
+import type { FetchProvider } from "./providers/fetch.js";
+import type { SearchProvider } from "./providers/search.js";
+import type { RunStore } from "./providers/store.js";
 import type { Researcher } from "./researcher.js";
+import type { SafetyPolicy } from "./safety.js";
 
 export type Effort = "fast" | "balanced" | "deep" | "max";
 
@@ -137,7 +137,11 @@ function resolveConcurrency(
   fallback: number,
   ...keys: string[]
 ): number {
-  if (configured !== undefined && Number.isFinite(configured) && configured >= 1) {
+  if (
+    configured !== undefined &&
+    Number.isFinite(configured) &&
+    configured >= 1
+  ) {
     return Math.floor(configured);
   }
   const raw = readEnv(...keys);
@@ -168,11 +172,17 @@ export function resolveRunConfig(
   const budget = { ...config.budget, ...options.budget };
   const budgetUSD = budget.maxUSD ?? envelope.budgetUSD;
   if (!Number.isFinite(budgetUSD) || budgetUSD <= 0) {
-    throw new AtlasError(`budget.maxUSD must be > 0 (got ${budgetUSD})`, "config");
+    throw new AtlasError(
+      `budget.maxUSD must be > 0 (got ${budgetUSD})`,
+      "config",
+    );
   }
   const maxTokens = budget.maxTokens ?? envelope.maxTokens;
   if (!Number.isFinite(maxTokens) || maxTokens <= 0) {
-    throw new AtlasError(`budget.maxTokens must be > 0 (got ${maxTokens})`, "config");
+    throw new AtlasError(
+      `budget.maxTokens must be > 0 (got ${maxTokens})`,
+      "config",
+    );
   }
   const maxSources = budget.maxSources ?? envelope.maxSources;
   if (!Number.isFinite(maxSources) || maxSources <= 0) {
@@ -182,7 +192,10 @@ export function resolveRunConfig(
     );
   }
   const maxDurationMs = budget.maxDurationMs ?? envelope.maxDurationMs;
-  if (maxDurationMs !== undefined && (!Number.isFinite(maxDurationMs) || maxDurationMs <= 0)) {
+  if (
+    maxDurationMs !== undefined &&
+    (!Number.isFinite(maxDurationMs) || maxDurationMs <= 0)
+  ) {
     throw new AtlasError(
       `budget.maxDurationMs must be > 0 (got ${maxDurationMs})`,
       "config",

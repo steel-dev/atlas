@@ -1,12 +1,12 @@
 import {
-  SITE_SOURCE,
-  TRACE_SCHEMA_VERSION,
   type CriticalSpan,
   type DigestAgent,
   type DigestAnomaly,
   type DigestPhase,
   type RunDigest,
+  SITE_SOURCE,
   type Span,
+  TRACE_SCHEMA_VERSION,
   type TraceStep,
 } from "./trace.js";
 
@@ -124,7 +124,10 @@ function criticalPath(
 function percentile(values: number[], p: number): number {
   if (values.length === 0) return 0;
   const sorted = [...values].sort((a, b) => a - b);
-  const idx = Math.min(sorted.length - 1, Math.floor((p / 100) * sorted.length));
+  const idx = Math.min(
+    sorted.length - 1,
+    Math.floor((p / 100) * sorted.length),
+  );
   return sorted[idx];
 }
 
@@ -181,7 +184,7 @@ function detectAnomalies(
         spanId: s.id,
         site: s.site,
         ...(s.agentId ? { agentId: s.agentId } : {}),
-        detail: `model call failed: ${String(s.attrs?.["finishReason"] ?? "error")}`,
+        detail: `model call failed: ${String(s.attrs?.finishReason ?? "error")}`,
       });
     }
   }
@@ -189,7 +192,7 @@ function detectAnomalies(
   const freshKeys = new Map<string, number>();
   for (const s of modelSpans) {
     if (s.status !== "ok") continue;
-    const key = s.attrs?.["callKey"];
+    const key = s.attrs?.callKey;
     if (typeof key !== "string" || !key) continue;
     freshKeys.set(key, (freshKeys.get(key) ?? 0) + 1);
   }
@@ -205,7 +208,11 @@ function detectAnomalies(
   const subtrees = agentSpans.map((s) => s.durationMs);
   const tailThreshold = 3 * median(subtrees);
   for (const s of agentSpans) {
-    if (subtrees.length > 2 && s.durationMs >= tailThreshold && s.durationMs > 0) {
+    if (
+      subtrees.length > 2 &&
+      s.durationMs >= tailThreshold &&
+      s.durationMs > 0
+    ) {
       anomalies.push({
         kind: "tail-agent",
         spanId: s.id,
@@ -290,11 +297,12 @@ export function computeDigest(
         : {}),
       ...(wrapper?.role ? { role: wrapper.role } : {}),
       selfMs: Math.round(intervalUnionMs(own)),
-      subtreeMs: Math.round(wrapper ? wrapper.durationMs : intervalUnionMs(own)),
+      subtreeMs: Math.round(
+        wrapper ? wrapper.durationMs : intervalUnionMs(own),
+      ),
       costUSD:
-        Math.round(
-          own.reduce((sum, s) => sum + (s.costUSD ?? 0), 0) * 10_000,
-        ) / 10_000,
+        Math.round(own.reduce((sum, s) => sum + (s.costUSD ?? 0), 0) * 10_000) /
+        10_000,
       tokens: own.reduce((sum, s) => sum + tokensOf(s), 0),
       spanCount: own.length,
     });

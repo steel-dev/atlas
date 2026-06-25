@@ -1,11 +1,7 @@
 import { createHash } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
-import type {
-  ResearchEvent,
-  ResearchResult,
-  RunStats,
-} from "../src/index.js";
+import type { ResearchEvent, ResearchResult, RunStats } from "../src/index.js";
 
 export async function mapWithConcurrency<T, R>(
   items: T[],
@@ -91,7 +87,7 @@ export async function writeJsonl(path: string, rows: unknown[]): Promise<void> {
   await mkdir(dirname(resolved), { recursive: true });
   await writeFile(
     resolved,
-    rows.map((row) => JSON.stringify(row)).join("\n") + "\n",
+    `${rows.map((row) => JSON.stringify(row)).join("\n")}\n`,
     "utf8",
   );
 }
@@ -217,7 +213,11 @@ export function traceEvent(
         count: event.results,
       };
     case "search.failed":
-      return { ...base("search_failed"), query: event.query, error: event.error };
+      return {
+        ...base("search_failed"),
+        query: event.query,
+        error: event.error,
+      };
     case "source.fetched":
       return {
         ...base("source_fetched"),

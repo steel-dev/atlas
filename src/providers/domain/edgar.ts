@@ -1,9 +1,9 @@
-import { errorMessage } from "../../errors.js";
 import { readEnv } from "../../env.js";
+import { errorMessage } from "../../errors.js";
 import {
-  safeDomain,
   type SearchProvider,
   type SearchResult,
+  safeDomain,
 } from "../search.js";
 import { clampLimit, collapse } from "./shared.js";
 
@@ -43,7 +43,11 @@ export function edgar(opts: EdgarOptions = {}): SearchProvider {
       if (opts.to) params.set("enddt", opts.to);
       let data: unknown;
       try {
-        data = await fetchEdgar(`${ENDPOINT}?${params.toString()}`, userAgent, signal);
+        data = await fetchEdgar(
+          `${ENDPOINT}?${params.toString()}`,
+          userAgent,
+          signal,
+        );
       } catch (err) {
         throw new Error(`edgar: request failed: ${errorMessage(err)}`);
       }
@@ -61,7 +65,8 @@ async function fetchEdgar(
     signal,
     headers: { "user-agent": userAgent, accept: "application/json" },
   });
-  if (!resp.ok) throw new Error(`HTTP ${resp.status} ${resp.statusText}`.trim());
+  if (!resp.ok)
+    throw new Error(`HTTP ${resp.status} ${resp.statusText}`.trim());
   return resp.json();
 }
 

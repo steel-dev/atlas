@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { semanticScholar } from "./semantic-scholar.js";
 import type { ToolContext } from "../../custom-tools.js";
+import { semanticScholar } from "./semantic-scholar.js";
 
 function makeCtx(signal?: AbortSignal) {
   const sources: { url: string; title?: string; content: string }[] = [];
@@ -44,8 +44,9 @@ const RESULT = {
 };
 
 function respond(status: number, body: unknown) {
-  return vi.fn(async (_url: string | URL, _init?: RequestInit) =>
-    new Response(JSON.stringify(body), { status }),
+  return vi.fn(
+    async (_url: string | URL, _init?: RequestInit) =>
+      new Response(JSON.stringify(body), { status }),
   );
 }
 
@@ -59,7 +60,9 @@ describe("semanticScholar", () => {
     expect(sources).toHaveLength(2);
     expect(sources[0].url).toBe("https://doi.org/10.5555/3295222.3295349");
     expect(sources[0].title).toBe("Attention Is All You Need");
-    expect(sources[0].content).toContain("Authors: Ashish Vaswani, Noam Shazeer");
+    expect(sources[0].content).toContain(
+      "Authors: Ashish Vaswani, Noam Shazeer",
+    );
     expect(sources[0].content).toContain("NeurIPS (2017)");
     expect(sources[0].content).toContain("Cited by 100000");
     expect(sources[0].content).toContain(

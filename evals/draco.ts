@@ -3,38 +3,40 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { createAnthropic } from "@ai-sdk/anthropic";
+import { createGoogleGenerativeAI } from "@ai-sdk/google";
+import { createOpenAI } from "@ai-sdk/openai";
 import {
   generateObject,
   jsonSchema,
   type LanguageModel,
   type LanguageModelUsage,
 } from "ai";
-import { createGoogleGenerativeAI } from "@ai-sdk/google";
-import { createAnthropic } from "@ai-sdk/anthropic";
-import { createOpenAI } from "@ai-sdk/openai";
 import {
   DEFAULT_ANTHROPIC_MODEL,
   DEFAULT_OPENAI_MODEL,
 } from "../src/defaults.js";
 import {
   Atlas,
-  fileStore,
   type AtlasConfig,
   type Effort,
+  fileStore,
   type ResearchOptions,
   type ResearchResult,
   type ResearchRun,
   type TraceMode,
 } from "../src/index.js";
-import { defaultSearchProviders } from "../src/providers/search.js";
 import {
   arxiv,
   edgar,
   openalex,
   pubmed,
 } from "../src/providers/domain/index.js";
+import { defaultSearchProviders } from "../src/providers/search.js";
 import {
   buildDiagnostics,
+  type EvalDiagnostics,
+  type EvalTraceEvent,
   formatCountMap,
   increment,
   isTransientResearchError,
@@ -42,14 +44,12 @@ import {
   mean,
   median,
   progressLine,
+  type RunMetrics,
   readEnv,
   stableHash,
   summarizeRun,
   traceEvent,
   writeJsonl,
-  type EvalDiagnostics,
-  type EvalTraceEvent,
-  type RunMetrics,
 } from "./lib.js";
 
 type ModelProvider = "anthropic" | "openai";
@@ -1776,7 +1776,7 @@ function printSummary(
   outPath: string,
 ): void {
   process.stdout.write(
-    [
+    `${[
       `cases: ${summary.total} (scored ${summary.scored}, errors ${summary.errors})`,
       `normalized score: ${(summary.normalizedScore * 100).toFixed(1)}%`,
       `pass rate: ${(summary.passRate * 100).toFixed(1)}%`,
@@ -1808,7 +1808,7 @@ function printSummary(
       `claims: extracted=${summary.claimHealth.extracted}, unsupported=${summary.claimHealth.unsupported}, verified=${summary.claimHealth.verified}, confirmed=${summary.claimHealth.confirmed}, contested=${summary.claimHealth.contested}, refuted=${summary.claimHealth.refuted}, unverified=${summary.claimHealth.unverified}`,
       `fetch health: fetched=${summary.fetchHealth.fetched}, rejected=${summary.fetchHealth.rejected}, blocked_or_thin=${summary.fetchHealth.blockedOrThin}, methods=${formatCountMap(summary.fetchHealth.fetchedByMethod)}`,
       `results: ${outPath}`,
-    ].join("\n") + "\n",
+    ].join("\n")}\n`,
   );
 }
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
+import { execSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { execSync } from "node:child_process";
 import { parseArgs } from "node:util";
 
 const ROOT = join("eval-runs", "traces");
@@ -73,11 +73,11 @@ function fail(message: string): never {
 }
 
 function out(value: unknown): void {
-  process.stdout.write(JSON.stringify(value, null, 2) + "\n");
+  process.stdout.write(`${JSON.stringify(value, null, 2)}\n`);
 }
 
 function raw(text: string): void {
-  process.stdout.write(text + "\n");
+  process.stdout.write(`${text}\n`);
 }
 
 function need(positionals: string[], index: number, name: string): string {
@@ -113,7 +113,9 @@ function findFile(runId: string, suffix: string): string {
     const p = join(ROOT, c, `${runId}.${suffix}`);
     if (existsSync(p)) return p;
   }
-  fail(`no ${suffix} for run ${runId} under ${ROOT}/*/ — was it run with --trace?`);
+  fail(
+    `no ${suffix} for run ${runId} under ${ROOT}/*/ — was it run with --trace?`,
+  );
 }
 
 function cmdCommits(): void {
@@ -124,7 +126,8 @@ function cmdCommits(): void {
       .length,
     ...(c === head ? { head: true } : {}),
   }));
-  if (rows.length === 0) raw(`(no traces yet under ${ROOT}/ — run with --trace)`);
+  if (rows.length === 0)
+    raw(`(no traces yet under ${ROOT}/ — run with --trace)`);
   else out(rows);
 }
 
@@ -171,9 +174,9 @@ function cmdDigest(positionals: string[]): void {
 }
 
 function cmdSpans(positionals: string[], flags: Flags): void {
-  const j = readJson(
-    findFile(need(positionals, 1, "runId"), "trace.json"),
-  ) as { spans?: Array<Record<string, unknown>> };
+  const j = readJson(findFile(need(positionals, 1, "runId"), "trace.json")) as {
+    spans?: Array<Record<string, unknown>>;
+  };
   let spans = j.spans ?? [];
   if (flags.kind) spans = spans.filter((s) => s.kind === flags.kind);
   if (flags.grep) {
@@ -215,9 +218,9 @@ function renderStep(step: TranscriptStep, includeMessages: boolean): string {
 }
 
 function cmdTranscript(positionals: string[], flags: Flags): void {
-  const j = readJson(
-    findFile(need(positionals, 1, "runId"), "trace.json"),
-  ) as { steps?: TranscriptStep[] };
+  const j = readJson(findFile(need(positionals, 1, "runId"), "trace.json")) as {
+    steps?: TranscriptStep[];
+  };
   const steps = j.steps ?? [];
   const selecting =
     flags.role || flags.seq || flags.step || flags.grep || flags.head;
@@ -256,7 +259,8 @@ function cmdTranscript(positionals: string[], flags: Flags): void {
     const re = new RegExp(flags.grep, "i");
     selected = selected.filter(
       (s) =>
-        re.test(JSON.stringify(s.output)) || re.test(JSON.stringify(s.messages)),
+        re.test(JSON.stringify(s.output)) ||
+        re.test(JSON.stringify(s.messages)),
     );
   }
   if (flags.head) selected = selected.slice(0, Number(flags.head));

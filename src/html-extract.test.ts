@@ -51,7 +51,9 @@ describe("htmlToMarkdown", () => {
       <pre><code class="language-bash">npm install atlas
 npm run build</code></pre>
     </body></html>`);
-    expect(markdown).toContain("```bash\nnpm install atlas\nnpm run build\n```");
+    expect(markdown).toContain(
+      "```bash\nnpm install atlas\nnpm run build\n```",
+    );
   });
 
   it("wraps inline code in backticks", () => {

@@ -22,7 +22,10 @@ export function stubToolResultWindow(
   messages.forEach((m, i) => {
     if (m.role === "tool" && Array.isArray(m.content)) {
       (m.content as Array<Record<string, unknown>>).forEach((part, k) => {
-        if (part?.type === "tool-result" && STUB_TOOLS.has(String(part.toolName))) {
+        if (
+          part?.type === "tool-result" &&
+          STUB_TOOLS.has(String(part.toolName))
+        ) {
           positions.push(`${i}:${k}`);
         }
       });
@@ -32,12 +35,13 @@ export function stubToolResultWindow(
   const keepSet = new Set(positions.slice(positions.length - keep));
   return messages.map((m, i) => {
     if (m.role !== "tool" || !Array.isArray(m.content)) return m;
-    const content = (m.content as Array<Record<string, unknown>>).map((part, k) =>
-      part?.type === "tool-result" &&
-      STUB_TOOLS.has(String(part.toolName)) &&
-      !keepSet.has(`${i}:${k}`)
-        ? stubPart(part)
-        : part,
+    const content = (m.content as Array<Record<string, unknown>>).map(
+      (part, k) =>
+        part?.type === "tool-result" &&
+        STUB_TOOLS.has(String(part.toolName)) &&
+        !keepSet.has(`${i}:${k}`)
+          ? stubPart(part)
+          : part,
     );
     return { ...m, content } as ModelMessage;
   });

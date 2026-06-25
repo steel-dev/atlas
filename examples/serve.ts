@@ -1,14 +1,13 @@
 #!/usr/bin/env node
+import { readFileSync } from "node:fs";
 import {
   createServer,
   type IncomingMessage,
   type ServerResponse,
 } from "node:http";
-import { readFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { createOpenAI } from "@ai-sdk/openai";
-import { Atlas, type AtlasConfig, type Effort } from "../src/index.js";
 import {
   DEFAULT_ANTHROPIC_MODEL,
   DEFAULT_OPENAI_MODEL,
@@ -16,6 +15,7 @@ import {
   DEFAULT_ZAI_MODEL,
 } from "../src/defaults.js";
 import { readEnv } from "../src/env.js";
+import { Atlas, type AtlasConfig, type Effort } from "../src/index.js";
 
 const USAGE = `atlas serve — minimal local web UI for deep research
 
@@ -198,7 +198,9 @@ async function main(): Promise<void> {
   }
   const host = values.host ?? "127.0.0.1";
 
-  const atlas = new Atlas({ model: resolveModel(values.provider, values.model) });
+  const atlas = new Atlas({
+    model: resolveModel(values.provider, values.model),
+  });
 
   const server = createServer((req, res) => {
     const path = new URL(req.url ?? "/", "http://localhost").pathname;

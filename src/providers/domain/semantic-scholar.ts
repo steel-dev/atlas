@@ -1,12 +1,18 @@
 import { jsonSchema } from "ai";
 import {
-  researchTool,
   type ResearchTool,
+  researchTool,
   type ToolContext,
 } from "../../custom-tools.js";
-import { errorMessage } from "../../errors.js";
 import { readEnv } from "../../env.js";
-import { USER_AGENT, buildContent, clampLimit, collapse, manifest } from "./shared.js";
+import { errorMessage } from "../../errors.js";
+import {
+  buildContent,
+  clampLimit,
+  collapse,
+  manifest,
+  USER_AGENT,
+} from "./shared.js";
 
 export interface SemanticScholarOptions {
   defaultLimit?: number;
@@ -44,7 +50,11 @@ export function semanticScholar(
       });
       let data: unknown;
       try {
-        data = await search(`${ENDPOINT}?${params.toString()}`, apiKey, ctx.signal);
+        data = await search(
+          `${ENDPOINT}?${params.toString()}`,
+          apiKey,
+          ctx.signal,
+        );
       } catch (err) {
         const message = errorMessage(err);
         if (message === RATE_LIMITED)
@@ -68,7 +78,8 @@ async function search(
   if (apiKey) headers["x-api-key"] = apiKey;
   const resp = await fetch(url, { signal, headers });
   if (resp.status === 429) throw new Error(RATE_LIMITED);
-  if (!resp.ok) throw new Error(`HTTP ${resp.status} ${resp.statusText}`.trim());
+  if (!resp.ok)
+    throw new Error(`HTTP ${resp.status} ${resp.statusText}`.trim());
   return resp.json();
 }
 

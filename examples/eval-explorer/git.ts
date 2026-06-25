@@ -33,6 +33,11 @@ export function captureCommit(): CommitInfo {
       dirtyFiles,
     };
   } catch {
-    return { sha: "unknown", shortSha: "unknown", dirty: false, dirtyFiles: [] };
+    return {
+      sha: "unknown",
+      shortSha: "unknown",
+      dirty: false,
+      dirtyFiles: [],
+    };
   }
 }

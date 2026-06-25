@@ -1,9 +1,9 @@
-import { errorMessage } from "../../errors.js";
 import { readEnv } from "../../env.js";
+import { errorMessage } from "../../errors.js";
 import {
-  safeDomain,
   type SearchProvider,
   type SearchResult,
+  safeDomain,
 } from "../search.js";
 import { buildContent, clampLimit, collapse, fetchJson } from "./shared.js";
 
@@ -79,7 +79,9 @@ function toResults(data: unknown): SearchResult[] {
       position: out.length + 1,
       title,
       url,
-      snippet: collapse([meta.join(" · "), abstract].filter(Boolean).join(" — ")),
+      snippet: collapse(
+        [meta.join(" · "), abstract].filter(Boolean).join(" — "),
+      ),
       domain: safeDomain(url),
       meta: {
         openUrls: openAccessUrls(w),
@@ -117,7 +119,8 @@ function workUrl(w: Record<string, unknown>): string {
       ? doi
       : `https://doi.org/${doi.replace(/^doi:/, "")}`;
   const landing = (w.primary_location as any)?.landing_page_url;
-  if (typeof landing === "string" && /^https?:\/\//.test(landing)) return landing;
+  if (typeof landing === "string" && /^https?:\/\//.test(landing))
+    return landing;
   const id = w.id;
   return typeof id === "string" && /^https?:\/\//.test(id) ? id : "";
 }
@@ -125,7 +128,9 @@ function workUrl(w: Record<string, unknown>): string {
 function reconstructAbstract(inv: unknown): string {
   if (!inv || typeof inv !== "object") return "";
   const slots: string[] = [];
-  for (const [word, positions] of Object.entries(inv as Record<string, unknown>)) {
+  for (const [word, positions] of Object.entries(
+    inv as Record<string, unknown>,
+  )) {
     if (!Array.isArray(positions)) continue;
     for (const p of positions) if (typeof p === "number") slots[p] = word;
   }

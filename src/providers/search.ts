@@ -1,8 +1,8 @@
 import { generateText, type LanguageModel, type ToolSet } from "ai";
-import { errorMessage } from "../errors.js";
-import { readEnv } from "../env.js";
 import { sleep } from "../async.js";
 import { isZaiModelId } from "../defaults.js";
+import { readEnv } from "../env.js";
+import { errorMessage } from "../errors.js";
 import { normalizeUrlForSource } from "../url.js";
 
 export interface SearchResult {
@@ -153,7 +153,11 @@ async function searchWithRetry(
       return await provider.search(q);
     } catch (err) {
       const { retryable, retryAfterMs } = classifySearchRetry(err);
-      if (!retryable || tries >= SEARCH_RETRY_MAX_ATTEMPTS || q.signal?.aborted) {
+      if (
+        !retryable ||
+        tries >= SEARCH_RETRY_MAX_ATTEMPTS ||
+        q.signal?.aborted
+      ) {
         throw err;
       }
       await sleep(searchBackoffDelayMs(tries, retryAfterMs), q.signal);
@@ -289,8 +293,7 @@ export interface BraveOptions {
 }
 
 export function brave(opts: BraveOptions = {}): SearchProvider {
-  const apiKey =
-    opts.apiKey ?? readEnv("ATLAS_BRAVE_API_KEY", "BRAVE_API_KEY");
+  const apiKey = opts.apiKey ?? readEnv("ATLAS_BRAVE_API_KEY", "BRAVE_API_KEY");
   if (!apiKey) {
     throw new Error(
       "brave() requires an apiKey (or set ATLAS_BRAVE_API_KEY / BRAVE_API_KEY)",
@@ -465,7 +468,9 @@ export interface MergedSearchResult {
 
 const RRF_K = 60;
 
-export function openUrlsOf(meta: Record<string, unknown> | undefined): string[] {
+export function openUrlsOf(
+  meta: Record<string, unknown> | undefined,
+): string[] {
   const raw = meta?.openUrls;
   if (!Array.isArray(raw)) return [];
   const out: string[] = [];
@@ -480,8 +485,12 @@ function mergeMeta(
   incoming: Record<string, unknown> | undefined,
   preferIncoming: boolean,
 ): Record<string, unknown> | undefined {
-  const openUrls = [...new Set([...openUrlsOf(existing), ...openUrlsOf(incoming)])];
-  const base = preferIncoming ? { ...existing, ...incoming } : { ...incoming, ...existing };
+  const openUrls = [
+    ...new Set([...openUrlsOf(existing), ...openUrlsOf(incoming)]),
+  ];
+  const base = preferIncoming
+    ? { ...existing, ...incoming }
+    : { ...incoming, ...existing };
   if (openUrls.length === 0) {
     return Object.keys(base).length > 0 ? base : undefined;
   }
@@ -528,9 +537,7 @@ export function mergeSearchResults(
     }
   }
   return [...byUrl.values()]
-    .sort(
-      (a, b) => b.score - a.score || a.providerRank - b.providerRank,
-    )
+    .sort((a, b) => b.score - a.score || a.providerRank - b.providerRank)
     .slice(0, limit);
 }
 
