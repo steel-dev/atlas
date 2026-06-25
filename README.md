@@ -14,6 +14,14 @@ const { report } = await atlas.research(
 );
 ```
 
+## Try it
+
+One-off query, no install:
+
+```bash
+ANTHROPIC_API_KEY=sk-ant-... npx @steel-dev/atlas "How do reasoning models differ from standard LLMs?"
+```
+
 ## Install
 
 ```bash
@@ -194,14 +202,6 @@ The real backstops are **price-independent** — each defaults to the effort row
 `result.stats` reports `budgetExhausted` and `tokensExhausted` so you can see which limit bound the run. Leave headroom on `maxUSD`, or set a provider-side spend limit, when the cap is truly hard.
 
 `result.stats.stopReason` folds those into one value — `"completed"`, `"finished"` (`run.finish()`), or a binding cap (`"budget"`, `"tokens"`, `"timeout"`). When several apply, the most proximate wins.
-
-## Safety
-
-Untrusted web content is quarantined (data, not instructions). Fetches pass SSRF guards hop-by-hop; `run_code` runs in a memory-capped V8 isolate with no network, filesystem, or host access. Direct fetch honors robots.txt.
-
-The isolate needs the optional `isolated-vm` dependency; without it, `run_code` is dropped from the toolset and the run proceeds without it — Atlas never falls back to an unsandboxed evaluator.
-
-The SSRF guard validates DNS at check time but can't pin the connection, so an attacker controlling DNS can defeat it via rebinding. Treat it as defense-in-depth — for hostile targets, run behind network-level egress controls that block private ranges.
 
 ## Dev
 
