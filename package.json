@@ -45,7 +45,7 @@
     "node": ">=20.16.0"
   },
   "dependencies": {
-    "@ai-sdk/provider": "^3.0.0",
+    "@ai-sdk/provider": "^4.0.0",
     "cheerio": "^1.0.0",
     "exa-js": "^2.14.0",
     "pdf-parse": "^2.4.5",
@@ -77,7 +77,7 @@
     "@arethetypeswrong/cli": "^0.18.4",
     "@biomejs/biome": "^2.5.1",
     "@types/node": "^22.0.0",
-    "ai": "^6.0.194",
+    "ai": "^7.0.0",
     "esbuild": "^0.25.12",
     "publint": "^0.3.21",
     "tsx": "^4.19.2",
