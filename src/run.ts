@@ -38,6 +38,7 @@ import {
   type ReplayCache,
   type RunStore,
 } from "./providers/store.js";
+import type { ResearchFailure } from "./result.js";
 import {
   capPartitionForReport,
   fallbackReportFromClaims,
@@ -88,6 +89,7 @@ export interface ResearchResult {
   question: string;
   report: string;
   note: string;
+  failure?: ResearchFailure;
   structured?: unknown;
   structuredBasis?: Record<string, FieldBasis>;
   claims: ResearchClaims;
@@ -336,6 +338,7 @@ async function executeRun(args: ExecuteRunArgs): Promise<ResearchResult> {
 
   let report: string;
   let note: string;
+  let failure: ResearchFailure | undefined;
   let citations: Citation[];
   let unsupportedSentences: string[];
   let structured: unknown;
@@ -365,6 +368,7 @@ async function executeRun(args: ExecuteRunArgs): Promise<ResearchResult> {
     });
     report = outputs.bound.report;
     note = orchestrator.note;
+    failure = undefined;
     citations = outputs.bound.citations;
     unsupportedSentences = outputs.bound.unsupportedSentences;
     structured = outputs.structured;
@@ -383,6 +387,7 @@ async function executeRun(args: ExecuteRunArgs): Promise<ResearchResult> {
     );
     report = spine.report;
     note = spine.note;
+    failure = spine.failure;
     citations = spine.citations;
     unsupportedSentences = spine.unsupportedSentences;
     structured = undefined;
@@ -419,6 +424,7 @@ async function executeRun(args: ExecuteRunArgs): Promise<ResearchResult> {
     question,
     report,
     note,
+    ...(failure ? { failure } : {}),
     ...(structured !== undefined ? { structured } : {}),
     ...(structuredBasis ? { structuredBasis } : {}),
     claims: {

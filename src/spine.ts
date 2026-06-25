@@ -15,6 +15,7 @@ import { errorMessage } from "./errors.js";
 import { NON_EVIDENCE_WARNINGS } from "./ledger.js";
 import { stubToolResultWindow } from "./memory.js";
 import { MODEL_CALL_MAX_RETRIES } from "./model.js";
+import type { ResearchFailure } from "./result.js";
 import type { RunCtx } from "./state.js";
 import {
   applyCoverageUpdate,
@@ -38,6 +39,7 @@ import { normalizeUrlForSource } from "./url.js";
 export interface SpineOutput {
   report: string;
   note: string;
+  failure?: ResearchFailure;
   citations: Citation[];
   unsupportedSentences: string[];
 }
@@ -791,11 +793,9 @@ export async function runSpine(
     }
     // A non-abort gather failure (e.g. an unreachable model endpoint) would
     // otherwise be invisible: the run still "completes" with a no-source
-    // report. Surface it on stderr and as a recoverable run event so both
-    // operators and event consumers (CLI, web UI) can see the real cause, and
-    // remember it so the returned report can name it instead of guessing.
+    // report. Emit it and remember it so consumers can show the real cause
+    // instead of guessing from a generic fallback report.
     gatherError = err;
-    process.stderr.write(`atlas: gather failed: ${errorMessage(err)}\n`);
     rctx.emit({
       type: "run.error",
       message: `gather failed: ${errorMessage(err)}`,
@@ -820,7 +820,15 @@ export async function runSpine(
         note ||
         failNote ||
         "No sources could be retrieved for this question, so no grounded report could be written.",
-      note: failNote || note,
+      note: failNote && note ? `${failNote}\n\n${note}` : failNote || note,
+      ...(gatherError
+        ? {
+            failure: {
+              phase: "gather",
+              message: failNote,
+            } satisfies ResearchFailure,
+          }
+        : {}),
       citations: [],
       unsupportedSentences: [],
     };
@@ -911,12 +919,18 @@ export async function runSpine(
     const failNote = synthError
       ? `Synthesis failed: ${errorMessage(synthError)}`
       : "";
+    const failureMessage =
+      failNote || "Sources were gathered but no report could be composed within budget.";
     return {
       report:
-        failNote ||
         note ||
+        failNote ||
         "Sources were gathered but no report could be composed within budget.",
-      note: failNote || note,
+      note: failNote && note ? `${failNote}\n\n${note}` : failNote || note,
+      failure: {
+        phase: "synthesis",
+        message: failureMessage,
+      },
       citations: [],
       unsupportedSentences: [],
     };

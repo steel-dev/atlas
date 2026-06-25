@@ -15,7 +15,12 @@ import {
   DEFAULT_ZAI_BASE_URL,
   DEFAULT_ZAI_MODEL,
 } from "../src/defaults.js";
-import { detectProxyBaseURL, readEnv } from "../src/env.js";
+import {
+  detectProxyBaseURL,
+  proxyBaseURLWarning,
+  readEnv,
+  type InheritedBaseURLProvider,
+} from "../src/env.js";
 
 const USAGE = `atlas serve — minimal local web UI for deep research
 
@@ -43,7 +48,9 @@ function messageOf(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-function normalizeProvider(provider: string): "anthropic" | "openai" | "zai" {
+type ServeProvider = "anthropic" | "openai" | "zai";
+
+function normalizeProvider(provider: string): ServeProvider {
   if (provider === "anthropic" || provider === "openai") return provider;
   if (provider === "zai" || provider === "z.ai" || provider === "zhipu") {
     return "zai";
@@ -52,12 +59,9 @@ function normalizeProvider(provider: string): "anthropic" | "openai" | "zai" {
 }
 
 function resolveModel(
-  providerFlag: string | undefined,
+  provider: ServeProvider,
   modelFlag: string | undefined,
 ): AtlasConfig["model"] {
-  const provider = normalizeProvider(
-    providerFlag ?? readEnv("ATLAS_PROVIDER") ?? "anthropic",
-  );
   const modelId =
     modelFlag ??
     readEnv("ATLAS_MODEL") ??
@@ -81,6 +85,26 @@ function resolveModel(
   const apiKey = readEnv("ATLAS_OPENAI_API_KEY", "OPENAI_API_KEY");
   if (!apiKey) fail("OPENAI_API_KEY is required for provider=openai");
   return createOpenAI({ apiKey })(modelId);
+}
+
+function inheritedBaseURLProvider(
+  provider: ServeProvider,
+): InheritedBaseURLProvider | undefined {
+  return provider === "anthropic" || provider === "openai"
+    ? provider
+    : undefined;
+}
+
+function warnInheritedBaseURLs(provider: ServeProvider): void {
+  const inheritedProvider = inheritedBaseURLProvider(provider);
+  if (!inheritedProvider) return;
+  for (const name of detectProxyBaseURL(process.env, {
+    providers: [inheritedProvider],
+  })) {
+    process.stderr.write(
+      `atlas-serve: WARNING: ${proxyBaseURLWarning(name)}\n`,
+    );
+  }
 }
 
 function readBody(req: IncomingMessage): Promise<string> {
@@ -198,14 +222,12 @@ async function main(): Promise<void> {
   }
   const host = values.host ?? "127.0.0.1";
 
-  for (const name of detectProxyBaseURL()) {
-    process.stderr.write(
-      `atlas-serve: WARNING: ${name} is set; the matching provider routes model calls through this base URL. ` +
-        `A mismatched proxy behind it (e.g. a non-Anthropic API under ANTHROPIC_BASE_URL) will make every model call fail.\n`,
-    );
-  }
+  const provider = normalizeProvider(
+    values.provider ?? readEnv("ATLAS_PROVIDER") ?? "anthropic",
+  );
+  warnInheritedBaseURLs(provider);
 
-  const atlas = new Atlas({ model: resolveModel(values.provider, values.model) });
+  const atlas = new Atlas({ model: resolveModel(provider, values.model) });
 
   const server = createServer((req, res) => {
     const path = new URL(req.url ?? "/", "http://localhost").pathname;

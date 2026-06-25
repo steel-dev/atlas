@@ -5,7 +5,7 @@ import type {
   LanguageModelV3GenerateResult,
   LanguageModelV3ToolChoice,
 } from "@ai-sdk/provider";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { Atlas } from "./atlas.js";
 import type { ResearchEvent } from "./events.js";
 import type { ResolvedModel } from "./model.js";
@@ -167,9 +167,8 @@ describe("spine engagement", () => {
 
 describe("gather failure visibility", () => {
   it("surfaces a non-abort gather model error instead of swallowing it", async () => {
-    // Mirrors a real incident: the research/gather model endpoint is unreachable
-    // (e.g. "Invalid JSON response" through a mismatched proxy). Before the fix
-    // this was swallowed and the run "completed" with a generic no-source report.
+    // Mirrors an unreachable research/gather model endpoint, such as "Invalid
+    // JSON response" through a mismatched proxy.
     const failingResearchModel = new MockLanguageModelV3({
       provider: "mock-provider",
       modelId: "research-model",
@@ -179,8 +178,6 @@ describe("gather failure visibility", () => {
         });
       },
     });
-
-    const stderr = vi.spyOn(process.stderr, "write");
 
     const atlas = new Atlas({
       model: planModel() as unknown as ResolvedModel,
@@ -205,13 +202,15 @@ describe("gather failure visibility", () => {
     })();
     const result = await run.result();
     await drain;
-    stderr.mockRestore();
 
     expect(run.status()).toBe("completed");
-    // The real cause is now embedded in the report and note, not a generic message.
     expect(result.report).toMatch(/Research failed before any sources/i);
     expect(result.note).toMatch(/Invalid JSON response/i);
-    // It is also emitted as a recoverable run event so CLI and web consumers see it.
+    expect(result.failure).toEqual({
+      phase: "gather",
+      message:
+        "Research failed before any sources could be retrieved: Invalid JSON response",
+    });
     const runErrors = events.filter(
       (event): event is Extract<ResearchEvent, { type: "run.error" }> =>
         event.type === "run.error",
@@ -309,10 +308,13 @@ describe("post-gather failure visibility", () => {
     // Sanity: gather fetched a source, so the run reached the post-gather path.
     expect(result.sources.length).toBeGreaterThan(0);
     expect(run.status()).toBe("completed");
-    // The synthesis cause reaches the user-facing report and note, not only the
-    // event stream — so a total synthesis outage isn't mistaken for a budget cap.
-    expect(result.report).toMatch(/synthesis failed/i);
+    expect(result.report).toMatch(/surveyed the question from fetched sources/i);
     expect(result.note).toMatch(/synthesis endpoint down/i);
+    expect(result.note).toMatch(/surveyed the question from fetched sources/i);
+    expect(result.failure).toEqual({
+      phase: "synthesis",
+      message: "Synthesis failed: synthesis endpoint down",
+    });
     const runErrors = events.filter(
       (event): event is Extract<ResearchEvent, { type: "run.error" }> =>
         event.type === "run.error",

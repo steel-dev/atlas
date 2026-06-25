@@ -24,8 +24,13 @@ import {
   DEFAULT_ZAI_BASE_URL,
   DEFAULT_ZAI_MODEL,
 } from "../src/defaults.js";
-import { readEnv } from "../src/env.js";
-import { classifyRunOutcome } from "../src/outcome.js";
+import {
+  detectProxyBaseURL,
+  proxyBaseURLWarning,
+  readEnv,
+  type InheritedBaseURLProvider,
+} from "../src/env.js";
+import { classifyRunOutcome, type RunOutcome } from "../src/outcome.js";
 import { defaultSearchProviders } from "../src/providers/search.js";
 import { arxiv, edgar, openalex, pubmed } from "./domain-tools/index.js";
 
@@ -124,9 +129,9 @@ function parseTrace(raw: string | undefined): TraceMode | undefined {
   fail(`--trace must be one of: off, spans, full (got "${raw}")`);
 }
 
-function normalizeProvider(
-  provider: string,
-): "anthropic" | "openai" | "google" | "zai" {
+type CliProvider = "anthropic" | "openai" | "google" | "zai";
+
+function normalizeProvider(provider: string): CliProvider {
   if (
     provider === "anthropic" ||
     provider === "openai" ||
@@ -142,12 +147,9 @@ function normalizeProvider(
 }
 
 function resolveModel(
-  providerFlag: string | undefined,
+  provider: CliProvider,
   modelFlag: string | undefined,
 ): AtlasConfig["model"] {
-  const provider = normalizeProvider(
-    providerFlag ?? readEnv("ATLAS_PROVIDER") ?? "anthropic",
-  );
   const modelId =
     modelFlag ??
     readEnv("ATLAS_MODEL") ??
@@ -182,6 +184,35 @@ function resolveModel(
   const apiKey = readEnv("ATLAS_OPENAI_API_KEY", "OPENAI_API_KEY");
   if (!apiKey) fail("OPENAI_API_KEY is required for provider=openai");
   return createOpenAI({ apiKey })(modelId);
+}
+
+function inheritedBaseURLProvider(
+  provider: CliProvider,
+): InheritedBaseURLProvider | undefined {
+  return provider === "anthropic" || provider === "openai"
+    ? provider
+    : undefined;
+}
+
+function configuredInheritedBaseURLProviders(
+  provider: CliProvider,
+): InheritedBaseURLProvider[] {
+  const providers: InheritedBaseURLProvider[] = [];
+  const lead = inheritedBaseURLProvider(provider);
+  if (lead) providers.push(lead);
+  const cheapProvider = readEnv("ATLAS_CHEAP_PROVIDER");
+  if (cheapProvider === "anthropic" || cheapProvider === "openai") {
+    providers.push(cheapProvider);
+  }
+  return providers;
+}
+
+function warnInheritedBaseURLs(
+  providers: readonly InheritedBaseURLProvider[],
+): void {
+  for (const name of detectProxyBaseURL(process.env, { providers })) {
+    process.stderr.write(`atlas: WARNING: ${proxyBaseURLWarning(name)}\n`);
+  }
 }
 
 function resolveCheapModels(): AtlasConfig["models"] | undefined {
@@ -289,7 +320,7 @@ function formatEvent(e: ResearchEvent): string | null {
     case "run.error":
       return paint(
         YELLOW,
-        `! ${e.recoverable ? "recoverable " : ""}error: ${e.message}`,
+        `! ${e.recoverable ? "warning" : "error"}: ${e.message}`,
       );
     default:
       return null;
@@ -357,27 +388,30 @@ function writeTrace(
   if (hot) process.stderr.write(paint(DIM, `  hot: ${hot}`) + "\n");
 }
 
-function footer(result: ResearchResult): string {
+function footerStats(result: ResearchResult): string {
   const s = result.stats;
   return (
-    paint(GREEN, "✓") +
-    ` done — $${s.costUSD.toFixed(4)} · ${result.sources.length} source${result.sources.length === 1 ? "" : "s"} · ` +
+    `$${s.costUSD.toFixed(4)} · ${result.sources.length} source${result.sources.length === 1 ? "" : "s"} · ` +
     `${s.claimsConfirmed} confirmed / ${s.claimsScreened} screened / ${s.claimsContested} contested / ${s.claimsRefuted} refuted · ` +
     `${s.agentsSpawned} agent${s.agentsSpawned === 1 ? "" : "s"} · ${(s.durationMs / 1000).toFixed(0)}s`
   );
 }
 
-// A zero-source run is degenerate (almost always a model/search failure). Show
-// the cause from result.note and signal failure with a non-zero exit instead of
-// the green "done" footer, so scripts and CI can detect it.
-function footerDegenerate(result: ResearchResult): string {
-  const s = result.stats;
-  const note = result.note.trim();
+function footer(result: ResearchResult, outcome: RunOutcome): string {
+  if (outcome.status === "ok") {
+    return paint(GREEN, "✓") + ` done — ${footerStats(result)}`;
+  }
+  const note = outcome.note.trim();
+  if (outcome.status === "failed") {
+    return (
+      paint(YELLOW, "✗") +
+      ` partial report — ${footerStats(result)}` +
+      (note ? `\n  ${note}` : "")
+    );
+  }
   return (
     paint(YELLOW, "✗") +
-    ` no usable report — $${s.costUSD.toFixed(4)} · ${result.sources.length} source${result.sources.length === 1 ? "" : "s"} · ` +
-    `${s.claimsConfirmed} confirmed / ${s.claimsScreened} screened / ${s.claimsContested} contested / ${s.claimsRefuted} refuted · ` +
-    `${s.agentsSpawned} agent${s.agentsSpawned === 1 ? "" : "s"} · ${(s.durationMs / 1000).toFixed(0)}s` +
+    ` no usable report — ${footerStats(result)}` +
     (note ? `\n  ${note}` : "")
   );
 }
@@ -437,8 +471,12 @@ async function main(): Promise<void> {
     budget.maxDurationMs = Math.floor(timeoutSeconds * 1000);
   }
 
+  const provider = normalizeProvider(
+    values.provider ?? readEnv("ATLAS_PROVIDER") ?? "anthropic",
+  );
+  warnInheritedBaseURLs(configuredInheritedBaseURLProviders(provider));
   const cheapModels = resolveCheapModels();
-  const model = resolveModel(values.provider, values.model);
+  const model = resolveModel(provider, values.model);
   const config: AtlasConfig = {
     model,
     search: {
@@ -535,10 +573,9 @@ async function main(): Promise<void> {
     }
     const outcome = classifyRunOutcome(result);
     if (!values.quiet) {
-      process.stderr.write(
-        (outcome.status === "degenerate" ? footerDegenerate(result) : footer(result)) +
-          "\n",
-      );
+      process.stderr.write(footer(result, outcome) + "\n");
+    } else if (outcome.exitCode !== 0 && outcome.note.trim()) {
+      process.stderr.write(`atlas: ${outcome.note.trim()}\n`);
     }
     // Set the code (don't process.exit) so the event loop flushes the report
     // and JSON writes to stdout before the process exits.

@@ -18,6 +18,7 @@ export type {
   RunStatus,
   SourceRecord,
 } from "./run.js";
+export type { ResearchFailure, ResearchFailurePhase } from "./result.js";
 export type { Citation } from "./bind.js";
 export type {
   AgentRole,

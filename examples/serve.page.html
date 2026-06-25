@@ -108,7 +108,7 @@
           case "rate.limited":
             return [`! rate limited — waiting ${e.retryAfterSeconds}s`, "warn"];
           case "run.error":
-            return [`! error: ${e.message}`, "warn"];
+            return [`! ${e.recoverable ? "warning" : "error"}: ${e.message}`, "warn"];
           case "run.completed":
             return ["✓ run completed", "ok"];
           default:

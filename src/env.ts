@@ -7,18 +7,33 @@ export function readEnv(...keys: string[]): string | undefined {
 }
 
 // Provider SDKs inherit these base-url env vars and route model calls through
-// them. When one points at a mismatched proxy (e.g. a non-Anthropic API behind
-// ANTHROPIC_BASE_URL), every model call fails with no other signal — so callers
-// (examples/serve.ts) warn at startup when any is set.
-const PROXY_BASE_URL_VARS = [
-  "ANTHROPIC_BASE_URL",
-  "OPENAI_BASE_URL",
-  "ZAI_BASE_URL",
-  "ATLAS_ZAI_BASE_URL",
-] as const;
+// them. App-owned Z.ai base-url settings are intentionally excluded: Atlas
+// passes those explicitly and they are valid documented configuration.
+const INHERITED_BASE_URL_BY_PROVIDER = {
+  anthropic: "ANTHROPIC_BASE_URL",
+  openai: "OPENAI_BASE_URL",
+} as const;
+
+export type InheritedBaseURLProvider = keyof typeof INHERITED_BASE_URL_BY_PROVIDER;
 
 export function detectProxyBaseURL(
   env: Record<string, string | undefined> = process.env,
+  options: { providers?: readonly InheritedBaseURLProvider[] } = {},
 ): string[] {
-  return PROXY_BASE_URL_VARS.filter((name) => !!env[name]);
+  const providers =
+    options.providers ??
+    (Object.keys(
+      INHERITED_BASE_URL_BY_PROVIDER,
+    ) as InheritedBaseURLProvider[]);
+  return providers
+    .map((provider) => INHERITED_BASE_URL_BY_PROVIDER[provider])
+    .filter((name, index, names) => names.indexOf(name) === index)
+    .filter((name) => !!env[name]);
+}
+
+export function proxyBaseURLWarning(name: string): string {
+  return (
+    `${name} is set; the matching provider SDK routes model calls through this base URL. ` +
+    "If it points at a mismatched proxy, model calls can fail before Atlas sees a usable response."
+  );
 }
