@@ -6,7 +6,7 @@ import {
 import type { BudgetGrant } from "./budget.js";
 import type { AgentRole } from "./events.js";
 import { stubToolResultWindow } from "./memory.js";
-import { MODEL_CALL_MAX_RETRIES, type ModelRole } from "./model.js";
+import { MODEL_CALL_MAX_RETRIES, totalFreshTokens, type ModelRole } from "./model.js";
 import { currentFrame, withTraceFrame } from "./trace.js";
 import { budgetStatusLine, type RunCtx } from "./state.js";
 import {
@@ -31,6 +31,7 @@ export interface AgentSpec {
   maxTurns?: number | undefined;
   maxOutputTokensPerStep?: number | undefined;
   maxContextTokens?: number | undefined;
+  tokenCeiling?: number | undefined;
   captureMessages?: boolean | undefined;
   memoryCursor?: number | undefined;
   forceFirstTool?: ToolName | undefined;
@@ -93,6 +94,13 @@ export async function runAgent(
       ({ steps }) => {
         if (spec.grant.floored()) {
           governorReason = "budget exhausted";
+          return true;
+        }
+        if (
+          spec.tokenCeiling !== undefined &&
+          totalFreshTokens(rctx.usage) >= spec.tokenCeiling
+        ) {
+          governorReason = "token ceiling reached";
           return true;
         }
         const runReason = rctx.stopReason();

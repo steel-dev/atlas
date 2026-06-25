@@ -154,3 +154,124 @@ describe("spine engagement", () => {
     expect(searched).toBe(true);
   });
 });
+
+function fetchingGatherModel(): ResolvedModel {
+  let step = 0;
+  return new MockLanguageModelV3({
+    provider: "mock-provider",
+    modelId: "research-model",
+    doGenerate: async () => {
+      step++;
+      if (step === 1) return searchCallResult();
+      if (step === 2) {
+        return {
+          content: [
+            {
+              type: "tool-call",
+              toolCallId: "fetch_1",
+              toolName: "fetch",
+              input: JSON.stringify({
+                url: "https://medline.example.com/bronchospasm",
+                goal: "paradoxical bronchospasm",
+              }),
+            },
+          ],
+          finishReason: { unified: "tool-calls", raw: undefined },
+          usage: USAGE,
+          warnings: [],
+        };
+      }
+      return textResult("Closing note: the rescue inhaler can worsen wheezing.");
+    },
+  }) as unknown as ResolvedModel;
+}
+
+function draftingWriteModel(): ResolvedModel {
+  let drafted = false;
+  return wrapLanguageModel({
+    model: new MockLanguageModelV3({
+      provider: "mock-provider",
+      modelId: "write-model",
+      doGenerate: async () => {
+        if (!drafted) {
+          drafted = true;
+          return {
+            content: [
+              {
+                type: "tool-call",
+                toolCallId: "draft_1",
+                toolName: "draft_set",
+                input: JSON.stringify({
+                  markdown:
+                    "A rescue inhaler can cause paradoxical bronchospasm, worsening wheezing [source_1].",
+                }),
+              },
+            ],
+            finishReason: { unified: "tool-calls", raw: undefined },
+            usage: USAGE,
+            warnings: [],
+          };
+        }
+        return textResult("Report complete.");
+      },
+    }),
+    middleware: simulateStreamingMiddleware(),
+  }) as unknown as ResolvedModel;
+}
+
+const stubSearch: SearchProvider = {
+  id: "stub",
+  search: async () => [
+    {
+      position: 1,
+      title: "Paradoxical bronchospasm",
+      url: "https://medline.example.com/bronchospasm",
+      snippet: "rescue inhaler worsening wheezing",
+      domain: "medline.example.com",
+    },
+  ],
+};
+
+function budgetAtlas(pricing: Record<string, { inputPerMTok: number; outputPerMTok: number }>): Atlas {
+  return new Atlas({
+    model: planModel() as unknown as ResolvedModel,
+    models: { research: fetchingGatherModel(), write: draftingWriteModel() },
+    search: stubSearch,
+    fetch: stubFetch,
+    effort: "fast",
+    pricing,
+    safety: { allowPrivateNetworks: true },
+  });
+}
+
+describe("spine budget control", () => {
+  it("reserves the draft pass and produces a report at a low feasible budget", async () => {
+    const atlas = budgetAtlas({
+      "lead-model": { inputPerMTok: 1, outputPerMTok: 5 },
+      "research-model": { inputPerMTok: 1, outputPerMTok: 5 },
+      "write-model": { inputPerMTok: 1, outputPerMTok: 5 },
+    });
+    const result = await atlas
+      .start("can my rescue inhaler make wheezing worse?", {
+        budget: { maxUSD: 0.5 },
+      })
+      .result();
+    expect(result.report).toContain("paradoxical bronchospasm");
+    expect(result.report).not.toContain("no report could be composed");
+  });
+
+  it("rejects an infeasible budget with an actionable error", async () => {
+    const atlas = budgetAtlas({
+      "lead-model": { inputPerMTok: 50, outputPerMTok: 200 },
+      "research-model": { inputPerMTok: 50, outputPerMTok: 200 },
+      "write-model": { inputPerMTok: 50, outputPerMTok: 200 },
+    });
+    await expect(
+      atlas
+        .start("can my rescue inhaler make wheezing worse?", {
+          budget: { maxUSD: 0.1 },
+        })
+        .result(),
+    ).rejects.toThrow(/budget/i);
+  });
+});

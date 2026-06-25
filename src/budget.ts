@@ -352,3 +352,80 @@ export async function withGrant<T>(
     grant.release();
   }
 }
+
+export type SpineScope = "single_fact" | "broad";
+
+export interface BudgetPlanInput {
+  budgetUSD: number;
+  maxTokens: number;
+  maxReportTokens: number;
+  scope: SpineScope;
+  researchPricing: ModelPricing;
+}
+
+export interface BudgetPlan {
+  feasible: boolean;
+  reason?: string;
+  effectiveTokens: number;
+  draftReserveTokens: number;
+  gatherCeilingTokens: number;
+}
+
+const PLAN_RESERVE_TOKENS = 2_000;
+const DRAFT_CONTEXT_TOKENS_BROAD = 48_000;
+const DRAFT_CONTEXT_TOKENS_SINGLE = 8_000;
+const SINGLE_FACT_REPORT_TOKENS = 2_000;
+const GATHER_MIN_TOKENS_BROAD = 60_000;
+const GATHER_MIN_TOKENS_SINGLE = 24_000;
+const TOKEN_BLEND_INPUT = 0.85;
+const TOKEN_BLEND_OUTPUT = 0.15;
+
+function blendedUsdPerToken(pricing: ModelPricing): number {
+  return (
+    (TOKEN_BLEND_INPUT * pricing.inputPerMTok +
+      TOKEN_BLEND_OUTPUT * pricing.outputPerMTok) /
+    1_000_000
+  );
+}
+
+export function resolveBudgetPlan(input: BudgetPlanInput): BudgetPlan {
+  const single = input.scope === "single_fact";
+  const reportTokens = single
+    ? Math.min(input.maxReportTokens, SINGLE_FACT_REPORT_TOKENS)
+    : input.maxReportTokens;
+  const draftReserveTokens =
+    (single ? DRAFT_CONTEXT_TOKENS_SINGLE : DRAFT_CONTEXT_TOKENS_BROAD) +
+    reportTokens;
+
+  const usdPerToken = blendedUsdPerToken(input.researchPricing);
+  const budgetTokens =
+    usdPerToken > 0 ? Math.floor(input.budgetUSD / usdPerToken) : Infinity;
+  const effectiveTokens = Math.min(input.maxTokens, budgetTokens);
+
+  const gatherCeilingTokens = Math.max(
+    0,
+    effectiveTokens - PLAN_RESERVE_TOKENS - draftReserveTokens,
+  );
+  const minGather = single ? GATHER_MIN_TOKENS_SINGLE : GATHER_MIN_TOKENS_BROAD;
+  const feasible = gatherCeilingTokens >= minGather;
+  if (feasible) {
+    return {
+      feasible,
+      effectiveTokens,
+      draftReserveTokens,
+      gatherCeilingTokens,
+    };
+  }
+  const minTokens = PLAN_RESERVE_TOKENS + draftReserveTokens + minGather;
+  const reason =
+    usdPerToken > 0
+      ? `budget.maxUSD $${input.budgetUSD} is too low for this model on a ${input.scope} question — about $${(minTokens * usdPerToken).toFixed(2)} is needed for one fetch and a written report. Raise budget.maxUSD, set models.research to a cheaper model, or use a cheaper lead model.`
+      : `budget.maxTokens ${input.maxTokens} is too low for a ${input.scope} question — about ${minTokens} tokens are needed for one fetch and a written report. Raise budget.maxTokens.`;
+  return {
+    feasible,
+    reason,
+    effectiveTokens,
+    draftReserveTokens,
+    gatherCeilingTokens,
+  };
+}

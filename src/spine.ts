@@ -8,7 +8,14 @@ import {
 } from "ai";
 import { z } from "zod";
 import { runAgent, type AgentResult } from "./agent.js";
-import { withGrant, type BudgetGrant, type BudgetMeter } from "./budget.js";
+import {
+  resolveBudgetPlan,
+  resolvePricing,
+  withGrant,
+  type BudgetGrant,
+  type BudgetMeter,
+} from "./budget.js";
+import { ConfigError } from "./errors.js";
 import type { AgentRole, Citation } from "./events.js";
 import { NON_EVIDENCE_WARNINGS } from "./sources.js";
 import { stubToolResultWindow } from "./memory.js";
@@ -51,21 +58,6 @@ interface Gap {
 
 const PLAN_FRACTION = 0.05;
 const PLAN_MIN_USD = 0.02;
-const SYNTH_FRACTION = 0.32;
-const SYNTH_MIN_USD = 0.3;
-const COVERAGE_FRACTION = 0.1;
-const COVERAGE_MIN_USD = 0.1;
-const PATCH_FRACTION = 0.28;
-const PATCH_MIN_USD = 0.25;
-const RECONCILE_FRACTION = 0.12;
-const RECONCILE_MIN_USD = 0.1;
-// Pre-synth sufficiency gate: a dedicated reserve carved before gather (so it
-// reliably has budget to fire — leftover-funding caught 0/draws). Self-targeting
-// stays at the agent level: it fetches only the contract items the notes do not
-// already pin, so an under-gatherer (opus) spends it while a full-coverage
-// gatherer (gpt) reads its notes, finds nothing open, and releases it.
-const PRESYNTH_FRACTION = 0.2;
-const PRESYNTH_MIN_USD = 0.12;
 const PRESYNTH_MAX_TURNS = 8;
 const GATHER_MEMORY_KEEP = 4;
 const WRITE_KEEP = 12;
@@ -159,6 +151,7 @@ async function gather(
   rctx: RunCtx,
   grant: BudgetGrant,
   task: string,
+  tokenCeiling: number,
 ): Promise<AgentResult> {
   return runAgent(rctx, {
     role: "gather",
@@ -179,6 +172,7 @@ async function gather(
     grant,
     depth: 0,
     maxTurns: rctx.config.envelope.maxTurns,
+    tokenCeiling,
     captureMessages: true,
     memoryCursor: GATHER_MEMORY_KEEP,
     forceFirstTool: "search",
@@ -193,6 +187,7 @@ async function preSynthFill(
   rctx: RunCtx,
   grant: BudgetGrant,
   ledger: Ledger,
+  tokenCeiling: number,
 ): Promise<void> {
   if (ledger.scope === "single_fact" || grant.floored()) return;
   const open = renderOpenSlots(ledger);
@@ -220,6 +215,7 @@ async function preSynthFill(
     grant,
     depth: 0,
     maxTurns: PRESYNTH_MAX_TURNS,
+    tokenCeiling,
     forceFirstTool: "search",
   });
 }
@@ -801,43 +797,30 @@ export async function runSpine(
   const task = ledger
     ? buildGatherTask(rctx.question, ledger)
     : `Research question:\n${rctx.question}\n\nInvestigate from fetched sources, then write a short closing note. Do not write the final report.`;
-  const synthGrant = meter.grant({ fraction: SYNTH_FRACTION, minUSD: SYNTH_MIN_USD }) ?? meter;
-  const coverageGrant = ledger
-    ? (meter.grant({ fraction: COVERAGE_FRACTION, minUSD: COVERAGE_MIN_USD }) ?? meter)
-    : meter;
-  const patchGrant = ledger
-    ? (meter.grant({ fraction: PATCH_FRACTION, minUSD: PATCH_MIN_USD }) ?? meter)
-    : meter;
-  const reconcileGrant = ledger
-    ? (meter.grant({ fraction: RECONCILE_FRACTION, minUSD: RECONCILE_MIN_USD }) ?? meter)
-    : meter;
-  const presynthGrant = ledger
-    ? meter.grant({ fraction: PRESYNTH_FRACTION, minUSD: PRESYNTH_MIN_USD })
-    : null;
-  const gatherGrant = meter.grant({ fraction: 1 }) ?? meter;
+  const researchModelId =
+    (rctx.config.models.research as { modelId?: string }).modelId ?? "";
+  const plan = resolveBudgetPlan({
+    budgetUSD: rctx.config.budgetUSD,
+    maxTokens: rctx.config.maxTokens,
+    maxReportTokens: rctx.config.envelope.maxReportTokens,
+    scope: ledger?.scope === "single_fact" ? "single_fact" : "broad",
+    researchPricing: resolvePricing(researchModelId, rctx.pricing).pricing,
+  });
+  if (!plan.feasible) {
+    throw new ConfigError(
+      plan.reason ?? "budget is too low to run this research",
+    );
+  }
+
   let gathered: AgentResult | null = null;
   try {
-    gathered = await gather(rctx, gatherGrant, task);
+    gathered = await gather(rctx, meter, task, plan.gatherCeilingTokens);
   } catch (err) {
-    if (rctx.signal?.aborted) {
-      if (synthGrant !== meter) synthGrant.release();
-      if (coverageGrant !== meter) coverageGrant.release();
-      if (patchGrant !== meter) patchGrant.release();
-      if (reconcileGrant !== meter) reconcileGrant.release();
-      presynthGrant?.release();
-      throw err;
-    }
-  } finally {
-    if (gatherGrant !== meter) gatherGrant.release();
+    if (rctx.signal?.aborted) throw err;
   }
   const note = gathered?.note.trim() ?? "";
 
   if (rctx.sources.fetchedSources.length === 0) {
-    if (synthGrant !== meter) synthGrant.release();
-    if (coverageGrant !== meter) coverageGrant.release();
-    if (patchGrant !== meter) patchGrant.release();
-    if (reconcileGrant !== meter) reconcileGrant.release();
-    presynthGrant?.release();
     return {
       report:
         note ||
@@ -848,19 +831,11 @@ export async function runSpine(
     };
   }
 
-  if (presynthGrant) {
+  if (ledger && ledger.scope !== "single_fact") {
     try {
-      await preSynthFill(rctx, presynthGrant, ledger!);
+      await preSynthFill(rctx, meter, ledger, plan.gatherCeilingTokens);
     } catch (err) {
-      if (rctx.signal?.aborted) {
-        if (synthGrant !== meter) synthGrant.release();
-        if (coverageGrant !== meter) coverageGrant.release();
-        if (patchGrant !== meter) patchGrant.release();
-        if (reconcileGrant !== meter) reconcileGrant.release();
-        throw err;
-      }
-    } finally {
-      presynthGrant.release();
+      if (rctx.signal?.aborted) throw err;
     }
   }
 
@@ -870,46 +845,26 @@ export async function runSpine(
   ];
   const draft: Draft = { text: "" };
   try {
-    await synthesizeHolistic(rctx, synthGrant, priorMessages, draft);
+    await synthesizeHolistic(rctx, meter, priorMessages, draft);
   } catch (err) {
-    if (rctx.signal?.aborted) {
-      if (coverageGrant !== meter) coverageGrant.release();
-      if (patchGrant !== meter) patchGrant.release();
-      if (reconcileGrant !== meter) reconcileGrant.release();
-      throw err;
-    }
-  } finally {
-    if (synthGrant !== meter) synthGrant.release();
+    if (rctx.signal?.aborted) throw err;
   }
   try {
     if (ledger && ledger.scope !== "single_fact") {
-      try {
-        for (let round = 0; round < COVERAGE_MAX_ROUNDS; round++) {
-          if (!draft.text.trim() || coverageGrant.floored()) break;
-          const gaps = prioritizeGaps(
-            await auditDraftAgainstLedger(
-              rctx,
-              coverageGrant,
-              ledger,
-              draft.text,
-            ),
-            ledger,
-          );
-          if (gaps.length === 0) break;
-          await patchDraftForGaps(rctx, patchGrant, draft, gaps);
-          await reconcileDraft(rctx, reconcileGrant, draft, gaps);
-        }
-      } catch (err) {
-        if (rctx.signal?.aborted) throw err;
+      for (let round = 0; round < COVERAGE_MAX_ROUNDS; round++) {
+        if (!draft.text.trim() || meter.floored()) break;
+        const gaps = prioritizeGaps(
+          await auditDraftAgainstLedger(rctx, meter, ledger, draft.text),
+          ledger,
+        );
+        if (gaps.length === 0) break;
+        await patchDraftForGaps(rctx, meter, draft, gaps);
+        await reconcileDraft(rctx, meter, draft, gaps);
       }
     }
-    await flushDroppedNotes(rctx, reconcileGrant, draft);
+    await flushDroppedNotes(rctx, meter, draft);
   } catch (err) {
     if (rctx.signal?.aborted) throw err;
-  } finally {
-    if (coverageGrant !== meter) coverageGrant.release();
-    if (patchGrant !== meter) patchGrant.release();
-    if (reconcileGrant !== meter) reconcileGrant.release();
   }
 
   if (!draft.text.trim()) {

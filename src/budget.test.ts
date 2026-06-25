@@ -2,9 +2,72 @@ import { describe, expect, it } from "vitest";
 import {
   createBudgetMeter,
   DEFAULT_PRICING,
+  resolveBudgetPlan,
   resolvePricing,
   usageCostUSD,
 } from "./budget.js";
+
+const CHEAP = { inputPerMTok: 0.25, outputPerMTok: 2 };
+const OPUS = { inputPerMTok: 5, outputPerMTok: 25 };
+const FREE = { inputPerMTok: 0, outputPerMTok: 0 };
+
+const planFor = (
+  over: Partial<Parameters<typeof resolveBudgetPlan>[0]>,
+) =>
+  resolveBudgetPlan({
+    budgetUSD: 0.5,
+    maxTokens: 5_000_000,
+    maxReportTokens: 4096,
+    scope: "broad",
+    researchPricing: CHEAP,
+    ...over,
+  });
+
+describe("resolveBudgetPlan", () => {
+  it("funds gather as the dominant share for a cheap model at low budget", () => {
+    const plan = planFor({ researchPricing: CHEAP });
+    expect(plan.feasible).toBe(true);
+    expect(plan.gatherCeilingTokens).toBeGreaterThan(plan.draftReserveTokens);
+  });
+
+  it("rejects an expensive model on a tiny budget with an actionable reason", () => {
+    const plan = planFor({ researchPricing: OPUS });
+    expect(plan.feasible).toBe(false);
+    expect(plan.reason).toMatch(/budget\.maxUSD/);
+    expect(plan.reason).toMatch(/cheaper/);
+  });
+
+  it("is governed by maxTokens (not USD) for a free model", () => {
+    const plan = planFor({ researchPricing: FREE });
+    expect(plan.feasible).toBe(true);
+    expect(plan.effectiveTokens).toBe(5_000_000);
+    expect(Number.isFinite(plan.gatherCeilingTokens)).toBe(true);
+  });
+
+  it("admits a tighter budget for single_fact than broad on the same model", () => {
+    const broad = planFor({ researchPricing: OPUS, scope: "broad" });
+    const single = planFor({ researchPricing: OPUS, scope: "single_fact" });
+    expect(single.draftReserveTokens).toBeLessThan(broad.draftReserveTokens);
+    expect(broad.feasible).toBe(false);
+    expect(single.feasible).toBe(true);
+  });
+
+  it("caps effective tokens by maxTokens when the USD budget is generous", () => {
+    const plan = planFor({ budgetUSD: 1000, maxTokens: 200_000 });
+    expect(plan.effectiveTokens).toBe(200_000);
+  });
+
+  it("never returns a negative or non-finite gather ceiling", () => {
+    const plan = planFor({
+      budgetUSD: 0.0001,
+      maxTokens: 1000,
+      researchPricing: OPUS,
+    });
+    expect(plan.gatherCeilingTokens).toBeGreaterThanOrEqual(0);
+    expect(Number.isFinite(plan.gatherCeilingTokens)).toBe(true);
+    expect(plan.feasible).toBe(false);
+  });
+});
 
 describe("budget meter", () => {
   it("charges spend against the total", () => {
