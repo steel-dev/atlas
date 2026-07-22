@@ -29,6 +29,7 @@ import {
   type ReplayCache,
   type RunStore,
 } from "./providers/store.js";
+import type { ResearchDegenerate, ResearchFailure } from "./result.js";
 import { runSpine } from "./spine.js";
 import type { RunCtx } from "./state.js";
 import { extractStructured } from "./structured.js";
@@ -67,6 +68,8 @@ export interface ResearchResult {
   stats: RunStats;
   trace?: RunTrace;
   eventVersion: string;
+  failure?: ResearchFailure;
+  degenerate?: ResearchDegenerate;
 }
 
 export interface ResearchRun {
@@ -367,6 +370,8 @@ async function executeRun(args: ExecuteRunArgs): Promise<ResearchResult> {
     stats,
     ...(rctx.recorder ? { trace: rctx.recorder.snapshot() } : {}),
     eventVersion: EVENT_SCHEMA_VERSION,
+    ...(out.failure ? { failure: out.failure } : {}),
+    ...(out.degenerate ? { degenerate: out.degenerate } : {}),
   };
   if (args.schema) {
     (result as { object?: unknown }).object = structured;

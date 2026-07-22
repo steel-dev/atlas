@@ -7,6 +7,6 @@
     "declarationMap": false,
     "sourceMap": false
   },
-  "include": ["cli.ts", "../src/**/*.ts"],
+  "include": ["cli.ts", "serve.ts", "../src/**/*.ts"],
   "exclude": ["../node_modules", "../dist"]
 }

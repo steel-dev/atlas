@@ -14,7 +14,12 @@ import {
   DEFAULT_ZAI_BASE_URL,
   DEFAULT_ZAI_MODEL,
 } from "../src/defaults.js";
-import { readEnv } from "../src/env.js";
+import {
+  detectProxyBaseURL,
+  type InheritedBaseURLProvider,
+  proxyBaseURLWarning,
+  readEnv,
+} from "../src/env.js";
 import { Atlas, type AtlasConfig, type Effort } from "../src/index.js";
 
 const USAGE = `atlas serve — minimal local web UI for deep research
@@ -49,6 +54,14 @@ function normalizeProvider(provider: string): "anthropic" | "openai" | "zai" {
     return "zai";
   }
   fail(`provider must be one of: anthropic, openai, zai (got "${provider}")`);
+}
+
+// The providers whose SDKs will actually run this server, so a pure Z.ai run
+// never warns about an OpenAI base URL the run never touches.
+function configuredInheritedBaseURLProviders(
+  provider: "anthropic" | "openai" | "zai",
+): InheritedBaseURLProvider[] {
+  return provider === "anthropic" || provider === "openai" ? [provider] : [];
 }
 
 function resolveModel(
@@ -197,6 +210,17 @@ async function main(): Promise<void> {
     fail(`--port must be a valid port 0-65535 (got "${values.port}")`);
   }
   const host = values.host ?? "127.0.0.1";
+
+  const provider = normalizeProvider(
+    values.provider ?? readEnv("ATLAS_PROVIDER") ?? "anthropic",
+  );
+  for (const name of detectProxyBaseURL(process.env, {
+    providers: configuredInheritedBaseURLProviders(provider),
+  })) {
+    process.stderr.write(
+      `atlas-serve: WARNING: ${proxyBaseURLWarning(name)}\n`,
+    );
+  }
 
   const atlas = new Atlas({
     model: resolveModel(values.provider, values.model),

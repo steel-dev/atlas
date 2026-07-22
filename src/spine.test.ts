@@ -7,6 +7,7 @@ import { simulateStreamingMiddleware, wrapLanguageModel } from "ai";
 import { MockLanguageModelV3 } from "ai/test";
 import { describe, expect, it } from "vitest";
 import { Atlas } from "./atlas.js";
+import type { ResearchEvent } from "./events.js";
 import type { ResolvedModel } from "./model.js";
 import type { FetchProvider } from "./providers/fetch.js";
 import type { SearchProvider } from "./providers/search.js";
@@ -281,5 +282,341 @@ describe("spine budget control", () => {
         })
         .result(),
     ).rejects.toThrow(/budget/i);
+  });
+});
+
+function recoverableRunErrors(
+  events: ResearchEvent[],
+): Extract<ResearchEvent, { type: "run.error" }>[] {
+  return events.filter(
+    (event): event is Extract<ResearchEvent, { type: "run.error" }> =>
+      event.type === "run.error" && event.recoverable,
+  );
+}
+
+function failingWriteModel(message: string): ResolvedModel {
+  return wrapLanguageModel({
+    model: new MockLanguageModelV3({
+      provider: "mock-provider",
+      modelId: "write-model",
+      doGenerate: async () => {
+        throw Object.assign(new Error(message), { isRetryable: false });
+      },
+    }),
+    middleware: simulateStreamingMiddleware(),
+  }) as unknown as ResolvedModel;
+}
+
+// Gathers cleanly (searches, finds nothing to fetch) so the run reaches the
+// zero-source fallback with no captured error — a benign degenerate result.
+function emptyGatherModel(): ResolvedModel {
+  let step = 0;
+  return new MockLanguageModelV3({
+    provider: "mock-provider",
+    modelId: "research-model",
+    doGenerate: async () => {
+      step++;
+      if (step === 1) return searchCallResult();
+      return textResult("Closing note: no usable sources were found.");
+    },
+  }) as unknown as ResolvedModel;
+}
+
+// Never calls draft_set, so synthesis completes without error but leaves the
+// draft empty — the budget-exhaustion-shaped empty-draft fallback.
+function nonDraftingWriteModel(): ResolvedModel {
+  return wrapLanguageModel({
+    model: new MockLanguageModelV3({
+      provider: "mock-provider",
+      modelId: "write-model",
+      doGenerate: async () => textResult("No draft written."),
+    }),
+    middleware: simulateStreamingMiddleware(),
+  }) as unknown as ResolvedModel;
+}
+
+describe("spine failure visibility", () => {
+  it("surfaces a non-abort gather model outage instead of swallowing it", async () => {
+    // Mirrors an unreachable research/gather model endpoint, such as an
+    // "Invalid JSON response" through a mismatched proxy base URL.
+    const failingResearchModel = new MockLanguageModelV3({
+      provider: "mock-provider",
+      modelId: "research-model",
+      doGenerate: async () => {
+        throw Object.assign(new Error("Invalid JSON response"), {
+          isRetryable: false,
+        });
+      },
+    });
+
+    const atlas = new Atlas({
+      model: planModel() as unknown as ResolvedModel,
+      models: {
+        research: failingResearchModel as unknown as ResolvedModel,
+        write: writeModel(),
+      },
+      search: { id: "stub", search: async () => [] },
+      fetch: stubFetch,
+      effort: "fast",
+      safety: { allowPrivateNetworks: true },
+    });
+
+    const run = atlas.start("test question", {
+      runId: "run_gather_fail",
+      budget: { maxUSD: 5 },
+    });
+    const events: ResearchEvent[] = [];
+    const drain = (async () => {
+      for await (const event of run.events()) events.push(event);
+    })();
+    const result = await run.result();
+    await drain;
+
+    expect(run.status()).toBe("completed");
+    expect(result.report).toMatch(/Research failed before any sources/i);
+    expect(result.note).toMatch(/Invalid JSON response/i);
+    expect(
+      recoverableRunErrors(events).some((event) =>
+        /gather failed/i.test(event.message),
+      ),
+    ).toBe(true);
+  });
+
+  it("surfaces a non-abort synthesis outage instead of swallowing it", async () => {
+    const atlas = new Atlas({
+      model: planModel() as unknown as ResolvedModel,
+      models: {
+        research: fetchingGatherModel(),
+        write: failingWriteModel("synthesis endpoint down"),
+      },
+      search: stubSearch,
+      fetch: stubFetch,
+      effort: "fast",
+      safety: { allowPrivateNetworks: true },
+    });
+
+    const run = atlas.start("can my rescue inhaler make wheezing worse?", {
+      runId: "run_synth_fail",
+      budget: { maxUSD: 5 },
+    });
+    const events: ResearchEvent[] = [];
+    const drain = (async () => {
+      for await (const event of run.events()) events.push(event);
+    })();
+    const result = await run.result();
+    await drain;
+
+    // Sanity: gather fetched a source, so the run reached the synthesis phase.
+    expect(result.sources.length).toBeGreaterThan(0);
+    expect(run.status()).toBe("completed");
+    expect(result.note).toMatch(/synthesis endpoint down/i);
+    expect(
+      recoverableRunErrors(events).some((event) =>
+        /synthesis failed/i.test(event.message),
+      ),
+    ).toBe(true);
+  });
+
+  it("re-throws on abort without emitting a recoverable run.error", async () => {
+    const controller = new AbortController();
+    const abortingResearchModel = new MockLanguageModelV3({
+      provider: "mock-provider",
+      modelId: "research-model",
+      doGenerate: async () => {
+        controller.abort();
+        throw Object.assign(new Error("aborted mid-flight"), {
+          isRetryable: false,
+        });
+      },
+    });
+
+    const atlas = new Atlas({
+      model: planModel() as unknown as ResolvedModel,
+      models: {
+        research: abortingResearchModel as unknown as ResolvedModel,
+        write: writeModel(),
+      },
+      search: stubSearch,
+      fetch: stubFetch,
+      effort: "fast",
+      safety: { allowPrivateNetworks: true },
+    });
+
+    const run = atlas.start("test question", {
+      runId: "run_abort",
+      budget: { maxUSD: 5 },
+      signal: controller.signal,
+    });
+    const events: ResearchEvent[] = [];
+    const drain = (async () => {
+      for await (const event of run.events()) events.push(event);
+    })();
+    await expect(run.result()).rejects.toThrow();
+    await drain;
+
+    expect(run.status()).toBe("aborted");
+    expect(recoverableRunErrors(events)).toHaveLength(0);
+  });
+
+  it("leaves a healthy run free of recoverable run.error events", async () => {
+    const atlas = new Atlas({
+      model: planModel() as unknown as ResolvedModel,
+      models: { research: fetchingGatherModel(), write: draftingWriteModel() },
+      search: stubSearch,
+      fetch: stubFetch,
+      effort: "fast",
+      safety: { allowPrivateNetworks: true },
+    });
+
+    const run = atlas.start("can my rescue inhaler make wheezing worse?", {
+      runId: "run_healthy",
+      budget: { maxUSD: 5 },
+    });
+    const events: ResearchEvent[] = [];
+    const drain = (async () => {
+      for await (const event of run.events()) events.push(event);
+    })();
+    const result = await run.result();
+    await drain;
+
+    expect(run.status()).toBe("completed");
+    expect(result.report).toContain("paradoxical bronchospasm");
+    expect(recoverableRunErrors(events)).toHaveLength(0);
+  });
+
+  it("marks a total gather outage as a gather failure", async () => {
+    const failingResearchModel = new MockLanguageModelV3({
+      provider: "mock-provider",
+      modelId: "research-model",
+      doGenerate: async () => {
+        throw Object.assign(new Error("Invalid JSON response"), {
+          isRetryable: false,
+        });
+      },
+    });
+
+    const atlas = new Atlas({
+      model: planModel() as unknown as ResolvedModel,
+      models: {
+        research: failingResearchModel as unknown as ResolvedModel,
+        write: writeModel(),
+      },
+      search: { id: "stub", search: async () => [] },
+      fetch: stubFetch,
+      effort: "fast",
+      safety: { allowPrivateNetworks: true },
+    });
+
+    const result = await atlas
+      .start("test question", {
+        runId: "run_gather_failure_flag",
+        budget: { maxUSD: 5 },
+      })
+      .result();
+
+    expect(result.failure).toBeDefined();
+    expect(result.failure?.phase).toBe("gather");
+    expect(result.failure?.message).toMatch(/Invalid JSON response/i);
+    expect(result.degenerate).toBeUndefined();
+  });
+
+  it("marks a synthesis outage as a synthesis failure", async () => {
+    const atlas = new Atlas({
+      model: planModel() as unknown as ResolvedModel,
+      models: {
+        research: fetchingGatherModel(),
+        write: failingWriteModel("synthesis endpoint down"),
+      },
+      search: stubSearch,
+      fetch: stubFetch,
+      effort: "fast",
+      safety: { allowPrivateNetworks: true },
+    });
+
+    const result = await atlas
+      .start("can my rescue inhaler make wheezing worse?", {
+        runId: "run_synth_failure_flag",
+        budget: { maxUSD: 5 },
+      })
+      .result();
+
+    expect(result.sources.length).toBeGreaterThan(0);
+    expect(result.failure).toBeDefined();
+    expect(result.failure?.phase).toBe("synthesis");
+    expect(result.failure?.message).toMatch(/synthesis endpoint down/i);
+    expect(result.degenerate).toBeUndefined();
+  });
+
+  it("marks a clean zero-source run as degenerate, not failed", async () => {
+    const atlas = new Atlas({
+      model: planModel() as unknown as ResolvedModel,
+      models: { research: emptyGatherModel(), write: writeModel() },
+      search: { id: "stub", search: async () => [] },
+      fetch: stubFetch,
+      effort: "fast",
+      safety: { allowPrivateNetworks: true },
+    });
+
+    const result = await atlas
+      .start("a question nothing usable answers", {
+        runId: "run_zero_source_degenerate",
+        budget: { maxUSD: 5 },
+      })
+      .result();
+
+    expect(result.sources.length).toBe(0);
+    expect(result.failure).toBeUndefined();
+    expect(result.degenerate).toBeDefined();
+    expect(result.degenerate?.reason).toMatch(/no sources retrieved/i);
+  });
+
+  it("marks a budget-exhausted empty draft as degenerate, not failed", async () => {
+    const atlas = new Atlas({
+      model: planModel() as unknown as ResolvedModel,
+      models: {
+        research: fetchingGatherModel(),
+        write: nonDraftingWriteModel(),
+      },
+      search: stubSearch,
+      fetch: stubFetch,
+      effort: "fast",
+      safety: { allowPrivateNetworks: true },
+    });
+
+    const result = await atlas
+      .start("can my rescue inhaler make wheezing worse?", {
+        runId: "run_empty_draft_degenerate",
+        budget: { maxUSD: 5 },
+      })
+      .result();
+
+    expect(result.sources.length).toBeGreaterThan(0);
+    expect(result.failure).toBeUndefined();
+    expect(result.degenerate).toBeDefined();
+    expect(result.degenerate?.reason).toMatch(
+      /no report composed within budget/i,
+    );
+  });
+
+  it("leaves a healthy run free of failure and degenerate flags", async () => {
+    const atlas = new Atlas({
+      model: planModel() as unknown as ResolvedModel,
+      models: { research: fetchingGatherModel(), write: draftingWriteModel() },
+      search: stubSearch,
+      fetch: stubFetch,
+      effort: "fast",
+      safety: { allowPrivateNetworks: true },
+    });
+
+    const result = await atlas
+      .start("can my rescue inhaler make wheezing worse?", {
+        runId: "run_healthy_flags",
+        budget: { maxUSD: 5 },
+      })
+      .result();
+
+    expect(result.report).toContain("paradoxical bronchospasm");
+    expect(result.failure).toBeUndefined();
+    expect(result.degenerate).toBeUndefined();
   });
 });

@@ -37,12 +37,23 @@ export type {
 } from "./events.js";
 export { EVENT_SCHEMA_VERSION } from "./events.js";
 export type { ModelRole } from "./model.js";
+export type { RunOutcome } from "./outcome.js";
+export {
+  classifyRunOutcome,
+  DEGENERATE_EXIT_CODE,
+  FAILED_EXIT_CODE,
+} from "./outcome.js";
 export type {
   Researcher,
   ResearcherContext,
   ResearchReport,
 } from "./researcher.js";
 export { researcher } from "./researcher.js";
+export type {
+  ResearchDegenerate,
+  ResearchFailure,
+  ResearchFailurePhase,
+} from "./result.js";
 export type {
   ResearchResult,
   ResearchRun,

@@ -26,11 +26,12 @@ import {
   renderOpenSlots,
   seedLedger,
 } from "./checklist.js";
-import { AtlasError } from "./errors.js";
+import { AtlasError, errorMessage } from "./errors.js";
 import type { AgentRole, Citation } from "./events.js";
 import { stubToolResultWindow } from "./memory.js";
 import { MODEL_CALL_MAX_RETRIES } from "./model.js";
 import { todayLine } from "./prompts.js";
+import type { ResearchDegenerate, ResearchFailure } from "./result.js";
 import { NON_EVIDENCE_WARNINGS } from "./sources.js";
 import type { RunCtx } from "./state.js";
 import {
@@ -48,6 +49,8 @@ export interface SpineOutput {
   unboundCitations: string[];
   sources?: { url: string; title: string; via: string; chars?: number }[];
   warnings?: string[];
+  failure?: ResearchFailure;
+  degenerate?: ResearchDegenerate;
 }
 
 interface Gap {
@@ -835,21 +838,41 @@ export async function runSpine(
   }
 
   let gathered: AgentResult | null = null;
+  let gatherError: unknown = null;
   try {
     gathered = await gather(rctx, meter, task, plan.gatherCeilingTokens);
   } catch (err) {
     if (rctx.signal?.aborted) throw err;
+    // A non-abort gather failure (e.g. an unreachable model endpoint) would
+    // otherwise be invisible: the run still "completes" with a no-source
+    // report. Emit it and remember it so consumers can show the real cause
+    // instead of guessing from a generic fallback report.
+    gatherError = err;
+    rctx.emit({
+      type: "run.error",
+      message: `gather failed: ${errorMessage(err)}`,
+      recoverable: true,
+    });
   }
   const note = gathered?.note.trim() ?? "";
 
   if (rctx.sources.fetchedSources.length === 0) {
+    const failNote = gatherError
+      ? `Research failed before any sources could be retrieved: ${errorMessage(gatherError)}`
+      : "";
     return {
       report:
         note ||
+        failNote ||
         "No sources could be retrieved for this question, so no grounded report could be written.",
-      note,
+      note: failNote && note ? `${failNote}\n\n${note}` : failNote || note,
       citations: [],
       unboundCitations: [],
+      // A captured gather error is a real outage (failed); a clean run that
+      // simply found nothing to fetch is a degenerate result, not a failure.
+      ...(gatherError
+        ? { failure: { phase: "gather", message: failNote } }
+        : { degenerate: { reason: "no sources retrieved" } }),
     };
   }
 
@@ -858,6 +881,13 @@ export async function runSpine(
       await preSynthFill(rctx, meter, ledger, plan.gatherCeilingTokens);
     } catch (err) {
       if (rctx.signal?.aborted) throw err;
+      // Surface the degraded phase instead of silently moving on; the run still
+      // completes, but event consumers can see why a gap went unfilled.
+      rctx.emit({
+        type: "run.error",
+        message: `pre-synthesis gap fill failed: ${errorMessage(err)}`,
+        recoverable: true,
+      });
     }
   }
 
@@ -866,10 +896,21 @@ export async function runSpine(
     ...(gathered?.messages ?? []),
   ];
   const draft: Draft = { text: "" };
+  let synthError: unknown = null;
   try {
     await synthesizeHolistic(rctx, meter, priorMessages, draft);
   } catch (err) {
     if (rctx.signal?.aborted && !draft.text.trim()) throw err;
+    // Synthesis threw: the run falls back to a no-report result. Surface the
+    // cause so the fallback isn't mistaken for a budget limit.
+    if (!rctx.signal?.aborted) {
+      synthError = err;
+      rctx.emit({
+        type: "run.error",
+        message: `synthesis failed: ${errorMessage(err)}`,
+        recoverable: true,
+      });
+    }
   }
   try {
     if (ledger && ledger.scope !== "single_fact" && !rctx.signal?.aborted) {
@@ -888,16 +929,34 @@ export async function runSpine(
     if (!rctx.signal?.aborted) await flushDroppedNotes(rctx, meter, draft);
   } catch (err) {
     if (rctx.signal?.aborted && !draft.text.trim()) throw err;
+    // The coverage/patch pass degraded but the draft may still be usable;
+    // surface the cause without discarding what synthesis already produced.
+    if (!rctx.signal?.aborted) {
+      rctx.emit({
+        type: "run.error",
+        message: `coverage/patch failed: ${errorMessage(err)}`,
+        recoverable: true,
+      });
+    }
   }
 
   if (!draft.text.trim()) {
+    const failNote = synthError
+      ? `Synthesis failed: ${errorMessage(synthError)}`
+      : "";
     return {
       report:
         note ||
+        failNote ||
         "Sources were gathered but no report could be composed within budget.",
-      note,
+      note: failNote && note ? `${failNote}\n\n${note}` : failNote || note,
       citations: [],
       unboundCitations: [],
+      // A captured synthesis error is a real outage (failed); an empty draft
+      // from budget exhaustion with no error is degenerate, not a failure.
+      ...(synthError
+        ? { failure: { phase: "synthesis", message: failNote } }
+        : { degenerate: { reason: "no report composed within budget" } }),
     };
   }
   const grounded = renumberAndGround(rctx, stripProcessCaveats(draft.text));

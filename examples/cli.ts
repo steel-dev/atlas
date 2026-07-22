@@ -12,7 +12,12 @@ import {
   DEFAULT_ZAI_BASE_URL,
   DEFAULT_ZAI_MODEL,
 } from "../src/defaults.js";
-import { readEnv } from "../src/env.js";
+import {
+  detectProxyBaseURL,
+  type InheritedBaseURLProvider,
+  proxyBaseURLWarning,
+  readEnv,
+} from "../src/env.js";
 import {
   Atlas,
   type AtlasConfig,
@@ -25,6 +30,7 @@ import {
   type RunStats,
   type TraceMode,
 } from "../src/index.js";
+import { classifyRunOutcome, type RunOutcome } from "../src/outcome.js";
 import {
   arxiv,
   edgar,
@@ -129,9 +135,9 @@ function parseTrace(raw: string | undefined): TraceMode | undefined {
   fail(`--trace must be one of: off, spans, full (got "${raw}")`);
 }
 
-function normalizeProvider(
-  provider: string,
-): "anthropic" | "openai" | "google" | "zai" {
+type CliProvider = "anthropic" | "openai" | "google" | "zai";
+
+function normalizeProvider(provider: string): CliProvider {
   if (
     provider === "anthropic" ||
     provider === "openai" ||
@@ -144,6 +150,38 @@ function normalizeProvider(
   fail(
     `provider must be one of: anthropic, openai, google, zai (got "${provider}")`,
   );
+}
+
+function inheritedBaseURLProvider(
+  provider: CliProvider,
+): InheritedBaseURLProvider | undefined {
+  return provider === "anthropic" || provider === "openai"
+    ? provider
+    : undefined;
+}
+
+// The providers whose SDKs will actually run this session — the lead provider
+// plus any configured cheap tier — so a pure Z.ai run never warns about an
+// OpenAI base URL the run never touches.
+function configuredInheritedBaseURLProviders(
+  provider: CliProvider,
+): InheritedBaseURLProvider[] {
+  const providers: InheritedBaseURLProvider[] = [];
+  const lead = inheritedBaseURLProvider(provider);
+  if (lead) providers.push(lead);
+  const cheapProvider = readEnv("ATLAS_CHEAP_PROVIDER");
+  if (cheapProvider === "anthropic" || cheapProvider === "openai") {
+    providers.push(cheapProvider);
+  }
+  return providers;
+}
+
+function warnInheritedBaseURLs(
+  providers: readonly InheritedBaseURLProvider[],
+): void {
+  for (const name of detectProxyBaseURL(process.env, { providers })) {
+    process.stderr.write(`atlas: WARNING: ${proxyBaseURLWarning(name)}\n`);
+  }
 }
 
 function resolveModel(
@@ -266,7 +304,7 @@ function formatEvent(e: ResearchEvent): string | null {
     case "run.error":
       return paint(
         YELLOW,
-        `! ${e.recoverable ? "recoverable " : ""}error: ${e.message}`,
+        e.recoverable ? `! warning: ${e.message}` : `! error: ${e.message}`,
       );
     default:
       return null;
@@ -336,17 +374,28 @@ function writeTrace(
   if (hot) process.stderr.write(`${paint(DIM, `  hot: ${hot}`)}\n`);
 }
 
-function footer(result: ResearchResult): string {
+function footerStats(result: ResearchResult): string {
   const s = result.stats;
   const cites =
     s.citationsBound > 0 || s.citationsUnsupported > 0
       ? ` · ${s.citationsBound} cited / ${s.citationsUnsupported} unsupported`
       : "";
   return (
-    paint(GREEN, "✓") +
-    ` done — $${s.costUSD.toFixed(4)} · ${result.sources.length} source${result.sources.length === 1 ? "" : "s"} · ` +
+    `$${s.costUSD.toFixed(4)} · ${result.sources.length} source${result.sources.length === 1 ? "" : "s"} · ` +
     `${s.searches} search${s.searches === 1 ? "" : "es"}${cites} · ` +
     `${s.stopReason} · ${(s.durationMs / 1000).toFixed(0)}s`
+  );
+}
+
+function footer(result: ResearchResult, outcome: RunOutcome): string {
+  if (outcome.status === "ok") {
+    return `${paint(GREEN, "✓")} done — ${footerStats(result)}`;
+  }
+  const note = outcome.note.trim();
+  const label = outcome.status === "failed" ? "run failed" : "no usable report";
+  return (
+    `${paint(YELLOW, "✗")} ${label} — ${footerStats(result)}` +
+    (note ? `\n  ${note}` : "")
   );
 }
 
@@ -405,6 +454,10 @@ async function main(): Promise<void> {
     budget.maxDurationMs = Math.floor(timeoutSeconds * 1000);
   }
 
+  const provider = normalizeProvider(
+    values.provider ?? readEnv("ATLAS_PROVIDER") ?? "anthropic",
+  );
+  warnInheritedBaseURLs(configuredInheritedBaseURLProviders(provider));
   const cheapModels = resolveCheapModels();
   const model = resolveModel(values.provider, values.model);
   const config: AtlasConfig = {
@@ -501,7 +554,15 @@ async function main(): Promise<void> {
     } else {
       process.stdout.write("\n");
     }
-    if (!values.quiet) process.stderr.write(`${footer(result)}\n`);
+    const outcome = classifyRunOutcome(result);
+    if (!values.quiet) {
+      process.stderr.write(`${footer(result, outcome)}\n`);
+    } else if (outcome.exitCode !== 0 && outcome.note.trim()) {
+      process.stderr.write(`atlas: ${outcome.note.trim()}\n`);
+    }
+    // Set the code (don't process.exit) so the event loop flushes the report
+    // and JSON writes to stdout before the process exits.
+    if (outcome.exitCode !== 0) process.exitCode = outcome.exitCode;
   } catch (err) {
     if (run.status() === "paused") {
       process.stderr.write(`atlas: ${messageOf(err)}\n`);

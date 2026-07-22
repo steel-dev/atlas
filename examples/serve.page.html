@@ -108,7 +108,7 @@
           case "rate.limited":
             return [`! rate limited — waiting ${e.retryAfterSeconds}s`, "warn"];
           case "run.error":
-            return [`! error: ${e.message}`, "warn"];
+            return [e.recoverable ? `! warning: ${e.message}` : `! error: ${e.message}`, "warn"];
           case "run.completed":
             return ["✓ run completed", "ok"];
           default:
@@ -119,10 +119,14 @@
       function finish(result) {
         report.textContent = result.report;
         const s = result.stats;
+        const cites =
+          s.citationsBound > 0 || s.citationsUnsupported > 0
+            ? ` · ${s.citationsBound} cited / ${s.citationsUnsupported} unsupported`
+            : "";
         stats.textContent =
           `$${s.costUSD.toFixed(4)} · ${result.sources.length} sources · ` +
-          `${s.claimsConfirmed} confirmed / ${s.claimsContested} contested / ${s.claimsRefuted} refuted · ` +
-          `${s.agentsSpawned} agents · ${(s.durationMs / 1000).toFixed(0)}s`;
+          `${s.searches} searches${cites} · ` +
+          `${s.stopReason} · ${(s.durationMs / 1000).toFixed(0)}s`;
       }
 
       async function research(question, effort) {
