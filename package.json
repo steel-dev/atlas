@@ -71,18 +71,18 @@
     }
   },
   "devDependencies": {
-    "@ai-sdk/anthropic": "^3.0.81",
-    "@ai-sdk/google": "^3.0.80",
-    "@ai-sdk/openai": "^3.0.67",
+    "@ai-sdk/anthropic": "^4.0.18",
+    "@ai-sdk/google": "^4.0.22",
+    "@ai-sdk/openai": "^4.0.18",
     "@arethetypeswrong/cli": "^0.18.4",
     "@biomejs/biome": "^2.5.1",
-    "@types/node": "^22.0.0",
-    "ai": "^6.0.194",
-    "esbuild": "^0.25.12",
+    "@types/node": "^26.1.1",
+    "ai": "^7.0.35",
+    "esbuild": "^0.28.1",
     "publint": "^0.3.21",
     "tsx": "^4.19.2",
-    "typescript": "^5.7.2",
-    "vitest": "^2.1.8"
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.10"
   },
   "keywords": [
     "deep-research",
