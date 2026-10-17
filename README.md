@@ -43,6 +43,27 @@ const atlas = new Atlas({
 });
 ```
 
+For free web search without a search API key or account, opt into
+[Parallel Search MCP](https://docs.parallel.ai/integrations/mcp/search-mcp):
+
+```ts
+import { Atlas, parallel } from "@steel-dev/atlas";
+import { anthropic } from "@ai-sdk/anthropic";
+
+const atlas = new Atlas({
+  model: anthropic("claude-fable-5"),
+  search: parallel.search(),
+});
+const { report } = await atlas.research("What's changing in browser automation?");
+```
+
+Anonymous searches use Fast mode and have free-tier rate limits. Pass
+`parallel.search({ apiKey: "..." })` for higher limits, or `timeoutMs` to change the
+60-second connection-and-search timeout. This provider does not read environment
+API keys. It is selected only when configured; automatic search selection and the
+fetch chain keep their existing behavior. `parallel.agent()` remains the separate,
+API-key-required task researcher.
+
 ## Orchestrate researchers
 
 Register other research agents — including Atlas itself — as a fleet. Atlas decomposes the question, routes each sub-task to the best-fit researcher (`query → report`), runs them in isolation, then synthesizes one report. With no `researchers` set it stays a single spine run.

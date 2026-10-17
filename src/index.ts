@@ -5,6 +5,7 @@ import {
   steel as steelFetch,
 } from "./providers/fetch.js";
 import { parallelAgent } from "./providers/parallel-agent.js";
+import { parallelSearch } from "./providers/parallel-search.js";
 import { perplexityAgent } from "./providers/perplexity-agent.js";
 import {
   brave as braveSearch,
@@ -76,7 +77,7 @@ export const native = { search: nativeModelSearch };
 export const steel = { fetch: steelFetch };
 export const basic = { fetch: basicFetch };
 export const perplexity = { agent: perplexityAgent };
-export const parallel = { agent: parallelAgent };
+export const parallel = { search: parallelSearch, agent: parallelAgent };
 export type { AtlasErrorCode } from "./errors.js";
 export { AtlasError } from "./errors.js";
 export type {
@@ -106,6 +107,7 @@ export type {
   SteelOptions,
 } from "./providers/fetch.js";
 export type { ParallelAgentOptions } from "./providers/parallel-agent.js";
+export type { ParallelSearchOptions } from "./providers/parallel-search.js";
 export type { PerplexityAgentOptions } from "./providers/perplexity-agent.js";
 export type {
   BraveOptions,

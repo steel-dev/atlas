@@ -46,6 +46,7 @@
   },
   "dependencies": {
     "@ai-sdk/provider": "^3.0.0",
+    "@modelcontextprotocol/sdk": "^1.32.1",
     "cheerio": "^1.0.0",
     "exa-js": "^2.14.0",
     "pdf-parse": "^2.4.5",
